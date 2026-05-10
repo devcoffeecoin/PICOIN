@@ -48,6 +48,7 @@ class TaskResponse(BaseModel):
     assignment_mode: str | None = None
     assignment_ms: int | None = None
     compute_ms: int | None = None
+    protocol_params_id: int | None = None
     created_at: datetime
     expires_at: datetime | None = None
 
@@ -120,6 +121,7 @@ class BlockResponse(BaseModel):
     block_hash: str
     reward: float
     difficulty: float | None = None
+    protocol_params_id: int | None = None
     protocol_version: str | None = None
     validation_mode: str | None = None
     total_task_ms: int | None = None
@@ -192,6 +194,43 @@ class ProtocolParamsResponse(BaseModel):
     created_at: datetime
     difficulty: float
     reward_per_block: float
+
+
+class RetargetStatusResponse(BaseModel):
+    enabled: bool
+    epoch_blocks: int
+    target_block_ms: int
+    tolerance: float
+    current_height: int
+    last_retarget_height: int
+    blocks_until_next_epoch: int
+    active_difficulty: float
+    active_reward_per_block: float
+
+
+class RetargetEventResponse(BaseModel):
+    id: int
+    previous_protocol_params_id: int | None
+    new_protocol_params_id: int | None
+    epoch_start_height: int
+    epoch_end_height: int
+    epoch_block_count: int
+    average_block_ms: float
+    target_block_ms: int
+    old_difficulty: float
+    new_difficulty: float
+    adjustment_factor: float
+    action: str
+    reason: str
+    created_at: datetime
+
+
+class RetargetRunResponse(BaseModel):
+    retargeted: bool
+    status: str
+    message: str
+    event: RetargetEventResponse | None = None
+    protocol: ProtocolResponse
 
 
 class ValidationJobResponse(BaseModel):

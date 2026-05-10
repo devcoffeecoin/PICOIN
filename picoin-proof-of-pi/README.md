@@ -4,12 +4,12 @@ MVP funcional de **Proof of Pi**. Un coordinador asigna rangos pequenos de digit
 
 Este proyecto no implementa una blockchain completa. Usa una cadena local de bloques aceptados con `previous_hash` y `block_hash` para preparar una evolucion futura.
 
-## Protocolo v0.8
+## Protocolo v0.9
 
 Parametros actuales:
 
 ```text
-protocol_version = 0.8
+protocol_version = 0.9
 algorithm = bbp_hex_v1
 validation_mode = external_commit_reveal
 required_validator_approvals = 1
@@ -30,7 +30,7 @@ cooldown_after_rejections = 3
 cooldown_seconds = 300
 ```
 
-El endpoint `GET /protocol` devuelve estos valores para que mineros y validadores sepan que reglas estan activas. Desde v0.8 estos parametros viven en SQLite, en `protocol_params`, para que luego podamos cambiar dificultad sin reescribir el codigo.
+El endpoint `GET /protocol` devuelve estos valores para que mineros y validadores sepan que reglas estan activas. Desde v0.9 estos parametros viven en SQLite, en `protocol_params`, y pueden cambiar automaticamente por epocas.
 
 La dificultad se calcula con una formula simple y auditable:
 
@@ -44,6 +44,18 @@ reward_per_block = base_reward * difficulty
 ```
 
 Cada bloque guarda la dificultad y recompensa usadas al momento de aceptarse.
+Las tareas y bloques tambien guardan `protocol_params_id`, asi un retarget no cambia las reglas de una tarea que ya estaba asignada.
+
+Retarget automatico:
+
+```text
+epoch_blocks = 5
+target_block_ms = 60000
+tolerance = 20%
+max_adjustment_factor = 1.25
+```
+
+Cuando se aceptan suficientes bloques para cerrar una epoca, el coordinador mide `blocks.total_task_ms`. El objetivo es que cada bloque aceptado dure cerca de 1 minuto. Si el promedio fue demasiado rapido, sube dificultad para los siguientes trabajos. Si fue demasiado lento, la baja. El ajuste es conservador y crea una nueva fila activa en `protocol_params`; los bloques anteriores conservan la dificultad con la que fueron aceptados.
 
 ## Arquitectura
 
@@ -165,7 +177,25 @@ Devuelve parametros activos del protocolo, incluyendo `base_reward`, `difficulty
 
 ### `GET /protocol/history`
 
-Devuelve el historial de parametros de protocolo guardados en SQLite. En este MVP solo hay un set activo por defecto, pero la tabla ya prepara el camino para ajustes de dificultad por epoca.
+Devuelve el historial de parametros de protocolo guardados en SQLite. Cada retarget que cambia dificultad desactiva el set anterior y crea uno nuevo.
+
+### `GET /difficulty`
+
+Devuelve el estado del retarget automatico: altura actual, ultima altura ajustada, bloques faltantes para la siguiente epoca, dificultad activa y recompensa activa.
+
+### `GET /difficulty/history`
+
+Lista eventos de retarget ya ejecutados.
+
+### `POST /difficulty/retarget`
+
+Ejecuta el retarget si la epoca esta completa. Para pruebas locales se puede usar:
+
+```powershell
+curl -X POST "http://127.0.0.1:8000/difficulty/retarget?force=true"
+```
+
+`force=true` permite probar la logica con menos bloques, pero el flujo normal no lo necesita: al aceptar bloques, el coordinador intenta retarget automaticamente.
 
 ### `POST /miners/register`
 
@@ -358,6 +388,7 @@ Cada bloque aceptado contiene:
 - `block_hash`
 - `reward`
 - `difficulty`
+- `protocol_params_id`
 - `protocol_version`
 - `validation_mode`
 - `total_task_ms`
@@ -397,7 +428,7 @@ Limites intencionales:
 - No hay consenso distribuido.
 - No hay red P2P.
 - No hay wallet real ni token transferible.
-- La validacion v0.8 es probabilistica por muestras, no una prueba criptografica completa del calculo entero.
+- La validacion v0.9 es probabilistica por muestras, no una prueba criptografica completa del calculo entero.
 
 ## Performance
 
@@ -523,6 +554,7 @@ validation_jobs
 submissions
 blocks
 protocol_params
+retarget_events
 rewards
 penalties
 rejected_submissions
@@ -588,6 +620,13 @@ curl http://127.0.0.1:8000/stats/performance
 curl http://127.0.0.1:8000/protocol/history
 ```
 
+10. Consulta dificultad:
+
+```powershell
+curl http://127.0.0.1:8000/difficulty
+curl http://127.0.0.1:8000/difficulty/history
+```
+
 ## Pruebas
 
 ```powershell
@@ -602,8 +641,7 @@ python -m app.tools.reset_db
 
 ## Siguiente Evolucion
 
-- Ajuste automatico por epocas segun tiempo promedio de bloque.
-- Politica para subir o bajar `segment_size`, `sample_count` y `max_pi_position`.
-- Agregar slashing/staking simulado.
+- Ajustar el tamano de epoca y objetivo de bloque con benchmarks reales.
+- Simular slashing/staking para validadores y mineros.
 - Mayor quorum de validadores independientes.
 - Evolucionar la lista local de bloques hacia consenso blockchain.

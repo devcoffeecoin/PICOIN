@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.core.crypto import canonical_json, hash_block, sha256_text
-from app.core.difficulty import calculate_difficulty, calculate_reward
+from app.core.difficulty import calculate_difficulty, calculate_reward, propose_retarget_params
 from app.core.merkle import verify_merkle_proof
 from app.core.performance import elapsed_ms, now_perf
 from app.core.pi import calculate_pi_segment
@@ -26,6 +26,9 @@ from app.core.settings import (
     PENALTY_INVALID_SIGNATURE,
     PROJECT_NAME,
     PROTOCOL_VERSION,
+    RETARGET_EPOCH_BLOCKS,
+    RETARGET_TARGET_BLOCK_MS,
+    RETARGET_TOLERANCE,
     VALIDATION_MODE,
 )
 from app.db.database import get_connection, row_to_dict
@@ -180,9 +183,10 @@ def create_next_task(miner_id: str) -> dict[str, Any] | None:
             """
             INSERT INTO tasks (
                 task_id, miner_id, range_start, range_end, algorithm, status,
-                assignment_seed, assignment_mode, assignment_ms, created_at, expires_at
+                assignment_seed, assignment_mode, assignment_ms, protocol_params_id,
+                created_at, expires_at
             )
-            VALUES (?, ?, ?, ?, ?, 'assigned', ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 'assigned', ?, ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -193,6 +197,7 @@ def create_next_task(miner_id: str) -> dict[str, Any] | None:
                 assignment["assignment_seed"],
                 params["range_assignment_mode"],
                 assignment_ms,
+                params["id"],
                 now,
                 expires_at,
             ),
@@ -358,7 +363,7 @@ def submit_task(
                 segment,
             )
 
-        params = _active_protocol_params(connection)
+        params = _protocol_params_for_task(connection, task)
         reward = calculate_reward(params)
         difficulty = calculate_difficulty(params)
         latest_block = connection.execute(
@@ -380,6 +385,7 @@ def submit_task(
             "difficulty": difficulty,
             "samples": validation.samples,
             "timestamp": timestamp,
+            "protocol_params_id": params["id"],
             "protocol_version": params["protocol_version"],
             "validation_mode": params["validation_mode"],
         }
@@ -390,9 +396,9 @@ def submit_task(
             INSERT INTO blocks (
                 height, previous_hash, miner_id, range_start, range_end, algorithm,
                 result_hash, samples, timestamp, block_hash, reward, difficulty, task_id,
-                protocol_version, validation_mode
+                protocol_params_id, protocol_version, validation_mode
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 next_height,
@@ -408,6 +414,7 @@ def submit_task(
                 reward,
                 difficulty,
                 task_id,
+                params["id"],
                 params["protocol_version"],
                 params["validation_mode"],
             ),
@@ -425,6 +432,7 @@ def submit_task(
             (miner_id, next_height, reward, timestamp),
         )
         _refresh_trust_score(connection, miner_id)
+        _maybe_retarget_after_block(connection, next_height)
 
         block = {
             "height": next_height,
@@ -439,6 +447,7 @@ def submit_task(
             "block_hash": block_hash,
             "reward": reward,
             "difficulty": difficulty,
+            "protocol_params_id": params["id"],
             "protocol_version": params["protocol_version"],
             "validation_mode": params["validation_mode"],
         }
@@ -795,7 +804,7 @@ def submit_validation_result(
         samples = json.loads(job["samples"])
         validation_ms = elapsed_ms(started)
         if approved:
-            params = _active_protocol_params(connection)
+            params = _protocol_params_for_task(connection, task)
             block = _accept_block_in_connection(
                 connection=connection,
                 task=task,
@@ -929,6 +938,54 @@ def get_protocol_history() -> list[dict[str, Any]]:
             "SELECT * FROM protocol_params ORDER BY id DESC"
         ).fetchall()
     return [_protocol_params_payload(row_to_dict(row)) for row in rows]
+
+
+def get_difficulty_status() -> dict[str, Any]:
+    with get_connection() as connection:
+        params = _active_protocol_params(connection)
+        current_height = _latest_block_height(connection)
+        last_retarget_height = _last_retarget_height(connection)
+
+    blocks_since_retarget = max(0, current_height - last_retarget_height)
+    return {
+        "enabled": True,
+        "epoch_blocks": RETARGET_EPOCH_BLOCKS,
+        "target_block_ms": RETARGET_TARGET_BLOCK_MS,
+        "tolerance": RETARGET_TOLERANCE,
+        "current_height": current_height,
+        "last_retarget_height": last_retarget_height,
+        "blocks_until_next_epoch": max(0, RETARGET_EPOCH_BLOCKS - blocks_since_retarget),
+        "active_difficulty": calculate_difficulty(params),
+        "active_reward_per_block": calculate_reward(params),
+    }
+
+
+def get_retarget_history(limit: int = 20) -> list[dict[str, Any]]:
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM retarget_events
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [row_to_dict(row) for row in rows]
+
+
+def run_retarget(force: bool = False) -> dict[str, Any]:
+    with get_connection() as connection:
+        current_height = _latest_block_height(connection)
+        event = _maybe_retarget_after_block(connection, current_height, force=force)
+        params = _active_protocol_params(connection)
+
+    return {
+        "retargeted": event is not None,
+        "status": "retargeted" if event is not None else "waiting",
+        "message": "retarget epoch applied" if event is not None else "not enough accepted blocks for retarget",
+        "event": event,
+        "protocol": _protocol_payload(params),
+    }
 
 
 def _protocol_payload(params: dict[str, Any]) -> dict[str, Any]:
@@ -1134,6 +1191,8 @@ def _block_payload(block: dict[str, Any], include_protocol: bool) -> dict[str, A
     }
     if block.get("difficulty") is not None:
         payload["difficulty"] = block["difficulty"]
+    if block.get("protocol_params_id") is not None:
+        payload["protocol_params_id"] = block["protocol_params_id"]
     if block.get("merkle_root"):
         payload["merkle_root"] = block["merkle_root"]
     if include_protocol:
@@ -1157,6 +1216,18 @@ def _latest_block_hash(connection: Any) -> str:
     return GENESIS_HASH if latest is None else latest["block_hash"]
 
 
+def _latest_block_height(connection: Any) -> int:
+    latest = connection.execute("SELECT COALESCE(MAX(height), 0) AS height FROM blocks").fetchone()
+    return int(latest["height"])
+
+
+def _last_retarget_height(connection: Any) -> int:
+    latest = connection.execute(
+        "SELECT COALESCE(MAX(epoch_end_height), 0) AS height FROM retarget_events"
+    ).fetchone()
+    return int(latest["height"])
+
+
 def _active_protocol_params(connection: Any) -> dict[str, Any]:
     params = row_to_dict(
         connection.execute(
@@ -1167,6 +1238,27 @@ def _active_protocol_params(connection: Any) -> dict[str, Any]:
         raise MiningError(500, "active protocol params not found")
     params["active"] = bool(params["active"])
     return params
+
+
+def _protocol_params_by_id(connection: Any, protocol_params_id: int) -> dict[str, Any] | None:
+    params = row_to_dict(
+        connection.execute(
+            "SELECT * FROM protocol_params WHERE id = ?",
+            (protocol_params_id,),
+        ).fetchone()
+    )
+    if params is not None:
+        params["active"] = bool(params["active"])
+    return params
+
+
+def _protocol_params_for_task(connection: Any, task: dict[str, Any]) -> dict[str, Any]:
+    protocol_params_id = task.get("protocol_params_id")
+    if protocol_params_id is not None:
+        params = _protocol_params_by_id(connection, protocol_params_id)
+        if params is not None:
+            return params
+    return _active_protocol_params(connection)
 
 
 def _assign_pseudo_random_range(
@@ -1238,6 +1330,93 @@ def _build_challenge_samples(
     return [{"position": range_start + offset} for offset in offsets]
 
 
+def _maybe_retarget_after_block(connection: Any, current_height: int, force: bool = False) -> dict[str, Any] | None:
+    if current_height <= 0:
+        return None
+
+    last_height = _last_retarget_height(connection)
+    epoch_rows = connection.execute(
+        """
+        SELECT height, COALESCE(total_task_ms, ?) AS total_task_ms
+        FROM blocks
+        WHERE height > ?
+        ORDER BY height ASC
+        LIMIT ?
+        """,
+        (RETARGET_TARGET_BLOCK_MS, last_height, RETARGET_EPOCH_BLOCKS),
+    ).fetchall()
+    if not epoch_rows:
+        return None
+    if not force and len(epoch_rows) < RETARGET_EPOCH_BLOCKS:
+        return None
+
+    params = _active_protocol_params(connection)
+    average_block_ms = sum(float(row["total_task_ms"]) for row in epoch_rows) / len(epoch_rows)
+    next_params, meta = propose_retarget_params(params, average_block_ms)
+    old_difficulty = calculate_difficulty(params)
+    new_difficulty = calculate_difficulty(next_params)
+    previous_params_id = params["id"]
+    new_params_id = previous_params_id
+
+    if meta["action"] != "keep":
+        connection.execute("UPDATE protocol_params SET active = 0 WHERE active = 1")
+        cursor = connection.execute(
+            """
+            INSERT INTO protocol_params (
+                protocol_version, algorithm, validation_mode, required_validator_approvals,
+                range_assignment_mode, max_pi_position, range_assignment_max_attempts,
+                segment_size, sample_count, task_expiration_seconds,
+                max_active_tasks_per_miner, base_reward, active
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            """,
+            (
+                PROTOCOL_VERSION,
+                next_params["algorithm"],
+                next_params["validation_mode"],
+                next_params["required_validator_approvals"],
+                next_params["range_assignment_mode"],
+                next_params["max_pi_position"],
+                next_params["range_assignment_max_attempts"],
+                next_params["segment_size"],
+                next_params["sample_count"],
+                next_params["task_expiration_seconds"],
+                next_params["max_active_tasks_per_miner"],
+                next_params["base_reward"],
+            ),
+        )
+        new_params_id = cursor.lastrowid
+
+    epoch_start_height = int(epoch_rows[0]["height"])
+    epoch_end_height = int(epoch_rows[-1]["height"])
+    cursor = connection.execute(
+        """
+        INSERT INTO retarget_events (
+            previous_protocol_params_id, new_protocol_params_id, epoch_start_height,
+            epoch_end_height, epoch_block_count, average_block_ms, target_block_ms,
+            old_difficulty, new_difficulty, adjustment_factor, action, reason, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            previous_params_id,
+            new_params_id,
+            epoch_start_height,
+            epoch_end_height,
+            len(epoch_rows),
+            round(average_block_ms, 2),
+            RETARGET_TARGET_BLOCK_MS,
+            old_difficulty,
+            new_difficulty,
+            meta["adjustment_factor"],
+            meta["action"],
+            meta["reason"],
+            utc_now(),
+        ),
+    )
+    return row_to_dict(connection.execute("SELECT * FROM retarget_events WHERE id = ?", (cursor.lastrowid,)).fetchone())
+
+
 def _validate_revealed_samples(
     task: dict[str, Any],
     commitment: dict[str, Any],
@@ -1281,7 +1460,7 @@ def _accept_block_in_connection(
     params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if params is None:
-        params = _active_protocol_params(connection)
+        params = _protocol_params_for_task(connection, task)
     reward = calculate_reward(params)
     difficulty = calculate_difficulty(params)
     latest_block = connection.execute(
@@ -1307,6 +1486,7 @@ def _accept_block_in_connection(
         "difficulty": difficulty,
         "samples": samples,
         "timestamp": timestamp,
+        "protocol_params_id": params["id"],
         "protocol_version": params["protocol_version"],
         "validation_mode": params["validation_mode"],
     }
@@ -1319,9 +1499,9 @@ def _accept_block_in_connection(
         INSERT INTO blocks (
             height, previous_hash, miner_id, range_start, range_end, algorithm,
             result_hash, merkle_root, samples, timestamp, block_hash, reward, difficulty,
-            task_id, protocol_version, validation_mode, total_task_ms, validation_ms
+            task_id, protocol_params_id, protocol_version, validation_mode, total_task_ms, validation_ms
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             next_height,
@@ -1338,6 +1518,7 @@ def _accept_block_in_connection(
             reward,
             difficulty,
             task["task_id"],
+            params["id"],
             params["protocol_version"],
             params["validation_mode"],
             total_task_ms,
@@ -1357,6 +1538,7 @@ def _accept_block_in_connection(
         (miner_id, next_height, reward, timestamp),
     )
     _refresh_trust_score(connection, miner_id)
+    _maybe_retarget_after_block(connection, next_height)
 
     return {
         "height": next_height,
@@ -1372,6 +1554,7 @@ def _accept_block_in_connection(
         "block_hash": block_hash,
         "reward": reward,
         "difficulty": difficulty,
+        "protocol_params_id": params["id"],
         "protocol_version": params["protocol_version"],
         "validation_mode": params["validation_mode"],
         "total_task_ms": total_task_ms,

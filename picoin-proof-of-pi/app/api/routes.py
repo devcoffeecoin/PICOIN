@@ -8,6 +8,9 @@ from app.models.schemas import (
     PerformanceStatsResponse,
     ProtocolParamsResponse,
     ProtocolResponse,
+    RetargetEventResponse,
+    RetargetRunResponse,
+    RetargetStatusResponse,
     StatsResponse,
     TaskCommitRequest,
     TaskCommitResponse,
@@ -31,12 +34,15 @@ from app.services.mining import (
     get_performance_stats,
     get_protocol,
     get_protocol_history,
+    get_difficulty_status,
+    get_retarget_history,
     get_stats,
     get_validation_job,
     get_validator,
     register_miner,
     register_validator,
     reveal_task,
+    run_retarget,
     submit_validation_result,
     submit_task,
     verify_chain,
@@ -184,3 +190,18 @@ def protocol() -> dict:
 @router.get("/protocol/history", response_model=list[ProtocolParamsResponse])
 def protocol_history() -> list[dict]:
     return get_protocol_history()
+
+
+@router.get("/difficulty", response_model=RetargetStatusResponse)
+def difficulty_status() -> dict:
+    return get_difficulty_status()
+
+
+@router.get("/difficulty/history", response_model=list[RetargetEventResponse])
+def difficulty_history(limit: int = Query(20, ge=1, le=100)) -> list[dict]:
+    return get_retarget_history(limit)
+
+
+@router.post("/difficulty/retarget", response_model=RetargetRunResponse)
+def retarget_difficulty(force: bool = Query(False)) -> dict:
+    return run_retarget(force)

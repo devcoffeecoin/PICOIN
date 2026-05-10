@@ -78,6 +78,25 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
 
+            CREATE TABLE IF NOT EXISTS retarget_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                previous_protocol_params_id INTEGER,
+                new_protocol_params_id INTEGER,
+                epoch_start_height INTEGER NOT NULL,
+                epoch_end_height INTEGER NOT NULL,
+                epoch_block_count INTEGER NOT NULL,
+                average_block_ms REAL NOT NULL,
+                target_block_ms INTEGER NOT NULL,
+                old_difficulty REAL NOT NULL,
+                new_difficulty REAL NOT NULL,
+                adjustment_factor REAL NOT NULL,
+                action TEXT NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(previous_protocol_params_id) REFERENCES protocol_params(id),
+                FOREIGN KEY(new_protocol_params_id) REFERENCES protocol_params(id)
+            );
+
             CREATE TABLE IF NOT EXISTS tasks (
                 task_id TEXT PRIMARY KEY,
                 miner_id TEXT NOT NULL,
@@ -89,11 +108,13 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 assignment_mode TEXT,
                 assignment_ms INTEGER,
                 compute_ms INTEGER,
+                protocol_params_id INTEGER,
                 created_at TEXT NOT NULL,
                 expires_at TEXT,
                 submitted_at TEXT,
                 UNIQUE(range_start, range_end, algorithm),
-                FOREIGN KEY(miner_id) REFERENCES miners(miner_id)
+                FOREIGN KEY(miner_id) REFERENCES miners(miner_id),
+                FOREIGN KEY(protocol_params_id) REFERENCES protocol_params(id)
             );
 
             CREATE TABLE IF NOT EXISTS blocks (
@@ -111,12 +132,14 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 reward REAL NOT NULL,
                 difficulty REAL,
                 task_id TEXT NOT NULL UNIQUE,
-                protocol_version TEXT NOT NULL DEFAULT '0.8',
+                protocol_params_id INTEGER,
+                protocol_version TEXT NOT NULL DEFAULT '0.9',
                 validation_mode TEXT NOT NULL DEFAULT 'external_commit_reveal',
                 total_task_ms INTEGER,
                 validation_ms INTEGER,
                 FOREIGN KEY(miner_id) REFERENCES miners(miner_id),
-                FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+                FOREIGN KEY(task_id) REFERENCES tasks(task_id),
+                FOREIGN KEY(protocol_params_id) REFERENCES protocol_params(id)
             );
 
             CREATE TABLE IF NOT EXISTS commitments (
@@ -213,11 +236,13 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "tasks", "assignment_mode", "TEXT")
         _ensure_column(connection, "tasks", "assignment_ms", "INTEGER")
         _ensure_column(connection, "tasks", "compute_ms", "INTEGER")
+        _ensure_column(connection, "tasks", "protocol_params_id", "INTEGER")
         _ensure_column(connection, "blocks", "merkle_root", "TEXT")
         _ensure_column(connection, "blocks", "difficulty", "REAL")
+        _ensure_column(connection, "blocks", "protocol_params_id", "INTEGER")
         _ensure_column(connection, "blocks", "total_task_ms", "INTEGER")
         _ensure_column(connection, "blocks", "validation_ms", "INTEGER")
-        _ensure_column(connection, "blocks", "protocol_version", "TEXT NOT NULL DEFAULT '0.8'")
+        _ensure_column(connection, "blocks", "protocol_version", "TEXT NOT NULL DEFAULT '0.9'")
         _ensure_column(connection, "blocks", "validation_mode", "TEXT NOT NULL DEFAULT 'external_commit_reveal'")
         _ensure_column(connection, "commitments", "commit_ms", "INTEGER")
         _ensure_column(connection, "validation_jobs", "validation_ms", "INTEGER")
