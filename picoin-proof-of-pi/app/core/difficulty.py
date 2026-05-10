@@ -25,7 +25,7 @@ def calculate_difficulty(params: dict[str, Any]) -> float:
 
 
 def calculate_reward(params: dict[str, Any]) -> float:
-    return round(float(params["base_reward"]) * calculate_difficulty(params), 8)
+    return round(float(params["base_reward"]), 8)
 
 
 def propose_retarget_params(

@@ -12,7 +12,7 @@ Parametros actuales:
 protocol_version = 0.9
 algorithm = bbp_hex_v1
 validation_mode = external_commit_reveal
-required_validator_approvals = 1
+required_validator_approvals = 2
 range_assignment_mode = pseudo_random
 max_pi_position = 10000
 range_assignment_max_attempts = 512
@@ -20,9 +20,12 @@ segment_size = 64
 sample_count = 8
 task_expiration_seconds = 600
 max_active_tasks_per_miner = 1
-base_reward = 3.14159
+genesis_supply = 3141600.0
+base_reward = 3.1416
 difficulty = 1.0
-reward_per_block = 3.14159
+reward_per_block = 3.1416
+min_validator_stake = 31.416
+validator_slash_invalid_signature = 3.1416
 penalty_invalid_result = 1
 penalty_duplicate = 3
 penalty_invalid_signature = 5
@@ -40,8 +43,12 @@ difficulty =
   * (sample_count / 8)
   * (log10(max_pi_position) / log10(10000))
 
-reward_per_block = base_reward * difficulty
+reward_per_block = base_reward
 ```
+
+La dificultad regula el trabajo, no multiplica la emision. La emision queda fija en `3.1416` por bloque aceptado.
+
+El genesis acredita `3,141,600` monedas a la cuenta `genesis`. Cada bloque aceptado acredita `3.1416` monedas al minero ganador en el ledger local.
 
 Cada bloque guarda la dificultad y recompensa usadas al momento de aceptarse.
 Las tareas y bloques tambien guardan `protocol_params_id`, asi un retarget no cambia las reglas de una tarea que ya estaba asignada.
@@ -122,8 +129,8 @@ El minero:
 8. Envia un commit firmado a `POST /tasks/commit`.
 9. Recibe posiciones de muestra generadas por el servidor.
 10. Revela solo esas muestras con Merkle proofs en `POST /tasks/reveal`.
-11. Queda esperando aprobacion de un validador externo.
-12. Cuando el validador aprueba, el servidor registra el bloque.
+11. Queda esperando votos de validadores externos.
+12. Cuando alcanza quorum de aprobaciones, el servidor registra el bloque.
 
 Comandos del minero:
 
@@ -186,6 +193,14 @@ Devuelve el estado del retarget automatico: altura actual, ultima altura ajustad
 ### `GET /difficulty/history`
 
 Lista eventos de retarget ya ejecutados.
+
+### `GET /difficulty/preview`
+
+Simula el siguiente retarget sin cambiar la base de datos. Devuelve si la epoca esta lista, promedio observado, accion propuesta (`increase`, `decrease`, `keep` o `wait`) y el protocolo propuesto.
+
+```powershell
+curl http://127.0.0.1:8000/difficulty/preview
+```
 
 ### `POST /difficulty/retarget`
 
@@ -304,13 +319,34 @@ Registra un validador externo.
 }
 ```
 
+### `GET /validators/{validator_id}`
+
+Consulta identidad, historial y reputacion de un validador. Incluye:
+
+- `accepted_jobs`
+- `rejected_jobs`
+- `completed_jobs`
+- `invalid_results`
+- `trust_score`
+- `cooldown_until`
+- `avg_validation_ms`
+- `is_banned`
+
+### `GET /validators`
+
+Lista validadores ordenados por reputacion, stake y trabajos aceptados. Con `eligible_only=true` devuelve solo validadores aptos para recibir jobs.
+
+```powershell
+curl "http://127.0.0.1:8000/validators?eligible_only=true"
+```
+
 ### `GET /validation/jobs?validator_id=...`
 
-Entrega el siguiente job pendiente a un validador.
+Entrega el siguiente job pendiente a un validador elegible. El mismo job puede ser entregado a varios validadores distintos hasta alcanzar quorum. Un validador no puede votar dos veces el mismo job.
 
 ### `POST /validation/results`
 
-Recibe el resultado firmado del validador.
+Recibe el voto firmado del validador. El bloque se acepta solo cuando `approvals >= required_validator_approvals`.
 
 ```json
 {
@@ -320,6 +356,18 @@ Recibe el resultado firmado del validador.
   "reason": "external validator accepted samples",
   "signature": "base64url_signature",
   "signed_at": "2026-05-10T15:02:00+00:00"
+}
+```
+
+Respuesta antes de quorum:
+
+```json
+{
+  "accepted": true,
+  "status": "validation_pending",
+  "approvals": 1,
+  "required_approvals": 2,
+  "block": null
 }
 ```
 
@@ -348,6 +396,26 @@ Consulta un bloque por altura.
 ### `GET /miners/{miner_id}`
 
 Consulta datos, reputacion y recompensas simuladas de un minero.
+
+### `GET /balances`
+
+Lista balances persistentes de cuentas `genesis`, mineros y validadores.
+
+### `GET /balances/{account_id}`
+
+Consulta el balance de una cuenta.
+
+### `GET /ledger`
+
+Lista movimientos del ledger local. Puede filtrarse por cuenta:
+
+```powershell
+curl "http://127.0.0.1:8000/ledger?account_id=genesis"
+```
+
+### `GET /audit/summary`
+
+Devuelve resumen de emision, circulante, stake bloqueado, stake recortado, bloques aceptados y validadores elegibles.
 
 ### `GET /stats`
 
@@ -405,6 +473,12 @@ Implementado:
 - Firma Ed25519 obligatoria en commit y reveal.
 - Identidad Ed25519 por validador.
 - Firma Ed25519 obligatoria en resultados de validacion.
+- Quorum de multiples validadores por bloque.
+- Reputacion de validadores con `trust_score`.
+- Seleccion/gating de validadores por reputacion y stake minimo.
+- Stake simulado de validadores y slashing por firmas invalidas.
+- Balances persistentes y ledger auditable.
+- Cooldown y ban por firmas invalidas repetidas.
 - Commit-reveal con `result_hash` y `merkle_root`.
 - Merkle proofs para cada muestra revelada.
 - Recalculo independiente por validador externo.
@@ -427,7 +501,7 @@ Limites intencionales:
 
 - No hay consenso distribuido.
 - No hay red P2P.
-- No hay wallet real ni token transferible.
+- No hay wallet transferible entre usuarios; el ledger solo registra emision, recompensas, stake simulado y slashing.
 - La validacion v0.9 es probabilistica por muestras, no una prueba criptografica completa del calculo entero.
 
 ## Performance
@@ -468,6 +542,34 @@ Ejemplo observado en este entorno:
 start=5000 length=32 workers=1 avg_ms=311
 start=5000 length=32 workers=2 avg_ms=302
 ```
+
+## Reputacion De Validadores
+
+Cada validador mantiene reputacion local en SQLite:
+
+```text
+completed_jobs = accepted_jobs + rejected_jobs
+trust_score = (completed_jobs + 1) / (completed_jobs + 1 + invalid_results * 2)
+```
+
+Aceptar o rechazar un job firmado correctamente cuenta como trabajo completado. Un rechazo no baja reputacion por si solo, porque puede ser una decision honesta. Las firmas invalidas si bajan `trust_score`; despues de 3 resultados invalidos el validador entra en cooldown, y despues de 9 queda baneado.
+
+Cada validador recibe un stake simulado inicial de `31.416`, financiado desde la cuenta `genesis`. Para recibir jobs debe mantener al menos ese stake y `trust_score >= 0.25`. Cada firma invalida recorta `3.1416` del stake y lo devuelve a `genesis`.
+
+Este modelo todavia no es staking real transferible. Es una capa MVP para priorizar validadores confiables, agregar costo anti-Sybil simulado y detectar comportamiento roto o malicioso.
+
+## Economia MVP
+
+Reglas actuales:
+
+```text
+genesis_supply = 3141600.0
+block_emission = 3.1416
+validator_initial_stake = 31.416
+validator_slash_invalid_signature = 3.1416
+```
+
+El genesis queda registrado en `ledger_entries` con `block_height = 0`. Cada bloque aceptado crea un movimiento `block_reward` para el minero. Los registros de stake y slashing tambien quedan en el ledger.
 
 ## Firma Ed25519
 
@@ -513,7 +615,9 @@ El servidor verifica dos cosas por muestra:
 1. El digito coincide con BBP para esa posicion.
 2. La prueba Merkle conecta ese digito con el `merkle_root` comprometido.
 
-Si todas las muestras pasan, el validador firma una aprobacion. Solo entonces el coordinador acepta el bloque. Esto evita guardar pi, evita transmitir el segmento completo y separa el rol de validacion del rol de coordinacion.
+Si todas las muestras pasan, cada validador firma una aprobacion. El coordinador registra un voto por validador en `validation_votes`. Solo cuando el job alcanza `required_validator_approvals` aprobaciones de validadores distintos se acepta el bloque. Los rechazos firmados tambien se acumulan; si alcanzan el mismo quorum, la tarea se rechaza.
+
+Esto evita guardar pi, evita transmitir el segmento completo, separa el rol de validacion del rol de coordinacion y reduce el riesgo de depender de un unico validador.
 
 ## Algoritmo De Pi
 
@@ -551,11 +655,14 @@ validators
 tasks
 commitments
 validation_jobs
+validation_votes
 submissions
 blocks
 protocol_params
 retarget_events
 rewards
+balances
+ledger_entries
 penalties
 rejected_submissions
 ```
@@ -624,7 +731,17 @@ curl http://127.0.0.1:8000/protocol/history
 
 ```powershell
 curl http://127.0.0.1:8000/difficulty
+curl http://127.0.0.1:8000/difficulty/preview
 curl http://127.0.0.1:8000/difficulty/history
+```
+
+11. Consulta economia y auditoria:
+
+```powershell
+curl http://127.0.0.1:8000/balances
+curl http://127.0.0.1:8000/ledger
+curl http://127.0.0.1:8000/audit/summary
+curl "http://127.0.0.1:8000/validators?eligible_only=true"
 ```
 
 ## Pruebas
@@ -642,6 +759,7 @@ python -m app.tools.reset_db
 ## Siguiente Evolucion
 
 - Ajustar el tamano de epoca y objetivo de bloque con benchmarks reales.
-- Simular slashing/staking para validadores y mineros.
-- Mayor quorum de validadores independientes.
+- Crear dashboard local de testnet.
+- Agregar faucet controlado para mineros/validadores.
+- Empaquetar scripts de arranque para servidor + minero + 2 validadores.
 - Evolucionar la lista local de bloques hacia consenso blockchain.

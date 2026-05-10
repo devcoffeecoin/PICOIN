@@ -125,7 +125,11 @@ def command_validate(args: argparse.Namespace) -> int:
 
         approved, reason = validate_job(job)
         result = submit_result(server_url, identity, job, approved, reason)
-        print(f"Validated {job['job_id']}: approved={approved} status={result['status']}")
+        print(
+            f"Validated {job['job_id']}: approved={approved} "
+            f"status={result['status']} approvals={result.get('approvals', 0)}/"
+            f"{result.get('required_approvals', 1)}"
+        )
         completed += 1
 
         if args.once:

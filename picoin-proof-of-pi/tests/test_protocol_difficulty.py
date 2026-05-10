@@ -8,6 +8,7 @@ from app.services.mining import (
     get_protocol,
     get_protocol_history,
     get_retarget_history,
+    preview_retarget,
     register_miner,
     run_retarget,
     submit_task,
@@ -93,6 +94,27 @@ def test_retarget_increases_difficulty_after_fast_epoch(tmp_path, monkeypatch) -
     assert status["last_retarget_height"] == 5
 
 
+def test_retarget_preview_does_not_mutate_protocol_or_history(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "retarget-preview.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    keypair = generate_keypair()
+    miner = register_miner("preview-miner", keypair["public_key"])
+    _insert_epoch_blocks(miner["miner_id"], total_task_ms=1_000)
+
+    before = get_protocol()
+    preview = preview_retarget()
+    after = get_protocol()
+
+    assert preview["ready"] is True
+    assert preview["action"] == "increase"
+    assert preview["proposed_protocol"]["difficulty"] > preview["current_protocol"]["difficulty"]
+    assert after == before
+    assert get_retarget_history() == []
+
+
 def test_retarget_waits_until_epoch_is_complete(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "retarget-wait.sqlite3"
     monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
@@ -104,8 +126,11 @@ def test_retarget_waits_until_epoch_is_complete(tmp_path, monkeypatch) -> None:
     _insert_epoch_blocks(miner["miner_id"], total_task_ms=1_000, count=4)
 
     result = run_retarget()
+    preview = preview_retarget()
 
     assert result["retargeted"] is False
+    assert preview["ready"] is False
+    assert preview["blocks_until_ready"] == 1
     assert get_protocol()["difficulty"] == 1.0
 
 

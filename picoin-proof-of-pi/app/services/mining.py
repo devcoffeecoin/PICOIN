@@ -21,6 +21,9 @@ from app.core.signatures import (
 from app.core.settings import (
     COOLDOWN_AFTER_REJECTIONS,
     COOLDOWN_SECONDS,
+    GENESIS_ACCOUNT_ID,
+    GENESIS_SUPPLY,
+    MIN_VALIDATOR_STAKE,
     PENALTY_DUPLICATE,
     PENALTY_INVALID_RESULT,
     PENALTY_INVALID_SIGNATURE,
@@ -29,6 +32,12 @@ from app.core.settings import (
     RETARGET_EPOCH_BLOCKS,
     RETARGET_TARGET_BLOCK_MS,
     RETARGET_TOLERANCE,
+    VALIDATOR_BAN_AFTER_INVALID_RESULTS,
+    VALIDATOR_COOLDOWN_AFTER_INVALID_RESULTS,
+    VALIDATOR_COOLDOWN_SECONDS,
+    VALIDATOR_MIN_TRUST_SCORE,
+    VALIDATOR_PENALTY_INVALID_SIGNATURE,
+    VALIDATOR_SLASH_INVALID_SIGNATURE,
     VALIDATION_MODE,
 )
 from app.db.database import get_connection, row_to_dict
@@ -79,6 +88,7 @@ def register_miner(name: str, public_key: str | None = None) -> dict[str, Any]:
             "INSERT INTO miners (miner_id, name, public_key, registered_at) VALUES (?, ?, ?, ?)",
             (miner_id, name, public_key, utc_now()),
         )
+        _ensure_balance_account(connection, miner_id, "miner")
         row = connection.execute("SELECT * FROM miners WHERE miner_id = ?", (miner_id,)).fetchone()
     return enrich_miner(row_to_dict(row))
 
@@ -104,18 +114,63 @@ def register_validator(name: str, public_key: str) -> dict[str, Any]:
             "INSERT INTO validators (validator_id, name, public_key, registered_at) VALUES (?, ?, ?, ?)",
             (validator_id, name, public_key, utc_now()),
         )
+        _ensure_balance_account(connection, validator_id, "validator")
+        _apply_ledger_entry(
+            connection,
+            account_id=GENESIS_ACCOUNT_ID,
+            account_type="genesis",
+            amount=-MIN_VALIDATOR_STAKE,
+            entry_type="validator_stake_grant",
+            related_id=validator_id,
+            description="simulated validator stake funded from genesis",
+        )
+        _apply_ledger_entry(
+            connection,
+            account_id=validator_id,
+            account_type="validator",
+            amount=MIN_VALIDATOR_STAKE,
+            entry_type="validator_stake_lock",
+            related_id=validator_id,
+            description="simulated validator stake locked",
+        )
         row = connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone()
-    validator = row_to_dict(row)
-    validator["is_banned"] = bool(validator["is_banned"])
-    return validator
+    return enrich_validator(row_to_dict(row))
 
 
 def get_validator(validator_id: str) -> dict[str, Any] | None:
     with get_connection() as connection:
         row = connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone()
-    validator = row_to_dict(row)
-    if validator is not None:
-        validator["is_banned"] = bool(validator["is_banned"])
+    return enrich_validator(row_to_dict(row))
+
+
+def get_validators(limit: int = 100, eligible_only: bool = False) -> list[dict[str, Any]]:
+    where = ""
+    params: tuple[Any, ...] = ()
+    if eligible_only:
+        where = "WHERE is_banned = 0 AND stake_locked >= ? AND trust_score >= ?"
+        params = (MIN_VALIDATOR_STAKE, VALIDATOR_MIN_TRUST_SCORE)
+    with get_connection() as connection:
+        rows = connection.execute(
+            f"""
+            SELECT * FROM validators
+            {where}
+            ORDER BY trust_score DESC, stake_locked DESC, accepted_jobs DESC, registered_at ASC
+            LIMIT ?
+            """,
+            (*params, limit),
+        ).fetchall()
+    return [enrich_validator(row_to_dict(row)) for row in rows]
+
+
+def enrich_validator(validator: dict[str, Any] | None) -> dict[str, Any] | None:
+    if validator is None:
+        return None
+    completed_jobs = int(validator["accepted_jobs"]) + int(validator["rejected_jobs"])
+    total_validation_ms = int(validator.get("total_validation_ms") or 0)
+    validator["completed_jobs"] = completed_jobs
+    validator["avg_validation_ms"] = round(total_validation_ms / completed_jobs, 2) if completed_jobs else 0.0
+    validator["balance"] = get_balance_amount(validator["validator_id"])
+    validator["is_banned"] = bool(validator["is_banned"])
     return validator
 
 
@@ -134,6 +189,7 @@ def enrich_miner(miner: dict[str, Any] | None) -> dict[str, Any] | None:
     miner["accepted_blocks"] = accepted_blocks["count"]
     miner["total_rewards"] = accepted_blocks["rewards"]
     miner["rejected_submissions"] = rejected["count"]
+    miner["balance"] = get_balance_amount(miner["miner_id"])
     miner["is_banned"] = bool(miner["is_banned"])
     return miner
 
@@ -431,6 +487,16 @@ def submit_task(
             """,
             (miner_id, next_height, reward, timestamp),
         )
+        _apply_ledger_entry(
+            connection,
+            account_id=miner_id,
+            account_type="miner",
+            amount=reward,
+            entry_type="block_reward",
+            block_height=next_height,
+            related_id=task_id,
+            description="miner block reward",
+        )
         _refresh_trust_score(connection, miner_id)
         _maybe_retarget_after_block(connection, next_height)
 
@@ -726,16 +792,37 @@ def get_validation_job(validator_id: str) -> dict[str, Any] | None:
             return None
         if validator["is_banned"]:
             raise MiningError(403, "validator is banned")
+        cooldown_until = parse_iso(validator["cooldown_until"])
+        if cooldown_until is not None and cooldown_until > utc_now_dt():
+            raise MiningError(429, f"validator is in cooldown until {validator['cooldown_until']}")
+        if float(validator["stake_locked"]) < MIN_VALIDATOR_STAKE:
+            raise MiningError(403, "validator stake is below the minimum required")
+        if float(validator["trust_score"]) < VALIDATOR_MIN_TRUST_SCORE:
+            raise MiningError(403, "validator trust score is below the minimum required")
+        connection.execute(
+            "UPDATE validators SET last_seen_at = ? WHERE validator_id = ?",
+            (utc_now(), validator_id),
+        )
 
         job = row_to_dict(
             connection.execute(
                 """
                 SELECT validation_jobs.*, tasks.range_start, tasks.range_end, tasks.algorithm
+                     , tasks.protocol_params_id
                 FROM validation_jobs
                 JOIN tasks ON tasks.task_id = validation_jobs.task_id
                 WHERE validation_jobs.status = 'pending'
-                AND (validation_jobs.assigned_validator_id IS NULL OR validation_jobs.assigned_validator_id = ?)
-                ORDER BY validation_jobs.created_at ASC
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM validation_votes
+                    WHERE validation_votes.job_id = validation_jobs.job_id
+                    AND validation_votes.validator_id = ?
+                )
+                ORDER BY (
+                    SELECT COUNT(*)
+                    FROM validation_votes
+                    WHERE validation_votes.job_id = validation_jobs.job_id
+                ) ASC, validation_jobs.created_at ASC
                 LIMIT 1
                 """,
                 (validator_id,),
@@ -743,14 +830,15 @@ def get_validation_job(validator_id: str) -> dict[str, Any] | None:
         )
         if job is None:
             return None
-        if job["assigned_validator_id"] is None:
-            connection.execute(
-                "UPDATE validation_jobs SET assigned_validator_id = ? WHERE job_id = ?",
-                (validator_id, job["job_id"]),
-            )
-            job["assigned_validator_id"] = validator_id
+        job["assigned_validator_id"] = validator_id
+        counts = _validation_vote_counts(connection, job["job_id"])
+        params = _protocol_params_for_task(connection, job)
 
     job["samples"] = json.loads(job["samples"])
+    job["approvals"] = counts["approvals"]
+    job["rejections"] = counts["rejections"]
+    job["required_approvals"] = params["required_validator_approvals"]
+    job["required_rejections"] = params["required_validator_approvals"]
     return job
 
 
@@ -768,6 +856,7 @@ def submit_validation_result(
             connection.execute(
                 """
                 SELECT validation_jobs.*, tasks.range_start, tasks.range_end, tasks.algorithm
+                     , tasks.protocol_params_id
                 FROM validation_jobs
                 JOIN tasks ON tasks.task_id = validation_jobs.task_id
                 WHERE validation_jobs.job_id = ?
@@ -780,10 +869,41 @@ def submit_validation_result(
             raise MiningError(404, "validation job not found")
         if validator is None:
             raise MiningError(404, "validator not found")
-        if job["assigned_validator_id"] not in (None, validator_id):
-            raise MiningError(403, "validation job is assigned to another validator")
+        if validator["is_banned"]:
+            raise MiningError(403, "validator is banned")
+        cooldown_until = parse_iso(validator["cooldown_until"])
+        if cooldown_until is not None and cooldown_until > utc_now_dt():
+            raise MiningError(429, f"validator is in cooldown until {validator['cooldown_until']}")
         if job["status"] != "pending":
-            return {"accepted": False, "status": job["status"], "message": "validation job already completed", "block": None}
+            counts = _validation_vote_counts(connection, job_id)
+            params = _protocol_params_for_task(connection, job)
+            return {
+                "accepted": False,
+                "status": job["status"],
+                "message": "validation job already completed",
+                "block": None,
+                "approvals": counts["approvals"],
+                "rejections": counts["rejections"],
+                "required_approvals": params["required_validator_approvals"],
+                "required_rejections": params["required_validator_approvals"],
+            }
+        existing_vote = connection.execute(
+            "SELECT 1 FROM validation_votes WHERE job_id = ? AND validator_id = ?",
+            (job_id, validator_id),
+        ).fetchone()
+        if existing_vote is not None:
+            counts = _validation_vote_counts(connection, job_id)
+            params = _protocol_params_for_task(connection, job)
+            return {
+                "accepted": False,
+                "status": "already_voted",
+                "message": "validator already submitted a vote for this job",
+                "block": None,
+                "approvals": counts["approvals"],
+                "rejections": counts["rejections"],
+                "required_approvals": params["required_validator_approvals"],
+                "required_rejections": params["required_validator_approvals"],
+            }
 
         payload = build_validation_result_signature_payload(
             job_id=job_id,
@@ -798,13 +918,39 @@ def submit_validation_result(
         except (RuntimeError, ValueError):
             signature_valid = False
         if not signature_valid:
+            _apply_validator_penalty(connection, validator_id, "invalid validator signature")
+            connection.commit()
             raise MiningError(400, "invalid validator signature")
 
         task = row_to_dict(connection.execute("SELECT * FROM tasks WHERE task_id = ?", (job["task_id"],)).fetchone())
         samples = json.loads(job["samples"])
         validation_ms = elapsed_ms(started)
-        if approved:
-            params = _protocol_params_for_task(connection, task)
+        params = _protocol_params_for_task(connection, task)
+        connection.execute(
+            """
+            INSERT INTO validation_votes (
+                job_id, task_id, validator_id, approved, reason, signature,
+                signed_at, validation_ms, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_id,
+                job["task_id"],
+                validator_id,
+                int(approved),
+                reason,
+                signature,
+                signed_at,
+                validation_ms,
+                utc_now(),
+            ),
+        )
+        _record_validator_completed_vote(connection, validator_id, approved, validation_ms)
+        counts = _validation_vote_counts(connection, job_id)
+        required = params["required_validator_approvals"]
+
+        if approved and counts["approvals"] >= required:
             block = _accept_block_in_connection(
                 connection=connection,
                 task=task,
@@ -826,32 +972,53 @@ def submit_validation_result(
                 """,
                 (validator_id, reason, signature, validation_ms, utc_now(), job_id),
             )
+            return {
+                "accepted": True,
+                "status": "approved",
+                "message": "block accepted by validator quorum",
+                "block": block,
+                "approvals": counts["approvals"],
+                "rejections": counts["rejections"],
+                "required_approvals": required,
+                "required_rejections": required,
+            }
+
+        if not approved and counts["rejections"] >= required:
             connection.execute(
-                "UPDATE validators SET accepted_jobs = accepted_jobs + 1 WHERE validator_id = ?",
-                (validator_id,),
+                "UPDATE tasks SET status = 'rejected', submitted_at = ? WHERE task_id = ?",
+                (utc_now(), job["task_id"]),
             )
-            return {"accepted": True, "status": "approved", "message": "block accepted", "block": block}
+            connection.execute(
+                """
+                UPDATE validation_jobs
+                SET status = 'rejected', assigned_validator_id = ?, result_reason = ?,
+                    validator_signature = ?, validation_ms = ?, completed_at = ?
+                WHERE job_id = ?
+                """,
+                (validator_id, reason, signature, validation_ms, utc_now(), job_id),
+            )
+            _apply_penalty(connection, job["miner_id"], job["task_id"], PENALTY_INVALID_RESULT, reason)
+            return {
+                "accepted": True,
+                "status": "rejected",
+                "message": "validation rejected task by validator quorum",
+                "block": None,
+                "approvals": counts["approvals"],
+                "rejections": counts["rejections"],
+                "required_approvals": required,
+                "required_rejections": required,
+            }
 
-        connection.execute(
-            "UPDATE tasks SET status = 'rejected', submitted_at = ? WHERE task_id = ?",
-            (utc_now(), job["task_id"]),
-        )
-        connection.execute(
-            """
-            UPDATE validation_jobs
-            SET status = 'rejected', assigned_validator_id = ?, result_reason = ?,
-                validator_signature = ?, validation_ms = ?, completed_at = ?
-            WHERE job_id = ?
-            """,
-            (validator_id, reason, signature, validation_ms, utc_now(), job_id),
-        )
-        connection.execute(
-            "UPDATE validators SET rejected_jobs = rejected_jobs + 1 WHERE validator_id = ?",
-            (validator_id,),
-        )
-        _apply_penalty(connection, job["miner_id"], job["task_id"], PENALTY_INVALID_RESULT, reason)
-
-    return {"accepted": True, "status": "rejected", "message": "validation rejected task", "block": None}
+    return {
+        "accepted": True,
+        "status": "validation_pending",
+        "message": "validator vote recorded; waiting for quorum",
+        "block": None,
+        "approvals": counts["approvals"],
+        "rejections": counts["rejections"],
+        "required_approvals": required,
+        "required_rejections": required,
+    }
 
 
 def get_blocks() -> list[dict[str, Any]]:
@@ -876,6 +1043,7 @@ def get_stats() -> dict[str, Any]:
         blocks = connection.execute("SELECT COUNT(*) AS count, COALESCE(SUM(reward), 0) AS rewards FROM blocks").fetchone()
         rejected = connection.execute("SELECT COUNT(*) AS count FROM submissions WHERE accepted = 0").fetchone()["count"]
         latest = connection.execute("SELECT block_hash FROM blocks ORDER BY height DESC LIMIT 1").fetchone()
+        supply = _supply_snapshot(connection)
     return {
         "miners": miners,
         "tasks": tasks,
@@ -884,7 +1052,79 @@ def get_stats() -> dict[str, Any]:
         "accepted_blocks": blocks["count"],
         "rejected_submissions": rejected,
         "total_rewards": blocks["rewards"],
+        "circulating_supply": supply["circulating_supply"],
+        "genesis_balance": supply["genesis_balance"],
         "latest_block_hash": GENESIS_HASH if latest is None else latest["block_hash"],
+    }
+
+
+def get_balance(account_id: str) -> dict[str, Any] | None:
+    with get_connection() as connection:
+        row = connection.execute("SELECT * FROM balances WHERE account_id = ?", (account_id,)).fetchone()
+    return row_to_dict(row)
+
+
+def get_balances(limit: int = 100) -> list[dict[str, Any]]:
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT * FROM balances
+            ORDER BY balance DESC, account_id ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [row_to_dict(row) for row in rows]
+
+
+def get_ledger_entries(account_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
+    with get_connection() as connection:
+        if account_id is None:
+            rows = connection.execute(
+                "SELECT * FROM ledger_entries ORDER BY id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT * FROM ledger_entries
+                WHERE account_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (account_id, limit),
+            ).fetchall()
+    return [row_to_dict(row) for row in rows]
+
+
+def get_audit_summary() -> dict[str, Any]:
+    with get_connection() as connection:
+        supply = _supply_snapshot(connection)
+        blocks = connection.execute("SELECT COUNT(*) AS count FROM blocks").fetchone()["count"]
+        pending_jobs = connection.execute("SELECT COUNT(*) AS count FROM validation_jobs WHERE status = 'pending'").fetchone()["count"]
+        validators = connection.execute(
+            """
+            SELECT
+                COUNT(*) AS validator_count,
+                COALESCE(SUM(stake_locked), 0) AS locked_stake,
+                COALESCE(SUM(slashed_amount), 0) AS slashed_stake,
+                COALESCE(SUM(CASE WHEN is_banned = 0 AND stake_locked >= ? AND trust_score >= ? THEN 1 ELSE 0 END), 0) AS eligible_count
+            FROM validators
+            """,
+            (MIN_VALIDATOR_STAKE, VALIDATOR_MIN_TRUST_SCORE),
+        ).fetchone()
+    return {
+        "genesis_supply": GENESIS_SUPPLY,
+        "circulating_supply": supply["circulating_supply"],
+        "genesis_balance": supply["genesis_balance"],
+        "total_miner_balances": supply["miner_balances"],
+        "total_validator_balances": supply["validator_balances"],
+        "total_locked_validator_stake": round(float(validators["locked_stake"]), 8),
+        "total_slashed_validator_stake": round(float(validators["slashed_stake"]), 8),
+        "accepted_blocks": blocks,
+        "pending_validation_jobs": pending_jobs,
+        "validator_count": validators["validator_count"],
+        "eligible_validator_count": validators["eligible_count"],
     }
 
 
@@ -945,8 +1185,10 @@ def get_difficulty_status() -> dict[str, Any]:
         params = _active_protocol_params(connection)
         current_height = _latest_block_height(connection)
         last_retarget_height = _last_retarget_height(connection)
+        epoch_rows = _retarget_epoch_rows(connection, last_retarget_height)
 
     blocks_since_retarget = max(0, current_height - last_retarget_height)
+    average_ms = _average_epoch_ms(epoch_rows) if epoch_rows else None
     return {
         "enabled": True,
         "epoch_blocks": RETARGET_EPOCH_BLOCKS,
@@ -954,10 +1196,17 @@ def get_difficulty_status() -> dict[str, Any]:
         "tolerance": RETARGET_TOLERANCE,
         "current_height": current_height,
         "last_retarget_height": last_retarget_height,
+        "current_epoch_block_count": len(epoch_rows),
+        "current_epoch_average_ms": average_ms,
         "blocks_until_next_epoch": max(0, RETARGET_EPOCH_BLOCKS - blocks_since_retarget),
         "active_difficulty": calculate_difficulty(params),
         "active_reward_per_block": calculate_reward(params),
     }
+
+
+def preview_retarget(force: bool = False) -> dict[str, Any]:
+    with get_connection() as connection:
+        return _public_retarget_preview(_retarget_preview(connection, force=force))
 
 
 def get_retarget_history(limit: int = 20) -> list[dict[str, Any]]:
@@ -1127,6 +1376,92 @@ def _record_submission(
     )
 
 
+def get_balance_amount(account_id: str) -> float:
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT balance FROM balances WHERE account_id = ?",
+            (account_id,),
+        ).fetchone()
+    return 0.0 if row is None else round(float(row["balance"]), 8)
+
+
+def _ensure_balance_account(connection: Any, account_id: str, account_type: str) -> None:
+    connection.execute(
+        """
+        INSERT INTO balances (account_id, account_type, balance, updated_at)
+        VALUES (?, ?, 0, ?)
+        ON CONFLICT(account_id) DO NOTHING
+        """,
+        (account_id, account_type, utc_now()),
+    )
+
+
+def _apply_ledger_entry(
+    connection: Any,
+    *,
+    account_id: str,
+    account_type: str,
+    amount: float,
+    entry_type: str,
+    block_height: int | None = None,
+    related_id: str | None = None,
+    description: str | None = None,
+) -> None:
+    _ensure_balance_account(connection, account_id, account_type)
+    current = connection.execute(
+        "SELECT balance FROM balances WHERE account_id = ?",
+        (account_id,),
+    ).fetchone()
+    balance_after = round(float(current["balance"]) + float(amount), 8)
+    timestamp = utc_now()
+    connection.execute(
+        "UPDATE balances SET balance = ?, updated_at = ? WHERE account_id = ?",
+        (balance_after, timestamp, account_id),
+    )
+    connection.execute(
+        """
+        INSERT INTO ledger_entries (
+            account_id, account_type, amount, balance_after, entry_type,
+            block_height, related_id, description, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            account_id,
+            account_type,
+            round(float(amount), 8),
+            balance_after,
+            entry_type,
+            block_height,
+            related_id,
+            description,
+            timestamp,
+        ),
+    )
+
+
+def _supply_snapshot(connection: Any) -> dict[str, float]:
+    row = connection.execute(
+        """
+        SELECT
+            COALESCE(SUM(CASE WHEN account_id = ? THEN balance ELSE 0 END), 0) AS genesis_balance,
+            COALESCE(SUM(CASE WHEN account_type = 'miner' THEN balance ELSE 0 END), 0) AS miner_balances,
+            COALESCE(SUM(CASE WHEN account_type = 'validator' THEN balance ELSE 0 END), 0) AS validator_balances
+        FROM balances
+        """,
+        (GENESIS_ACCOUNT_ID,),
+    ).fetchone()
+    genesis_balance = round(float(row["genesis_balance"]), 8)
+    miner_balances = round(float(row["miner_balances"]), 8)
+    validator_balances = round(float(row["validator_balances"]), 8)
+    return {
+        "genesis_balance": genesis_balance,
+        "miner_balances": miner_balances,
+        "validator_balances": validator_balances,
+        "circulating_supply": round(miner_balances + validator_balances, 8),
+    }
+
+
 def _miner_exists(connection: Any, miner_id: str) -> bool:
     row = connection.execute("SELECT 1 FROM miners WHERE miner_id = ?", (miner_id,)).fetchone()
     return row is not None
@@ -1167,6 +1502,116 @@ def _refresh_trust_score(connection: Any, miner_id: str) -> None:
         "UPDATE miners SET trust_score = ? WHERE miner_id = ?",
         (round(trust_score, 4), miner_id),
     )
+
+
+def _apply_validator_penalty(connection: Any, validator_id: str, reason: str) -> None:
+    validator = connection.execute(
+        "SELECT stake_locked FROM validators WHERE validator_id = ?",
+        (validator_id,),
+    ).fetchone()
+    slash_amount = 0.0
+    if validator is not None:
+        slash_amount = min(float(validator["stake_locked"]), VALIDATOR_SLASH_INVALID_SIGNATURE)
+    connection.execute(
+        """
+        UPDATE validators
+        SET invalid_results = invalid_results + 1,
+            stake_locked = MAX(0, stake_locked - ?),
+            slashed_amount = slashed_amount + ?,
+            last_seen_at = ?
+        WHERE validator_id = ?
+        """,
+        (slash_amount, slash_amount, utc_now(), validator_id),
+    )
+    if slash_amount > 0:
+        _apply_ledger_entry(
+            connection,
+            account_id=validator_id,
+            account_type="validator",
+            amount=-slash_amount,
+            entry_type="validator_slash",
+            related_id=validator_id,
+            description=reason,
+        )
+        _apply_ledger_entry(
+            connection,
+            account_id=GENESIS_ACCOUNT_ID,
+            account_type="genesis",
+            amount=slash_amount,
+            entry_type="validator_slash",
+            related_id=validator_id,
+            description=reason,
+        )
+    row = connection.execute(
+        "SELECT invalid_results FROM validators WHERE validator_id = ?",
+        (validator_id,),
+    ).fetchone()
+    invalid_results = int(row["invalid_results"])
+    if invalid_results >= VALIDATOR_COOLDOWN_AFTER_INVALID_RESULTS:
+        connection.execute(
+            "UPDATE validators SET cooldown_until = ? WHERE validator_id = ?",
+            (iso_at(VALIDATOR_COOLDOWN_SECONDS), validator_id),
+        )
+    if invalid_results >= VALIDATOR_BAN_AFTER_INVALID_RESULTS:
+        connection.execute(
+            "UPDATE validators SET is_banned = 1 WHERE validator_id = ?",
+            (validator_id,),
+        )
+    _refresh_validator_trust_score(connection, validator_id)
+
+
+def _refresh_validator_trust_score(connection: Any, validator_id: str) -> None:
+    row = connection.execute(
+        """
+        SELECT accepted_jobs, rejected_jobs, invalid_results
+        FROM validators
+        WHERE validator_id = ?
+        """,
+        (validator_id,),
+    ).fetchone()
+    if row is None:
+        return
+    completed = int(row["accepted_jobs"]) + int(row["rejected_jobs"])
+    invalid_weight = int(row["invalid_results"]) * VALIDATOR_PENALTY_INVALID_SIGNATURE
+    trust_score = (completed + 1) / (completed + 1 + invalid_weight)
+    connection.execute(
+        "UPDATE validators SET trust_score = ? WHERE validator_id = ?",
+        (round(trust_score, 4), validator_id),
+    )
+
+
+def _record_validator_completed_vote(
+    connection: Any,
+    validator_id: str,
+    approved: bool,
+    validation_ms: int,
+) -> None:
+    column = "accepted_jobs" if approved else "rejected_jobs"
+    connection.execute(
+        f"""
+        UPDATE validators
+        SET {column} = {column} + 1,
+            total_validation_ms = total_validation_ms + ?,
+            last_seen_at = ?
+        WHERE validator_id = ?
+        """,
+        (validation_ms, utc_now(), validator_id),
+    )
+    _refresh_validator_trust_score(connection, validator_id)
+
+
+def _validation_vote_counts(connection: Any, job_id: str) -> dict[str, int]:
+    row = connection.execute(
+        """
+        SELECT
+            COALESCE(SUM(CASE WHEN approved = 1 THEN 1 ELSE 0 END), 0) AS approvals,
+            COALESCE(SUM(CASE WHEN approved = 0 THEN 1 ELSE 0 END), 0) AS rejections
+        FROM validation_votes
+        WHERE job_id = ?
+        """,
+        (job_id,),
+    ).fetchone()
+    return {"approvals": int(row["approvals"]), "rejections": int(row["rejections"])}
 
 
 def _decode_block(block: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -1330,12 +1775,8 @@ def _build_challenge_samples(
     return [{"position": range_start + offset} for offset in offsets]
 
 
-def _maybe_retarget_after_block(connection: Any, current_height: int, force: bool = False) -> dict[str, Any] | None:
-    if current_height <= 0:
-        return None
-
-    last_height = _last_retarget_height(connection)
-    epoch_rows = connection.execute(
+def _retarget_epoch_rows(connection: Any, last_height: int) -> list[Any]:
+    return connection.execute(
         """
         SELECT height, COALESCE(total_task_ms, ?) AS total_task_ms
         FROM blocks
@@ -1345,14 +1786,79 @@ def _maybe_retarget_after_block(connection: Any, current_height: int, force: boo
         """,
         (RETARGET_TARGET_BLOCK_MS, last_height, RETARGET_EPOCH_BLOCKS),
     ).fetchall()
+
+
+def _average_epoch_ms(epoch_rows: list[Any]) -> float:
+    return round(sum(float(row["total_task_ms"]) for row in epoch_rows) / len(epoch_rows), 2)
+
+
+def _retarget_preview(connection: Any, force: bool = False) -> dict[str, Any]:
+    current_height = _latest_block_height(connection)
+    last_height = _last_retarget_height(connection)
+    params = _active_protocol_params(connection)
+    epoch_rows = _retarget_epoch_rows(connection, last_height)
+    epoch_count = len(epoch_rows)
+    average_block_ms = _average_epoch_ms(epoch_rows) if epoch_rows else None
+    ready = bool(epoch_rows) and (force or epoch_count >= RETARGET_EPOCH_BLOCKS)
+    next_params = dict(params)
+    meta = {
+        "action": "wait",
+        "reason": "not enough accepted blocks for retarget",
+        "adjustment_factor": 1.0,
+    }
+    if ready and average_block_ms is not None:
+        next_params, meta = propose_retarget_params(params, average_block_ms)
+
+    status = "ready" if ready else "waiting"
     if not epoch_rows:
-        return None
-    if not force and len(epoch_rows) < RETARGET_EPOCH_BLOCKS:
+        status = "empty"
+
+    return {
+        "ready": ready,
+        "status": status,
+        "message": "retarget can be applied" if ready else "not enough accepted blocks for retarget",
+        "current_height": current_height,
+        "last_retarget_height": last_height,
+        "epoch_start_height": int(epoch_rows[0]["height"]) if epoch_rows else None,
+        "epoch_end_height": int(epoch_rows[-1]["height"]) if epoch_rows else None,
+        "epoch_block_count": epoch_count,
+        "epoch_blocks_required": RETARGET_EPOCH_BLOCKS,
+        "blocks_until_ready": max(0, RETARGET_EPOCH_BLOCKS - epoch_count),
+        "average_block_ms": average_block_ms,
+        "target_block_ms": RETARGET_TARGET_BLOCK_MS,
+        "tolerance": RETARGET_TOLERANCE,
+        "action": meta["action"],
+        "reason": meta["reason"],
+        "adjustment_factor": meta["adjustment_factor"],
+        "old_difficulty": calculate_difficulty(params),
+        "new_difficulty": calculate_difficulty(next_params),
+        "current_protocol": _protocol_payload(params),
+        "proposed_protocol": _protocol_payload(next_params),
+        "_current_params": params,
+        "_proposed_params": next_params,
+        "_meta": meta,
+    }
+
+
+def _public_retarget_preview(preview: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in preview.items() if not key.startswith("_")}
+
+
+def _maybe_retarget_after_block(connection: Any, current_height: int, force: bool = False) -> dict[str, Any] | None:
+    if current_height <= 0:
         return None
 
-    params = _active_protocol_params(connection)
-    average_block_ms = sum(float(row["total_task_ms"]) for row in epoch_rows) / len(epoch_rows)
-    next_params, meta = propose_retarget_params(params, average_block_ms)
+    preview = _retarget_preview(connection, force=force)
+    if not preview["ready"]:
+        return None
+
+    epoch_rows = _retarget_epoch_rows(connection, preview["last_retarget_height"])
+    params = preview["_current_params"]
+    next_params = preview["_proposed_params"]
+    meta = preview["_meta"]
+    average_block_ms = preview["average_block_ms"]
+    if not epoch_rows:
+        return None
     old_difficulty = calculate_difficulty(params)
     new_difficulty = calculate_difficulty(next_params)
     previous_params_id = params["id"]
@@ -1536,6 +2042,16 @@ def _accept_block_in_connection(
         VALUES (?, ?, ?, 'block accepted', ?)
         """,
         (miner_id, next_height, reward, timestamp),
+    )
+    _apply_ledger_entry(
+        connection,
+        account_id=miner_id,
+        account_type="miner",
+        amount=reward,
+        entry_type="block_reward",
+        block_height=next_height,
+        related_id=task["task_id"],
+        description="miner block reward",
     )
     _refresh_trust_score(connection, miner_id)
     _maybe_retarget_after_block(connection, next_height)

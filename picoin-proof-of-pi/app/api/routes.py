@@ -1,14 +1,18 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from app.models.schemas import (
+    AuditSummaryResponse,
+    BalanceResponse,
     BlockResponse,
     ChainVerificationResponse,
+    LedgerEntryResponse,
     MinerRegisterRequest,
     MinerResponse,
     PerformanceStatsResponse,
     ProtocolParamsResponse,
     ProtocolResponse,
     RetargetEventResponse,
+    RetargetPreviewResponse,
     RetargetRunResponse,
     RetargetStatusResponse,
     StatsResponse,
@@ -28,8 +32,12 @@ from app.services.mining import (
     MiningError,
     commit_task,
     create_next_task,
+    get_audit_summary,
+    get_balance,
+    get_balances,
     get_block,
     get_blocks,
+    get_ledger_entries,
     get_miner,
     get_performance_stats,
     get_protocol,
@@ -39,8 +47,10 @@ from app.services.mining import (
     get_stats,
     get_validation_job,
     get_validator,
+    get_validators,
     register_miner,
     register_validator,
+    preview_retarget,
     reveal_task,
     run_retarget,
     submit_validation_result,
@@ -74,6 +84,11 @@ def validator_by_id(validator_id: str) -> dict:
     if validator is None:
         raise HTTPException(status_code=404, detail="validator not found")
     return validator
+
+
+@router.get("/validators", response_model=list[ValidatorResponse])
+def validators(limit: int = Query(100, ge=1, le=500), eligible_only: bool = Query(False)) -> list[dict]:
+    return get_validators(limit, eligible_only)
 
 
 @router.get("/tasks/next", response_model=TaskResponse)
@@ -172,6 +187,29 @@ def miner_by_id(miner_id: str) -> dict:
     return miner
 
 
+@router.get("/balances", response_model=list[BalanceResponse])
+def balances(limit: int = Query(100, ge=1, le=500)) -> list[dict]:
+    return get_balances(limit)
+
+
+@router.get("/balances/{account_id}", response_model=BalanceResponse)
+def balance_by_account(account_id: str) -> dict:
+    balance = get_balance(account_id)
+    if balance is None:
+        raise HTTPException(status_code=404, detail="balance not found")
+    return balance
+
+
+@router.get("/ledger", response_model=list[LedgerEntryResponse])
+def ledger(account_id: str | None = Query(None), limit: int = Query(100, ge=1, le=500)) -> list[dict]:
+    return get_ledger_entries(account_id, limit)
+
+
+@router.get("/audit/summary", response_model=AuditSummaryResponse)
+def audit_summary() -> dict:
+    return get_audit_summary()
+
+
 @router.get("/stats", response_model=StatsResponse)
 def stats() -> dict:
     return get_stats()
@@ -200,6 +238,11 @@ def difficulty_status() -> dict:
 @router.get("/difficulty/history", response_model=list[RetargetEventResponse])
 def difficulty_history(limit: int = Query(20, ge=1, le=100)) -> list[dict]:
     return get_retarget_history(limit)
+
+
+@router.get("/difficulty/preview", response_model=RetargetPreviewResponse)
+def difficulty_preview(force: bool = Query(False)) -> dict:
+    return preview_retarget(force)
 
 
 @router.post("/difficulty/retarget", response_model=RetargetRunResponse)

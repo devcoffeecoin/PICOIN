@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -6,8 +7,11 @@ from app.core.settings import (
     DATA_DIR,
     DATABASE_PATH,
     DEFAULT_REWARD,
+    GENESIS_ACCOUNT_ID,
+    GENESIS_SUPPLY,
     MAX_ACTIVE_TASKS_PER_MINER,
     MAX_PI_POSITION,
+    MIN_VALIDATOR_STAKE,
     PI_ALGORITHM,
     PROTOCOL_VERSION,
     RANGE_ASSIGNMENT_MAX_ATTEMPTS,
@@ -57,6 +61,13 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 registered_at TEXT NOT NULL,
                 accepted_jobs INTEGER NOT NULL DEFAULT 0,
                 rejected_jobs INTEGER NOT NULL DEFAULT 0,
+                invalid_results INTEGER NOT NULL DEFAULT 0,
+                trust_score REAL NOT NULL DEFAULT 1.0,
+                cooldown_until TEXT,
+                last_seen_at TEXT,
+                total_validation_ms INTEGER NOT NULL DEFAULT 0,
+                stake_locked REAL NOT NULL DEFAULT 31.416,
+                slashed_amount REAL NOT NULL DEFAULT 0,
                 is_banned INTEGER NOT NULL DEFAULT 0
             );
 
@@ -177,6 +188,23 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 FOREIGN KEY(assigned_validator_id) REFERENCES validators(validator_id)
             );
 
+            CREATE TABLE IF NOT EXISTS validation_votes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL,
+                task_id TEXT NOT NULL,
+                validator_id TEXT NOT NULL,
+                approved INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                signature TEXT NOT NULL,
+                signed_at TEXT NOT NULL,
+                validation_ms INTEGER,
+                created_at TEXT NOT NULL,
+                UNIQUE(job_id, validator_id),
+                FOREIGN KEY(job_id) REFERENCES validation_jobs(job_id),
+                FOREIGN KEY(task_id) REFERENCES tasks(task_id),
+                FOREIGN KEY(validator_id) REFERENCES validators(validator_id)
+            );
+
             CREATE TABLE IF NOT EXISTS submissions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id TEXT NOT NULL,
@@ -199,6 +227,26 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(miner_id) REFERENCES miners(miner_id),
                 FOREIGN KEY(block_height) REFERENCES blocks(height)
+            );
+
+            CREATE TABLE IF NOT EXISTS balances (
+                account_id TEXT PRIMARY KEY,
+                account_type TEXT NOT NULL,
+                balance REAL NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS ledger_entries (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                account_id TEXT NOT NULL,
+                account_type TEXT NOT NULL,
+                amount REAL NOT NULL,
+                balance_after REAL NOT NULL,
+                entry_type TEXT NOT NULL,
+                block_height INTEGER,
+                related_id TEXT,
+                description TEXT,
+                created_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS penalties (
@@ -224,13 +272,23 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_blocks_miner ON blocks(miner_id);
             CREATE INDEX IF NOT EXISTS idx_commitments_miner ON commitments(miner_id);
             CREATE INDEX IF NOT EXISTS idx_validation_jobs_status ON validation_jobs(status);
+            CREATE INDEX IF NOT EXISTS idx_validation_votes_job ON validation_votes(job_id);
             CREATE INDEX IF NOT EXISTS idx_submissions_miner ON submissions(miner_id);
             CREATE INDEX IF NOT EXISTS idx_penalties_miner ON penalties(miner_id);
+            CREATE INDEX IF NOT EXISTS idx_ledger_account ON ledger_entries(account_id);
+            CREATE INDEX IF NOT EXISTS idx_ledger_type ON ledger_entries(entry_type);
             """
         )
         _ensure_column(connection, "miners", "trust_score", "REAL NOT NULL DEFAULT 1.0")
         _ensure_column(connection, "miners", "cooldown_until", "TEXT")
         _ensure_column(connection, "miners", "is_banned", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "validators", "invalid_results", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "validators", "trust_score", "REAL NOT NULL DEFAULT 1.0")
+        _ensure_column(connection, "validators", "cooldown_until", "TEXT")
+        _ensure_column(connection, "validators", "last_seen_at", "TEXT")
+        _ensure_column(connection, "validators", "total_validation_ms", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "validators", "stake_locked", f"REAL NOT NULL DEFAULT {MIN_VALIDATOR_STAKE}")
+        _ensure_column(connection, "validators", "slashed_amount", "REAL NOT NULL DEFAULT 0")
         _ensure_column(connection, "tasks", "expires_at", "TEXT")
         _ensure_column(connection, "tasks", "assignment_seed", "TEXT")
         _ensure_column(connection, "tasks", "assignment_mode", "TEXT")
@@ -247,6 +305,8 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "commitments", "commit_ms", "INTEGER")
         _ensure_column(connection, "validation_jobs", "validation_ms", "INTEGER")
         _ensure_default_protocol_params(connection)
+        _ensure_genesis_balance(connection)
+        _ensure_existing_validator_stake_balances(connection)
 
 
 def _ensure_column(connection: sqlite3.Connection, table_name: str, column_name: str, definition: str) -> None:
@@ -260,9 +320,32 @@ def _ensure_column(connection: sqlite3.Connection, table_name: str, column_name:
 
 def _ensure_default_protocol_params(connection: sqlite3.Connection) -> None:
     active = connection.execute(
-        "SELECT protocol_version FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        """
+        SELECT protocol_version, algorithm, validation_mode, required_validator_approvals,
+               range_assignment_mode, max_pi_position, range_assignment_max_attempts,
+               segment_size, sample_count, task_expiration_seconds,
+               max_active_tasks_per_miner, base_reward
+        FROM protocol_params
+        WHERE active = 1
+        ORDER BY id DESC
+        LIMIT 1
+        """
     ).fetchone()
-    if active is not None and active[0] == PROTOCOL_VERSION:
+    defaults = (
+        PROTOCOL_VERSION,
+        PI_ALGORITHM,
+        VALIDATION_MODE,
+        REQUIRED_VALIDATOR_APPROVALS,
+        RANGE_ASSIGNMENT_MODE,
+        MAX_PI_POSITION,
+        RANGE_ASSIGNMENT_MAX_ATTEMPTS,
+        TASK_SEGMENT_SIZE,
+        SAMPLE_COUNT,
+        TASK_EXPIRATION_SECONDS,
+        MAX_ACTIVE_TASKS_PER_MINER,
+        DEFAULT_REWARD,
+    )
+    if active is not None and tuple(active) == defaults:
         return
     connection.execute("UPDATE protocol_params SET active = 0 WHERE active = 1")
     connection.execute(
@@ -290,3 +373,112 @@ def _ensure_default_protocol_params(connection: sqlite3.Connection) -> None:
             DEFAULT_REWARD,
         ),
     )
+
+
+def _ensure_genesis_balance(connection: sqlite3.Connection) -> None:
+    existing = connection.execute(
+        "SELECT 1 FROM ledger_entries WHERE entry_type = 'genesis' AND account_id = ? LIMIT 1",
+        (GENESIS_ACCOUNT_ID,),
+    ).fetchone()
+    if existing is not None:
+        return
+    timestamp = "1970-01-01T00:00:00+00:00"
+    connection.execute(
+        """
+        INSERT INTO balances (account_id, account_type, balance, updated_at)
+        VALUES (?, 'genesis', ?, ?)
+        ON CONFLICT(account_id) DO UPDATE SET
+            account_type = excluded.account_type,
+            balance = excluded.balance,
+            updated_at = excluded.updated_at
+        """,
+        (GENESIS_ACCOUNT_ID, GENESIS_SUPPLY, timestamp),
+    )
+    connection.execute(
+        """
+        INSERT INTO ledger_entries (
+            account_id, account_type, amount, balance_after, entry_type,
+            block_height, related_id, description, created_at
+        )
+        VALUES (?, 'genesis', ?, ?, 'genesis', 0, 'genesis', 'genesis allocation', ?)
+        """,
+        (GENESIS_ACCOUNT_ID, GENESIS_SUPPLY, GENESIS_SUPPLY, timestamp),
+    )
+
+
+def _ensure_existing_validator_stake_balances(connection: sqlite3.Connection) -> None:
+    validators = connection.execute(
+        """
+        SELECT validator_id, stake_locked
+        FROM validators
+        WHERE stake_locked > 0
+        AND NOT EXISTS (
+            SELECT 1
+            FROM ledger_entries
+            WHERE ledger_entries.account_id = validators.validator_id
+            AND ledger_entries.entry_type = 'validator_stake_lock'
+        )
+        """
+    ).fetchall()
+    for validator in validators:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        validator_id = validator[0]
+        stake = round(float(validator[1]), 8)
+        genesis_balance = connection.execute(
+            "SELECT balance FROM balances WHERE account_id = ?",
+            (GENESIS_ACCOUNT_ID,),
+        ).fetchone()[0]
+        next_genesis_balance = round(float(genesis_balance) - stake, 8)
+        connection.execute(
+            "UPDATE balances SET balance = ?, updated_at = ? WHERE account_id = ?",
+            (next_genesis_balance, timestamp, GENESIS_ACCOUNT_ID),
+        )
+        connection.execute(
+            """
+            INSERT INTO ledger_entries (
+                account_id, account_type, amount, balance_after, entry_type,
+                block_height, related_id, description, created_at
+            )
+            VALUES (?, 'genesis', ?, ?, 'validator_stake_grant', NULL, ?, ?, ?)
+            """,
+            (
+                GENESIS_ACCOUNT_ID,
+                -stake,
+                next_genesis_balance,
+                validator_id,
+                "simulated validator stake funded from genesis",
+                timestamp,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO balances (account_id, account_type, balance, updated_at)
+            VALUES (?, 'validator', ?, ?)
+            ON CONFLICT(account_id) DO UPDATE SET
+                account_type = 'validator',
+                balance = balances.balance + excluded.balance,
+                updated_at = excluded.updated_at
+            """,
+            (validator_id, stake, timestamp),
+        )
+        validator_balance = connection.execute(
+            "SELECT balance FROM balances WHERE account_id = ?",
+            (validator_id,),
+        ).fetchone()[0]
+        connection.execute(
+            """
+            INSERT INTO ledger_entries (
+                account_id, account_type, amount, balance_after, entry_type,
+                block_height, related_id, description, created_at
+            )
+            VALUES (?, 'validator', ?, ?, 'validator_stake_lock', NULL, ?, ?, ?)
+            """,
+            (
+                validator_id,
+                stake,
+                validator_balance,
+                validator_id,
+                "simulated validator stake locked",
+                timestamp,
+            ),
+        )

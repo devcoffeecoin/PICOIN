@@ -20,6 +20,7 @@ class MinerResponse(BaseModel):
     accepted_blocks: int = 0
     rejected_submissions: int = 0
     total_rewards: float = 0.0
+    balance: float = 0.0
 
 
 class ValidatorRegisterRequest(BaseModel):
@@ -34,6 +35,15 @@ class ValidatorResponse(BaseModel):
     registered_at: datetime
     accepted_jobs: int = 0
     rejected_jobs: int = 0
+    completed_jobs: int = 0
+    invalid_results: int = 0
+    trust_score: float = 1.0
+    cooldown_until: datetime | None = None
+    last_seen_at: datetime | None = None
+    avg_validation_ms: float = 0.0
+    stake_locked: float = 0.0
+    slashed_amount: float = 0.0
+    balance: float = 0.0
     is_banned: bool = False
 
 
@@ -136,7 +146,43 @@ class StatsResponse(BaseModel):
     accepted_blocks: int
     rejected_submissions: int
     total_rewards: float
+    circulating_supply: float
+    genesis_balance: float
     latest_block_hash: str
+
+
+class BalanceResponse(BaseModel):
+    account_id: str
+    account_type: str
+    balance: float
+    updated_at: datetime
+
+
+class LedgerEntryResponse(BaseModel):
+    id: int
+    account_id: str
+    account_type: str
+    amount: float
+    balance_after: float
+    entry_type: str
+    block_height: int | None = None
+    related_id: str | None = None
+    description: str | None = None
+    created_at: datetime
+
+
+class AuditSummaryResponse(BaseModel):
+    genesis_supply: float
+    circulating_supply: float
+    genesis_balance: float
+    total_miner_balances: float
+    total_validator_balances: float
+    total_locked_validator_stake: float
+    total_slashed_validator_stake: float
+    accepted_blocks: int
+    pending_validation_jobs: int
+    validator_count: int
+    eligible_validator_count: int
 
 
 class PerformanceStatsResponse(BaseModel):
@@ -203,9 +249,34 @@ class RetargetStatusResponse(BaseModel):
     tolerance: float
     current_height: int
     last_retarget_height: int
+    current_epoch_block_count: int
+    current_epoch_average_ms: float | None = None
     blocks_until_next_epoch: int
     active_difficulty: float
     active_reward_per_block: float
+
+
+class RetargetPreviewResponse(BaseModel):
+    ready: bool
+    status: str
+    message: str
+    current_height: int
+    last_retarget_height: int
+    epoch_start_height: int | None = None
+    epoch_end_height: int | None = None
+    epoch_block_count: int
+    epoch_blocks_required: int
+    blocks_until_ready: int
+    average_block_ms: float | None = None
+    target_block_ms: int
+    tolerance: float
+    action: str
+    reason: str
+    adjustment_factor: float
+    old_difficulty: float
+    new_difficulty: float
+    current_protocol: ProtocolResponse
+    proposed_protocol: ProtocolResponse
 
 
 class RetargetEventResponse(BaseModel):
@@ -246,6 +317,10 @@ class ValidationJobResponse(BaseModel):
     samples: list[dict[str, Any]]
     status: str
     assigned_validator_id: str | None = None
+    approvals: int = 0
+    rejections: int = 0
+    required_approvals: int = 1
+    required_rejections: int = 1
     created_at: datetime
 
 
@@ -263,6 +338,10 @@ class ValidationResultResponse(BaseModel):
     status: str
     message: str
     block: "BlockResponse | None" = None
+    approvals: int = 0
+    rejections: int = 0
+    required_approvals: int = 1
+    required_rejections: int = 1
 
 
 class ChainVerificationIssue(BaseModel):
