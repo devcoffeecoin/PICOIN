@@ -4,6 +4,7 @@ from typing import Any
 
 from app.core.crypto import hash_result
 from app.core.pi import calculate_pi_segment, is_valid_segment_charset, normalize_segment
+from app.core.settings import SAMPLE_COUNT
 
 
 @dataclass(frozen=True)
@@ -14,7 +15,7 @@ class ValidationResult:
     samples: list[dict[str, Any]]
 
 
-def build_samples(segment: str, range_start: int, count: int = 5) -> list[dict[str, Any]]:
+def build_samples(segment: str, range_start: int, count: int = SAMPLE_COUNT) -> list[dict[str, Any]]:
     if not segment:
         return []
 

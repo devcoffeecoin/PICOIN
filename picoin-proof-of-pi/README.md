@@ -1,8 +1,33 @@
 # picoin-proof-of-pi
 
-MVP funcional de **Proof of Pi**: un coordinador asigna rangos pequeños de digitos hexadecimales de pi, un minero calcula el segmento con BBP, el validador recalcula de forma independiente y el servidor registra bloques aceptados con recompensa simulada.
+MVP funcional de **Proof of Pi**. Un coordinador asigna rangos pequenos de digitos hexadecimales de pi, un minero calcula el segmento con BBP, el validador recalcula de forma independiente y el servidor registra bloques aceptados con recompensa simulada.
 
-Este proyecto no implementa una blockchain completa. Usa una cadena simple de bloques aceptados con `previous_hash` y `block_hash` para preparar la arquitectura hacia una blockchain futura.
+Este proyecto no implementa una blockchain completa. Usa una cadena local de bloques aceptados con `previous_hash` y `block_hash` para preparar una evolucion futura.
+
+## Protocolo v0.5
+
+Parametros actuales:
+
+```text
+protocol_version = 0.5
+algorithm = bbp_hex_v1
+validation_mode = commit_reveal
+range_assignment_mode = pseudo_random
+max_pi_position = 10000
+range_assignment_max_attempts = 512
+segment_size = 64
+sample_count = 8
+task_expiration_seconds = 600
+max_active_tasks_per_miner = 1
+reward_per_block = 3.14159
+penalty_invalid_result = 1
+penalty_duplicate = 3
+penalty_invalid_signature = 5
+cooldown_after_rejections = 3
+cooldown_seconds = 300
+```
+
+El endpoint `GET /protocol` devuelve estos valores para que mineros y validadores sepan que reglas estan activas.
 
 ## Arquitectura
 
@@ -11,9 +36,9 @@ picoin-proof-of-pi/
   app/
     api/          Endpoints REST FastAPI
     core/         Configuracion, hashing SHA-256 y calculo BBP de pi
-    db/           Inicializacion SQLite
+    db/           SQLite y migraciones simples
     models/       Schemas Pydantic
-    services/     Logica de minado, bloques y recompensas
+    services/     Tareas, bloques, recompensas, penalizaciones
   validator/      Verificacion independiente del Proof of Pi
   miner/          Cliente minero ejecutable por usuarios
   tests/          Pruebas basicas del calculo y validador
@@ -33,46 +58,73 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
-## Correr el servidor coordinador
+## Correr El Servidor
 
 ```powershell
 uvicorn app.main:app --reload
 ```
 
-La API quedara en:
+La API queda en:
 
 - `http://127.0.0.1:8000`
 - Docs interactivas: `http://127.0.0.1:8000/docs`
 
-La base de datos SQLite se crea automaticamente en `data/picoin.sqlite3`.
+La base SQLite se crea automaticamente en `data/picoin.sqlite3`.
 
-## Correr un minero
+## Correr Un Minero
 
 En otra terminal:
 
 ```powershell
 cd C:\Users\LOQ\Documents\personal\PROYECTOS\PICOIN\picoin-proof-of-pi
 .\.venv\Scripts\Activate.ps1
-python -m miner.client --name alice
+python -m miner.client register --name alice
+python -m miner.client mine --once
 ```
 
 El minero:
 
-1. Registra un minero si no se pasa `--miner-id`.
-2. Pide una tarea a `GET /tasks/next`.
-3. Calcula el segmento hexadecimal asignado de pi.
-4. Genera `result_hash` con SHA-256.
-5. Firma de forma simple el submit con `sha256(miner_id:task_id:result_hash)`.
-6. Envia el resultado a `POST /tasks/submit`.
-7. Muestra si el bloque fue aceptado o rechazado.
+1. Genera una identidad Ed25519 local en `miner_identity.json`.
+2. Registra el minero con su `public_key`.
+3. Pide una tarea a `GET /tasks/next`.
+4. Recibe un rango pseudoaleatorio de posiciones hexadecimales de pi.
+5. Calcula el segmento hexadecimal asignado.
+6. Genera `result_hash` con SHA-256.
+7. Construye un Merkle root del segmento.
+8. Envia un commit firmado a `POST /tasks/commit`.
+9. Recibe posiciones de muestra generadas por el servidor.
+10. Revela solo esas muestras con Merkle proofs en `POST /tasks/reveal`.
+11. Muestra si el bloque fue aceptado o rechazado.
 
-Para reutilizar un minero existente:
+Comandos del minero:
 
 ```powershell
-python -m miner.client --miner-id miner_xxxxxxxxxxxxxxxx
+python -m miner.client register --name alice
+python -m miner.client mine --once
+python -m miner.client mine --loops 10
+python -m miner.client stats
 ```
 
+Para usar otro archivo de identidad:
+
+```powershell
+python -m miner.client --identity alice_identity.json register --name alice
+python -m miner.client --identity alice_identity.json mine --loops 10
+```
+
+Para reemplazar una identidad local existente:
+
+```powershell
+python -m miner.client register --name alice --overwrite
+```
+
+La clave privada queda solo en el archivo local de identidad. El servidor solo recibe la `public_key`.
+
 ## Endpoints
+
+### `GET /protocol`
+
+Devuelve parametros activos del protocolo.
 
 ### `POST /miners/register`
 
@@ -81,31 +133,102 @@ Registra un minero.
 ```json
 {
   "name": "alice",
-  "public_key": "simple:alice"
+  "public_key": "ed25519:base64url_public_key"
 }
 ```
 
 ### `GET /tasks/next?miner_id=...`
 
-Asigna el siguiente rango de posiciones hexadecimales de pi.
+Asigna el siguiente rango de posiciones hexadecimales de pi. Si el minero ya tiene una tarea activa no expirada, devuelve esa misma tarea.
 
-### `POST /tasks/submit`
+La asignacion ya no es secuencial. El servidor deriva una semilla con:
 
-Recibe el segmento calculado por el minero.
+```text
+previous_hash
+miner_id
+task_id
+task_counter
+nonce
+segment_size
+max_pi_position
+algorithm
+```
+
+Luego convierte esa semilla en `range_start` y busca un rango sin solape con tareas activas, comprometidas o aceptadas. La tarea guarda:
+
+```text
+assignment_seed
+assignment_mode = pseudo_random
+```
+
+### `POST /tasks/commit`
+
+Recibe el compromiso del resultado. No recibe el segmento completo.
 
 ```json
 {
   "task_id": "task_xxxxxxxxxxxxxxxx",
   "miner_id": "miner_xxxxxxxxxxxxxxxx",
   "result_hash": "64_hex_chars",
-  "segment": "243F6A8885",
-  "signature": "64_hex_chars"
+  "merkle_root": "64_hex_chars",
+  "signature": "base64url_signature",
+  "signed_at": "2026-05-10T15:00:00+00:00"
 }
 ```
+
+Respuesta:
+
+```json
+{
+  "accepted": true,
+  "status": "committed",
+  "challenge_seed": "64_hex_chars",
+  "samples": [
+    {"position": 12},
+    {"position": 33}
+  ]
+}
+```
+
+### `POST /tasks/reveal`
+
+Revela las muestras pedidas y sus Merkle proofs.
+
+```json
+{
+  "task_id": "task_xxxxxxxxxxxxxxxx",
+  "miner_id": "miner_xxxxxxxxxxxxxxxx",
+  "samples": [
+    {
+      "position": 12,
+      "digit": "A",
+      "proof": [
+        {"side": "right", "hash": "64_hex_chars"}
+      ]
+    }
+  ],
+  "signature": "base64url_signature",
+  "signed_at": "2026-05-10T15:01:00+00:00"
+}
+```
+
+### `POST /tasks/submit`
+
+Endpoint heredado para validacion completa del segmento. El minero v0.5 usa `commit` y `reveal`.
 
 ### `GET /blocks`
 
 Lista bloques aceptados.
+
+### `GET /blocks/verify`
+
+Audita la cadena local de bloques aceptados. Verifica:
+
+- `height` incremental
+- `previous_hash`
+- `block_hash`
+- rangos duplicados
+- `result_hash` duplicados
 
 ### `GET /blocks/{height}`
 
@@ -113,7 +236,7 @@ Consulta un bloque por altura.
 
 ### `GET /miners/{miner_id}`
 
-Consulta datos y recompensas simuladas de un minero.
+Consulta datos, reputacion y recompensas simuladas de un minero.
 
 ### `GET /stats`
 
@@ -130,10 +253,13 @@ Cada bloque aceptado contiene:
 - `range_end`
 - `algorithm`
 - `result_hash`
+- `merkle_root`
 - `samples`
 - `timestamp`
 - `block_hash`
 - `reward`
+- `protocol_version`
+- `validation_mode`
 
 ## Seguridad MVP
 
@@ -142,11 +268,21 @@ Implementado:
 - SHA-256 para resultados y bloques.
 - Encadenamiento por `previous_hash`.
 - Identificacion de minero por `miner_id`.
-- Firma simple opcional del submit.
-- Recalculo independiente del rango por el validador.
-- Muestras deterministicas del segmento validado.
-- Rechazo de tareas ya enviadas.
+- Identidad Ed25519 por minero.
+- Firma Ed25519 obligatoria en commit y reveal.
+- Commit-reveal con `result_hash` y `merkle_root`.
+- Merkle proofs para cada muestra revelada.
+- Recalculo independiente de las posiciones muestreadas.
+- Muestras deterministicas generadas despues del commit.
+- Tareas con expiracion.
+- Maximo de una tarea activa por minero.
+- Asignacion pseudoaleatoria de rangos basada en `previous_hash`.
+- Rechazo de solapes con rangos activos o aceptados.
+- Rechazo de tareas ya enviadas o expiradas.
 - Rechazo de `result_hash` duplicado.
+- Penalizaciones por resultado invalido, duplicado o firma invalida.
+- `trust_score` por minero.
+- Cooldown temporal si acumula demasiadas penalizaciones.
 - Restricciones SQLite para evitar doble bloque por tarea.
 
 Limites intencionales:
@@ -154,12 +290,57 @@ Limites intencionales:
 - No hay consenso distribuido.
 - No hay red P2P.
 - No hay wallet real ni token transferible.
-- La firma simple no reemplaza criptografia asimetrica real.
-- El calculo de pi usa BBP hexadecimal, adecuado para calcular posiciones lejanas sin recorrer todos los digitos anteriores.
+- La validacion v0.5 es probabilistica por muestras, no una prueba criptografica completa del calculo entero.
 
-## Algoritmo de pi
+## Firma Ed25519
 
-El MVP arranca con `bbp_hex_v1`, basado en la formula Bailey-Borwein-Plouffe:
+El minero firma un mensaje canonico con:
+
+```text
+task_id
+miner_id
+range_start
+range_end
+algorithm
+result_hash
+signed_at
+```
+
+El servidor reconstruye el mismo mensaje desde la tarea guardada y verifica la firma con la `public_key` registrada. Si alguien cambia el rango, el algoritmo, el hash o intenta enviar el resultado como otro minero, la firma deja de ser valida.
+
+## Commit-Reveal Y Merkle Root
+
+El minero calcula el segmento completo localmente, pero no lo envia al servidor. En su lugar:
+
+```text
+result_hash = sha256(segment + range + algorithm)
+merkle_root = root(leaves(position, digit))
+```
+
+Luego firma y envia el commit. El servidor genera el reto con:
+
+```text
+challenge_seed = sha256(previous_hash + task_id + result_hash + merkle_root)
+```
+
+Con ese seed el servidor elige `sample_count` posiciones. El minero revela solo esas posiciones:
+
+```text
+position
+digit
+merkle proof
+```
+
+El servidor verifica dos cosas por muestra:
+
+1. El digito coincide con BBP para esa posicion.
+2. La prueba Merkle conecta ese digito con el `merkle_root` comprometido.
+
+Si todas las muestras pasan, se acepta el bloque. Esto evita guardar pi y evita transmitir el segmento completo.
+
+## Algoritmo De Pi
+
+El MVP usa `bbp_hex_v1`, basado en la formula Bailey-Borwein-Plouffe:
 
 ```text
 pi = sum(k=0..infinito) 1/16^k * (
@@ -179,15 +360,28 @@ Por eso el rango `1..5` devuelve:
 243F6
 ```
 
-BBP es una mejor base para Picoin que los decimales tradicionales porque permite calcular un digito hexadecimal en una posicion remota sin calcular todos los digitos anteriores. Esta aislado en `app/core/pi.py` para poder ajustar precision, introducir auditorias por muestras o agregar otro algoritmo versionado mas adelante.
+BBP permite calcular un digito hexadecimal en una posicion remota sin calcular todos los digitos anteriores. Esa propiedad hace que sea una mejor base para Picoin que los decimales tradicionales.
 
-El algoritmo decimal anterior queda como referencia interna (`machin_decimal_v1`), pero el algoritmo base del coordinador es:
+Para que el MVP local sea rapido, `max_pi_position` esta en `10000`. Se puede subir cuando optimicemos el calculo BBP o movamos el trabajo pesado a una implementacion mas eficiente.
+
+## Persistencia
+
+SQLite usa estas tablas:
 
 ```text
-bbp_hex_v1
+miners
+tasks
+commitments
+submissions
+blocks
+rewards
+penalties
+rejected_submissions
 ```
 
-## Flujo completo de ejemplo
+La separacion permite auditar tareas, intentos, bloques aceptados, recompensas y castigos sin mezclar conceptos.
+
+## Flujo Completo
 
 1. Inicia el servidor:
 
@@ -195,19 +389,32 @@ bbp_hex_v1
 uvicorn app.main:app --reload
 ```
 
-2. Ejecuta un minero:
+2. Consulta protocolo:
 
 ```powershell
-python -m miner.client --name alice
+curl http://127.0.0.1:8000/protocol
 ```
 
-3. Consulta bloques:
+3. Ejecuta un minero:
+
+```powershell
+python -m miner.client register --name alice
+python -m miner.client mine --once
+```
+
+4. Consulta bloques:
 
 ```powershell
 curl http://127.0.0.1:8000/blocks
 ```
 
-4. Consulta estadisticas:
+5. Verifica la cadena local:
+
+```powershell
+curl http://127.0.0.1:8000/blocks/verify
+```
+
+6. Consulta estadisticas:
 
 ```powershell
 curl http://127.0.0.1:8000/stats
@@ -219,11 +426,16 @@ curl http://127.0.0.1:8000/stats
 pytest
 ```
 
-## Siguiente evolucion sugerida
+Si quieres reiniciar la demo desde bloque 1:
 
-- Sustituir firma simple por claves publicas reales.
-- Separar repositorio de tareas pendientes y mempool.
-- Agregar dificultad o scoring por rango.
-- Agregar expiracion y reasignacion de tareas.
+```powershell
+python -m app.tools.reset_db
+```
+
+## Siguiente Evolucion
+
+- Separar validadores externos que auditen samples.
+- Ajustar `sample_count` segun dificultad/riesgo.
+- Agregar slashing/staking simulado.
 - Introducir nodos validadores independientes.
-- Evolucionar la lista de bloques aceptados hacia consenso blockchain.
+- Evolucionar la lista local de bloques hacia consenso blockchain.

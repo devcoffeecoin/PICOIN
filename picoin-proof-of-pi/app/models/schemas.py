@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field
 
 class MinerRegisterRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=80)
-    public_key: str | None = Field(default=None, max_length=256)
+    public_key: str = Field(..., min_length=1, max_length=256)
 
 
 class MinerResponse(BaseModel):
@@ -29,6 +29,8 @@ class TaskResponse(BaseModel):
     range_end: int
     algorithm: str
     status: str
+    assignment_seed: str | None = None
+    assignment_mode: str | None = None
     created_at: datetime
     expires_at: datetime | None = None
 
@@ -38,7 +40,44 @@ class TaskSubmitRequest(BaseModel):
     miner_id: str
     result_hash: str = Field(..., min_length=64, max_length=64)
     segment: str = Field(..., min_length=1)
-    signature: str | None = Field(default=None, max_length=256)
+    signature: str = Field(..., min_length=1, max_length=256)
+    signed_at: datetime
+
+
+class TaskCommitRequest(BaseModel):
+    task_id: str
+    miner_id: str
+    result_hash: str = Field(..., min_length=64, max_length=64)
+    merkle_root: str = Field(..., min_length=64, max_length=64)
+    signature: str = Field(..., min_length=1, max_length=256)
+    signed_at: datetime
+
+
+class TaskCommitResponse(BaseModel):
+    accepted: bool
+    status: str
+    message: str
+    challenge_seed: str | None = None
+    samples: list[dict[str, Any]] = []
+
+
+class MerkleProofNode(BaseModel):
+    side: str
+    hash: str = Field(..., min_length=64, max_length=64)
+
+
+class SampleReveal(BaseModel):
+    position: int
+    digit: str = Field(..., min_length=1, max_length=1)
+    proof: list[MerkleProofNode]
+
+
+class TaskRevealRequest(BaseModel):
+    task_id: str
+    miner_id: str
+    samples: list[SampleReveal]
+    signature: str = Field(..., min_length=1, max_length=256)
+    signed_at: datetime
 
 
 class TaskSubmitResponse(BaseModel):
@@ -57,10 +96,13 @@ class BlockResponse(BaseModel):
     range_end: int
     algorithm: str
     result_hash: str
+    merkle_root: str | None = None
     samples: list[dict[str, Any]]
     timestamp: datetime
     block_hash: str
     reward: float
+    protocol_version: str | None = None
+    validation_mode: str | None = None
 
 
 class StatsResponse(BaseModel):
@@ -79,6 +121,9 @@ class ProtocolResponse(BaseModel):
     protocol_version: str
     algorithm: str
     validation_mode: str
+    range_assignment_mode: str
+    max_pi_position: int
+    range_assignment_max_attempts: int
     segment_size: int
     sample_count: int
     task_expiration_seconds: int
