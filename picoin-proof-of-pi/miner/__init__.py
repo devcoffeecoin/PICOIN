@@ -1,0 +1,1 @@
+"""Picoin miner client package."""
