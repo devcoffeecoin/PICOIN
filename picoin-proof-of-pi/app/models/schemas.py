@@ -46,6 +46,8 @@ class TaskResponse(BaseModel):
     status: str
     assignment_seed: str | None = None
     assignment_mode: str | None = None
+    assignment_ms: int | None = None
+    compute_ms: int | None = None
     created_at: datetime
     expires_at: datetime | None = None
 
@@ -64,6 +66,7 @@ class TaskCommitRequest(BaseModel):
     miner_id: str
     result_hash: str = Field(..., min_length=64, max_length=64)
     merkle_root: str = Field(..., min_length=64, max_length=64)
+    compute_ms: int | None = Field(default=None, ge=0)
     signature: str = Field(..., min_length=1, max_length=256)
     signed_at: datetime
 
@@ -116,8 +119,11 @@ class BlockResponse(BaseModel):
     timestamp: datetime
     block_hash: str
     reward: float
+    difficulty: float | None = None
     protocol_version: str | None = None
     validation_mode: str | None = None
+    total_task_ms: int | None = None
+    validation_ms: int | None = None
 
 
 class StatsResponse(BaseModel):
@@ -129,6 +135,20 @@ class StatsResponse(BaseModel):
     rejected_submissions: int
     total_rewards: float
     latest_block_hash: str
+
+
+class PerformanceStatsResponse(BaseModel):
+    accepted_blocks: int
+    avg_compute_ms: float
+    avg_assignment_ms: float
+    avg_commit_ms: float
+    avg_validation_ms: float
+    avg_total_task_ms: float
+    pending_validation_jobs: int
+    bbp_digit_cache_hits: int
+    bbp_digit_cache_misses: int
+    bbp_digit_cache_maxsize: int
+    bbp_digit_cache_currsize: int
 
 
 class ProtocolResponse(BaseModel):
@@ -144,12 +164,34 @@ class ProtocolResponse(BaseModel):
     sample_count: int
     task_expiration_seconds: int
     max_active_tasks_per_miner: int
+    base_reward: float
+    difficulty: float
     reward_per_block: float
     penalty_invalid_result: int
     penalty_duplicate: int
     penalty_invalid_signature: int
     cooldown_after_rejections: int
     cooldown_seconds: int
+
+
+class ProtocolParamsResponse(BaseModel):
+    id: int
+    protocol_version: str
+    algorithm: str
+    validation_mode: str
+    required_validator_approvals: int
+    range_assignment_mode: str
+    max_pi_position: int
+    range_assignment_max_attempts: int
+    segment_size: int
+    sample_count: int
+    task_expiration_seconds: int
+    max_active_tasks_per_miner: int
+    base_reward: float
+    active: bool
+    created_at: datetime
+    difficulty: float
+    reward_per_block: float
 
 
 class ValidationJobResponse(BaseModel):

@@ -2,7 +2,22 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from app.core.settings import DATA_DIR, DATABASE_PATH
+from app.core.settings import (
+    DATA_DIR,
+    DATABASE_PATH,
+    DEFAULT_REWARD,
+    MAX_ACTIVE_TASKS_PER_MINER,
+    MAX_PI_POSITION,
+    PI_ALGORITHM,
+    PROTOCOL_VERSION,
+    RANGE_ASSIGNMENT_MAX_ATTEMPTS,
+    RANGE_ASSIGNMENT_MODE,
+    REQUIRED_VALIDATOR_APPROVALS,
+    SAMPLE_COUNT,
+    TASK_EXPIRATION_SECONDS,
+    TASK_SEGMENT_SIZE,
+    VALIDATION_MODE,
+)
 
 
 def get_connection() -> sqlite3.Connection:
@@ -45,6 +60,24 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 is_banned INTEGER NOT NULL DEFAULT 0
             );
 
+            CREATE TABLE IF NOT EXISTS protocol_params (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                protocol_version TEXT NOT NULL,
+                algorithm TEXT NOT NULL,
+                validation_mode TEXT NOT NULL,
+                required_validator_approvals INTEGER NOT NULL,
+                range_assignment_mode TEXT NOT NULL,
+                max_pi_position INTEGER NOT NULL,
+                range_assignment_max_attempts INTEGER NOT NULL,
+                segment_size INTEGER NOT NULL,
+                sample_count INTEGER NOT NULL,
+                task_expiration_seconds INTEGER NOT NULL,
+                max_active_tasks_per_miner INTEGER NOT NULL,
+                base_reward REAL NOT NULL,
+                active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+            );
+
             CREATE TABLE IF NOT EXISTS tasks (
                 task_id TEXT PRIMARY KEY,
                 miner_id TEXT NOT NULL,
@@ -54,6 +87,8 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 status TEXT NOT NULL,
                 assignment_seed TEXT,
                 assignment_mode TEXT,
+                assignment_ms INTEGER,
+                compute_ms INTEGER,
                 created_at TEXT NOT NULL,
                 expires_at TEXT,
                 submitted_at TEXT,
@@ -74,9 +109,12 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 timestamp TEXT NOT NULL,
                 block_hash TEXT NOT NULL UNIQUE,
                 reward REAL NOT NULL,
+                difficulty REAL,
                 task_id TEXT NOT NULL UNIQUE,
-                protocol_version TEXT NOT NULL DEFAULT '0.6',
+                protocol_version TEXT NOT NULL DEFAULT '0.8',
                 validation_mode TEXT NOT NULL DEFAULT 'external_commit_reveal',
+                total_task_ms INTEGER,
+                validation_ms INTEGER,
                 FOREIGN KEY(miner_id) REFERENCES miners(miner_id),
                 FOREIGN KEY(task_id) REFERENCES tasks(task_id)
             );
@@ -90,6 +128,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 samples TEXT NOT NULL,
                 signature TEXT NOT NULL,
                 signed_at TEXT NOT NULL,
+                commit_ms INTEGER,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(miner_id) REFERENCES miners(miner_id),
                 FOREIGN KEY(task_id) REFERENCES tasks(task_id)
@@ -107,6 +146,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 assigned_validator_id TEXT,
                 result_reason TEXT,
                 validator_signature TEXT,
+                validation_ms INTEGER,
                 created_at TEXT NOT NULL,
                 completed_at TEXT,
                 FOREIGN KEY(miner_id) REFERENCES miners(miner_id),
@@ -171,9 +211,17 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "tasks", "expires_at", "TEXT")
         _ensure_column(connection, "tasks", "assignment_seed", "TEXT")
         _ensure_column(connection, "tasks", "assignment_mode", "TEXT")
+        _ensure_column(connection, "tasks", "assignment_ms", "INTEGER")
+        _ensure_column(connection, "tasks", "compute_ms", "INTEGER")
         _ensure_column(connection, "blocks", "merkle_root", "TEXT")
-        _ensure_column(connection, "blocks", "protocol_version", "TEXT NOT NULL DEFAULT '0.6'")
+        _ensure_column(connection, "blocks", "difficulty", "REAL")
+        _ensure_column(connection, "blocks", "total_task_ms", "INTEGER")
+        _ensure_column(connection, "blocks", "validation_ms", "INTEGER")
+        _ensure_column(connection, "blocks", "protocol_version", "TEXT NOT NULL DEFAULT '0.8'")
         _ensure_column(connection, "blocks", "validation_mode", "TEXT NOT NULL DEFAULT 'external_commit_reveal'")
+        _ensure_column(connection, "commitments", "commit_ms", "INTEGER")
+        _ensure_column(connection, "validation_jobs", "validation_ms", "INTEGER")
+        _ensure_default_protocol_params(connection)
 
 
 def _ensure_column(connection: sqlite3.Connection, table_name: str, column_name: str, definition: str) -> None:
@@ -183,3 +231,37 @@ def _ensure_column(connection: sqlite3.Connection, table_name: str, column_name:
     }
     if column_name not in columns:
         connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+
+def _ensure_default_protocol_params(connection: sqlite3.Connection) -> None:
+    active = connection.execute(
+        "SELECT protocol_version FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    if active is not None and active[0] == PROTOCOL_VERSION:
+        return
+    connection.execute("UPDATE protocol_params SET active = 0 WHERE active = 1")
+    connection.execute(
+        """
+        INSERT INTO protocol_params (
+            protocol_version, algorithm, validation_mode, required_validator_approvals,
+            range_assignment_mode, max_pi_position, range_assignment_max_attempts,
+            segment_size, sample_count, task_expiration_seconds,
+            max_active_tasks_per_miner, base_reward, active
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        """,
+        (
+            PROTOCOL_VERSION,
+            PI_ALGORITHM,
+            VALIDATION_MODE,
+            REQUIRED_VALIDATOR_APPROVALS,
+            RANGE_ASSIGNMENT_MODE,
+            MAX_PI_POSITION,
+            RANGE_ASSIGNMENT_MAX_ATTEMPTS,
+            TASK_SEGMENT_SIZE,
+            SAMPLE_COUNT,
+            TASK_EXPIRATION_SECONDS,
+            MAX_ACTIVE_TASKS_PER_MINER,
+            DEFAULT_REWARD,
+        ),
+    )

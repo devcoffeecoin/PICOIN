@@ -5,8 +5,11 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.core.crypto import canonical_json, hash_block, sha256_text
+from app.core.difficulty import calculate_difficulty, calculate_reward
 from app.core.merkle import verify_merkle_proof
+from app.core.performance import elapsed_ms, now_perf
 from app.core.pi import calculate_pi_segment
+from app.core.pi import pi_cache_info
 from app.core.signatures import (
     build_commit_signature_payload,
     build_reveal_signature_payload,
@@ -18,21 +21,11 @@ from app.core.signatures import (
 from app.core.settings import (
     COOLDOWN_AFTER_REJECTIONS,
     COOLDOWN_SECONDS,
-    DEFAULT_REWARD,
-    MAX_ACTIVE_TASKS_PER_MINER,
-    MAX_PI_POSITION,
     PENALTY_DUPLICATE,
     PENALTY_INVALID_RESULT,
     PENALTY_INVALID_SIGNATURE,
-    PI_ALGORITHM,
     PROJECT_NAME,
-    RANGE_ASSIGNMENT_MAX_ATTEMPTS,
-    RANGE_ASSIGNMENT_MODE,
     PROTOCOL_VERSION,
-    REQUIRED_VALIDATOR_APPROVALS,
-    SAMPLE_COUNT,
-    TASK_EXPIRATION_SECONDS,
-    TASK_SEGMENT_SIZE,
     VALIDATION_MODE,
 )
 from app.db.database import get_connection, row_to_dict
@@ -143,6 +136,7 @@ def enrich_miner(miner: dict[str, Any] | None) -> dict[str, Any] | None:
 
 
 def create_next_task(miner_id: str) -> dict[str, Any] | None:
+    started = now_perf()
     with get_connection() as connection:
         _expire_assigned_tasks(connection)
         miner = row_to_dict(connection.execute("SELECT * FROM miners WHERE miner_id = ?", (miner_id,)).fetchone())
@@ -168,34 +162,37 @@ def create_next_task(miner_id: str) -> dict[str, Any] | None:
         if active_task is not None:
             return row_to_dict(active_task)
 
+        params = _active_protocol_params(connection)
         active_count = connection.execute(
             "SELECT COUNT(*) AS count FROM tasks WHERE miner_id = ? AND status IN ('assigned', 'committed', 'revealed')",
             (miner_id,),
         ).fetchone()["count"]
-        if active_count >= MAX_ACTIVE_TASKS_PER_MINER:
+        if active_count >= params["max_active_tasks_per_miner"]:
             raise MiningError(429, "miner has too many active tasks")
 
         task_id = f"task_{uuid.uuid4().hex[:16]}"
-        assignment = _assign_pseudo_random_range(connection, miner_id, task_id)
+        assignment = _assign_pseudo_random_range(connection, miner_id, task_id, params)
+        assignment_ms = elapsed_ms(started)
         now = utc_now()
-        expires_at = iso_at(TASK_EXPIRATION_SECONDS)
+        expires_at = iso_at(params["task_expiration_seconds"])
 
         connection.execute(
             """
             INSERT INTO tasks (
                 task_id, miner_id, range_start, range_end, algorithm, status,
-                assignment_seed, assignment_mode, created_at, expires_at
+                assignment_seed, assignment_mode, assignment_ms, created_at, expires_at
             )
-            VALUES (?, ?, ?, ?, ?, 'assigned', ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 'assigned', ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
                 miner_id,
                 assignment["range_start"],
                 assignment["range_end"],
-                PI_ALGORITHM,
+                params["algorithm"],
                 assignment["assignment_seed"],
-                RANGE_ASSIGNMENT_MODE,
+                params["range_assignment_mode"],
+                assignment_ms,
                 now,
                 expires_at,
             ),
@@ -361,6 +358,9 @@ def submit_task(
                 segment,
             )
 
+        params = _active_protocol_params(connection)
+        reward = calculate_reward(params)
+        difficulty = calculate_difficulty(params)
         latest_block = connection.execute(
             "SELECT height, block_hash FROM blocks ORDER BY height DESC LIMIT 1"
         ).fetchone()
@@ -376,11 +376,12 @@ def submit_task(
             "range_end": task["range_end"],
             "range_start": task["range_start"],
             "result_hash": result_hash,
-            "reward": DEFAULT_REWARD,
+            "reward": reward,
+            "difficulty": difficulty,
             "samples": validation.samples,
             "timestamp": timestamp,
-            "protocol_version": PROTOCOL_VERSION,
-            "validation_mode": VALIDATION_MODE,
+            "protocol_version": params["protocol_version"],
+            "validation_mode": params["validation_mode"],
         }
         block_hash = hash_block(block_payload)
 
@@ -388,10 +389,10 @@ def submit_task(
             """
             INSERT INTO blocks (
                 height, previous_hash, miner_id, range_start, range_end, algorithm,
-                result_hash, samples, timestamp, block_hash, reward, task_id,
+                result_hash, samples, timestamp, block_hash, reward, difficulty, task_id,
                 protocol_version, validation_mode
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 next_height,
@@ -404,10 +405,11 @@ def submit_task(
                 json.dumps(validation.samples),
                 timestamp,
                 block_hash,
-                DEFAULT_REWARD,
+                reward,
+                difficulty,
                 task_id,
-                PROTOCOL_VERSION,
-                VALIDATION_MODE,
+                params["protocol_version"],
+                params["validation_mode"],
             ),
         )
         connection.execute(
@@ -420,7 +422,7 @@ def submit_task(
             INSERT INTO rewards (miner_id, block_height, amount, reason, created_at)
             VALUES (?, ?, ?, 'block accepted', ?)
             """,
-            (miner_id, next_height, DEFAULT_REWARD, timestamp),
+            (miner_id, next_height, reward, timestamp),
         )
         _refresh_trust_score(connection, miner_id)
 
@@ -435,7 +437,10 @@ def submit_task(
             "samples": validation.samples,
             "timestamp": timestamp,
             "block_hash": block_hash,
-            "reward": DEFAULT_REWARD,
+            "reward": reward,
+            "difficulty": difficulty,
+            "protocol_version": params["protocol_version"],
+            "validation_mode": params["validation_mode"],
         }
 
     return {
@@ -454,7 +459,9 @@ def commit_task(
     merkle_root: str,
     signature: str,
     signed_at: str,
+    compute_ms: int | None = None,
 ) -> dict[str, Any]:
+    started = now_perf()
     with get_connection() as connection:
         _expire_assigned_tasks(connection)
         task = row_to_dict(
@@ -522,15 +529,21 @@ def commit_task(
                 }
             )
         )
-        samples = _build_challenge_samples(task["range_start"], task["range_end"], challenge_seed)
+        params = _active_protocol_params(connection)
+        samples = _build_challenge_samples(
+            task["range_start"],
+            task["range_end"],
+            challenge_seed,
+            params["sample_count"],
+        )
 
         connection.execute(
             """
             INSERT INTO commitments (
                 task_id, miner_id, result_hash, merkle_root, challenge_seed,
-                samples, signature, signed_at, created_at
+                samples, signature, signed_at, commit_ms, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -541,9 +554,12 @@ def commit_task(
                 json.dumps(samples),
                 signature,
                 signed_at,
+                elapsed_ms(started),
                 utc_now(),
             ),
         )
+        if compute_ms is not None:
+            connection.execute("UPDATE tasks SET compute_ms = ? WHERE task_id = ?", (compute_ms, task_id))
         connection.execute("UPDATE tasks SET status = 'committed' WHERE task_id = ?", (task_id,))
 
     return {
@@ -737,6 +753,7 @@ def submit_validation_result(
     signature: str,
     signed_at: str,
 ) -> dict[str, Any]:
+    started = now_perf()
     with get_connection() as connection:
         job = row_to_dict(
             connection.execute(
@@ -776,7 +793,9 @@ def submit_validation_result(
 
         task = row_to_dict(connection.execute("SELECT * FROM tasks WHERE task_id = ?", (job["task_id"],)).fetchone())
         samples = json.loads(job["samples"])
+        validation_ms = elapsed_ms(started)
         if approved:
+            params = _active_protocol_params(connection)
             block = _accept_block_in_connection(
                 connection=connection,
                 task=task,
@@ -786,15 +805,17 @@ def submit_validation_result(
                 samples=samples,
                 signature=signature,
                 submission_reason=f"external validation approved by {validator_id}",
+                validation_ms=validation_ms,
+                params=params,
             )
             connection.execute(
                 """
                 UPDATE validation_jobs
                 SET status = 'approved', assigned_validator_id = ?, result_reason = ?,
-                    validator_signature = ?, completed_at = ?
+                    validator_signature = ?, validation_ms = ?, completed_at = ?
                 WHERE job_id = ?
                 """,
-                (validator_id, reason, signature, utc_now(), job_id),
+                (validator_id, reason, signature, validation_ms, utc_now(), job_id),
             )
             connection.execute(
                 "UPDATE validators SET accepted_jobs = accepted_jobs + 1 WHERE validator_id = ?",
@@ -810,10 +831,10 @@ def submit_validation_result(
             """
             UPDATE validation_jobs
             SET status = 'rejected', assigned_validator_id = ?, result_reason = ?,
-                validator_signature = ?, completed_at = ?
+                validator_signature = ?, validation_ms = ?, completed_at = ?
             WHERE job_id = ?
             """,
-            (validator_id, reason, signature, utc_now(), job_id),
+            (validator_id, reason, signature, validation_ms, utc_now(), job_id),
         )
         connection.execute(
             "UPDATE validators SET rejected_jobs = rejected_jobs + 1 WHERE validator_id = ?",
@@ -858,27 +879,89 @@ def get_stats() -> dict[str, Any]:
     }
 
 
+def get_performance_stats() -> dict[str, Any]:
+    with get_connection() as connection:
+        blocks = connection.execute(
+            """
+            SELECT
+                COUNT(*) AS accepted_blocks,
+                COALESCE(AVG(total_task_ms), 0) AS avg_total_task_ms,
+                COALESCE(AVG(validation_ms), 0) AS avg_validation_ms
+            FROM blocks
+            """
+        ).fetchone()
+        tasks = connection.execute(
+            """
+            SELECT
+                COALESCE(AVG(compute_ms), 0) AS avg_compute_ms,
+                COALESCE(AVG(assignment_ms), 0) AS avg_assignment_ms
+            FROM tasks
+            """
+        ).fetchone()
+        commitments = connection.execute(
+            "SELECT COALESCE(AVG(commit_ms), 0) AS avg_commit_ms FROM commitments"
+        ).fetchone()
+        pending_jobs = connection.execute(
+            "SELECT COUNT(*) AS count FROM validation_jobs WHERE status = 'pending'"
+        ).fetchone()["count"]
+
+    return {
+        "accepted_blocks": blocks["accepted_blocks"],
+        "avg_compute_ms": round(blocks_or_zero(tasks["avg_compute_ms"]), 2),
+        "avg_assignment_ms": round(blocks_or_zero(tasks["avg_assignment_ms"]), 2),
+        "avg_commit_ms": round(blocks_or_zero(commitments["avg_commit_ms"]), 2),
+        "avg_validation_ms": round(blocks_or_zero(blocks["avg_validation_ms"]), 2),
+        "avg_total_task_ms": round(blocks_or_zero(blocks["avg_total_task_ms"]), 2),
+        "pending_validation_jobs": pending_jobs,
+        **pi_cache_info(),
+    }
+
+
 def get_protocol() -> dict[str, Any]:
+    with get_connection() as connection:
+        params = _active_protocol_params(connection)
+    return _protocol_payload(params)
+
+
+def get_protocol_history() -> list[dict[str, Any]]:
+    with get_connection() as connection:
+        rows = connection.execute(
+            "SELECT * FROM protocol_params ORDER BY id DESC"
+        ).fetchall()
+    return [_protocol_params_payload(row_to_dict(row)) for row in rows]
+
+
+def _protocol_payload(params: dict[str, Any]) -> dict[str, Any]:
     return {
         "project": PROJECT_NAME,
-        "protocol_version": PROTOCOL_VERSION,
-        "algorithm": PI_ALGORITHM,
-        "validation_mode": VALIDATION_MODE,
-        "required_validator_approvals": REQUIRED_VALIDATOR_APPROVALS,
-        "range_assignment_mode": RANGE_ASSIGNMENT_MODE,
-        "max_pi_position": MAX_PI_POSITION,
-        "range_assignment_max_attempts": RANGE_ASSIGNMENT_MAX_ATTEMPTS,
-        "segment_size": TASK_SEGMENT_SIZE,
-        "sample_count": SAMPLE_COUNT,
-        "task_expiration_seconds": TASK_EXPIRATION_SECONDS,
-        "max_active_tasks_per_miner": MAX_ACTIVE_TASKS_PER_MINER,
-        "reward_per_block": DEFAULT_REWARD,
+        "protocol_version": params["protocol_version"],
+        "algorithm": params["algorithm"],
+        "validation_mode": params["validation_mode"],
+        "required_validator_approvals": params["required_validator_approvals"],
+        "range_assignment_mode": params["range_assignment_mode"],
+        "max_pi_position": params["max_pi_position"],
+        "range_assignment_max_attempts": params["range_assignment_max_attempts"],
+        "segment_size": params["segment_size"],
+        "sample_count": params["sample_count"],
+        "task_expiration_seconds": params["task_expiration_seconds"],
+        "max_active_tasks_per_miner": params["max_active_tasks_per_miner"],
+        "base_reward": params["base_reward"],
+        "difficulty": calculate_difficulty(params),
+        "reward_per_block": calculate_reward(params),
         "penalty_invalid_result": PENALTY_INVALID_RESULT,
         "penalty_duplicate": PENALTY_DUPLICATE,
         "penalty_invalid_signature": PENALTY_INVALID_SIGNATURE,
         "cooldown_after_rejections": COOLDOWN_AFTER_REJECTIONS,
         "cooldown_seconds": COOLDOWN_SECONDS,
     }
+
+
+def _protocol_params_payload(params: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(params)
+    payload["active"] = bool(payload["active"])
+    payload["difficulty"] = calculate_difficulty(payload)
+    payload["reward_per_block"] = calculate_reward(payload)
+    return payload
 
 
 def verify_chain() -> dict[str, Any]:
@@ -1049,6 +1132,8 @@ def _block_payload(block: dict[str, Any], include_protocol: bool) -> dict[str, A
         "samples": block["samples"],
         "timestamp": block["timestamp"],
     }
+    if block.get("difficulty") is not None:
+        payload["difficulty"] = block["difficulty"]
     if block.get("merkle_root"):
         payload["merkle_root"] = block["merkle_root"]
     if include_protocol:
@@ -1072,32 +1157,49 @@ def _latest_block_hash(connection: Any) -> str:
     return GENESIS_HASH if latest is None else latest["block_hash"]
 
 
-def _assign_pseudo_random_range(connection: Any, miner_id: str, task_id: str) -> dict[str, Any]:
-    max_start = MAX_PI_POSITION - TASK_SEGMENT_SIZE + 1
+def _active_protocol_params(connection: Any) -> dict[str, Any]:
+    params = row_to_dict(
+        connection.execute(
+            "SELECT * FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+    )
+    if params is None:
+        raise MiningError(500, "active protocol params not found")
+    params["active"] = bool(params["active"])
+    return params
+
+
+def _assign_pseudo_random_range(
+    connection: Any,
+    miner_id: str,
+    task_id: str,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    max_start = params["max_pi_position"] - params["segment_size"] + 1
     if max_start < 1:
-        raise MiningError(500, "MAX_PI_POSITION must be >= TASK_SEGMENT_SIZE")
+        raise MiningError(500, "max_pi_position must be >= segment_size")
 
     previous_hash = _latest_block_hash(connection)
     task_counter = connection.execute("SELECT COUNT(*) AS count FROM tasks").fetchone()["count"] + 1
 
-    for nonce in range(RANGE_ASSIGNMENT_MAX_ATTEMPTS):
+    for nonce in range(params["range_assignment_max_attempts"]):
         assignment_seed = sha256_text(
             canonical_json(
                 {
-                    "algorithm": PI_ALGORITHM,
-                    "max_pi_position": MAX_PI_POSITION,
+                    "algorithm": params["algorithm"],
+                    "max_pi_position": params["max_pi_position"],
                     "miner_id": miner_id,
                     "nonce": nonce,
                     "previous_hash": previous_hash,
-                    "segment_size": TASK_SEGMENT_SIZE,
+                    "segment_size": params["segment_size"],
                     "task_counter": task_counter,
                     "task_id": task_id,
                 }
             )
         )
         range_start = (int(assignment_seed, 16) % max_start) + 1
-        range_end = range_start + TASK_SEGMENT_SIZE - 1
-        if not _range_overlaps_protected_task(connection, range_start, range_end):
+        range_end = range_start + params["segment_size"] - 1
+        if not _range_overlaps_protected_task(connection, range_start, range_end, params["algorithm"]):
             return {
                 "range_start": range_start,
                 "range_end": range_end,
@@ -1107,7 +1209,7 @@ def _assign_pseudo_random_range(connection: Any, miner_id: str, task_id: str) ->
     raise MiningError(503, "could not assign a non-overlapping range")
 
 
-def _range_overlaps_protected_task(connection: Any, range_start: int, range_end: int) -> bool:
+def _range_overlaps_protected_task(connection: Any, range_start: int, range_end: int, algorithm: str) -> bool:
     row = connection.execute(
         """
         SELECT 1
@@ -1118,14 +1220,19 @@ def _range_overlaps_protected_task(connection: Any, range_start: int, range_end:
         AND range_end >= ?
         LIMIT 1
         """,
-        (PI_ALGORITHM, range_end, range_start),
+        (algorithm, range_end, range_start),
     ).fetchone()
     return row is not None
 
 
-def _build_challenge_samples(range_start: int, range_end: int, challenge_seed: str) -> list[dict[str, int]]:
+def _build_challenge_samples(
+    range_start: int,
+    range_end: int,
+    challenge_seed: str,
+    requested_sample_count: int,
+) -> list[dict[str, int]]:
     length = range_end - range_start + 1
-    sample_count = min(SAMPLE_COUNT, length)
+    sample_count = min(requested_sample_count, length)
     randomizer = random.Random(challenge_seed)
     offsets = sorted(randomizer.sample(range(length), sample_count))
     return [{"position": range_start + offset} for offset in offsets]
@@ -1170,13 +1277,23 @@ def _accept_block_in_connection(
     samples: list[dict[str, Any]],
     signature: str,
     submission_reason: str,
+    validation_ms: int | None = None,
+    params: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if params is None:
+        params = _active_protocol_params(connection)
+    reward = calculate_reward(params)
+    difficulty = calculate_difficulty(params)
     latest_block = connection.execute(
         "SELECT height, block_hash FROM blocks ORDER BY height DESC LIMIT 1"
     ).fetchone()
     next_height = 1 if latest_block is None else latest_block["height"] + 1
     previous_hash = GENESIS_HASH if latest_block is None else latest_block["block_hash"]
     timestamp = utc_now()
+    created_at = parse_iso(task.get("created_at"))
+    total_task_ms = None
+    if created_at is not None:
+        total_task_ms = max(0, round((utc_now_dt() - created_at).total_seconds() * 1000))
 
     block_payload = {
         "algorithm": task["algorithm"],
@@ -1186,11 +1303,12 @@ def _accept_block_in_connection(
         "range_end": task["range_end"],
         "range_start": task["range_start"],
         "result_hash": result_hash,
-        "reward": DEFAULT_REWARD,
+        "reward": reward,
+        "difficulty": difficulty,
         "samples": samples,
         "timestamp": timestamp,
-        "protocol_version": PROTOCOL_VERSION,
-        "validation_mode": VALIDATION_MODE,
+        "protocol_version": params["protocol_version"],
+        "validation_mode": params["validation_mode"],
     }
     if merkle_root:
         block_payload["merkle_root"] = merkle_root
@@ -1200,10 +1318,10 @@ def _accept_block_in_connection(
         """
         INSERT INTO blocks (
             height, previous_hash, miner_id, range_start, range_end, algorithm,
-            result_hash, merkle_root, samples, timestamp, block_hash, reward, task_id,
-            protocol_version, validation_mode
+            result_hash, merkle_root, samples, timestamp, block_hash, reward, difficulty,
+            task_id, protocol_version, validation_mode, total_task_ms, validation_ms
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             next_height,
@@ -1217,10 +1335,13 @@ def _accept_block_in_connection(
             json.dumps(samples),
             timestamp,
             block_hash,
-            DEFAULT_REWARD,
+            reward,
+            difficulty,
             task["task_id"],
-            PROTOCOL_VERSION,
-            VALIDATION_MODE,
+            params["protocol_version"],
+            params["validation_mode"],
+            total_task_ms,
+            validation_ms,
         ),
     )
     connection.execute(
@@ -1233,7 +1354,7 @@ def _accept_block_in_connection(
         INSERT INTO rewards (miner_id, block_height, amount, reason, created_at)
         VALUES (?, ?, ?, 'block accepted', ?)
         """,
-        (miner_id, next_height, DEFAULT_REWARD, timestamp),
+        (miner_id, next_height, reward, timestamp),
     )
     _refresh_trust_score(connection, miner_id)
 
@@ -1249,7 +1370,14 @@ def _accept_block_in_connection(
         "samples": samples,
         "timestamp": timestamp,
         "block_hash": block_hash,
-        "reward": DEFAULT_REWARD,
-        "protocol_version": PROTOCOL_VERSION,
-        "validation_mode": VALIDATION_MODE,
+        "reward": reward,
+        "difficulty": difficulty,
+        "protocol_version": params["protocol_version"],
+        "validation_mode": params["validation_mode"],
+        "total_task_ms": total_task_ms,
+        "validation_ms": validation_ms,
     }
+
+
+def blocks_or_zero(value: Any) -> float:
+    return 0.0 if value is None else float(value)

@@ -4,12 +4,12 @@ MVP funcional de **Proof of Pi**. Un coordinador asigna rangos pequenos de digit
 
 Este proyecto no implementa una blockchain completa. Usa una cadena local de bloques aceptados con `previous_hash` y `block_hash` para preparar una evolucion futura.
 
-## Protocolo v0.6
+## Protocolo v0.8
 
 Parametros actuales:
 
 ```text
-protocol_version = 0.6
+protocol_version = 0.8
 algorithm = bbp_hex_v1
 validation_mode = external_commit_reveal
 required_validator_approvals = 1
@@ -20,6 +20,8 @@ segment_size = 64
 sample_count = 8
 task_expiration_seconds = 600
 max_active_tasks_per_miner = 1
+base_reward = 3.14159
+difficulty = 1.0
 reward_per_block = 3.14159
 penalty_invalid_result = 1
 penalty_duplicate = 3
@@ -28,7 +30,20 @@ cooldown_after_rejections = 3
 cooldown_seconds = 300
 ```
 
-El endpoint `GET /protocol` devuelve estos valores para que mineros y validadores sepan que reglas estan activas.
+El endpoint `GET /protocol` devuelve estos valores para que mineros y validadores sepan que reglas estan activas. Desde v0.8 estos parametros viven en SQLite, en `protocol_params`, para que luego podamos cambiar dificultad sin reescribir el codigo.
+
+La dificultad se calcula con una formula simple y auditable:
+
+```text
+difficulty =
+  (segment_size / 64)
+  * (sample_count / 8)
+  * (log10(max_pi_position) / log10(10000))
+
+reward_per_block = base_reward * difficulty
+```
+
+Cada bloque guarda la dificultad y recompensa usadas al momento de aceptarse.
 
 ## Arquitectura
 
@@ -104,6 +119,7 @@ Comandos del minero:
 python -m miner.client register --name alice
 python -m miner.client mine --once
 python -m miner.client mine --loops 10
+python -m miner.client mine --loops 10 --workers 2
 python -m miner.client stats
 ```
 
@@ -145,7 +161,11 @@ El validador:
 
 ### `GET /protocol`
 
-Devuelve parametros activos del protocolo.
+Devuelve parametros activos del protocolo, incluyendo `base_reward`, `difficulty` y `reward_per_block`.
+
+### `GET /protocol/history`
+
+Devuelve el historial de parametros de protocolo guardados en SQLite. En este MVP solo hay un set activo por defecto, pero la tabla ya prepara el camino para ajustes de dificultad por epoca.
 
 ### `POST /miners/register`
 
@@ -275,7 +295,7 @@ Recibe el resultado firmado del validador.
 
 ### `POST /tasks/submit`
 
-Endpoint heredado para validacion completa del segmento. El minero v0.6 usa `commit` y `reveal`.
+Endpoint heredado para validacion completa del segmento. El minero actual usa `commit` y `reveal`.
 
 ### `GET /blocks`
 
@@ -303,6 +323,24 @@ Consulta datos, reputacion y recompensas simuladas de un minero.
 
 Devuelve estadisticas globales del MVP.
 
+### `GET /stats/performance`
+
+Devuelve metricas de velocidad:
+
+```json
+{
+  "accepted_blocks": 1,
+  "avg_compute_ms": 589.0,
+  "avg_assignment_ms": 1.0,
+  "avg_commit_ms": 2.0,
+  "avg_validation_ms": 4.0,
+  "avg_total_task_ms": 900.0,
+  "pending_validation_jobs": 0,
+  "bbp_digit_cache_hits": 8,
+  "bbp_digit_cache_misses": 64
+}
+```
+
 ## Bloques
 
 Cada bloque aceptado contiene:
@@ -319,8 +357,11 @@ Cada bloque aceptado contiene:
 - `timestamp`
 - `block_hash`
 - `reward`
+- `difficulty`
 - `protocol_version`
 - `validation_mode`
+- `total_task_ms`
+- `validation_ms`
 
 ## Seguridad MVP
 
@@ -347,13 +388,55 @@ Implementado:
 - `trust_score` por minero.
 - Cooldown temporal si acumula demasiadas penalizaciones.
 - Restricciones SQLite para evitar doble bloque por tarea.
+- Cache LRU para digitos BBP.
+- Metricas de performance por tarea, commit, validacion y bloque.
+- Dificultad dinamica inicial basada en tamano de segmento, muestras y posicion maxima.
 
 Limites intencionales:
 
 - No hay consenso distribuido.
 - No hay red P2P.
 - No hay wallet real ni token transferible.
-- La validacion v0.6 es probabilistica por muestras, no una prueba criptografica completa del calculo entero.
+- La validacion v0.8 es probabilistica por muestras, no una prueba criptografica completa del calculo entero.
+
+## Performance
+
+El calculo BBP usa cache LRU en memoria para digitos hexadecimales individuales. Esto acelera validaciones repetidas de samples y auditorias sobre posiciones ya vistas.
+
+Metricas guardadas:
+
+```text
+tasks.assignment_ms
+tasks.compute_ms
+commitments.commit_ms
+validation_jobs.validation_ms
+blocks.total_task_ms
+blocks.validation_ms
+```
+
+El minero mide `compute_ms` localmente y lo envia en `POST /tasks/commit`. El servidor mide asignacion, commit, validacion externa y tiempo total hasta bloque aceptado.
+
+El minero tambien puede calcular segmentos usando procesos paralelos:
+
+```powershell
+python -m miner.client mine --once --workers 2
+```
+
+Para rangos pequenos, `--workers 1` suele ser mas rapido por menor overhead. Para posiciones o segmentos mas pesados, compara con el benchmark antes de cambiar parametros del protocolo.
+
+Benchmark BBP:
+
+```powershell
+python -m app.tools.benchmark_bbp --start 5000 --length 32 --workers 1 --rounds 1
+python -m app.tools.benchmark_bbp --start 5000 --length 32 --workers 2 --rounds 1
+```
+
+Ejemplo observado en este entorno:
+
+```text
+start=5000 length=32 workers=1 avg_ms=311
+start=5000 length=32 workers=2 avg_ms=302
+```
 
 ## Firma Ed25519
 
@@ -439,6 +522,7 @@ commitments
 validation_jobs
 submissions
 blocks
+protocol_params
 rewards
 penalties
 rejected_submissions
@@ -492,6 +576,18 @@ curl http://127.0.0.1:8000/blocks/verify
 curl http://127.0.0.1:8000/stats
 ```
 
+8. Consulta performance:
+
+```powershell
+curl http://127.0.0.1:8000/stats/performance
+```
+
+9. Consulta historial de parametros:
+
+```powershell
+curl http://127.0.0.1:8000/protocol/history
+```
+
 ## Pruebas
 
 ```powershell
@@ -506,7 +602,8 @@ python -m app.tools.reset_db
 
 ## Siguiente Evolucion
 
-- Ajustar `sample_count` segun dificultad/riesgo.
+- Ajuste automatico por epocas segun tiempo promedio de bloque.
+- Politica para subir o bajar `segment_size`, `sample_count` y `max_pi_position`.
 - Agregar slashing/staking simulado.
-- Introducir nodos validadores independientes.
+- Mayor quorum de validadores independientes.
 - Evolucionar la lista local de bloques hacia consenso blockchain.

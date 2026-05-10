@@ -5,6 +5,8 @@ from app.models.schemas import (
     ChainVerificationResponse,
     MinerRegisterRequest,
     MinerResponse,
+    PerformanceStatsResponse,
+    ProtocolParamsResponse,
     ProtocolResponse,
     StatsResponse,
     TaskCommitRequest,
@@ -26,7 +28,9 @@ from app.services.mining import (
     get_block,
     get_blocks,
     get_miner,
+    get_performance_stats,
     get_protocol,
+    get_protocol_history,
     get_stats,
     get_validation_job,
     get_validator,
@@ -98,6 +102,7 @@ def commit_task_endpoint(payload: TaskCommitRequest) -> dict:
         merkle_root=payload.merkle_root,
         signature=payload.signature,
         signed_at=payload.signed_at.isoformat(),
+        compute_ms=payload.compute_ms,
     )
 
 
@@ -166,6 +171,16 @@ def stats() -> dict:
     return get_stats()
 
 
+@router.get("/stats/performance", response_model=PerformanceStatsResponse)
+def performance_stats() -> dict:
+    return get_performance_stats()
+
+
 @router.get("/protocol", response_model=ProtocolResponse)
 def protocol() -> dict:
     return get_protocol()
+
+
+@router.get("/protocol/history", response_model=list[ProtocolParamsResponse])
+def protocol_history() -> list[dict]:
+    return get_protocol_history()

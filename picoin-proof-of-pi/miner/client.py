@@ -2,6 +2,7 @@ import argparse
 import json
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -10,6 +11,7 @@ import requests
 
 from app.core.crypto import hash_result
 from app.core.merkle import merkle_proof, merkle_root
+from app.core.performance import elapsed_ms, now_perf
 from app.core.pi import calculate_pi_segment
 from app.core.signatures import (
     build_commit_signature_payload,
@@ -36,6 +38,22 @@ def load_identity(path: Path) -> dict[str, Any]:
 def save_identity(path: Path, identity: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(identity, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def calculate_single_position(args: tuple[int, str]) -> tuple[int, str]:
+    position, algorithm = args
+    return position, calculate_pi_segment(position, position, algorithm)
+
+
+def calculate_segment_with_workers(range_start: int, range_end: int, algorithm: str, workers: int) -> str:
+    if workers <= 1:
+        return calculate_pi_segment(range_start, range_end, algorithm)
+
+    positions = list(range(range_start, range_end + 1))
+    with ProcessPoolExecutor(max_workers=workers) as executor:
+        results = executor.map(calculate_single_position, ((position, algorithm) for position in positions))
+    digits = {position: digit for position, digit in results}
+    return "".join(digits[position] for position in positions)
 
 
 def register(server_url: str, name: str, identity_path: Path, overwrite: bool) -> dict[str, Any]:
@@ -115,6 +133,7 @@ def commit_result(
     identity: dict[str, Any],
     result_hash: str,
     root: str,
+    compute_ms: int,
 ) -> dict[str, Any]:
     signed_at = utc_now()
     signature_payload = build_commit_signature_payload(
@@ -136,6 +155,7 @@ def commit_result(
             "miner_id": identity["miner_id"],
             "result_hash": result_hash,
             "merkle_root": root,
+            "compute_ms": compute_ms,
             "signature": signature,
             "signed_at": signed_at,
         },
@@ -189,7 +209,7 @@ def reveal_samples(
     return response.json()
 
 
-def mine_once(server_url: str, identity: dict[str, Any]) -> bool:
+def mine_once(server_url: str, identity: dict[str, Any], workers: int) -> bool:
     task = get_task(server_url, identity["miner_id"])
     print(
         "Task assigned: "
@@ -197,14 +217,18 @@ def mine_once(server_url: str, identity: dict[str, Any]) -> bool:
         f"using {task['algorithm']}"
     )
 
-    segment = calculate_pi_segment(task["range_start"], task["range_end"], task["algorithm"])
+    compute_started = now_perf()
+    segment = calculate_segment_with_workers(task["range_start"], task["range_end"], task["algorithm"], workers)
     result_hash = hash_result(segment, task["range_start"], task["range_end"], task["algorithm"])
     root = merkle_root(segment, task["range_start"])
+    compute_ms = elapsed_ms(compute_started)
     print(f"Calculated segment length: {len(segment)}")
+    print(f"Compute time: {compute_ms} ms")
+    print(f"Workers: {workers}")
     print(f"Result hash: {result_hash}")
     print(f"Merkle root: {root}")
 
-    challenge = commit_result(server_url, task, identity, result_hash, root)
+    challenge = commit_result(server_url, task, identity, result_hash, root, compute_ms)
     if not challenge["accepted"]:
         print(f"Commit rejected: {challenge['message']}")
         return False
@@ -245,7 +269,7 @@ def command_mine(args: argparse.Namespace) -> int:
     for index in range(loops):
         attempts += 1
         print(f"Mining attempt {index + 1}/{loops} as {identity['miner_id']}")
-        if mine_once(server_url, identity):
+        if mine_once(server_url, identity, args.workers):
             accepted += 1
         if index + 1 < loops:
             time.sleep(args.sleep)
@@ -278,6 +302,7 @@ def parse_args() -> argparse.Namespace:
     mine_parser.add_argument("--once", action="store_true", help="Mine exactly one task")
     mine_parser.add_argument("--loops", type=int, default=1, help="Number of mining attempts")
     mine_parser.add_argument("--sleep", type=float, default=1.0, help="Seconds between attempts")
+    mine_parser.add_argument("--workers", type=int, default=1, help="Parallel workers for BBP segment calculation")
     mine_parser.set_defaults(func=command_mine)
 
     stats_parser = subparsers.add_parser("stats", help="Show registered miner stats")

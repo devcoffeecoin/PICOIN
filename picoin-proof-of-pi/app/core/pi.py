@@ -1,5 +1,6 @@
 import math
 from decimal import Decimal, getcontext
+from functools import lru_cache
 
 
 HEX_DIGITS = "0123456789ABCDEF"
@@ -80,6 +81,7 @@ def _bbp_series(j: int, n: int) -> float:
     return total % 1.0
 
 
+@lru_cache(maxsize=4096)
 def _bbp_hex_digit(zero_based_position: int) -> str:
     value = (
         4.0 * _bbp_series(1, zero_based_position)
@@ -116,6 +118,16 @@ def calculate_pi_segment(range_start: int, range_end: int, algorithm: str) -> st
     if algorithm == "machin_decimal_v1":
         return calculate_pi_decimal_digits(range_start, range_end)
     raise ValueError(f"unsupported pi algorithm: {algorithm}")
+
+
+def pi_cache_info() -> dict[str, int]:
+    info = _bbp_hex_digit.cache_info()
+    return {
+        "bbp_digit_cache_hits": info.hits,
+        "bbp_digit_cache_misses": info.misses,
+        "bbp_digit_cache_maxsize": info.maxsize or 0,
+        "bbp_digit_cache_currsize": info.currsize,
+    }
 
 
 def calculate_pi_digits(range_start: int, range_end: int) -> str:
