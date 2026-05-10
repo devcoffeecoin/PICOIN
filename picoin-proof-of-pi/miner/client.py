@@ -211,6 +211,11 @@ def mine_once(server_url: str, identity: dict[str, Any]) -> bool:
     print(f"Commit accepted. Revealing {len(challenge['samples'])} samples.")
 
     submission = reveal_samples(server_url, task, identity, segment, root, challenge)
+    if submission["status"] == "validation_pending":
+        print(f"Reveal accepted. Validation job: {submission['validation']['job_id']}")
+        print("Waiting for an external validator to approve the block.")
+        return True
+
     if submission["accepted"]:
         block = submission["block"]
         print(f"Accepted block #{block['height']}: {block['block_hash']}")

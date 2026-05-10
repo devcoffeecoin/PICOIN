@@ -4,14 +4,15 @@ MVP funcional de **Proof of Pi**. Un coordinador asigna rangos pequenos de digit
 
 Este proyecto no implementa una blockchain completa. Usa una cadena local de bloques aceptados con `previous_hash` y `block_hash` para preparar una evolucion futura.
 
-## Protocolo v0.5
+## Protocolo v0.6
 
 Parametros actuales:
 
 ```text
-protocol_version = 0.5
+protocol_version = 0.6
 algorithm = bbp_hex_v1
-validation_mode = commit_reveal
+validation_mode = external_commit_reveal
+required_validator_approvals = 1
 range_assignment_mode = pseudo_random
 max_pi_position = 10000
 range_assignment_max_attempts = 512
@@ -94,7 +95,8 @@ El minero:
 8. Envia un commit firmado a `POST /tasks/commit`.
 9. Recibe posiciones de muestra generadas por el servidor.
 10. Revela solo esas muestras con Merkle proofs en `POST /tasks/reveal`.
-11. Muestra si el bloque fue aceptado o rechazado.
+11. Queda esperando aprobacion de un validador externo.
+12. Cuando el validador aprueba, el servidor registra el bloque.
 
 Comandos del minero:
 
@@ -119,6 +121,25 @@ python -m miner.client register --name alice --overwrite
 ```
 
 La clave privada queda solo en el archivo local de identidad. El servidor solo recibe la `public_key`.
+
+## Correr Un Validador
+
+En otra terminal:
+
+```powershell
+python -m validator.client register --name val1
+python -m validator.client validate --once
+```
+
+El validador:
+
+1. Genera una identidad Ed25519 local en `validator_identity.json`.
+2. Registra el validador con su `public_key`.
+3. Pide un job a `GET /validation/jobs`.
+4. Recalcula con BBP cada posicion revelada.
+5. Verifica cada Merkle proof contra el `merkle_root`.
+6. Firma el resultado.
+7. Envia aprobacion o rechazo a `POST /validation/results`.
 
 ## Endpoints
 
@@ -212,9 +233,49 @@ Revela las muestras pedidas y sus Merkle proofs.
 }
 ```
 
+Respuesta esperada:
+
+```json
+{
+  "accepted": true,
+  "status": "validation_pending",
+  "message": "reveal accepted; waiting for external validator"
+}
+```
+
+### `POST /validators/register`
+
+Registra un validador externo.
+
+```json
+{
+  "name": "val1",
+  "public_key": "ed25519:base64url_public_key"
+}
+```
+
+### `GET /validation/jobs?validator_id=...`
+
+Entrega el siguiente job pendiente a un validador.
+
+### `POST /validation/results`
+
+Recibe el resultado firmado del validador.
+
+```json
+{
+  "job_id": "job_xxxxxxxxxxxxxxxx",
+  "validator_id": "validator_xxxxxxxxxxxxxxxx",
+  "approved": true,
+  "reason": "external validator accepted samples",
+  "signature": "base64url_signature",
+  "signed_at": "2026-05-10T15:02:00+00:00"
+}
+```
+
 ### `POST /tasks/submit`
 
-Endpoint heredado para validacion completa del segmento. El minero v0.5 usa `commit` y `reveal`.
+Endpoint heredado para validacion completa del segmento. El minero v0.6 usa `commit` y `reveal`.
 
 ### `GET /blocks`
 
@@ -270,9 +331,11 @@ Implementado:
 - Identificacion de minero por `miner_id`.
 - Identidad Ed25519 por minero.
 - Firma Ed25519 obligatoria en commit y reveal.
+- Identidad Ed25519 por validador.
+- Firma Ed25519 obligatoria en resultados de validacion.
 - Commit-reveal con `result_hash` y `merkle_root`.
 - Merkle proofs para cada muestra revelada.
-- Recalculo independiente de las posiciones muestreadas.
+- Recalculo independiente por validador externo.
 - Muestras deterministicas generadas despues del commit.
 - Tareas con expiracion.
 - Maximo de una tarea activa por minero.
@@ -290,7 +353,7 @@ Limites intencionales:
 - No hay consenso distribuido.
 - No hay red P2P.
 - No hay wallet real ni token transferible.
-- La validacion v0.5 es probabilistica por muestras, no una prueba criptografica completa del calculo entero.
+- La validacion v0.6 es probabilistica por muestras, no una prueba criptografica completa del calculo entero.
 
 ## Firma Ed25519
 
@@ -308,7 +371,7 @@ signed_at
 
 El servidor reconstruye el mismo mensaje desde la tarea guardada y verifica la firma con la `public_key` registrada. Si alguien cambia el rango, el algoritmo, el hash o intenta enviar el resultado como otro minero, la firma deja de ser valida.
 
-## Commit-Reveal Y Merkle Root
+## Commit-Reveal, Merkle Root Y Validadores
 
 El minero calcula el segmento completo localmente, pero no lo envia al servidor. En su lugar:
 
@@ -336,7 +399,7 @@ El servidor verifica dos cosas por muestra:
 1. El digito coincide con BBP para esa posicion.
 2. La prueba Merkle conecta ese digito con el `merkle_root` comprometido.
 
-Si todas las muestras pasan, se acepta el bloque. Esto evita guardar pi y evita transmitir el segmento completo.
+Si todas las muestras pasan, el validador firma una aprobacion. Solo entonces el coordinador acepta el bloque. Esto evita guardar pi, evita transmitir el segmento completo y separa el rol de validacion del rol de coordinacion.
 
 ## Algoritmo De Pi
 
@@ -370,8 +433,10 @@ SQLite usa estas tablas:
 
 ```text
 miners
+validators
 tasks
 commitments
+validation_jobs
 submissions
 blocks
 rewards
@@ -402,19 +467,26 @@ python -m miner.client register --name alice
 python -m miner.client mine --once
 ```
 
-4. Consulta bloques:
+4. Ejecuta un validador externo:
+
+```powershell
+python -m validator.client register --name val1
+python -m validator.client validate --once
+```
+
+5. Consulta bloques:
 
 ```powershell
 curl http://127.0.0.1:8000/blocks
 ```
 
-5. Verifica la cadena local:
+6. Verifica la cadena local:
 
 ```powershell
 curl http://127.0.0.1:8000/blocks/verify
 ```
 
-6. Consulta estadisticas:
+7. Consulta estadisticas:
 
 ```powershell
 curl http://127.0.0.1:8000/stats
@@ -434,7 +506,6 @@ python -m app.tools.reset_db
 
 ## Siguiente Evolucion
 
-- Separar validadores externos que auditen samples.
 - Ajustar `sample_count` segun dificultad/riesgo.
 - Agregar slashing/staking simulado.
 - Introducir nodos validadores independientes.

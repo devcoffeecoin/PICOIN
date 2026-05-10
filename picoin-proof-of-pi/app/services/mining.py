@@ -11,6 +11,7 @@ from app.core.signatures import (
     build_commit_signature_payload,
     build_reveal_signature_payload,
     build_submission_signature_payload,
+    build_validation_result_signature_payload,
     validate_public_key,
     verify_payload_signature,
 )
@@ -28,6 +29,7 @@ from app.core.settings import (
     RANGE_ASSIGNMENT_MAX_ATTEMPTS,
     RANGE_ASSIGNMENT_MODE,
     PROTOCOL_VERSION,
+    REQUIRED_VALIDATOR_APPROVALS,
     SAMPLE_COUNT,
     TASK_EXPIRATION_SECONDS,
     TASK_SEGMENT_SIZE,
@@ -94,6 +96,33 @@ def get_miner(miner_id: str) -> dict[str, Any] | None:
     return enrich_miner(miner)
 
 
+def register_validator(name: str, public_key: str) -> dict[str, Any]:
+    try:
+        validate_public_key(public_key)
+    except (RuntimeError, ValueError) as exc:
+        raise MiningError(400, str(exc)) from exc
+
+    validator_id = f"validator_{uuid.uuid4().hex[:16]}"
+    with get_connection() as connection:
+        connection.execute(
+            "INSERT INTO validators (validator_id, name, public_key, registered_at) VALUES (?, ?, ?, ?)",
+            (validator_id, name, public_key, utc_now()),
+        )
+        row = connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone()
+    validator = row_to_dict(row)
+    validator["is_banned"] = bool(validator["is_banned"])
+    return validator
+
+
+def get_validator(validator_id: str) -> dict[str, Any] | None:
+    with get_connection() as connection:
+        row = connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone()
+    validator = row_to_dict(row)
+    if validator is not None:
+        validator["is_banned"] = bool(validator["is_banned"])
+    return validator
+
+
 def enrich_miner(miner: dict[str, Any] | None) -> dict[str, Any] | None:
     if miner is None:
         return None
@@ -130,7 +159,7 @@ def create_next_task(miner_id: str) -> dict[str, Any] | None:
         active_task = connection.execute(
             """
             SELECT * FROM tasks
-            WHERE miner_id = ? AND status IN ('assigned', 'committed')
+            WHERE miner_id = ? AND status IN ('assigned', 'committed', 'revealed')
             ORDER BY created_at ASC
             LIMIT 1
             """,
@@ -140,7 +169,7 @@ def create_next_task(miner_id: str) -> dict[str, Any] | None:
             return row_to_dict(active_task)
 
         active_count = connection.execute(
-            "SELECT COUNT(*) AS count FROM tasks WHERE miner_id = ? AND status IN ('assigned', 'committed')",
+            "SELECT COUNT(*) AS count FROM tasks WHERE miner_id = ? AND status IN ('assigned', 'committed', 'revealed')",
             (miner_id,),
         ).fetchone()["count"]
         if active_count >= MAX_ACTIVE_TASKS_PER_MINER:
@@ -610,49 +639,189 @@ def reveal_task(
             )
 
         requested_samples = json.loads(commitment["samples"])
-        validation = _validate_revealed_samples(task, commitment, requested_samples, revealed_samples)
-        validation_payload = {
-            "reason": validation["reason"],
-            "samples": validation["samples"],
-            "challenge_seed": commitment["challenge_seed"],
-            "merkle_root": commitment["merkle_root"],
-        }
-
-        if not validation["accepted"]:
-            connection.execute(
-                "UPDATE tasks SET status = 'rejected', submitted_at = ? WHERE task_id = ?",
-                (utc_now(), task_id),
-            )
+        requested_positions = {sample["position"] for sample in requested_samples}
+        revealed_positions = {sample["position"] for sample in revealed_samples}
+        if requested_positions != revealed_positions:
             return _reject_in_connection(
                 connection,
-                validation["reason"],
+                "revealed samples do not match requested positions",
                 task_id,
                 miner_id,
                 commitment["result_hash"],
-                validation_payload,
+                {"requested_positions": sorted(requested_positions), "revealed_positions": sorted(revealed_positions)},
                 PENALTY_INVALID_RESULT,
                 signature,
                 "",
             )
 
-        block = _accept_block_in_connection(
-            connection=connection,
-            task=task,
-            miner_id=miner_id,
-            result_hash=commitment["result_hash"],
-            merkle_root=commitment["merkle_root"],
-            samples=validation["samples"],
-            signature=signature,
-            submission_reason="commit_reveal accepted",
-        )
+        existing_job = row_to_dict(connection.execute("SELECT * FROM validation_jobs WHERE task_id = ?", (task_id,)).fetchone())
+        if existing_job is None:
+            job_id = f"job_{uuid.uuid4().hex[:16]}"
+            connection.execute(
+                """
+                INSERT INTO validation_jobs (
+                    job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                    samples, status, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                """,
+                (
+                    job_id,
+                    task_id,
+                    miner_id,
+                    commitment["result_hash"],
+                    commitment["merkle_root"],
+                    commitment["challenge_seed"],
+                    json.dumps(revealed_samples),
+                    utc_now(),
+                ),
+            )
+            connection.execute("UPDATE tasks SET status = 'revealed' WHERE task_id = ?", (task_id,))
+        else:
+            job_id = existing_job["job_id"]
 
     return {
         "accepted": True,
-        "status": "accepted",
-        "message": "block accepted",
-        "block": block,
-        "validation": validation_payload,
+        "status": "validation_pending",
+        "message": "reveal accepted; waiting for external validator",
+        "block": None,
+        "validation": {
+            "job_id": job_id,
+            "challenge_seed": commitment["challenge_seed"],
+            "merkle_root": commitment["merkle_root"],
+            "samples": revealed_samples,
+        },
     }
+
+
+def get_validation_job(validator_id: str) -> dict[str, Any] | None:
+    with get_connection() as connection:
+        validator = row_to_dict(connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone())
+        if validator is None:
+            return None
+        if validator["is_banned"]:
+            raise MiningError(403, "validator is banned")
+
+        job = row_to_dict(
+            connection.execute(
+                """
+                SELECT validation_jobs.*, tasks.range_start, tasks.range_end, tasks.algorithm
+                FROM validation_jobs
+                JOIN tasks ON tasks.task_id = validation_jobs.task_id
+                WHERE validation_jobs.status = 'pending'
+                AND (validation_jobs.assigned_validator_id IS NULL OR validation_jobs.assigned_validator_id = ?)
+                ORDER BY validation_jobs.created_at ASC
+                LIMIT 1
+                """,
+                (validator_id,),
+            ).fetchone()
+        )
+        if job is None:
+            return None
+        if job["assigned_validator_id"] is None:
+            connection.execute(
+                "UPDATE validation_jobs SET assigned_validator_id = ? WHERE job_id = ?",
+                (validator_id, job["job_id"]),
+            )
+            job["assigned_validator_id"] = validator_id
+
+    job["samples"] = json.loads(job["samples"])
+    return job
+
+
+def submit_validation_result(
+    job_id: str,
+    validator_id: str,
+    approved: bool,
+    reason: str,
+    signature: str,
+    signed_at: str,
+) -> dict[str, Any]:
+    with get_connection() as connection:
+        job = row_to_dict(
+            connection.execute(
+                """
+                SELECT validation_jobs.*, tasks.range_start, tasks.range_end, tasks.algorithm
+                FROM validation_jobs
+                JOIN tasks ON tasks.task_id = validation_jobs.task_id
+                WHERE validation_jobs.job_id = ?
+                """,
+                (job_id,),
+            ).fetchone()
+        )
+        validator = row_to_dict(connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone())
+        if job is None:
+            raise MiningError(404, "validation job not found")
+        if validator is None:
+            raise MiningError(404, "validator not found")
+        if job["assigned_validator_id"] not in (None, validator_id):
+            raise MiningError(403, "validation job is assigned to another validator")
+        if job["status"] != "pending":
+            return {"accepted": False, "status": job["status"], "message": "validation job already completed", "block": None}
+
+        payload = build_validation_result_signature_payload(
+            job_id=job_id,
+            validator_id=validator_id,
+            task_id=job["task_id"],
+            approved=approved,
+            reason=reason,
+            signed_at=signed_at,
+        )
+        try:
+            signature_valid = verify_payload_signature(validator["public_key"], payload, signature)
+        except (RuntimeError, ValueError):
+            signature_valid = False
+        if not signature_valid:
+            raise MiningError(400, "invalid validator signature")
+
+        task = row_to_dict(connection.execute("SELECT * FROM tasks WHERE task_id = ?", (job["task_id"],)).fetchone())
+        samples = json.loads(job["samples"])
+        if approved:
+            block = _accept_block_in_connection(
+                connection=connection,
+                task=task,
+                miner_id=job["miner_id"],
+                result_hash=job["result_hash"],
+                merkle_root=job["merkle_root"],
+                samples=samples,
+                signature=signature,
+                submission_reason=f"external validation approved by {validator_id}",
+            )
+            connection.execute(
+                """
+                UPDATE validation_jobs
+                SET status = 'approved', assigned_validator_id = ?, result_reason = ?,
+                    validator_signature = ?, completed_at = ?
+                WHERE job_id = ?
+                """,
+                (validator_id, reason, signature, utc_now(), job_id),
+            )
+            connection.execute(
+                "UPDATE validators SET accepted_jobs = accepted_jobs + 1 WHERE validator_id = ?",
+                (validator_id,),
+            )
+            return {"accepted": True, "status": "approved", "message": "block accepted", "block": block}
+
+        connection.execute(
+            "UPDATE tasks SET status = 'rejected', submitted_at = ? WHERE task_id = ?",
+            (utc_now(), job["task_id"]),
+        )
+        connection.execute(
+            """
+            UPDATE validation_jobs
+            SET status = 'rejected', assigned_validator_id = ?, result_reason = ?,
+                validator_signature = ?, completed_at = ?
+            WHERE job_id = ?
+            """,
+            (validator_id, reason, signature, utc_now(), job_id),
+        )
+        connection.execute(
+            "UPDATE validators SET rejected_jobs = rejected_jobs + 1 WHERE validator_id = ?",
+            (validator_id,),
+        )
+        _apply_penalty(connection, job["miner_id"], job["task_id"], PENALTY_INVALID_RESULT, reason)
+
+    return {"accepted": True, "status": "rejected", "message": "validation rejected task", "block": None}
 
 
 def get_blocks() -> list[dict[str, Any]]:
@@ -695,6 +864,7 @@ def get_protocol() -> dict[str, Any]:
         "protocol_version": PROTOCOL_VERSION,
         "algorithm": PI_ALGORITHM,
         "validation_mode": VALIDATION_MODE,
+        "required_validator_approvals": REQUIRED_VALIDATOR_APPROVALS,
         "range_assignment_mode": RANGE_ASSIGNMENT_MODE,
         "max_pi_position": MAX_PI_POSITION,
         "range_assignment_max_attempts": RANGE_ASSIGNMENT_MAX_ATTEMPTS,
@@ -787,7 +957,7 @@ def _expire_assigned_tasks(connection: Any) -> None:
         """
         UPDATE tasks
         SET status = 'expired'
-        WHERE status IN ('assigned', 'committed')
+        WHERE status IN ('assigned', 'committed', 'revealed')
         AND expires_at IS NOT NULL
         AND expires_at <= ?
         """,
@@ -943,7 +1113,7 @@ def _range_overlaps_protected_task(connection: Any, range_start: int, range_end:
         SELECT 1
         FROM tasks
         WHERE algorithm = ?
-        AND status IN ('assigned', 'committed', 'accepted')
+        AND status IN ('assigned', 'committed', 'revealed', 'accepted')
         AND range_start <= ?
         AND range_end >= ?
         LIMIT 1

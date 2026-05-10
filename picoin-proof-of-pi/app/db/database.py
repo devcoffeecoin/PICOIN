@@ -35,6 +35,16 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 is_banned INTEGER NOT NULL DEFAULT 0
             );
 
+            CREATE TABLE IF NOT EXISTS validators (
+                validator_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                public_key TEXT NOT NULL,
+                registered_at TEXT NOT NULL,
+                accepted_jobs INTEGER NOT NULL DEFAULT 0,
+                rejected_jobs INTEGER NOT NULL DEFAULT 0,
+                is_banned INTEGER NOT NULL DEFAULT 0
+            );
+
             CREATE TABLE IF NOT EXISTS tasks (
                 task_id TEXT PRIMARY KEY,
                 miner_id TEXT NOT NULL,
@@ -65,8 +75,8 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 block_hash TEXT NOT NULL UNIQUE,
                 reward REAL NOT NULL,
                 task_id TEXT NOT NULL UNIQUE,
-                protocol_version TEXT NOT NULL DEFAULT '0.5',
-                validation_mode TEXT NOT NULL DEFAULT 'commit_reveal',
+                protocol_version TEXT NOT NULL DEFAULT '0.6',
+                validation_mode TEXT NOT NULL DEFAULT 'external_commit_reveal',
                 FOREIGN KEY(miner_id) REFERENCES miners(miner_id),
                 FOREIGN KEY(task_id) REFERENCES tasks(task_id)
             );
@@ -83,6 +93,25 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(miner_id) REFERENCES miners(miner_id),
                 FOREIGN KEY(task_id) REFERENCES tasks(task_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS validation_jobs (
+                job_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL UNIQUE,
+                miner_id TEXT NOT NULL,
+                result_hash TEXT NOT NULL,
+                merkle_root TEXT NOT NULL,
+                challenge_seed TEXT NOT NULL,
+                samples TEXT NOT NULL,
+                status TEXT NOT NULL,
+                assigned_validator_id TEXT,
+                result_reason TEXT,
+                validator_signature TEXT,
+                created_at TEXT NOT NULL,
+                completed_at TEXT,
+                FOREIGN KEY(miner_id) REFERENCES miners(miner_id),
+                FOREIGN KEY(task_id) REFERENCES tasks(task_id),
+                FOREIGN KEY(assigned_validator_id) REFERENCES validators(validator_id)
             );
 
             CREATE TABLE IF NOT EXISTS submissions (
@@ -131,6 +160,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
             CREATE INDEX IF NOT EXISTS idx_blocks_miner ON blocks(miner_id);
             CREATE INDEX IF NOT EXISTS idx_commitments_miner ON commitments(miner_id);
+            CREATE INDEX IF NOT EXISTS idx_validation_jobs_status ON validation_jobs(status);
             CREATE INDEX IF NOT EXISTS idx_submissions_miner ON submissions(miner_id);
             CREATE INDEX IF NOT EXISTS idx_penalties_miner ON penalties(miner_id);
             """
@@ -142,8 +172,8 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "tasks", "assignment_seed", "TEXT")
         _ensure_column(connection, "tasks", "assignment_mode", "TEXT")
         _ensure_column(connection, "blocks", "merkle_root", "TEXT")
-        _ensure_column(connection, "blocks", "protocol_version", "TEXT NOT NULL DEFAULT '0.5'")
-        _ensure_column(connection, "blocks", "validation_mode", "TEXT NOT NULL DEFAULT 'commit_reveal'")
+        _ensure_column(connection, "blocks", "protocol_version", "TEXT NOT NULL DEFAULT '0.6'")
+        _ensure_column(connection, "blocks", "validation_mode", "TEXT NOT NULL DEFAULT 'external_commit_reveal'")
 
 
 def _ensure_column(connection: sqlite3.Connection, table_name: str, column_name: str, definition: str) -> None:

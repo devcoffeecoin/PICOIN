@@ -7,3 +7,4 @@ venv/
 data/
 .env
 miner_identity.json
+validator_identity.json

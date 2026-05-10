@@ -156,3 +156,22 @@ def build_reveal_signature_payload(
         "signed_at": signed_at,
         "task_id": task_id,
     }
+
+
+def build_validation_result_signature_payload(
+    *,
+    job_id: str,
+    validator_id: str,
+    task_id: str,
+    approved: bool,
+    reason: str,
+    signed_at: str,
+) -> dict[str, Any]:
+    return {
+        "approved": approved,
+        "job_id": job_id,
+        "reason": reason,
+        "signed_at": signed_at,
+        "task_id": task_id,
+        "validator_id": validator_id,
+    }

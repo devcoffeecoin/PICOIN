@@ -22,6 +22,21 @@ class MinerResponse(BaseModel):
     total_rewards: float = 0.0
 
 
+class ValidatorRegisterRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=80)
+    public_key: str = Field(..., min_length=1, max_length=256)
+
+
+class ValidatorResponse(BaseModel):
+    validator_id: str
+    name: str
+    public_key: str
+    registered_at: datetime
+    accepted_jobs: int = 0
+    rejected_jobs: int = 0
+    is_banned: bool = False
+
+
 class TaskResponse(BaseModel):
     task_id: str
     miner_id: str
@@ -121,6 +136,7 @@ class ProtocolResponse(BaseModel):
     protocol_version: str
     algorithm: str
     validation_mode: str
+    required_validator_approvals: int
     range_assignment_mode: str
     max_pi_position: int
     range_assignment_max_attempts: int
@@ -134,6 +150,38 @@ class ProtocolResponse(BaseModel):
     penalty_invalid_signature: int
     cooldown_after_rejections: int
     cooldown_seconds: int
+
+
+class ValidationJobResponse(BaseModel):
+    job_id: str
+    task_id: str
+    miner_id: str
+    range_start: int
+    range_end: int
+    algorithm: str
+    result_hash: str
+    merkle_root: str
+    challenge_seed: str
+    samples: list[dict[str, Any]]
+    status: str
+    assigned_validator_id: str | None = None
+    created_at: datetime
+
+
+class ValidationResultRequest(BaseModel):
+    job_id: str
+    validator_id: str
+    approved: bool
+    reason: str = Field(..., min_length=1, max_length=512)
+    signature: str = Field(..., min_length=1, max_length=256)
+    signed_at: datetime
+
+
+class ValidationResultResponse(BaseModel):
+    accepted: bool
+    status: str
+    message: str
+    block: "BlockResponse | None" = None
 
 
 class ChainVerificationIssue(BaseModel):

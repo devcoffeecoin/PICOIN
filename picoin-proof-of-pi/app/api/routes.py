@@ -13,6 +13,11 @@ from app.models.schemas import (
     TaskResponse,
     TaskSubmitRequest,
     TaskSubmitResponse,
+    ValidationJobResponse,
+    ValidationResultRequest,
+    ValidationResultResponse,
+    ValidatorRegisterRequest,
+    ValidatorResponse,
 )
 from app.services.mining import (
     MiningError,
@@ -23,8 +28,12 @@ from app.services.mining import (
     get_miner,
     get_protocol,
     get_stats,
+    get_validation_job,
+    get_validator,
     register_miner,
+    register_validator,
     reveal_task,
+    submit_validation_result,
     submit_task,
     verify_chain,
 )
@@ -39,6 +48,22 @@ def register_miner_endpoint(payload: MinerRegisterRequest) -> dict:
         return register_miner(payload.name, payload.public_key)
     except MiningError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post("/validators/register", response_model=ValidatorResponse, status_code=201)
+def register_validator_endpoint(payload: ValidatorRegisterRequest) -> dict:
+    try:
+        return register_validator(payload.name, payload.public_key)
+    except MiningError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.get("/validators/{validator_id}", response_model=ValidatorResponse)
+def validator_by_id(validator_id: str) -> dict:
+    validator = get_validator(validator_id)
+    if validator is None:
+        raise HTTPException(status_code=404, detail="validator not found")
+    return validator
 
 
 @router.get("/tasks/next", response_model=TaskResponse)
@@ -85,6 +110,29 @@ def reveal_task_endpoint(payload: TaskRevealRequest) -> dict:
         signature=payload.signature,
         signed_at=payload.signed_at.isoformat(),
     )
+
+
+@router.get("/validation/jobs", response_model=ValidationJobResponse | None)
+def validation_job(validator_id: str = Query(..., min_length=1)) -> dict | None:
+    try:
+        return get_validation_job(validator_id)
+    except MiningError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post("/validation/results", response_model=ValidationResultResponse)
+def validation_result(payload: ValidationResultRequest) -> dict:
+    try:
+        return submit_validation_result(
+            job_id=payload.job_id,
+            validator_id=payload.validator_id,
+            approved=payload.approved,
+            reason=payload.reason,
+            signature=payload.signature,
+            signed_at=payload.signed_at.isoformat(),
+        )
+    except MiningError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.get("/blocks", response_model=list[BlockResponse])
