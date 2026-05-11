@@ -7,7 +7,7 @@ DATA_DIR = BASE_DIR / "data"
 DATABASE_PATH = DATA_DIR / "picoin.sqlite3"
 
 PROJECT_NAME = "picoin-proof-of-pi"
-PROTOCOL_VERSION = "0.12"
+PROTOCOL_VERSION = "0.14"
 NETWORK_ID = os.getenv("PICOIN_NETWORK", "local").strip().lower() or "local"
 VALIDATION_MODE = "external_commit_reveal"
 REQUIRED_VALIDATOR_APPROVALS = 2

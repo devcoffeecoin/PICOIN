@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Picoin Dashboard</title>
+    <link rel="stylesheet" href="/dashboard/static/dashboard.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">picoin-proof-of-pi</p>
+        <h1>Dashboard Local</h1>
+      </div>
+      <div class="topbar-actions">
+        <span id="networkBadge" class="badge">network</span>
+        <button id="refreshButton" type="button">Actualizar</button>
+      </div>
+    </header>
+
+    <main class="layout">
+      <section class="metric-grid" aria-label="metricas principales">
+        <article class="metric">
+          <span>Bloques</span>
+          <strong id="metricBlocks">0</strong>
+        </article>
+        <article class="metric">
+          <span>Dificultad</span>
+          <strong id="metricDifficulty">0</strong>
+        </article>
+        <article class="metric">
+          <span>Emision minada</span>
+          <strong id="metricMinted">0</strong>
+        </article>
+        <article class="metric">
+          <span>Tiempo promedio</span>
+          <strong id="metricAvgTime">0 ms</strong>
+        </article>
+        <article class="metric">
+          <span>Validadores</span>
+          <strong id="metricValidators">0</strong>
+        </article>
+        <article class="metric">
+          <span>Auditoria</span>
+          <strong id="metricAudit">-</strong>
+        </article>
+      </section>
+
+      <section class="panel wide">
+        <div class="panel-header">
+          <h2>Explorador de bloques</h2>
+          <span id="chainStatus" class="status-pill">sin datos</span>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Height</th>
+                <th>Minero</th>
+                <th>Rango</th>
+                <th>Reward</th>
+                <th>Dificultad</th>
+                <th>Hash</th>
+              </tr>
+            </thead>
+            <tbody id="blocksTable"></tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Validadores</h2>
+          <span id="eligibleCount" class="status-pill">0 elegibles</span>
+        </div>
+        <div id="validatorsList" class="validator-list"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Faucet</h2>
+          <span id="faucetStatus" class="status-pill">local</span>
+        </div>
+        <form id="faucetForm" class="form-grid">
+          <label>
+            Cuenta
+            <input id="faucetAccount" name="account_id" placeholder="miner_..." autocomplete="off" required />
+          </label>
+          <label>
+            Tipo
+            <select id="faucetType" name="account_type">
+              <option value="miner">miner</option>
+              <option value="validator">validator</option>
+            </select>
+          </label>
+          <label>
+            Monto
+            <input id="faucetAmount" name="amount" type="number" min="0.000001" step="0.000001" value="10" required />
+          </label>
+          <button type="submit">Enviar faucet</button>
+        </form>
+        <pre id="faucetResult" class="result-box"></pre>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Dificultad</h2>
+          <span id="difficultyAction" class="status-pill">wait</span>
+        </div>
+        <div class="difficulty-grid">
+          <div>
+            <span>Altura actual</span>
+            <strong id="difficultyHeight">0</strong>
+          </div>
+          <div>
+            <span>Bloques restantes</span>
+            <strong id="difficultyRemaining">0</strong>
+          </div>
+          <div>
+            <span>Promedio epoca</span>
+            <strong id="difficultyAverage">-</strong>
+          </div>
+          <div>
+            <span>Objetivo</span>
+            <strong id="difficultyTarget">-</strong>
+          </div>
+        </div>
+        <div class="meter">
+          <span id="epochProgress"></span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Performance</h2>
+          <span id="cacheStats" class="status-pill">cache</span>
+        </div>
+        <div id="performanceBars" class="bars"></div>
+      </section>
+
+      <section class="panel wide">
+        <div class="panel-header">
+          <h2>Auditoria economica</h2>
+          <span id="auditStatus" class="status-pill">pendiente</span>
+        </div>
+        <div id="auditSummary" class="audit-summary"></div>
+      </section>
+    </main>
+
+    <script src="/dashboard/static/dashboard.js"></script>
+  </body>
+</html>

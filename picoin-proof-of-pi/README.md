@@ -4,12 +4,12 @@ MVP funcional de **Proof of Pi**. Un coordinador asigna rangos pequenos de digit
 
 Este proyecto no implementa una blockchain completa. Usa una cadena local de bloques aceptados con `previous_hash` y `block_hash` para preparar una evolucion futura.
 
-## Protocolo v0.12
+## Protocolo v0.14
 
 Parametros actuales:
 
 ```text
-protocol_version = 0.12
+protocol_version = 0.14
 network_id = local
 algorithm = bbp_hex_v1
 validation_mode = external_commit_reveal
@@ -40,7 +40,7 @@ faucet_rate_limit = 3 credits / account / hour
 validator_selection_mode = weighted_reputation_stake_rotation
 ```
 
-El endpoint `GET /protocol` devuelve estos valores para que mineros y validadores sepan que reglas estan activas. Desde v0.12 estos parametros viven en SQLite, en `protocol_params`, y pueden cambiar automaticamente por epocas. `network_id` viene de `PICOIN_NETWORK`; por defecto es `local`.
+El endpoint `GET /protocol` devuelve estos valores para que mineros y validadores sepan que reglas estan activas. Desde v0.14 estos parametros viven en SQLite, en `protocol_params`, y pueden cambiar automaticamente por epocas. `network_id` viene de `PICOIN_NETWORK`; por defecto es `local`.
 
 La dificultad se calcula con una formula simple y auditable:
 
@@ -82,6 +82,7 @@ picoin-proof-of-pi/
     db/           SQLite y migraciones simples
     models/       Schemas Pydantic
     services/     Tareas, bloques, recompensas, penalizaciones
+    web/          Dashboard local estatico servido por FastAPI
   validator/      Verificacion independiente del Proof of Pi
   miner/          Cliente minero ejecutable por usuarios
   tests/          Pruebas basicas del calculo y validador
@@ -104,15 +105,72 @@ pip install -r requirements.txt
 ## Correr El Servidor
 
 ```powershell
-uvicorn app.main:app --reload
+.\.venv\Scripts\python.exe -m picoin node start --reload
 ```
 
 La API queda en:
 
 - `http://127.0.0.1:8000`
 - Docs interactivas: `http://127.0.0.1:8000/docs`
+- Dashboard local: `http://127.0.0.1:8000/dashboard`
 
 La base SQLite se crea automaticamente en `data/picoin.sqlite3`.
+
+## Dashboard Local
+
+Desde v0.14, el nodo sirve un panel web operativo en:
+
+```text
+http://127.0.0.1:8000/dashboard
+```
+
+El dashboard consume la API REST del mismo nodo y muestra:
+
+- Explorador de bloques aceptados con height, minero, rango, recompensa, dificultad y hash.
+- Estado de validadores, incluyendo reputacion, stake, score de seleccion, votos recientes y recompensas.
+- Faucet visual para acreditar balances demo a mineros o validadores en red local.
+- Metricas de dificultad, progreso de epoca y preview de retarget.
+- Metricas de performance por asignacion, compute, commit, validacion y total.
+- Resumen de auditoria economica y estado de integridad de la cadena local.
+
+## CLI Nodo Local
+
+Desde v0.13, Picoin incluye un CLI local unificado:
+
+```powershell
+.\.venv\Scripts\python.exe -m picoin --version
+.\.venv\Scripts\python.exe -m picoin node start --reload
+.\.venv\Scripts\python.exe -m picoin node status
+.\.venv\Scripts\python.exe -m picoin node audit
+.\.venv\Scripts\python.exe -m picoin node protocol
+```
+
+El CLI tambien envuelve minero, validador y testnet:
+
+```powershell
+.\.venv\Scripts\python.exe -m picoin miner register --name alice
+.\.venv\Scripts\python.exe -m picoin miner mine --once
+.\.venv\Scripts\python.exe -m picoin validator register --name val1
+.\.venv\Scripts\python.exe -m picoin validator validate --once
+.\.venv\Scripts\python.exe -m picoin testnet reset
+.\.venv\Scripts\python.exe -m picoin testnet bootstrap
+.\.venv\Scripts\python.exe -m picoin testnet cycle
+```
+
+Config local opcional:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Variables soportadas:
+
+```text
+PICOIN_NETWORK=local
+PICOIN_HOST=127.0.0.1
+PICOIN_PORT=8000
+PICOIN_SERVER=http://127.0.0.1:8000
+```
 
 ## Correr Un Minero
 
@@ -656,7 +714,7 @@ Limites intencionales:
 - No hay consenso distribuido.
 - No hay red P2P.
 - No hay wallet transferible entre usuarios; el ledger solo registra emision, recompensas, stake simulado y slashing.
-- La validacion v0.12 es probabilistica por muestras, no una prueba criptografica completa del calculo entero.
+- La validacion actual es probabilistica por muestras, no una prueba criptografica completa del calculo entero.
 
 ## Performance
 
@@ -949,7 +1007,6 @@ python -m app.tools.reset_db
 ## Siguiente Evolucion
 
 - Ajustar el tamano de epoca y objetivo de bloque con benchmarks reales.
-- Crear dashboard local de testnet.
 - Agregar protecciones de entorno para desactivar faucet fuera de testnet.
 - Crear scripts equivalentes para Linux/macOS.
 - Evolucionar la lista local de bloques hacia consenso blockchain.
