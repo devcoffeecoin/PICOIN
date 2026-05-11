@@ -6,6 +6,7 @@ from typing import Any
 
 from app.core.crypto import canonical_json, hash_block, hash_result, sha256_text
 from app.core.difficulty import calculate_difficulty, calculate_reward, propose_retarget_params
+from app.services.difficulty_service import DifficultyService
 from app.core.merkle import verify_merkle_proof
 from app.core.performance import elapsed_ms, now_perf
 from app.core.pi import calculate_pi_segment
@@ -3139,15 +3140,16 @@ def _build_challenge_samples(
 
 
 def _retarget_epoch_rows(connection: Any, last_height: int) -> list[Any]:
+    # Aumentamos el límite de 5 a 10 para soportar la ventana SMA del DifficultyService
     return connection.execute(
         """
-        SELECT height, COALESCE(total_task_ms, ?) AS total_task_ms
+        SELECT height, range_start, COALESCE(total_task_ms, ?) AS total_task_ms
         FROM blocks
         WHERE height > ?
         ORDER BY height ASC
-        LIMIT ?
+        LIMIT 10
         """,
-        (RETARGET_TARGET_BLOCK_MS, last_height, RETARGET_EPOCH_BLOCKS),
+        (RETARGET_TARGET_BLOCK_MS, last_height),
     ).fetchall()
 
 
@@ -3161,16 +3163,18 @@ def _retarget_preview(connection: Any, force: bool = False) -> dict[str, Any]:
     params = _active_protocol_params(connection)
     epoch_rows = _retarget_epoch_rows(connection, last_height)
     epoch_count = len(epoch_rows)
-    average_block_ms = _average_epoch_ms(epoch_rows) if epoch_rows else None
-    ready = bool(epoch_rows) and (force or epoch_count >= RETARGET_EPOCH_BLOCKS)
+    # El trigger de preparación ahora depende de la ventana SMA del servicio (10 bloques)
+    ready = bool(epoch_rows) and (force or epoch_count >= DifficultyService.SMA_WINDOW)
     next_params = dict(params)
     meta = {
         "action": "wait",
         "reason": "not enough accepted blocks for retarget",
         "adjustment_factor": 1.0,
     }
-    if ready and average_block_ms is not None:
-        next_params, meta = propose_retarget_params(params, average_block_ms)
+    if ready:
+        # Convertimos las filas de SQLite a diccionarios para el servicio
+        history = [dict(row) for row in epoch_rows]
+        next_params, meta = DifficultyService.calculate_next_difficulty(history, params)
 
     status = "ready" if ready else "waiting"
     if not epoch_rows:
