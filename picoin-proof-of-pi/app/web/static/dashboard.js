@@ -263,9 +263,12 @@ function renderAudit() {
     <div class="audit-box"><span>Balances esperados</span><strong>${fmt(state.audit.supply.expected_total_balances, 5)}</strong></div>
     <div class="audit-box"><span>Balances actuales</span><strong>${fmt(state.audit.supply.actual_total_balances, 5)}</strong></div>
     <div class="audit-box"><span>Minted rewards</span><strong>${fmt(state.audit.rewards.total_minted_rewards, 5)}</strong></div>
+    <div class="audit-box"><span>Audit rewards</span><strong>${fmt(state.audit.rewards.audit_reward_total, 5)}</strong></div>
     <div class="audit-box"><span>Estado</span><strong>${issueSummary}</strong></div>
     <div class="audit-box"><span>Retro audits</span><strong>${fmt(state.retroAudits.length, 0)}</strong></div>
-    <div class="audit-box"><span>Ultima retro</span><strong>${latestRetroAudit ? `#${latestRetroAudit.block_height} ${latestRetroAudit.passed ? "OK" : "Fail"}` : "-"}</strong></div>
+    <div class="audit-box"><span>Ultima retro</span><strong>${latestRetroAudit ? `#${latestRetroAudit.block_height} ${latestRetroAudit.passed ? "OK" : "Fraud"}` : "-"}</strong></div>
+    <div class="audit-box"><span>Cadencia</span><strong>${fmt(state.protocol.retroactive_audit_interval_blocks, 0)} bloques</strong></div>
+    <div class="audit-box"><span>Reward auditoria</span><strong>${fmt(state.protocol.retroactive_audit_reward_per_audit, 5)}</strong></div>
   `;
 }
 

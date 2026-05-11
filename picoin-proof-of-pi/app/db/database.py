@@ -148,6 +148,9 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 validation_mode TEXT NOT NULL DEFAULT 'external_commit_reveal',
                 total_task_ms INTEGER,
                 validation_ms INTEGER,
+                fraudulent INTEGER NOT NULL DEFAULT 0,
+                fraud_reason TEXT,
+                fraud_detected_at TEXT,
                 FOREIGN KEY(miner_id) REFERENCES miners(miner_id),
                 FOREIGN KEY(task_id) REFERENCES tasks(task_id),
                 FOREIGN KEY(protocol_params_id) REFERENCES protocol_params(id)
@@ -279,6 +282,10 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 actual_hash TEXT NOT NULL,
                 passed INTEGER NOT NULL,
                 reason TEXT NOT NULL,
+                automatic INTEGER NOT NULL DEFAULT 0,
+                reward REAL NOT NULL DEFAULT 0,
+                reward_account_id TEXT,
+                fraud_detected INTEGER NOT NULL DEFAULT 0,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(block_height) REFERENCES blocks(height)
             );
@@ -318,6 +325,13 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "blocks", "validation_ms", "INTEGER")
         _ensure_column(connection, "blocks", "protocol_version", "TEXT NOT NULL DEFAULT '0.16'")
         _ensure_column(connection, "blocks", "validation_mode", "TEXT NOT NULL DEFAULT 'external_commit_reveal'")
+        _ensure_column(connection, "blocks", "fraudulent", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "blocks", "fraud_reason", "TEXT")
+        _ensure_column(connection, "blocks", "fraud_detected_at", "TEXT")
+        _ensure_column(connection, "retroactive_audits", "automatic", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "retroactive_audits", "reward", "REAL NOT NULL DEFAULT 0")
+        _ensure_column(connection, "retroactive_audits", "reward_account_id", "TEXT")
+        _ensure_column(connection, "retroactive_audits", "fraud_detected", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "commitments", "commit_ms", "INTEGER")
         _ensure_column(connection, "validation_jobs", "validation_ms", "INTEGER")
         _ensure_default_protocol_params(connection)

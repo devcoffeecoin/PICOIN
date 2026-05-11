@@ -26,6 +26,9 @@ from app.core.settings import (
     FAUCET_MAX_AMOUNT,
     FAUCET_RATE_LIMIT_MAX_REQUESTS,
     FAUCET_RATE_LIMIT_WINDOW_SECONDS,
+    FRAUD_COOLDOWN_SECONDS,
+    FRAUD_MINER_PENALTY_POINTS,
+    FRAUD_VALIDATOR_INVALID_RESULTS,
     GENESIS_ACCOUNT_ID,
     GENESIS_SUPPLY,
     MIN_VALIDATOR_STAKE,
@@ -35,6 +38,10 @@ from app.core.settings import (
     PENALTY_INVALID_SIGNATURE,
     PROJECT_NAME,
     PROTOCOL_VERSION,
+    RETROACTIVE_AUDIT_INTERVAL_BLOCKS,
+    RETROACTIVE_AUDIT_REWARD_ACCOUNT_ID,
+    RETROACTIVE_AUDIT_REWARD_PERCENT_OF_BLOCK,
+    RETROACTIVE_AUDIT_SAMPLE_MULTIPLIER,
     RETARGET_EPOCH_BLOCKS,
     RETARGET_TARGET_BLOCK_MS,
     RETARGET_TOLERANCE,
@@ -490,6 +497,9 @@ def submit_task(
             "protocol_params_id": params["id"],
             "protocol_version": params["protocol_version"],
             "validation_mode": params["validation_mode"],
+            "fraudulent": False,
+            "fraud_reason": None,
+            "fraud_detected_at": None,
         }
         block_hash = hash_block(block_payload)
 
@@ -545,6 +555,7 @@ def submit_task(
         )
         _refresh_trust_score(connection, miner_id)
         _maybe_retarget_after_block(connection, next_height)
+        _maybe_run_scheduled_retroactive_audit(connection, next_height)
 
         block = {
             "height": next_height,
@@ -1108,6 +1119,13 @@ def get_stats() -> dict[str, Any]:
             WHERE entry_type = 'validator_reward'
             """
         ).fetchone()["rewards"]
+        audit_rewards = connection.execute(
+            """
+            SELECT COALESCE(SUM(amount), 0) AS rewards
+            FROM ledger_entries
+            WHERE entry_type = 'retroactive_audit_reward'
+            """
+        ).fetchone()["rewards"]
         rejected = connection.execute("SELECT COUNT(*) AS count FROM submissions WHERE accepted = 0").fetchone()["count"]
         latest = connection.execute("SELECT block_hash FROM blocks ORDER BY height DESC LIMIT 1").fetchone()
         supply = _supply_snapshot(connection)
@@ -1120,7 +1138,11 @@ def get_stats() -> dict[str, Any]:
         "rejected_submissions": rejected,
         "total_rewards": blocks["rewards"],
         "total_validator_rewards": round(float(validator_rewards), 8),
-        "total_minted_rewards": round(float(blocks["rewards"]) + float(validator_rewards), 8),
+        "total_audit_rewards": round(float(audit_rewards), 8),
+        "total_minted_rewards": round(
+            float(blocks["rewards"]) + float(validator_rewards) + float(audit_rewards),
+            8,
+        ),
         "circulating_supply": supply["circulating_supply"],
         "genesis_balance": supply["genesis_balance"],
         "latest_block_hash": GENESIS_HASH if latest is None else latest["block_hash"],
@@ -1330,6 +1352,10 @@ def get_full_economic_audit() -> dict[str, Any]:
             connection,
             "SELECT COALESCE(SUM(amount), 0) AS total FROM ledger_entries WHERE entry_type = 'validator_reward'",
         )
+        audit_rewards = _sum_query(
+            connection,
+            "SELECT COALESCE(SUM(amount), 0) AS total FROM ledger_entries WHERE entry_type = 'retroactive_audit_reward'",
+        )
         reward_rows = connection.execute(
             "SELECT COUNT(*) AS count, COALESCE(SUM(amount), 0) AS total FROM rewards"
         ).fetchone()
@@ -1361,7 +1387,7 @@ def get_full_economic_audit() -> dict[str, Any]:
             """
             SELECT COALESCE(SUM(amount), 0) AS total
             FROM ledger_entries
-            WHERE entry_type = 'validator_slash'
+            WHERE entry_type IN ('validator_slash', 'validator_fraud_slash')
             AND account_type = 'validator'
             """,
         )
@@ -1370,26 +1396,26 @@ def get_full_economic_audit() -> dict[str, Any]:
             """
             SELECT COALESCE(SUM(amount), 0) AS total
             FROM ledger_entries
-            WHERE entry_type = 'validator_slash'
+            WHERE entry_type IN ('validator_slash', 'validator_fraud_slash')
             AND account_type = 'genesis'
             """,
         )
 
-    expected_total_balances = round(GENESIS_SUPPLY + block_rewards + validator_rewards, 8)
+    expected_total_balances = round(GENESIS_SUPPLY + block_rewards + validator_rewards + audit_rewards, 8)
     expected_ledger_total = expected_total_balances
     expected_validator_stake_locked = round(ledger_validator_stake_locks + ledger_validator_slashes, 8)
 
     _audit_equal(
         issues,
         code="total_balances_mismatch",
-        message="sum(balances) must equal genesis supply plus minted miner and validator rewards",
+        message="sum(balances) must equal genesis supply plus minted miner, validator and audit rewards",
         expected=expected_total_balances,
         actual=actual_total_balances,
     )
     _audit_equal(
         issues,
         code="ledger_total_mismatch",
-        message="sum(ledger_entries.amount) must equal genesis supply plus minted miner and validator rewards",
+        message="sum(ledger_entries.amount) must equal genesis supply plus minted miner, validator and audit rewards",
         expected=expected_ledger_total,
         actual=ledger_total_amount,
     )
@@ -1477,7 +1503,8 @@ def get_full_economic_audit() -> dict[str, Any]:
             "accepted_blocks": accepted_blocks,
             "block_reward_total": block_rewards,
             "validator_reward_total": validator_rewards,
-            "total_minted_rewards": round(block_rewards + validator_rewards, 8),
+            "audit_reward_total": audit_rewards,
+            "total_minted_rewards": round(block_rewards + validator_rewards + audit_rewards, 8),
             "reward_rows": reward_count,
             "rewards_table_total": rewards_table_total,
             "ledger_block_reward_total": ledger_block_rewards,
@@ -1705,77 +1732,11 @@ def get_retroactive_audits(limit: int = 20) -> list[dict[str, Any]]:
 
 def run_retroactive_audit(block_height: int | None = None, sample_multiplier: int = 2) -> dict[str, Any]:
     with get_connection() as connection:
-        if block_height is None:
-            row = connection.execute(
-                "SELECT * FROM blocks ORDER BY RANDOM() LIMIT 1"
-            ).fetchone()
-        else:
-            row = connection.execute(
-                "SELECT * FROM blocks WHERE height = ?",
-                (block_height,),
-            ).fetchone()
-        block = _decode_block(row_to_dict(row))
-        if block is None:
-            raise MiningError(404, "block not found for retroactive audit")
-
-        params = _protocol_params_for_block(connection, block)
-        base_samples = int(params["sample_count"])
-        sample_count = min(block["range_end"] - block["range_start"] + 1, base_samples * sample_multiplier)
-        timestamp = utc_now()
-        audit_seed = sha256_text(
-            canonical_json(
-                {
-                    "audit_id": uuid.uuid4().hex,
-                    "block_hash": block["block_hash"],
-                    "block_height": block["height"],
-                    "created_at": timestamp,
-                    "sample_count": sample_count,
-                }
-            )
-        )
-        segment = calculate_pi_segment(block["range_start"], block["range_end"], block["algorithm"])
-        actual_hash = hash_result(segment, block["range_start"], block["range_end"], block["algorithm"])
-        requested_samples = _build_challenge_samples(
-            block["range_start"],
-            block["range_end"],
-            audit_seed,
-            sample_count,
-        )
-        samples = [
-            {
-                "position": sample["position"],
-                "digit": segment[sample["position"] - block["range_start"]],
-            }
-            for sample in requested_samples
-        ]
-        passed = actual_hash == block["result_hash"]
-        reason = "accepted" if passed else "result_hash mismatch"
-        cursor = connection.execute(
-            """
-            INSERT INTO retroactive_audits (
-                block_height, block_hash, audit_seed, sample_count, samples,
-                expected_hash, actual_hash, passed, reason, created_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                block["height"],
-                block["block_hash"],
-                audit_seed,
-                sample_count,
-                json.dumps(samples),
-                block["result_hash"],
-                actual_hash,
-                int(passed),
-                reason,
-                timestamp,
-            ),
-        )
-        audit = row_to_dict(
-            connection.execute(
-                "SELECT * FROM retroactive_audits WHERE id = ?",
-                (cursor.lastrowid,),
-            ).fetchone()
+        audit = _run_retroactive_audit_in_connection(
+            connection,
+            block_height=block_height,
+            sample_multiplier=sample_multiplier,
+            automatic=False,
         )
 
     decoded = _decode_retroactive_audit(audit)
@@ -1873,6 +1834,16 @@ def _protocol_payload(params: dict[str, Any]) -> dict[str, Any]:
         "reward_per_block": calculate_reward(params),
         "validator_reward_percent": VALIDATOR_REWARD_PERCENT_OF_BLOCK,
         "validator_reward_pool_per_block": calculate_validator_reward_pool(params),
+        "retroactive_audit_interval_blocks": RETROACTIVE_AUDIT_INTERVAL_BLOCKS,
+        "retroactive_audit_sample_multiplier": RETROACTIVE_AUDIT_SAMPLE_MULTIPLIER,
+        "retroactive_audit_reward_percent": RETROACTIVE_AUDIT_REWARD_PERCENT_OF_BLOCK,
+        "retroactive_audit_reward_per_audit": round(
+            calculate_reward(params) * RETROACTIVE_AUDIT_REWARD_PERCENT_OF_BLOCK,
+            8,
+        ),
+        "fraud_miner_penalty_points": FRAUD_MINER_PENALTY_POINTS,
+        "fraud_validator_invalid_results": FRAUD_VALIDATOR_INVALID_RESULTS,
+        "fraud_cooldown_seconds": FRAUD_COOLDOWN_SECONDS,
         "faucet_enabled": NETWORK_ID in FAUCET_ALLOWED_NETWORKS,
         "validator_selection_mode": VALIDATOR_SELECTION_MODE,
         "penalty_invalid_result": PENALTY_INVALID_RESULT,
@@ -2416,7 +2387,7 @@ def _retarget_events(connection: Any, limit: int) -> list[dict[str, Any]]:
 def _retroactive_audit_events(connection: Any, limit: int) -> list[dict[str, Any]]:
     rows = connection.execute(
         """
-        SELECT id, block_height, sample_count, passed, reason, created_at
+        SELECT id, block_height, sample_count, passed, reason, automatic, reward, fraud_detected, created_at
         FROM retroactive_audits
         ORDER BY id DESC
         LIMIT ?
@@ -2427,13 +2398,19 @@ def _retroactive_audit_events(connection: Any, limit: int) -> list[dict[str, Any
         _event(
             event_id=f"retro_audit:{row['id']}",
             event_type="retroactive_audit",
-            title="Auditoria retroactiva",
+            title="Auditoria retroactiva automatica" if row["automatic"] else "Auditoria retroactiva",
             message=f"bloque {row['block_height']} con {row['sample_count']} samples: {row['reason']}",
             severity="info" if row["passed"] else "bad",
             created_at=row["created_at"],
             related_id=str(row["id"]),
             block_height=int(row["block_height"]),
-            metadata={"sample_count": row["sample_count"], "passed": bool(row["passed"])},
+            metadata={
+                "sample_count": row["sample_count"],
+                "passed": bool(row["passed"]),
+                "automatic": bool(row["automatic"]),
+                "reward": row["reward"],
+                "fraud_detected": bool(row["fraud_detected"]),
+            },
         )
         for row in rows
     ]
@@ -2579,7 +2556,8 @@ def _supply_snapshot(connection: Any) -> dict[str, float]:
         SELECT
             COALESCE(SUM(CASE WHEN account_id = ? THEN balance ELSE 0 END), 0) AS genesis_balance,
             COALESCE(SUM(CASE WHEN account_type = 'miner' THEN balance ELSE 0 END), 0) AS miner_balances,
-            COALESCE(SUM(CASE WHEN account_type = 'validator' THEN balance ELSE 0 END), 0) AS validator_balances
+            COALESCE(SUM(CASE WHEN account_type = 'validator' THEN balance ELSE 0 END), 0) AS validator_balances,
+            COALESCE(SUM(CASE WHEN account_type = 'audit' THEN balance ELSE 0 END), 0) AS audit_balances
         FROM balances
         """,
         (GENESIS_ACCOUNT_ID,),
@@ -2587,11 +2565,13 @@ def _supply_snapshot(connection: Any) -> dict[str, float]:
     genesis_balance = round(float(row["genesis_balance"]), 8)
     miner_balances = round(float(row["miner_balances"]), 8)
     validator_balances = round(float(row["validator_balances"]), 8)
+    audit_balances = round(float(row["audit_balances"]), 8)
     return {
         "genesis_balance": genesis_balance,
         "miner_balances": miner_balances,
         "validator_balances": validator_balances,
-        "circulating_supply": round(miner_balances + validator_balances, 8),
+        "audit_balances": audit_balances,
+        "circulating_supply": round(miner_balances + validator_balances + audit_balances, 8),
     }
 
 
@@ -2600,7 +2580,14 @@ def _miner_exists(connection: Any, miner_id: str) -> bool:
     return row is not None
 
 
-def _apply_penalty(connection: Any, miner_id: str, task_id: str, points: int, reason: str) -> None:
+def _apply_penalty(
+    connection: Any,
+    miner_id: str,
+    task_id: str,
+    points: int,
+    reason: str,
+    force_cooldown_seconds: int | None = None,
+) -> None:
     connection.execute(
         """
         INSERT INTO penalties (miner_id, task_id, points, reason, created_at)
@@ -2616,6 +2603,11 @@ def _apply_penalty(connection: Any, miner_id: str, task_id: str, points: int, re
         connection.execute(
             "UPDATE miners SET cooldown_until = ? WHERE miner_id = ?",
             (iso_at(COOLDOWN_SECONDS), miner_id),
+        )
+    if force_cooldown_seconds is not None:
+        connection.execute(
+            "UPDATE miners SET cooldown_until = ? WHERE miner_id = ?",
+            (iso_at(force_cooldown_seconds), miner_id),
         )
     _refresh_trust_score(connection, miner_id)
 
@@ -2747,10 +2739,229 @@ def _validation_vote_counts(connection: Any, job_id: str) -> dict[str, int]:
     return {"approvals": int(row["approvals"]), "rejections": int(row["rejections"])}
 
 
+def _run_retroactive_audit_in_connection(
+    connection: Any,
+    *,
+    block_height: int | None,
+    sample_multiplier: int,
+    automatic: bool,
+) -> dict[str, Any]:
+    if block_height is None:
+        row = connection.execute(
+            "SELECT * FROM blocks ORDER BY RANDOM() LIMIT 1"
+        ).fetchone()
+    else:
+        row = connection.execute(
+            "SELECT * FROM blocks WHERE height = ?",
+            (block_height,),
+        ).fetchone()
+    block = _decode_block(row_to_dict(row))
+    if block is None:
+        raise MiningError(404, "block not found for retroactive audit")
+
+    params = _protocol_params_for_block(connection, block)
+    base_samples = int(params["sample_count"])
+    sample_count = min(block["range_end"] - block["range_start"] + 1, base_samples * sample_multiplier)
+    timestamp = utc_now()
+    audit_seed = sha256_text(
+        canonical_json(
+            {
+                "audit_id": uuid.uuid4().hex,
+                "automatic": automatic,
+                "block_hash": block["block_hash"],
+                "block_height": block["height"],
+                "created_at": timestamp,
+                "sample_count": sample_count,
+            }
+        )
+    )
+    segment = calculate_pi_segment(block["range_start"], block["range_end"], block["algorithm"])
+    actual_hash = hash_result(segment, block["range_start"], block["range_end"], block["algorithm"])
+    requested_samples = _build_challenge_samples(
+        block["range_start"],
+        block["range_end"],
+        audit_seed,
+        sample_count,
+    )
+    samples = [
+        {
+            "position": sample["position"],
+            "digit": segment[sample["position"] - block["range_start"]],
+        }
+        for sample in requested_samples
+    ]
+    passed = actual_hash == block["result_hash"]
+    reason = "accepted" if passed else "fraud detected: result_hash mismatch"
+    reward = _apply_retroactive_audit_reward(connection, block, audit_seed) if automatic else 0.0
+    if not passed:
+        if block.get("fraudulent"):
+            reason = "fraud confirmed: result_hash mismatch"
+        else:
+            _mark_block_fraudulent(connection, block, reason, timestamp)
+            _apply_fraud_penalties(connection, block, reason)
+
+    cursor = connection.execute(
+        """
+        INSERT INTO retroactive_audits (
+            block_height, block_hash, audit_seed, sample_count, samples,
+            expected_hash, actual_hash, passed, reason, automatic, reward,
+            reward_account_id, fraud_detected, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            block["height"],
+            block["block_hash"],
+            audit_seed,
+            sample_count,
+            json.dumps(samples),
+            block["result_hash"],
+            actual_hash,
+            int(passed),
+            reason,
+            int(automatic),
+            reward,
+            RETROACTIVE_AUDIT_REWARD_ACCOUNT_ID if reward > 0 else None,
+            int(not passed),
+            timestamp,
+        ),
+    )
+    return row_to_dict(
+        connection.execute(
+            "SELECT * FROM retroactive_audits WHERE id = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+    )
+
+
+def _apply_retroactive_audit_reward(connection: Any, block: dict[str, Any], audit_seed: str) -> float:
+    reward = round(float(block["reward"]) * RETROACTIVE_AUDIT_REWARD_PERCENT_OF_BLOCK, 8)
+    if reward <= 0:
+        return 0.0
+    _apply_ledger_entry(
+        connection,
+        account_id=RETROACTIVE_AUDIT_REWARD_ACCOUNT_ID,
+        account_type="audit",
+        amount=reward,
+        entry_type="retroactive_audit_reward",
+        block_height=block["height"],
+        related_id=audit_seed,
+        description="scheduled retroactive audit reward",
+    )
+    return reward
+
+
+def _mark_block_fraudulent(connection: Any, block: dict[str, Any], reason: str, detected_at: str) -> None:
+    connection.execute(
+        """
+        UPDATE blocks
+        SET fraudulent = 1,
+            fraud_reason = ?,
+            fraud_detected_at = ?
+        WHERE height = ?
+        """,
+        (reason, detected_at, block["height"]),
+    )
+
+
+def _apply_fraud_penalties(connection: Any, block: dict[str, Any], reason: str) -> None:
+    _apply_penalty(
+        connection,
+        block["miner_id"],
+        block["task_id"],
+        FRAUD_MINER_PENALTY_POINTS,
+        reason,
+        force_cooldown_seconds=FRAUD_COOLDOWN_SECONDS,
+    )
+    validator_ids = connection.execute(
+        """
+        SELECT DISTINCT validator_id
+        FROM validation_votes
+        WHERE task_id = ?
+        AND approved = 1
+        """,
+        (block["task_id"],),
+    ).fetchall()
+    for row in validator_ids:
+        _apply_validator_fraud_penalty(connection, row["validator_id"], reason)
+
+
+def _apply_validator_fraud_penalty(connection: Any, validator_id: str, reason: str) -> None:
+    validator = connection.execute(
+        "SELECT stake_locked FROM validators WHERE validator_id = ?",
+        (validator_id,),
+    ).fetchone()
+    slash_amount = 0.0
+    if validator is not None:
+        slash_amount = min(float(validator["stake_locked"]), VALIDATOR_SLASH_INVALID_SIGNATURE)
+    connection.execute(
+        """
+        UPDATE validators
+        SET invalid_results = invalid_results + ?,
+            stake_locked = MAX(0, stake_locked - ?),
+            slashed_amount = slashed_amount + ?,
+            cooldown_until = ?,
+            last_seen_at = ?
+        WHERE validator_id = ?
+        """,
+        (
+            FRAUD_VALIDATOR_INVALID_RESULTS,
+            slash_amount,
+            slash_amount,
+            iso_at(FRAUD_COOLDOWN_SECONDS),
+            utc_now(),
+            validator_id,
+        ),
+    )
+    if slash_amount > 0:
+        _apply_ledger_entry(
+            connection,
+            account_id=validator_id,
+            account_type="validator",
+            amount=-slash_amount,
+            entry_type="validator_fraud_slash",
+            related_id=validator_id,
+            description=reason,
+        )
+        _apply_ledger_entry(
+            connection,
+            account_id=GENESIS_ACCOUNT_ID,
+            account_type="genesis",
+            amount=slash_amount,
+            entry_type="validator_fraud_slash",
+            related_id=validator_id,
+            description=reason,
+        )
+    invalid_results = int(
+        connection.execute(
+            "SELECT invalid_results FROM validators WHERE validator_id = ?",
+            (validator_id,),
+        ).fetchone()["invalid_results"]
+    )
+    if invalid_results >= VALIDATOR_BAN_AFTER_INVALID_RESULTS:
+        connection.execute(
+            "UPDATE validators SET is_banned = 1 WHERE validator_id = ?",
+            (validator_id,),
+        )
+    _refresh_validator_trust_score(connection, validator_id)
+
+
+def _maybe_run_scheduled_retroactive_audit(connection: Any, current_height: int) -> dict[str, Any] | None:
+    if current_height <= 0 or current_height % RETROACTIVE_AUDIT_INTERVAL_BLOCKS != 0:
+        return None
+    return _run_retroactive_audit_in_connection(
+        connection,
+        block_height=None,
+        sample_multiplier=RETROACTIVE_AUDIT_SAMPLE_MULTIPLIER,
+        automatic=True,
+    )
+
+
 def _decode_block(block: dict[str, Any] | None) -> dict[str, Any] | None:
     if block is None:
         return None
     block["samples"] = json.loads(block["samples"])
+    block["fraudulent"] = bool(block.get("fraudulent", 0))
     return block
 
 
@@ -2759,6 +2970,8 @@ def _decode_retroactive_audit(audit: dict[str, Any] | None) -> dict[str, Any] | 
         return None
     audit["samples"] = json.loads(audit["samples"])
     audit["passed"] = bool(audit["passed"])
+    audit["automatic"] = bool(audit.get("automatic", 0))
+    audit["fraud_detected"] = bool(audit.get("fraud_detected", 0))
     return audit
 
 
@@ -3214,6 +3427,7 @@ def _accept_block_in_connection(
         )
     _refresh_trust_score(connection, miner_id)
     _maybe_retarget_after_block(connection, next_height)
+    _maybe_run_scheduled_retroactive_audit(connection, next_height)
 
     return {
         "height": next_height,
@@ -3235,6 +3449,9 @@ def _accept_block_in_connection(
         "validation_mode": params["validation_mode"],
         "total_task_ms": total_task_ms,
         "validation_ms": validation_ms,
+        "fraudulent": False,
+        "fraud_reason": None,
+        "fraud_detected_at": None,
     }
 
 

@@ -27,6 +27,13 @@ difficulty = 4.0
 reward_per_block = 3.1416
 validator_reward_percent = 10%
 validator_reward_pool_per_block = 0.31416
+retroactive_audit_interval_blocks = 314
+retroactive_audit_sample_multiplier = 2
+retroactive_audit_reward_percent = 20%
+retroactive_audit_reward_per_audit = 0.62832
+fraud_miner_penalty_points = 20
+fraud_validator_invalid_results = 3
+fraud_cooldown_seconds = 3600
 min_validator_stake = 31.416
 validator_slash_invalid_signature = 3.1416
 penalty_invalid_result = 1
@@ -52,11 +59,12 @@ difficulty =
 
 miner_reward_per_block = base_reward
 validator_reward_pool_per_block = base_reward * 0.10
+retroactive_audit_reward_per_audit = base_reward * 0.20
 ```
 
 La dificultad regula el trabajo, no multiplica la emision. La recompensa del minero queda fija en `3.1416` por bloque aceptado. Adicionalmente, los validadores que aprobaron el bloque reciben una emision extra total de `0.31416`, repartida en partes iguales.
 
-El genesis acredita `3,141,600` monedas a la cuenta `genesis`. Cada bloque aceptado acredita `3.1416` monedas al minero ganador y `0.31416` monedas adicionales repartidas entre validadores aprobadores en el ledger local.
+El genesis acredita `3,141,600` monedas a la cuenta `genesis`. Cada bloque aceptado acredita `3.1416` monedas al minero ganador y `0.31416` monedas adicionales repartidas entre validadores aprobadores en el ledger local. Cada auditoria retroactiva automatica acredita `0.62832` monedas adicionales a `audit_treasury`.
 
 Cada bloque guarda la dificultad y recompensa usadas al momento de aceptarse.
 Las tareas y bloques tambien guardan `protocol_params_id`, asi un retarget no cambia las reglas de una tarea que ya estaba asignada.
@@ -666,7 +674,7 @@ Si `valid = false`, la respuesta incluye `issues` con codigos como `account_bala
 
 ### `GET /audit/retroactive`
 
-Lista auditorias retroactivas recientes. Cada auditoria guarda bloque, seed, cantidad de muestras, hash esperado, hash recalculado y resultado.
+Lista auditorias retroactivas recientes. Cada auditoria guarda bloque, seed, cantidad de muestras, hash esperado, hash recalculado, si fue automatica, recompensa y resultado.
 
 ```powershell
 curl "http://127.0.0.1:8000/audit/retroactive?limit=20"
@@ -674,7 +682,7 @@ curl "http://127.0.0.1:8000/audit/retroactive?limit=20"
 
 ### `POST /audit/retroactive/run`
 
-Ejecuta una auditoria aleatoria sobre un bloque aceptado, o sobre una altura especifica. Por defecto usa el doble de muestras del protocolo activo del bloque.
+Ejecuta una auditoria manual sobre un bloque aceptado, o sobre una altura especifica. Por defecto usa el doble de muestras del protocolo activo del bloque. Las auditorias manuales no emiten recompensa; la recompensa del 20% solo aplica a la auditoria automatica programada cada 314 bloques.
 
 ```powershell
 curl -X POST "http://127.0.0.1:8000/audit/retroactive/run?sample_multiplier=2"
@@ -749,6 +757,9 @@ Implementado:
 - Balances persistentes y ledger auditable.
 - Auditoria economica completa en `/audit/full`.
 - Auditorias retroactivas aleatorias en `/audit/retroactive/run`.
+- Auditoria retroactiva automatica cada 314 bloques.
+- Marcado de bloques fraudulentos si una auditoria retroactiva falla.
+- Penalizacion reforzada y cooldown de 1 hora por fraude detectado.
 - Cooldown y ban por firmas invalidas repetidas.
 - Commit-reveal con `result_hash` y `merkle_root`.
 - Merkle proofs para cada muestra revelada.
@@ -878,9 +889,10 @@ expected_total_balances =
   genesis_supply
   + accepted_block_rewards
   + validator_rewards
+  + retroactive_audit_rewards
 ```
 
-`genesis`, faucet, stake y slashing son movimientos internos. Las recompensas de minero y validador son emision nueva. Por eso el total de balances puede crecer con cada bloque aceptado, mientras el endpoint `/audit/full` verifica que ese crecimiento coincida exactamente con la suma de recompensas registradas.
+`genesis`, faucet, stake y slashing son movimientos internos. Las recompensas de minero, validador y auditoria son emision nueva. Por eso el total de balances puede crecer con cada bloque aceptado o auditoria automatica, mientras el endpoint `/audit/full` verifica que ese crecimiento coincida exactamente con la suma de recompensas registradas.
 
 ## Firma Ed25519
 
@@ -934,6 +946,8 @@ Esto evita guardar pi, evita transmitir el segmento completo, separa el rol de v
 
 La validacion normal revisa 32 muestras reveladas por el minero. La auditoria retroactiva revisa un bloque ya aceptado con un reto nuevo y el doble de muestras. En v0.16 eso significa 64 posiciones.
 
+El coordinador ejecuta una auditoria aleatoria automatica cada 314 bloques aceptados. La auditoria escoge un bloque aceptado al azar, no necesariamente el ultimo. Si la auditoria fue automatica, emite una recompensa adicional del 20% de la recompensa base del bloque auditado: `0.62832` PICOIN en la configuracion actual. Esa recompensa se registra como `retroactive_audit_reward` en el ledger y se acredita a la cuenta de protocolo `audit_treasury` hasta que existan auditores externos.
+
 El flujo es:
 
 1. El coordinador elige un bloque aceptado al azar, o usa `block_height` si se indica.
@@ -942,6 +956,15 @@ El flujo es:
 4. Comprueba que `hash_result(segmento, rango, algoritmo)` coincida con el `result_hash` guardado.
 5. Deriva 64 posiciones de muestra desde `audit_seed` y guarda los digitos observados.
 6. Registra el resultado en `retroactive_audits` y lo expone como evento reciente.
+
+Si la auditoria detecta fraude:
+
+- el bloque se marca con `fraudulent = true`;
+- se guarda `fraud_reason` y `fraud_detected_at`;
+- el minero recibe `20` puntos de penalizacion;
+- el cooldown del minero sube a 1 hora;
+- cada validador que aprobo ese bloque suma `3` resultados invalidos;
+- esos validadores reciben cooldown de 1 hora y pierden reputacion de forma mas agresiva.
 
 Esto no guarda pi completo en la base de datos. Solo guarda muestras de auditoria, hashes y metadatos. La version actual recalcula el segmento porque los rangos del MVP son pequenos; mas adelante se puede reemplazar por pruebas mas compactas sin cambiar la interfaz de auditoria.
 

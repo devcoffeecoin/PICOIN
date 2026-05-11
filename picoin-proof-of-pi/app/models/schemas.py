@@ -156,6 +156,9 @@ class BlockResponse(BaseModel):
     validation_mode: str | None = None
     total_task_ms: int | None = None
     validation_ms: int | None = None
+    fraudulent: bool = False
+    fraud_reason: str | None = None
+    fraud_detected_at: datetime | None = None
 
 
 class StatsResponse(BaseModel):
@@ -167,6 +170,7 @@ class StatsResponse(BaseModel):
     rejected_submissions: int
     total_rewards: float
     total_validator_rewards: float
+    total_audit_rewards: float = 0.0
     total_minted_rewards: float
     circulating_supply: float
     genesis_balance: float
@@ -334,6 +338,13 @@ class ProtocolResponse(BaseModel):
     reward_per_block: float
     validator_reward_percent: float
     validator_reward_pool_per_block: float
+    retroactive_audit_interval_blocks: int
+    retroactive_audit_sample_multiplier: int
+    retroactive_audit_reward_percent: float
+    retroactive_audit_reward_per_audit: float
+    fraud_miner_penalty_points: int
+    fraud_validator_invalid_results: int
+    fraud_cooldown_seconds: int
     faucet_enabled: bool
     validator_selection_mode: str
     penalty_invalid_result: int
@@ -414,6 +425,10 @@ class RetargetEventResponse(BaseModel):
     adjustment_factor: float
     action: str
     reason: str
+    automatic: bool = False
+    reward: float = 0.0
+    reward_account_id: str | None = None
+    fraud_detected: bool = False
     created_at: datetime
 
 
