@@ -4,12 +4,12 @@ MVP funcional de **Proof of Pi**. Un coordinador asigna rangos pequenos de digit
 
 Este proyecto no implementa una blockchain completa. Usa una cadena local de bloques aceptados con `previous_hash` y `block_hash` para preparar una evolucion futura.
 
-## Protocolo v0.14
+## Protocolo v0.15
 
 Parametros actuales:
 
 ```text
-protocol_version = 0.14
+protocol_version = 0.15
 network_id = local
 algorithm = bbp_hex_v1
 validation_mode = external_commit_reveal
@@ -40,7 +40,7 @@ faucet_rate_limit = 3 credits / account / hour
 validator_selection_mode = weighted_reputation_stake_rotation
 ```
 
-El endpoint `GET /protocol` devuelve estos valores para que mineros y validadores sepan que reglas estan activas. Desde v0.14 estos parametros viven en SQLite, en `protocol_params`, y pueden cambiar automaticamente por epocas. `network_id` viene de `PICOIN_NETWORK`; por defecto es `local`.
+El endpoint `GET /protocol` devuelve estos valores para que mineros y validadores sepan que reglas estan activas. Desde v0.15 estos parametros viven en SQLite, en `protocol_params`, y pueden cambiar automaticamente por epocas. `network_id` viene de `PICOIN_NETWORK`; por defecto es `local`.
 
 La dificultad se calcula con una formula simple y auditable:
 
@@ -118,7 +118,7 @@ La base SQLite se crea automaticamente en `data/picoin.sqlite3`.
 
 ## Dashboard Local
 
-Desde v0.14, el nodo sirve un panel web operativo en:
+Desde v0.15, el nodo sirve un panel web operativo en:
 
 ```text
 http://127.0.0.1:8000/dashboard
@@ -132,6 +132,7 @@ El dashboard consume la API REST del mismo nodo y muestra:
 - Metricas de dificultad, progreso de epoca y preview de retarget.
 - Metricas de performance por asignacion, compute, commit, validacion y total.
 - Resumen de auditoria economica y estado de integridad de la cadena local.
+- Estado operativo del nodo, readiness de mineria y eventos recientes.
 
 ## CLI Nodo Local
 
@@ -335,6 +336,30 @@ curl -X POST http://127.0.0.1:8000/faucet `
 ```
 
 ## Endpoints
+
+### `GET /health`
+
+Devuelve salud operativa del nodo: conexion a SQLite, version activa, uptime, altura actual, hash mas reciente, verificacion de cadena, auditoria basica y si hay quorum suficiente para mineria.
+
+```powershell
+curl http://127.0.0.1:8000/health
+```
+
+### `GET /node/status`
+
+Devuelve un snapshot mas amplio del nodo local: contadores de mineros, validadores, tareas, jobs de validacion, dificultad activa, performance y economia resumida.
+
+```powershell
+curl http://127.0.0.1:8000/node/status
+```
+
+### `GET /events`
+
+Lista eventos recientes normalizados para dashboard y debugging: bloques aceptados, votos de validadores, faucet, penalizaciones y retargets.
+
+```powershell
+curl "http://127.0.0.1:8000/events?limit=20"
+```
 
 ### `GET /protocol`
 
@@ -962,19 +987,27 @@ curl http://127.0.0.1:8000/blocks/verify
 curl http://127.0.0.1:8000/stats
 ```
 
-8. Consulta performance:
+8. Consulta salud operativa:
+
+```powershell
+curl http://127.0.0.1:8000/health
+curl http://127.0.0.1:8000/node/status
+curl "http://127.0.0.1:8000/events?limit=20"
+```
+
+9. Consulta performance:
 
 ```powershell
 curl http://127.0.0.1:8000/stats/performance
 ```
 
-9. Consulta historial de parametros:
+10. Consulta historial de parametros:
 
 ```powershell
 curl http://127.0.0.1:8000/protocol/history
 ```
 
-10. Consulta dificultad:
+11. Consulta dificultad:
 
 ```powershell
 curl http://127.0.0.1:8000/difficulty
@@ -982,7 +1015,7 @@ curl http://127.0.0.1:8000/difficulty/preview
 curl http://127.0.0.1:8000/difficulty/history
 ```
 
-11. Consulta economia y auditoria:
+12. Consulta economia y auditoria:
 
 ```powershell
 curl http://127.0.0.1:8000/balances

@@ -65,9 +65,9 @@ def command_node_status(args: argparse.Namespace) -> int:
     print_json(
         {
             "root": get_json(server_url, "/"),
-            "protocol": get_json(server_url, "/protocol"),
-            "stats": get_json(server_url, "/stats"),
-            "chain": get_json(server_url, "/blocks/verify"),
+            "health": get_json(server_url, "/health"),
+            "status": get_json(server_url, "/node/status"),
+            "events": get_json(server_url, "/events?limit=5"),
         }
     )
     return 0
@@ -143,7 +143,7 @@ def add_node_parser(subparsers: argparse._SubParsersAction) -> None:
     start_parser.add_argument("--log-level", default="info")
     start_parser.set_defaults(func=command_node_start)
 
-    status_parser = node_subparsers.add_parser("status", help="Show root, protocol, stats and chain status")
+    status_parser = node_subparsers.add_parser("status", help="Show local node health, status and recent events")
     status_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
     status_parser.set_defaults(func=command_node_status)
 

@@ -21,3 +21,6 @@ def test_dashboard_static_assets() -> None:
     assert "/dashboard/static/dashboard.js" in html
     assert "metric-grid" in css
     assert "fetchJson" in js
+    assert 'fetchJson("/health")' in js
+    assert 'fetchJson("/node/status")' in js
+    assert 'fetchJson("/events?limit=14")' in js

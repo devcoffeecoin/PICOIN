@@ -96,6 +96,9 @@ def parse_iso(value: str | None) -> datetime | None:
     return parsed
 
 
+NODE_STARTED_AT = utc_now_dt()
+
+
 def register_miner(name: str, public_key: str | None = None) -> dict[str, Any]:
     if public_key is None:
         raise MiningError(400, "public_key is required")
@@ -1538,6 +1541,153 @@ def get_performance_stats() -> dict[str, Any]:
     }
 
 
+def get_health_status() -> dict[str, Any]:
+    checked_at = utc_now_dt()
+    issues: list[str] = []
+    database = {"connected": False}
+
+    try:
+        with get_connection() as connection:
+            connection.execute("SELECT 1").fetchone()
+            params = _active_protocol_params(connection)
+            latest_height = _latest_block_height(connection)
+            latest_hash = _latest_block_hash(connection)
+            miners = int(connection.execute("SELECT COUNT(*) AS count FROM miners").fetchone()["count"])
+            validators = connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    COALESCE(SUM(CASE WHEN is_banned = 0 AND stake_locked >= ? AND trust_score >= ? THEN 1 ELSE 0 END), 0) AS eligible
+                FROM validators
+                """,
+                (MIN_VALIDATOR_STAKE, VALIDATOR_MIN_TRUST_SCORE),
+            ).fetchone()
+            active_protocol = params is not None
+            required_approvals = int(params["required_validator_approvals"])
+            eligible_validators = int(validators["eligible"])
+            database = {
+                "connected": True,
+                "active_protocol": active_protocol,
+                "miners": miners,
+                "validators": int(validators["total"]),
+                "eligible_validators": eligible_validators,
+            }
+    except Exception as exc:
+        issues.append(f"database unavailable: {exc}")
+        params = None
+        latest_height = 0
+        latest_hash = GENESIS_HASH
+        miners = 0
+        required_approvals = REQUIRED_VALIDATOR_APPROVALS
+        eligible_validators = 0
+        active_protocol = False
+
+    chain = verify_chain() if database["connected"] else {
+        "valid": False,
+        "checked_blocks": 0,
+        "latest_block_hash": latest_hash,
+        "issues": [{"reason": "database unavailable"}],
+    }
+    audit = _basic_audit_health() if database["connected"] else {"valid": False, "issues": 1}
+
+    if not chain["valid"]:
+        issues.append("chain verification failed")
+    if not audit["valid"]:
+        issues.append("economic audit has issues")
+    if active_protocol and eligible_validators < required_approvals:
+        issues.append("not enough eligible validators for quorum")
+
+    can_assign_tasks = bool(database["connected"] and active_protocol)
+    mining_ready = bool(can_assign_tasks and miners > 0 and eligible_validators >= required_approvals)
+    status = "ok" if not issues else "degraded"
+
+    protocol_version = params["protocol_version"] if params is not None else PROTOCOL_VERSION
+    return {
+        "status": status,
+        "project": PROJECT_NAME,
+        "protocol_version": protocol_version,
+        "network_id": NETWORK_ID,
+        "checked_at": checked_at.isoformat(),
+        "started_at": NODE_STARTED_AT.isoformat(),
+        "uptime_seconds": max(0, int((checked_at - NODE_STARTED_AT).total_seconds())),
+        "database": database,
+        "chain": {
+            "valid": bool(chain["valid"]),
+            "checked_blocks": int(chain["checked_blocks"]),
+            "issue_count": len(chain["issues"]),
+        },
+        "audit": audit,
+        "latest_block_height": latest_height,
+        "latest_block_hash": latest_hash,
+        "can_assign_tasks": can_assign_tasks,
+        "mining_ready": mining_ready,
+        "issues": issues,
+    }
+
+
+def get_node_status() -> dict[str, Any]:
+    checked_at = utc_now_dt()
+    with get_connection() as connection:
+        params = _active_protocol_params(connection)
+        latest_height = _latest_block_height(connection)
+        latest_hash = _latest_block_hash(connection)
+        counts = _node_counts(connection, params)
+        supply = _supply_snapshot(connection)
+
+    chain = verify_chain()
+    audit = _basic_audit_health()
+    performance = get_performance_stats()
+    protocol = _protocol_payload(params)
+    mining_ready = counts["miners"] > 0 and counts["eligible_validators"] >= protocol["required_validator_approvals"]
+
+    return {
+        "project": PROJECT_NAME,
+        "protocol_version": protocol["protocol_version"],
+        "network_id": NETWORK_ID,
+        "started_at": NODE_STARTED_AT.isoformat(),
+        "checked_at": checked_at.isoformat(),
+        "uptime_seconds": max(0, int((checked_at - NODE_STARTED_AT).total_seconds())),
+        "latest_block_height": latest_height,
+        "latest_block_hash": latest_hash,
+        "chain_valid": bool(chain["valid"]),
+        "audit_valid": bool(audit["valid"]),
+        "mining_ready": mining_ready,
+        "counts": counts,
+        "protocol": {
+            "algorithm": protocol["algorithm"],
+            "validation_mode": protocol["validation_mode"],
+            "required_validator_approvals": protocol["required_validator_approvals"],
+            "difficulty": protocol["difficulty"],
+            "reward_per_block": protocol["reward_per_block"],
+            "faucet_enabled": protocol["faucet_enabled"],
+        },
+        "performance": {
+            "avg_total_task_ms": performance["avg_total_task_ms"],
+            "avg_validation_ms": performance["avg_validation_ms"],
+            "pending_validation_jobs": performance["pending_validation_jobs"],
+        },
+        "economy": {
+            "circulating_supply": supply["circulating_supply"],
+            "genesis_balance": supply["genesis_balance"],
+            "miner_balances": supply["miner_balances"],
+            "validator_balances": supply["validator_balances"],
+        },
+    }
+
+
+def get_recent_events(limit: int = 30) -> list[dict[str, Any]]:
+    with get_connection() as connection:
+        events: list[dict[str, Any]] = []
+        events.extend(_block_events(connection, limit))
+        events.extend(_validator_vote_events(connection, limit))
+        events.extend(_faucet_events(connection, limit))
+        events.extend(_penalty_events(connection, limit))
+        events.extend(_retarget_events(connection, limit))
+
+    events.sort(key=lambda event: parse_iso(event["created_at"]) or NODE_STARTED_AT, reverse=True)
+    return events[:limit]
+
+
 def get_protocol() -> dict[str, Any]:
     with get_connection() as connection:
         params = _active_protocol_params(connection)
@@ -1929,6 +2079,244 @@ def _validator_selection_metrics(connection: Any, validator: dict[str, Any]) -> 
 def _selection_jitter(seed: str, validator_id: str) -> float:
     digest = sha256_text(canonical_json({"seed": seed, "validator_id": validator_id}))
     return (int(digest[:8], 16) / 0xFFFFFFFF) / 1_000_000
+
+
+def _node_counts(connection: Any, params: dict[str, Any]) -> dict[str, Any]:
+    validators = connection.execute(
+        """
+        SELECT
+            COUNT(*) AS total,
+            COALESCE(SUM(CASE WHEN is_banned = 0 THEN 1 ELSE 0 END), 0) AS active,
+            COALESCE(SUM(CASE WHEN is_banned = 0 AND stake_locked >= ? AND trust_score >= ? THEN 1 ELSE 0 END), 0) AS eligible
+        FROM validators
+        """,
+        (MIN_VALIDATOR_STAKE, VALIDATOR_MIN_TRUST_SCORE),
+    ).fetchone()
+    tasks = connection.execute(
+        """
+        SELECT
+            COUNT(*) AS total,
+            COALESCE(SUM(CASE WHEN status = 'assigned' THEN 1 ELSE 0 END), 0) AS assigned,
+            COALESCE(SUM(CASE WHEN status = 'committed' THEN 1 ELSE 0 END), 0) AS committed,
+            COALESCE(SUM(CASE WHEN status = 'revealed' THEN 1 ELSE 0 END), 0) AS revealed,
+            COALESCE(SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END), 0) AS accepted,
+            COALESCE(SUM(CASE WHEN status = 'expired' THEN 1 ELSE 0 END), 0) AS expired
+        FROM tasks
+        """
+    ).fetchone()
+    validation_jobs = connection.execute(
+        """
+        SELECT
+            COUNT(*) AS total,
+            COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0) AS pending,
+            COALESCE(SUM(CASE WHEN status = 'approved' THEN 1 ELSE 0 END), 0) AS approved,
+            COALESCE(SUM(CASE WHEN status = 'rejected' THEN 1 ELSE 0 END), 0) AS rejected,
+            COALESCE(SUM(CASE WHEN status = 'expired' THEN 1 ELSE 0 END), 0) AS expired
+        FROM validation_jobs
+        """
+    ).fetchone()
+    return {
+        "miners": int(connection.execute("SELECT COUNT(*) AS count FROM miners").fetchone()["count"]),
+        "validators": int(validators["total"]),
+        "active_validators": int(validators["active"]),
+        "eligible_validators": int(validators["eligible"]),
+        "required_validator_approvals": int(params["required_validator_approvals"]),
+        "blocks": _latest_block_height(connection),
+        "tasks": {
+            "total": int(tasks["total"]),
+            "assigned": int(tasks["assigned"]),
+            "committed": int(tasks["committed"]),
+            "revealed": int(tasks["revealed"]),
+            "accepted": int(tasks["accepted"]),
+            "expired": int(tasks["expired"]),
+        },
+        "validation_jobs": {
+            "total": int(validation_jobs["total"]),
+            "pending": int(validation_jobs["pending"]),
+            "approved": int(validation_jobs["approved"]),
+            "rejected": int(validation_jobs["rejected"]),
+            "expired": int(validation_jobs["expired"]),
+        },
+    }
+
+
+def _basic_audit_health() -> dict[str, Any]:
+    with get_connection() as connection:
+        mismatches = _account_balance_mismatches(connection)
+        ledger_total = _sum_query(connection, "SELECT COALESCE(SUM(amount), 0) AS total FROM ledger_entries")
+        balance_total = _sum_query(connection, "SELECT COALESCE(SUM(balance), 0) AS total FROM balances")
+    return {
+        "valid": not mismatches and _money_equal(ledger_total, balance_total),
+        "balance_mismatches": len(mismatches),
+        "ledger_total": ledger_total,
+        "balance_total": balance_total,
+    }
+
+
+def _event(
+    *,
+    event_id: str,
+    event_type: str,
+    title: str,
+    message: str,
+    severity: str,
+    created_at: str,
+    related_id: str | None = None,
+    block_height: int | None = None,
+    actor_id: str | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    return {
+        "id": event_id,
+        "type": event_type,
+        "title": title,
+        "message": message,
+        "severity": severity,
+        "created_at": created_at,
+        "related_id": related_id,
+        "block_height": block_height,
+        "actor_id": actor_id,
+        "metadata": metadata or {},
+    }
+
+
+def _block_events(connection: Any, limit: int) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT height, miner_id, block_hash, reward, difficulty, timestamp
+        FROM blocks
+        ORDER BY height DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [
+        _event(
+            event_id=f"block:{row['height']}",
+            event_type="block_accepted",
+            title="Bloque aceptado",
+            message=f"height {row['height']} minado por {row['miner_id']}",
+            severity="info",
+            created_at=row["timestamp"],
+            related_id=row["block_hash"],
+            block_height=int(row["height"]),
+            actor_id=row["miner_id"],
+            metadata={"reward": row["reward"], "difficulty": row["difficulty"]},
+        )
+        for row in rows
+    ]
+
+
+def _validator_vote_events(connection: Any, limit: int) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT id, job_id, task_id, validator_id, approved, reason, validation_ms, created_at
+        FROM validation_votes
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [
+        _event(
+            event_id=f"vote:{row['id']}",
+            event_type="validator_vote",
+            title="Voto de validador",
+            message=f"{row['validator_id']} {'aprobo' if row['approved'] else 'rechazo'} {row['job_id']}",
+            severity="info" if row["approved"] else "warn",
+            created_at=row["created_at"],
+            related_id=row["job_id"],
+            actor_id=row["validator_id"],
+            metadata={
+                "task_id": row["task_id"],
+                "approved": bool(row["approved"]),
+                "reason": row["reason"],
+                "validation_ms": row["validation_ms"],
+            },
+        )
+        for row in rows
+    ]
+
+
+def _faucet_events(connection: Any, limit: int) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT id, account_id, account_type, amount, created_at
+        FROM ledger_entries
+        WHERE entry_type = 'faucet_credit'
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [
+        _event(
+            event_id=f"faucet:{row['id']}",
+            event_type="faucet_credit",
+            title="Faucet",
+            message=f"{row['amount']} acreditado a {row['account_id']}",
+            severity="info",
+            created_at=row["created_at"],
+            related_id=row["account_id"],
+            actor_id=row["account_id"],
+            metadata={"account_type": row["account_type"], "amount": row["amount"]},
+        )
+        for row in rows
+    ]
+
+
+def _penalty_events(connection: Any, limit: int) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT id, miner_id, task_id, points, reason, created_at
+        FROM penalties
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [
+        _event(
+            event_id=f"penalty:{row['id']}",
+            event_type="penalty",
+            title="Penalizacion",
+            message=f"{row['points']} puntos a {row['miner_id']}",
+            severity="bad",
+            created_at=row["created_at"],
+            related_id=row["task_id"],
+            actor_id=row["miner_id"],
+            metadata={"points": row["points"], "reason": row["reason"]},
+        )
+        for row in rows
+    ]
+
+
+def _retarget_events(connection: Any, limit: int) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT id, action, old_difficulty, new_difficulty, adjustment_factor, reason, created_at
+        FROM retarget_events
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [
+        _event(
+            event_id=f"retarget:{row['id']}",
+            event_type="retarget",
+            title="Retarget",
+            message=f"{row['action']} dificultad {row['old_difficulty']} -> {row['new_difficulty']}",
+            severity="info",
+            created_at=row["created_at"],
+            related_id=str(row["id"]),
+            metadata={
+                "adjustment_factor": row["adjustment_factor"],
+                "reason": row["reason"],
+            },
+        )
+        for row in rows
+    ]
 
 
 def _sum_query(connection: Any, query: str) -> float:

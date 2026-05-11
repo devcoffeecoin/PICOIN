@@ -142,7 +142,8 @@ button:hover {
 }
 
 .metric span,
-.difficulty-grid span {
+.difficulty-grid span,
+.summary-grid span {
   display: block;
   color: var(--muted);
   font-size: 13px;
@@ -222,22 +223,73 @@ td.hash,
 }
 
 .validator-stats,
-.difficulty-grid {
+.difficulty-grid,
+.summary-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
 }
 
 .validator-stats span,
-.audit-summary span {
+.audit-summary span,
+.event-row span {
   color: var(--muted);
   font-size: 12px;
 }
 
 .validator-stats strong,
-.difficulty-grid strong {
+.difficulty-grid strong,
+.summary-grid strong {
   display: block;
   margin-top: 3px;
+}
+
+.summary-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-top: 14px;
+}
+
+.summary-box {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 12px;
+}
+
+.summary-box strong {
+  overflow-wrap: anywhere;
+}
+
+.event-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.event-row {
+  border-left: 3px solid var(--blue);
+  border-radius: 6px;
+  background: #f6f9fa;
+  padding: 10px 12px;
+}
+
+.event-row.warn {
+  border-left-color: var(--amber);
+}
+
+.event-row.bad {
+  border-left-color: var(--red);
+}
+
+.event-row header {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.event-row p {
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 13px;
 }
 
 .form-grid {
@@ -340,7 +392,8 @@ select {
 @media (max-width: 1100px) {
   .layout,
   .metric-grid,
-  .audit-summary {
+  .audit-summary,
+  .summary-grid {
     grid-template-columns: 1fr 1fr;
   }
 
@@ -360,6 +413,7 @@ select {
   .layout,
   .metric-grid,
   .audit-summary,
+  .summary-grid,
   .validator-stats,
   .difficulty-grid {
     grid-template-columns: 1fr;

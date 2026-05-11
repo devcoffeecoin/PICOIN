@@ -13,6 +13,7 @@
         <h1>Dashboard Local</h1>
       </div>
       <div class="topbar-actions">
+        <span id="nodeStatusBadge" class="status-pill">node</span>
         <span id="networkBadge" class="badge">network</span>
         <button id="refreshButton" type="button">Actualizar</button>
       </div>
@@ -44,6 +45,22 @@
           <span>Auditoria</span>
           <strong id="metricAudit">-</strong>
         </article>
+      </section>
+
+      <section class="panel wide">
+        <div class="panel-header">
+          <h2>Estado del nodo</h2>
+          <span id="nodeHealth" class="status-pill">cargando</span>
+        </div>
+        <div id="nodeSummary" class="summary-grid"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Eventos recientes</h2>
+          <span id="eventsCount" class="status-pill">0</span>
+        </div>
+        <div id="eventsList" class="event-list"></div>
       </section>
 
       <section class="panel wide">

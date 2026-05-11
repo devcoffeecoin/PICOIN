@@ -8,6 +8,9 @@ const state = {
   validators: [],
   audit: null,
   chain: null,
+  health: null,
+  node: null,
+  events: [],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -58,6 +61,9 @@ async function loadData() {
     validators,
     audit,
     chain,
+    health,
+    node,
+    events,
   ] = await Promise.all([
     fetchJson("/protocol"),
     fetchJson("/stats"),
@@ -68,6 +74,9 @@ async function loadData() {
     fetchJson("/validators?limit=100"),
     fetchJson("/audit/full"),
     fetchJson("/blocks/verify"),
+    fetchJson("/health"),
+    fetchJson("/node/status"),
+    fetchJson("/events?limit=14"),
   ]);
 
   Object.assign(state, {
@@ -80,12 +89,17 @@ async function loadData() {
     validators,
     audit,
     chain,
+    health,
+    node,
+    events,
   });
   render();
 }
 
 function render() {
   renderMetrics();
+  renderNode();
+  renderEvents();
   renderBlocks();
   renderValidators();
   renderDifficulty();
@@ -95,6 +109,8 @@ function render() {
 
 function renderMetrics() {
   text("networkBadge", `${state.protocol.network_id} - v${state.protocol.protocol_version}`);
+  text("nodeStatusBadge", state.health.status);
+  $("nodeStatusBadge").className = `status-pill ${state.health.status === "ok" ? "ok" : "warn"}`;
   text("metricBlocks", fmt(state.stats.accepted_blocks, 0));
   text("metricDifficulty", fmt(state.protocol.difficulty, 3));
   text("metricMinted", fmt(state.stats.total_minted_rewards, 5));
@@ -104,6 +120,41 @@ function renderMetrics() {
   $("metricAudit").style.color = state.audit.valid ? "var(--green)" : "var(--red)";
   text("faucetStatus", state.protocol.faucet_enabled ? "habilitado" : "bloqueado");
   $("faucetStatus").className = `status-pill ${state.protocol.faucet_enabled ? "ok" : "bad"}`;
+}
+
+function renderNode() {
+  text("nodeHealth", state.health.mining_ready ? "mining ready" : state.health.status);
+  $("nodeHealth").className = `status-pill ${state.health.mining_ready ? "ok" : "warn"}`;
+  const counts = state.node.counts;
+  $("nodeSummary").innerHTML = `
+    <div class="summary-box"><span>Uptime</span><strong>${fmt(state.node.uptime_seconds, 0)} s</strong></div>
+    <div class="summary-box"><span>Altura</span><strong>${fmt(state.node.latest_block_height, 0)}</strong></div>
+    <div class="summary-box"><span>Validadores elegibles</span><strong>${fmt(counts.eligible_validators, 0)} / ${fmt(counts.required_validator_approvals, 0)}</strong></div>
+    <div class="summary-box"><span>Jobs pendientes</span><strong>${fmt(counts.validation_jobs.pending, 0)}</strong></div>
+    <div class="summary-box"><span>Asignacion</span><strong>${state.health.can_assign_tasks ? "activa" : "bloqueada"}</strong></div>
+    <div class="summary-box"><span>Cadena</span><strong>${state.node.chain_valid ? "valida" : "revisar"}</strong></div>
+  `;
+}
+
+function renderEvents() {
+  text("eventsCount", `${state.events.length}`);
+  if (!state.events.length) {
+    $("eventsList").innerHTML = `<div class="empty">Sin eventos recientes</div>`;
+    return;
+  }
+  $("eventsList").innerHTML = state.events
+    .map(
+      (event) => `
+        <article class="event-row ${event.severity}">
+          <header>
+            <strong>${escapeHtml(event.title)}</strong>
+            <span>${escapeHtml(new Date(event.created_at).toLocaleTimeString())}</span>
+          </header>
+          <p>${escapeHtml(event.message)}</p>
+        </article>
+      `
+    )
+    .join("");
 }
 
 function renderBlocks() {
@@ -240,6 +291,8 @@ async function boot() {
   } catch (error) {
     $("chainStatus").textContent = "sin conexion";
     $("chainStatus").className = "status-pill bad";
+    $("nodeStatusBadge").textContent = "offline";
+    $("nodeStatusBadge").className = "status-pill bad";
     $("faucetResult").textContent = `Error: ${error.message}`;
   }
 }

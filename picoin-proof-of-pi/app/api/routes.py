@@ -8,10 +8,13 @@ from app.models.schemas import (
     ChainVerificationResponse,
     FaucetRequest,
     FaucetResponse,
+    HealthResponse,
     LedgerEntryResponse,
     MaintenanceCleanupResponse,
     MinerRegisterRequest,
     MinerResponse,
+    NodeEventResponse,
+    NodeStatusResponse,
     PerformanceStatsResponse,
     ProtocolParamsResponse,
     ProtocolResponse,
@@ -39,17 +42,20 @@ from app.services.mining import (
     create_next_task,
     get_audit_summary,
     get_full_economic_audit,
+    get_health_status,
     get_balance,
     get_balances,
     get_block,
     get_blocks,
     get_ledger_entries,
     get_miner,
+    get_node_status,
     get_performance_stats,
     get_protocol,
     get_protocol_history,
     get_difficulty_status,
     get_retarget_history,
+    get_recent_events,
     get_stats,
     get_validation_job,
     get_validator,
@@ -67,6 +73,21 @@ from app.services.mining import (
 
 
 router = APIRouter()
+
+
+@router.get("/health", response_model=HealthResponse)
+def health() -> dict:
+    return get_health_status()
+
+
+@router.get("/node/status", response_model=NodeStatusResponse)
+def node_status() -> dict:
+    return get_node_status()
+
+
+@router.get("/events", response_model=list[NodeEventResponse])
+def recent_events(limit: int = Query(30, ge=1, le=100)) -> list[dict]:
+    return get_recent_events(limit)
 
 
 @router.post("/miners/register", response_model=MinerResponse, status_code=201)

@@ -144,7 +144,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 difficulty REAL,
                 task_id TEXT NOT NULL UNIQUE,
                 protocol_params_id INTEGER,
-                protocol_version TEXT NOT NULL DEFAULT '0.14',
+                protocol_version TEXT NOT NULL DEFAULT '0.15',
                 validation_mode TEXT NOT NULL DEFAULT 'external_commit_reveal',
                 total_task_ms INTEGER,
                 validation_ms INTEGER,
@@ -300,7 +300,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "blocks", "protocol_params_id", "INTEGER")
         _ensure_column(connection, "blocks", "total_task_ms", "INTEGER")
         _ensure_column(connection, "blocks", "validation_ms", "INTEGER")
-        _ensure_column(connection, "blocks", "protocol_version", "TEXT NOT NULL DEFAULT '0.14'")
+        _ensure_column(connection, "blocks", "protocol_version", "TEXT NOT NULL DEFAULT '0.15'")
         _ensure_column(connection, "blocks", "validation_mode", "TEXT NOT NULL DEFAULT 'external_commit_reveal'")
         _ensure_column(connection, "commitments", "commit_ms", "INTEGER")
         _ensure_column(connection, "validation_jobs", "validation_ms", "INTEGER")

@@ -247,6 +247,55 @@ class PerformanceStatsResponse(BaseModel):
     bbp_digit_cache_currsize: int
 
 
+class HealthResponse(BaseModel):
+    status: str
+    project: str
+    protocol_version: str
+    network_id: str
+    checked_at: datetime
+    started_at: datetime
+    uptime_seconds: int
+    database: dict[str, Any]
+    chain: dict[str, Any]
+    audit: dict[str, Any]
+    latest_block_height: int
+    latest_block_hash: str
+    can_assign_tasks: bool
+    mining_ready: bool
+    issues: list[str]
+
+
+class NodeStatusResponse(BaseModel):
+    project: str
+    protocol_version: str
+    network_id: str
+    started_at: datetime
+    checked_at: datetime
+    uptime_seconds: int
+    latest_block_height: int
+    latest_block_hash: str
+    chain_valid: bool
+    audit_valid: bool
+    mining_ready: bool
+    counts: dict[str, Any]
+    protocol: dict[str, Any]
+    performance: dict[str, Any]
+    economy: dict[str, Any]
+
+
+class NodeEventResponse(BaseModel):
+    id: str
+    type: str
+    title: str
+    message: str
+    severity: str
+    created_at: datetime
+    related_id: str | None = None
+    block_height: int | None = None
+    actor_id: str | None = None
+    metadata: dict[str, Any] = {}
+
+
 class ProtocolResponse(BaseModel):
     project: str
     protocol_version: str
