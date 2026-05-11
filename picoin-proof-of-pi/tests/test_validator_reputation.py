@@ -115,11 +115,17 @@ def test_block_is_accepted_after_validator_quorum(tmp_path, monkeypatch) -> None
     assert second_response["required_approvals"] == 2
     assert second_response["block"] is not None
     miner_balance = get_balance(miner_id)
+    first_validator_balance = get_balance(first_validator["validator_id"])
+    second_validator_balance = get_balance(second_validator["validator_id"])
     ledger = get_ledger_entries(miner_id)
     assert miner_balance["balance"] == 3.1416
+    assert first_validator_balance["balance"] == 31.57308
+    assert second_validator_balance["balance"] == 31.57308
     assert ledger[0]["entry_type"] == "block_reward"
     assert get_validator(first_validator["validator_id"])["accepted_jobs"] == 1
+    assert get_validator(first_validator["validator_id"])["total_rewards"] == 0.15708
     assert get_validator(second_validator["validator_id"])["accepted_jobs"] == 1
+    assert get_validator(second_validator["validator_id"])["total_rewards"] == 0.15708
 
 
 def test_genesis_balance_and_validator_stake_are_persisted(tmp_path, monkeypatch) -> None:

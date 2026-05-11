@@ -58,6 +58,11 @@ class ValidatorResponse(BaseModel):
     avg_validation_ms: float = 0.0
     stake_locked: float = 0.0
     slashed_amount: float = 0.0
+    total_rewards: float = 0.0
+    selection_score: float = 0.0
+    selection_weight: float = 0.0
+    recent_validation_votes: int = 0
+    availability_score: float = 0.0
     balance: float = 0.0
     is_banned: bool = False
 
@@ -161,6 +166,8 @@ class StatsResponse(BaseModel):
     accepted_blocks: int
     rejected_submissions: int
     total_rewards: float
+    total_validator_rewards: float
+    total_minted_rewards: float
     circulating_supply: float
     genesis_balance: float
     latest_block_hash: str
@@ -257,7 +264,10 @@ class ProtocolResponse(BaseModel):
     base_reward: float
     difficulty: float
     reward_per_block: float
+    validator_reward_percent: float
+    validator_reward_pool_per_block: float
     faucet_enabled: bool
+    validator_selection_mode: str
     penalty_invalid_result: int
     penalty_duplicate: int
     penalty_invalid_signature: int
@@ -360,6 +370,8 @@ class ValidationJobResponse(BaseModel):
     samples: list[dict[str, Any]]
     status: str
     assigned_validator_id: str | None = None
+    selection_score: float | None = None
+    selection_rank: int | None = None
     approvals: int = 0
     rejections: int = 0
     required_approvals: int = 1

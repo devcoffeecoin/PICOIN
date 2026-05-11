@@ -41,10 +41,19 @@ from app.core.settings import (
     TASK_RATE_LIMIT_MAX_ASSIGNMENTS,
     TASK_RATE_LIMIT_WINDOW_SECONDS,
     VALIDATOR_BAN_AFTER_INVALID_RESULTS,
+    VALIDATOR_AVAILABILITY_WINDOW_SECONDS,
     VALIDATOR_COOLDOWN_AFTER_INVALID_RESULTS,
     VALIDATOR_COOLDOWN_SECONDS,
     VALIDATOR_MIN_TRUST_SCORE,
     VALIDATOR_PENALTY_INVALID_SIGNATURE,
+    VALIDATOR_ROTATION_WINDOW_SECONDS,
+    VALIDATOR_REWARD_PERCENT_OF_BLOCK,
+    VALIDATOR_SELECTION_AVAILABILITY_WEIGHT,
+    VALIDATOR_SELECTION_MODE,
+    VALIDATOR_SELECTION_POOL_MULTIPLIER,
+    VALIDATOR_SELECTION_ROTATION_WEIGHT,
+    VALIDATOR_SELECTION_STAKE_WEIGHT,
+    VALIDATOR_SELECTION_TRUST_WEIGHT,
     VALIDATOR_SLASH_INVALID_SIGNATURE,
     VALIDATION_MODE,
 )
@@ -172,10 +181,12 @@ def get_validators(limit: int = 100, eligible_only: bool = False) -> list[dict[s
             """,
             (*params, limit),
         ).fetchall()
-    return [enrich_validator(row_to_dict(row)) for row in rows]
+        validators = [enrich_validator(row_to_dict(row), connection) for row in rows]
+    validators.sort(key=lambda item: (-float(item["selection_score"]), item["validator_id"]))
+    return validators
 
 
-def enrich_validator(validator: dict[str, Any] | None) -> dict[str, Any] | None:
+def enrich_validator(validator: dict[str, Any] | None, connection: Any | None = None) -> dict[str, Any] | None:
     if validator is None:
         return None
     completed_jobs = int(validator["accepted_jobs"]) + int(validator["rejected_jobs"])
@@ -184,6 +195,13 @@ def enrich_validator(validator: dict[str, Any] | None) -> dict[str, Any] | None:
     validator["avg_validation_ms"] = round(total_validation_ms / completed_jobs, 2) if completed_jobs else 0.0
     validator["balance"] = get_balance_amount(validator["validator_id"])
     validator["is_banned"] = bool(validator["is_banned"])
+    validator["total_rewards"] = _validator_reward_total(validator["validator_id"])
+    if connection is None:
+        with get_connection() as score_connection:
+            selection = _validator_selection_metrics(score_connection, validator)
+    else:
+        selection = _validator_selection_metrics(connection, validator)
+    validator.update(selection)
     return validator
 
 
@@ -829,33 +847,46 @@ def get_validation_job(validator_id: str) -> dict[str, Any] | None:
             (utc_now(), validator_id),
         )
 
-        job = row_to_dict(
-            connection.execute(
-                """
-                SELECT validation_jobs.*, tasks.range_start, tasks.range_end, tasks.algorithm
-                     , tasks.protocol_params_id
-                FROM validation_jobs
-                JOIN tasks ON tasks.task_id = validation_jobs.task_id
-                WHERE validation_jobs.status = 'pending'
-                AND NOT EXISTS (
-                    SELECT 1
-                    FROM validation_votes
-                    WHERE validation_votes.job_id = validation_jobs.job_id
-                    AND validation_votes.validator_id = ?
-                )
-                ORDER BY (
-                    SELECT COUNT(*)
-                    FROM validation_votes
-                    WHERE validation_votes.job_id = validation_jobs.job_id
-                ) ASC, validation_jobs.created_at ASC
-                LIMIT 1
-                """,
-                (validator_id,),
-            ).fetchone()
-        )
+        candidate_rows = connection.execute(
+            """
+            SELECT validation_jobs.*, tasks.range_start, tasks.range_end, tasks.algorithm
+                 , tasks.protocol_params_id
+            FROM validation_jobs
+            JOIN tasks ON tasks.task_id = validation_jobs.task_id
+            WHERE validation_jobs.status = 'pending'
+            AND NOT EXISTS (
+                SELECT 1
+                FROM validation_votes
+                WHERE validation_votes.job_id = validation_jobs.job_id
+                AND validation_votes.validator_id = ?
+            )
+            ORDER BY (
+                SELECT COUNT(*)
+                FROM validation_votes
+                WHERE validation_votes.job_id = validation_jobs.job_id
+            ) ASC, validation_jobs.created_at ASC
+            LIMIT 20
+            """,
+            (validator_id,),
+        ).fetchall()
+
+        job = None
+        selection_meta = None
+        for candidate_row in candidate_rows:
+            candidate = row_to_dict(candidate_row)
+            params = _protocol_params_for_task(connection, candidate)
+            selected = _selected_validators_for_job(connection, candidate, params)
+            match = next((item for item in selected if item["validator_id"] == validator_id), None)
+            if match is not None:
+                job = candidate
+                selection_meta = match
+                break
+
         if job is None:
             return None
         job["assigned_validator_id"] = validator_id
+        job["selection_score"] = selection_meta["selection_score"] if selection_meta else None
+        job["selection_rank"] = selection_meta["selection_rank"] if selection_meta else None
         counts = _validation_vote_counts(connection, job["job_id"])
         params = _protocol_params_for_task(connection, job)
 
@@ -987,6 +1018,7 @@ def submit_validation_result(
                 submission_reason=f"external validation approved by {validator_id}",
                 validation_ms=validation_ms,
                 params=params,
+                validation_job_id=job_id,
             )
             connection.execute(
                 """
@@ -1066,6 +1098,13 @@ def get_stats() -> dict[str, Any]:
         pending = connection.execute("SELECT COUNT(*) AS count FROM tasks WHERE status = 'assigned'").fetchone()["count"]
         expired = connection.execute("SELECT COUNT(*) AS count FROM tasks WHERE status = 'expired'").fetchone()["count"]
         blocks = connection.execute("SELECT COUNT(*) AS count, COALESCE(SUM(reward), 0) AS rewards FROM blocks").fetchone()
+        validator_rewards = connection.execute(
+            """
+            SELECT COALESCE(SUM(amount), 0) AS rewards
+            FROM ledger_entries
+            WHERE entry_type = 'validator_reward'
+            """
+        ).fetchone()["rewards"]
         rejected = connection.execute("SELECT COUNT(*) AS count FROM submissions WHERE accepted = 0").fetchone()["count"]
         latest = connection.execute("SELECT block_hash FROM blocks ORDER BY height DESC LIMIT 1").fetchone()
         supply = _supply_snapshot(connection)
@@ -1077,6 +1116,8 @@ def get_stats() -> dict[str, Any]:
         "accepted_blocks": blocks["count"],
         "rejected_submissions": rejected,
         "total_rewards": blocks["rewards"],
+        "total_validator_rewards": round(float(validator_rewards), 8),
+        "total_minted_rewards": round(float(blocks["rewards"]) + float(validator_rewards), 8),
         "circulating_supply": supply["circulating_supply"],
         "genesis_balance": supply["genesis_balance"],
         "latest_block_hash": GENESIS_HASH if latest is None else latest["block_hash"],
@@ -1282,6 +1323,10 @@ def get_full_economic_audit() -> dict[str, Any]:
         account_mismatches = _account_balance_mismatches(connection)
 
         block_rewards = _sum_query(connection, "SELECT COALESCE(SUM(reward), 0) AS total FROM blocks")
+        validator_rewards = _sum_query(
+            connection,
+            "SELECT COALESCE(SUM(amount), 0) AS total FROM ledger_entries WHERE entry_type = 'validator_reward'",
+        )
         reward_rows = connection.execute(
             "SELECT COUNT(*) AS count, COALESCE(SUM(amount), 0) AS total FROM rewards"
         ).fetchone()
@@ -1327,21 +1372,21 @@ def get_full_economic_audit() -> dict[str, Any]:
             """,
         )
 
-    expected_total_balances = round(GENESIS_SUPPLY + block_rewards, 8)
+    expected_total_balances = round(GENESIS_SUPPLY + block_rewards + validator_rewards, 8)
     expected_ledger_total = expected_total_balances
     expected_validator_stake_locked = round(ledger_validator_stake_locks + ledger_validator_slashes, 8)
 
     _audit_equal(
         issues,
         code="total_balances_mismatch",
-        message="sum(balances) must equal genesis supply plus minted block rewards",
+        message="sum(balances) must equal genesis supply plus minted miner and validator rewards",
         expected=expected_total_balances,
         actual=actual_total_balances,
     )
     _audit_equal(
         issues,
         code="ledger_total_mismatch",
-        message="sum(ledger_entries.amount) must equal genesis supply plus minted block rewards",
+        message="sum(ledger_entries.amount) must equal genesis supply plus minted miner and validator rewards",
         expected=expected_ledger_total,
         actual=ledger_total_amount,
     )
@@ -1428,6 +1473,8 @@ def get_full_economic_audit() -> dict[str, Any]:
         "rewards": {
             "accepted_blocks": accepted_blocks,
             "block_reward_total": block_rewards,
+            "validator_reward_total": validator_rewards,
+            "total_minted_rewards": round(block_rewards + validator_rewards, 8),
             "reward_rows": reward_count,
             "rewards_table_total": rewards_table_total,
             "ledger_block_reward_total": ledger_block_rewards,
@@ -1580,7 +1627,10 @@ def _protocol_payload(params: dict[str, Any]) -> dict[str, Any]:
         "base_reward": params["base_reward"],
         "difficulty": calculate_difficulty(params),
         "reward_per_block": calculate_reward(params),
+        "validator_reward_percent": VALIDATOR_REWARD_PERCENT_OF_BLOCK,
+        "validator_reward_pool_per_block": calculate_validator_reward_pool(params),
         "faucet_enabled": NETWORK_ID in FAUCET_ALLOWED_NETWORKS,
+        "validator_selection_mode": VALIDATOR_SELECTION_MODE,
         "penalty_invalid_result": PENALTY_INVALID_RESULT,
         "penalty_duplicate": PENALTY_DUPLICATE,
         "penalty_invalid_signature": PENALTY_INVALID_SIGNATURE,
@@ -1718,6 +1768,167 @@ def _record_submission(
         """,
         (task_id, miner_id, result_hash, len(segment), signature, int(accepted), reason, utc_now()),
     )
+
+
+def calculate_validator_reward_pool(params: dict[str, Any]) -> float:
+    return round(calculate_reward(params) * VALIDATOR_REWARD_PERCENT_OF_BLOCK, 8)
+
+
+def _validator_reward_total(validator_id: str) -> float:
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT COALESCE(SUM(amount), 0) AS total
+            FROM ledger_entries
+            WHERE account_id = ?
+            AND entry_type = 'validator_reward'
+            """,
+            (validator_id,),
+        ).fetchone()
+    return round(float(row["total"]), 8)
+
+
+def _approved_validator_ids_for_job(connection: Any, job_id: str) -> list[str]:
+    rows = connection.execute(
+        """
+        SELECT validator_id
+        FROM validation_votes
+        WHERE job_id = ?
+        AND approved = 1
+        ORDER BY created_at ASC, id ASC
+        """,
+        (job_id,),
+    ).fetchall()
+    return [row["validator_id"] for row in rows]
+
+
+def _apply_validator_rewards(
+    connection: Any,
+    *,
+    job_id: str,
+    block_height: int,
+    params: dict[str, Any],
+) -> dict[str, Any]:
+    validator_ids = _approved_validator_ids_for_job(connection, job_id)
+    pool = calculate_validator_reward_pool(params)
+    if not validator_ids or pool <= 0:
+        return {"pool": 0.0, "per_validator": 0.0, "validator_ids": []}
+
+    per_validator = round(pool / len(validator_ids), 8)
+    distributed = 0.0
+    for index, validator_id in enumerate(validator_ids, start=1):
+        amount = per_validator
+        if index == len(validator_ids):
+            amount = round(pool - distributed, 8)
+        distributed = round(distributed + amount, 8)
+        _apply_ledger_entry(
+            connection,
+            account_id=validator_id,
+            account_type="validator",
+            amount=amount,
+            entry_type="validator_reward",
+            block_height=block_height,
+            related_id=job_id,
+            description="additional validator reward",
+        )
+
+    return {
+        "pool": pool,
+        "per_validator": per_validator,
+        "validator_ids": validator_ids,
+    }
+
+
+def _selected_validators_for_job(
+    connection: Any,
+    job: dict[str, Any],
+    params: dict[str, Any],
+) -> list[dict[str, Any]]:
+    eligible = _eligible_validator_rows(connection)
+    required = int(params["required_validator_approvals"])
+    pool_size = min(len(eligible), max(required, required * VALIDATOR_SELECTION_POOL_MULTIPLIER))
+    scored: list[dict[str, Any]] = []
+    for validator in eligible:
+        metrics = _validator_selection_metrics(connection, validator)
+        jitter = _selection_jitter(job["challenge_seed"], validator["validator_id"])
+        scored.append(
+            {
+                "validator_id": validator["validator_id"],
+                "selection_score": metrics["selection_score"],
+                "selection_weight": round(metrics["selection_score"] + jitter, 8),
+                "recent_validation_votes": metrics["recent_validation_votes"],
+                "availability_score": metrics["availability_score"],
+            }
+        )
+
+    scored.sort(key=lambda item: (-item["selection_weight"], item["validator_id"]))
+    selected = scored[:pool_size]
+    for index, item in enumerate(selected, start=1):
+        item["selection_rank"] = index
+    return selected
+
+
+def _eligible_validator_rows(connection: Any) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT *
+        FROM validators
+        WHERE is_banned = 0
+        AND stake_locked >= ?
+        AND trust_score >= ?
+        """,
+        (MIN_VALIDATOR_STAKE, VALIDATOR_MIN_TRUST_SCORE),
+    ).fetchall()
+    eligible: list[dict[str, Any]] = []
+    now = utc_now_dt()
+    for row in rows:
+        validator = row_to_dict(row)
+        cooldown_until = parse_iso(validator["cooldown_until"])
+        if cooldown_until is not None and cooldown_until > now:
+            continue
+        eligible.append(validator)
+    return eligible
+
+
+def _validator_selection_metrics(connection: Any, validator: dict[str, Any]) -> dict[str, Any]:
+    trust_score = max(0.0, min(1.0, float(validator.get("trust_score") or 0.0)))
+    stake_locked = max(0.0, float(validator.get("stake_locked") or 0.0))
+    stake_score = min(1.0, stake_locked / (MIN_VALIDATOR_STAKE * 2))
+
+    last_seen_at = parse_iso(validator.get("last_seen_at"))
+    availability_score = 0.5
+    if last_seen_at is not None and last_seen_at >= utc_now_dt() - timedelta(seconds=VALIDATOR_AVAILABILITY_WINDOW_SECONDS):
+        availability_score = 1.0
+
+    recent_votes = int(
+        connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM validation_votes
+            WHERE validator_id = ?
+            AND created_at >= ?
+            """,
+            (validator["validator_id"], iso_ago(VALIDATOR_ROTATION_WINDOW_SECONDS)),
+        ).fetchone()["count"]
+    )
+    rotation_score = 1 / (1 + recent_votes)
+    selection_score = (
+        (trust_score * VALIDATOR_SELECTION_TRUST_WEIGHT)
+        + (stake_score * VALIDATOR_SELECTION_STAKE_WEIGHT)
+        + (availability_score * VALIDATOR_SELECTION_AVAILABILITY_WEIGHT)
+        + (rotation_score * VALIDATOR_SELECTION_ROTATION_WEIGHT)
+    )
+    return {
+        "selection_score": round(selection_score, 6),
+        "selection_weight": round(selection_score, 6),
+        "recent_validation_votes": recent_votes,
+        "availability_score": round(availability_score, 6),
+    }
+
+
+def _selection_jitter(seed: str, validator_id: str) -> float:
+    digest = sha256_text(canonical_json({"seed": seed, "validator_id": validator_id}))
+    return (int(digest[:8], 16) / 0xFFFFFFFF) / 1_000_000
 
 
 def _sum_query(connection: Any, query: str) -> float:
@@ -2378,6 +2589,7 @@ def _accept_block_in_connection(
     submission_reason: str,
     validation_ms: int | None = None,
     params: dict[str, Any] | None = None,
+    validation_job_id: str | None = None,
 ) -> dict[str, Any]:
     if params is None:
         params = _protocol_params_for_task(connection, task)
@@ -2467,6 +2679,14 @@ def _accept_block_in_connection(
         related_id=task["task_id"],
         description="miner block reward",
     )
+    validator_reward = {"pool": 0.0, "per_validator": 0.0, "validator_ids": []}
+    if validation_job_id is not None:
+        validator_reward = _apply_validator_rewards(
+            connection,
+            job_id=validation_job_id,
+            block_height=next_height,
+            params=params,
+        )
     _refresh_trust_score(connection, miner_id)
     _maybe_retarget_after_block(connection, next_height)
 
@@ -2483,6 +2703,7 @@ def _accept_block_in_connection(
         "timestamp": timestamp,
         "block_hash": block_hash,
         "reward": reward,
+        "validator_reward": validator_reward,
         "difficulty": difficulty,
         "protocol_params_id": params["id"],
         "protocol_version": params["protocol_version"],

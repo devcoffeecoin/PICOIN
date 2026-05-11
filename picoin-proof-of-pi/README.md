@@ -4,12 +4,12 @@ MVP funcional de **Proof of Pi**. Un coordinador asigna rangos pequenos de digit
 
 Este proyecto no implementa una blockchain completa. Usa una cadena local de bloques aceptados con `previous_hash` y `block_hash` para preparar una evolucion futura.
 
-## Protocolo v0.11
+## Protocolo v0.12
 
 Parametros actuales:
 
 ```text
-protocol_version = 0.11
+protocol_version = 0.12
 network_id = local
 algorithm = bbp_hex_v1
 validation_mode = external_commit_reveal
@@ -25,6 +25,8 @@ genesis_supply = 3141600.0
 base_reward = 3.1416
 difficulty = 1.0
 reward_per_block = 3.1416
+validator_reward_percent = 10%
+validator_reward_pool_per_block = 0.31416
 min_validator_stake = 31.416
 validator_slash_invalid_signature = 3.1416
 penalty_invalid_result = 1
@@ -35,9 +37,10 @@ cooldown_seconds = 300
 task_rate_limit = 12 assignments / 60 seconds
 faucet_enabled_networks = local
 faucet_rate_limit = 3 credits / account / hour
+validator_selection_mode = weighted_reputation_stake_rotation
 ```
 
-El endpoint `GET /protocol` devuelve estos valores para que mineros y validadores sepan que reglas estan activas. Desde v0.11 estos parametros viven en SQLite, en `protocol_params`, y pueden cambiar automaticamente por epocas. `network_id` viene de `PICOIN_NETWORK`; por defecto es `local`.
+El endpoint `GET /protocol` devuelve estos valores para que mineros y validadores sepan que reglas estan activas. Desde v0.12 estos parametros viven en SQLite, en `protocol_params`, y pueden cambiar automaticamente por epocas. `network_id` viene de `PICOIN_NETWORK`; por defecto es `local`.
 
 La dificultad se calcula con una formula simple y auditable:
 
@@ -47,12 +50,13 @@ difficulty =
   * (sample_count / 8)
   * (log10(max_pi_position) / log10(10000))
 
-reward_per_block = base_reward
+miner_reward_per_block = base_reward
+validator_reward_pool_per_block = base_reward * 0.10
 ```
 
-La dificultad regula el trabajo, no multiplica la emision. La emision queda fija en `3.1416` por bloque aceptado.
+La dificultad regula el trabajo, no multiplica la emision. La recompensa del minero queda fija en `3.1416` por bloque aceptado. Adicionalmente, los validadores que aprobaron el bloque reciben una emision extra total de `0.31416`, repartida en partes iguales.
 
-El genesis acredita `3,141,600` monedas a la cuenta `genesis`. Cada bloque aceptado acredita `3.1416` monedas al minero ganador en el ledger local.
+El genesis acredita `3,141,600` monedas a la cuenta `genesis`. Cada bloque aceptado acredita `3.1416` monedas al minero ganador y `0.31416` monedas adicionales repartidas entre validadores aprobadores en el ledger local.
 
 Cada bloque guarda la dificultad y recompensa usadas al momento de aceptarse.
 Las tareas y bloques tambien guardan `protocol_params_id`, asi un retarget no cambia las reglas de una tarea que ya estaba asignada.
@@ -450,15 +454,22 @@ Consulta identidad, historial y reputacion de un validador. Incluye:
 
 ### `GET /validators`
 
-Lista validadores ordenados por reputacion, stake y trabajos aceptados. Con `eligible_only=true` devuelve solo validadores aptos para recibir jobs.
+Lista validadores ordenados por score de seleccion. Con `eligible_only=true` devuelve solo validadores aptos para recibir jobs.
 
 ```powershell
 curl "http://127.0.0.1:8000/validators?eligible_only=true"
 ```
 
+Cada validador incluye campos de seleccion:
+
+- `selection_score`
+- `selection_weight`
+- `recent_validation_votes`
+- `availability_score`
+
 ### `GET /validation/jobs?validator_id=...`
 
-Entrega el siguiente job pendiente a un validador elegible. El mismo job puede ser entregado a varios validadores distintos hasta alcanzar quorum. Un validador no puede votar dos veces el mismo job.
+Entrega el siguiente job pendiente si el validador pertenece al pool seleccionado para ese job. El pool se calcula con reputacion, stake, disponibilidad y rotacion reciente. El mismo job puede ser entregado a varios validadores distintos hasta alcanzar quorum. Un validador no puede votar dos veces el mismo job.
 
 ### `POST /validation/results`
 
@@ -542,6 +553,7 @@ Ejecuta auditoria economica completa y devuelve un JSON verificable. Comprueba:
 - balance de cada cuenta contra sus movimientos de ledger
 - bloques aceptados contra tabla `rewards`
 - recompensas de bloque contra movimientos `block_reward`
+- recompensas adicionales de validadores contra movimientos `validator_reward`
 - stake bloqueado y slashing de validadores contra ledger
 
 ```powershell
@@ -609,7 +621,10 @@ Implementado:
 - Quorum de multiples validadores por bloque.
 - Reputacion de validadores con `trust_score`.
 - Seleccion/gating de validadores por reputacion y stake minimo.
+- Seleccion inteligente de validadores por score ponderado.
+- Rotacion para evitar concentracion excesiva de validaciones.
 - Stake simulado de validadores y slashing por firmas invalidas.
+- Recompensa adicional para validadores aprobadores.
 - Balances persistentes y ledger auditable.
 - Auditoria economica completa en `/audit/full`.
 - Cooldown y ban por firmas invalidas repetidas.
@@ -641,7 +656,7 @@ Limites intencionales:
 - No hay consenso distribuido.
 - No hay red P2P.
 - No hay wallet transferible entre usuarios; el ledger solo registra emision, recompensas, stake simulado y slashing.
-- La validacion v0.11 es probabilistica por muestras, no una prueba criptografica completa del calculo entero.
+- La validacion v0.12 es probabilistica por muestras, no una prueba criptografica completa del calculo entero.
 
 ## Performance
 
@@ -697,6 +712,28 @@ Cada validador recibe un stake simulado inicial de `31.416`, financiado desde la
 
 Este modelo todavia no es staking real transferible. Es una capa MVP para priorizar validadores confiables, agregar costo anti-Sybil simulado y detectar comportamiento roto o malicioso.
 
+## Seleccion De Validadores
+
+Desde v0.12, el coordinador no entrega jobs solamente por orden de llegada. Para cada `validation_job`, calcula un pool de validadores seleccionados con:
+
+```text
+selection_score =
+  trust_score * 0.55
+  + stake_score * 0.25
+  + availability_score * 0.10
+  + rotation_score * 0.10
+```
+
+`stake_score` se normaliza contra el stake minimo, `availability_score` sube cuando el validador ha estado activo recientemente, y `rotation_score` baja si ese validador ya voto muchas veces en la ultima hora. Un pequeno desempate deterministico basado en `challenge_seed` evita que los empates siempre favorezcan al mismo ID.
+
+El tamano del pool es:
+
+```text
+required_validator_approvals * 2
+```
+
+Si hay menos validadores elegibles, usa todos los disponibles. Esto mantiene velocidad para testnet local, pero reduce concentracion cuando hay mas validadores que el quorum minimo.
+
 ## Economia MVP
 
 Reglas actuales:
@@ -704,19 +741,24 @@ Reglas actuales:
 ```text
 genesis_supply = 3141600.0
 block_emission = 3.1416
+validator_reward_pool = 0.31416
+total_minted_per_accepted_block = 3.45576
 validator_initial_stake = 31.416
 validator_slash_invalid_signature = 3.1416
 ```
 
-El genesis queda registrado en `ledger_entries` con `block_height = 0`. Cada bloque aceptado crea un movimiento `block_reward` para el minero. Los registros de stake y slashing tambien quedan en el ledger.
+El genesis queda registrado en `ledger_entries` con `block_height = 0`. Cada bloque aceptado crea un movimiento `block_reward` para el minero y movimientos `validator_reward` para los validadores que aprobaron el bloque. Los registros de stake y slashing tambien quedan en el ledger.
 
 Politica monetaria auditada en v0.11:
 
 ```text
-expected_total_balances = genesis_supply + accepted_block_rewards
+expected_total_balances =
+  genesis_supply
+  + accepted_block_rewards
+  + validator_rewards
 ```
 
-`genesis`, faucet, stake y slashing son movimientos internos. Las recompensas de bloque son emision nueva. Por eso el total de balances puede crecer con cada bloque aceptado, mientras el endpoint `/audit/full` verifica que ese crecimiento coincida exactamente con la suma de recompensas registradas.
+`genesis`, faucet, stake y slashing son movimientos internos. Las recompensas de minero y validador son emision nueva. Por eso el total de balances puede crecer con cada bloque aceptado, mientras el endpoint `/audit/full` verifica que ese crecimiento coincida exactamente con la suma de recompensas registradas.
 
 ## Firma Ed25519
 

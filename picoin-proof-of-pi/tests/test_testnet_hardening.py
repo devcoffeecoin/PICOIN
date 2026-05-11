@@ -156,6 +156,7 @@ def test_full_commit_reveal_flow_accepts_block_after_two_validator_votes(tmp_pat
     assert first_response["status"] == "validation_pending"
     assert second_response["status"] == "approved"
     assert second_response["block"]["height"] == 1
+    assert second_response["block"]["validator_reward"]["pool"] == 0.31416
     assert second_response["approvals"] == 2
 
 
