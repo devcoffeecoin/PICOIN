@@ -1,5 +1,5 @@
 import math
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 
 class DifficultyService:
     """
@@ -14,7 +14,7 @@ class DifficultyService:
     PI_PIVOT_POS = 10000     # Posición de referencia para normalización
 
     @staticmethod
-    def calculate_next_difficulty(history: List[Dict[str, Any]], current_params: Dict[str, Any]) -> Dict[str, Any]:
+    def calculate_next_difficulty(history: List[Dict[str, Any]], current_params: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         """
         Calcula los nuevos parámetros del protocolo basándose en el historial reciente.
         
@@ -23,7 +23,7 @@ class DifficultyService:
             current_params: Diccionario con 'segment_size', 'sample_count' y 'max_pi_position'.
         """
         if len(history) < DifficultyService.SMA_WINDOW:
-            return current_params  # No hay datos suficientes para el suavizado
+            return current_params, {"action": "wait", "reason": "insufficient history", "adjustment_factor": 1.0}
 
         # 1. SUAVIZADO (SMA)
         # Extraemos la ventana de los últimos 10 bloques para evitar oscilaciones por anomalías de red
@@ -80,4 +80,15 @@ class DifficultyService:
             (math.log10(current_params['max_pi_position']) / math.log10(10000))
         )
 
-        return new_params
+        # Metadatos para el test y el log del nodo
+        action = "keep"
+        if adjustment_ratio > 1.05: action = "increase"
+        elif adjustment_ratio < 0.95: action = "decrease"
+
+        meta = {
+            "action": action,
+            "reason": f"SMA-10 Optimized (Obs: {int(avg_observed_ms)}ms, Norm: {int(normalized_ms)}ms)",
+            "adjustment_factor": round(adjustment_ratio, 4)
+        }
+
+        return new_params, meta
