@@ -50,7 +50,7 @@ def test_validator_reputation_tracks_completed_approved_jobs(tmp_path, monkeypat
     assert response["accepted"] is True
     assert response["status"] == "validation_pending"
     assert response["approvals"] == 1
-    assert response["required_approvals"] == 2
+    assert response["required_approvals"] == 3
     assert response["block"] is None
     assert updated["accepted_jobs"] == 1
     assert updated["completed_jobs"] == 1
@@ -68,8 +68,10 @@ def test_block_is_accepted_after_validator_quorum(tmp_path, monkeypatch) -> None
     miner_id = _register_miner("miner-quorum")
     first_keys = generate_keypair()
     second_keys = generate_keypair()
+    third_keys = generate_keypair()
     first_validator = register_validator("validator-one", first_keys["public_key"])
     second_validator = register_validator("validator-two", second_keys["public_key"])
+    third_validator = register_validator("validator-three", third_keys["public_key"])
     job_id, task_id = _insert_validation_job(miner_id, first_validator["validator_id"])
     signed_at = "2026-05-10T00:00:00+00:00"
 
@@ -109,23 +111,46 @@ def test_block_is_accepted_after_validator_quorum(tmp_path, monkeypatch) -> None
         signed_at=signed_at,
     )
 
+    third_signature = _sign_validation_result(
+        third_keys["private_key"],
+        job_id,
+        third_validator["validator_id"],
+        task_id,
+        True,
+        "accepted by third",
+        signed_at,
+    )
+    third_response = submit_validation_result(
+        job_id=job_id,
+        validator_id=third_validator["validator_id"],
+        approved=True,
+        reason="accepted by third",
+        signature=third_signature,
+        signed_at=signed_at,
+    )
+
     assert first_response["status"] == "validation_pending"
-    assert second_response["status"] == "approved"
-    assert second_response["approvals"] == 2
-    assert second_response["required_approvals"] == 2
-    assert second_response["block"] is not None
+    assert second_response["status"] == "validation_pending"
+    assert third_response["status"] == "approved"
+    assert third_response["approvals"] == 3
+    assert third_response["required_approvals"] == 3
+    assert third_response["block"] is not None
     miner_balance = get_balance(miner_id)
     first_validator_balance = get_balance(first_validator["validator_id"])
     second_validator_balance = get_balance(second_validator["validator_id"])
+    third_validator_balance = get_balance(third_validator["validator_id"])
     ledger = get_ledger_entries(miner_id)
     assert miner_balance["balance"] == 3.1416
-    assert first_validator_balance["balance"] == 31.57308
-    assert second_validator_balance["balance"] == 31.57308
+    assert first_validator_balance["balance"] == 31.52072
+    assert second_validator_balance["balance"] == 31.52072
+    assert third_validator_balance["balance"] == 31.52072
     assert ledger[0]["entry_type"] == "block_reward"
     assert get_validator(first_validator["validator_id"])["accepted_jobs"] == 1
-    assert get_validator(first_validator["validator_id"])["total_rewards"] == 0.15708
+    assert get_validator(first_validator["validator_id"])["total_rewards"] == 0.10472
     assert get_validator(second_validator["validator_id"])["accepted_jobs"] == 1
-    assert get_validator(second_validator["validator_id"])["total_rewards"] == 0.15708
+    assert get_validator(second_validator["validator_id"])["total_rewards"] == 0.10472
+    assert get_validator(third_validator["validator_id"])["accepted_jobs"] == 1
+    assert get_validator(third_validator["validator_id"])["total_rewards"] == 0.10472
 
 
 def test_genesis_balance_and_validator_stake_are_persisted(tmp_path, monkeypatch) -> None:

@@ -12,7 +12,7 @@ def test_weighted_validator_selection_excludes_lowest_rank_when_pool_is_full(tmp
     init_db(db_path)
 
     miner = _register_miner("selection-miner")
-    validators = [_register_validator(f"selection-validator-{index}") for index in range(5)]
+    validators = [_register_validator(f"selection-validator-{index}") for index in range(7)]
     low_validator = validators[-1]
     with get_connection() as connection:
         connection.execute(
@@ -26,7 +26,7 @@ def test_weighted_validator_selection_excludes_lowest_rank_when_pool_is_full(tmp
 
     assert low_job is None
     assert high_job is not None
-    assert high_job["selection_rank"] <= 4
+    assert high_job["selection_rank"] <= 6
     assert high_job["selection_score"] > 0
 
 

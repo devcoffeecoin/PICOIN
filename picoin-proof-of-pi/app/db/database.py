@@ -144,7 +144,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 difficulty REAL,
                 task_id TEXT NOT NULL UNIQUE,
                 protocol_params_id INTEGER,
-                protocol_version TEXT NOT NULL DEFAULT '0.15',
+                protocol_version TEXT NOT NULL DEFAULT '0.16',
                 validation_mode TEXT NOT NULL DEFAULT 'external_commit_reveal',
                 total_task_ms INTEGER,
                 validation_ms INTEGER,
@@ -268,6 +268,21 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS retroactive_audits (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                block_height INTEGER NOT NULL,
+                block_hash TEXT NOT NULL,
+                audit_seed TEXT NOT NULL,
+                sample_count INTEGER NOT NULL,
+                samples TEXT NOT NULL,
+                expected_hash TEXT NOT NULL,
+                actual_hash TEXT NOT NULL,
+                passed INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(block_height) REFERENCES blocks(height)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
             CREATE INDEX IF NOT EXISTS idx_blocks_miner ON blocks(miner_id);
             CREATE INDEX IF NOT EXISTS idx_commitments_miner ON commitments(miner_id);
@@ -277,6 +292,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_penalties_miner ON penalties(miner_id);
             CREATE INDEX IF NOT EXISTS idx_ledger_account ON ledger_entries(account_id);
             CREATE INDEX IF NOT EXISTS idx_ledger_type ON ledger_entries(entry_type);
+            CREATE INDEX IF NOT EXISTS idx_retroactive_audits_block ON retroactive_audits(block_height);
             """
         )
         _ensure_column(connection, "miners", "trust_score", "REAL NOT NULL DEFAULT 1.0")
@@ -300,7 +316,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "blocks", "protocol_params_id", "INTEGER")
         _ensure_column(connection, "blocks", "total_task_ms", "INTEGER")
         _ensure_column(connection, "blocks", "validation_ms", "INTEGER")
-        _ensure_column(connection, "blocks", "protocol_version", "TEXT NOT NULL DEFAULT '0.15'")
+        _ensure_column(connection, "blocks", "protocol_version", "TEXT NOT NULL DEFAULT '0.16'")
         _ensure_column(connection, "blocks", "validation_mode", "TEXT NOT NULL DEFAULT 'external_commit_reveal'")
         _ensure_column(connection, "commitments", "commit_ms", "INTEGER")
         _ensure_column(connection, "validation_jobs", "validation_ms", "INTEGER")

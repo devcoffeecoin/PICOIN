@@ -96,7 +96,7 @@ def test_cleanup_expires_stale_tasks_and_validation_jobs(tmp_path, monkeypatch) 
     assert job_status == "expired"
 
 
-def test_full_commit_reveal_flow_accepts_block_after_two_validator_votes(tmp_path, monkeypatch) -> None:
+def test_full_commit_reveal_flow_accepts_block_after_three_validator_votes(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "full-flow.sqlite3"
     monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
     monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
@@ -105,6 +105,7 @@ def test_full_commit_reveal_flow_accepts_block_after_two_validator_votes(tmp_pat
     miner, miner_keys = _register_miner_with_keys("full-flow-miner")
     first_validator, first_keys = _register_validator_with_keys("flow-validator-one")
     second_validator, second_keys = _register_validator_with_keys("flow-validator-two")
+    third_validator, third_keys = _register_validator_with_keys("flow-validator-three")
 
     task = create_next_task(miner["miner_id"])
     segment = calculate_pi_segment(task["range_start"], task["range_end"], task["algorithm"])
@@ -152,12 +153,14 @@ def test_full_commit_reveal_flow_accepts_block_after_two_validator_votes(tmp_pat
 
     first_response = _vote_next_job(first_validator["validator_id"], first_keys["private_key"])
     second_response = _vote_next_job(second_validator["validator_id"], second_keys["private_key"])
+    third_response = _vote_next_job(third_validator["validator_id"], third_keys["private_key"])
 
     assert first_response["status"] == "validation_pending"
-    assert second_response["status"] == "approved"
-    assert second_response["block"]["height"] == 1
-    assert second_response["block"]["validator_reward"]["pool"] == 0.31416
-    assert second_response["approvals"] == 2
+    assert second_response["status"] == "validation_pending"
+    assert third_response["status"] == "approved"
+    assert third_response["block"]["height"] == 1
+    assert third_response["block"]["validator_reward"]["pool"] == 0.31416
+    assert third_response["approvals"] == 3
 
 
 def _register_miner_with_keys(name: str) -> tuple[dict, dict]:

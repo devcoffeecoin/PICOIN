@@ -24,8 +24,10 @@ def test_protocol_exposes_dynamic_difficulty_and_rewards(tmp_path, monkeypatch) 
     protocol = get_protocol()
     history = get_protocol_history()
 
-    assert protocol["protocol_version"] == "0.15"
-    assert protocol["difficulty"] == 1.0
+    assert protocol["protocol_version"] == "0.16"
+    assert protocol["required_validator_approvals"] == 3
+    assert protocol["sample_count"] == 32
+    assert protocol["difficulty"] == 4.0
     assert protocol["reward_per_block"] == protocol["base_reward"]
     assert history[0]["active"] is True
     assert history[0]["difficulty"] == protocol["difficulty"]
@@ -131,7 +133,7 @@ def test_retarget_waits_until_epoch_is_complete(tmp_path, monkeypatch) -> None:
     assert result["retargeted"] is False
     assert preview["ready"] is False
     assert preview["blocks_until_ready"] == 1
-    assert get_protocol()["difficulty"] == 1.0
+    assert get_protocol()["difficulty"] == 4.0
 
 
 def test_retarget_decreases_difficulty_after_slow_epoch(tmp_path, monkeypatch) -> None:

@@ -10,6 +10,7 @@ import uvicorn
 from app.tools.bootstrap_testnet import main as bootstrap_testnet_main
 from app.tools.reset_testnet import main as reset_testnet_main
 from app.tools.run_testnet_cycle import main as run_testnet_cycle_main
+from app.tools.run_testnet_multi_miner import main as run_testnet_multi_miner_main
 from miner.client import command_mine, command_register as miner_register, command_stats as miner_stats
 from validator.client import command_register as validator_register, command_validate
 
@@ -114,10 +115,35 @@ def command_testnet_cycle(args: argparse.Namespace) -> int:
         str(args.validator_one_identity),
         "--validator-two",
         str(args.validator_two_identity),
+        "--validator-three",
+        str(args.validator_three_identity),
         "--workers",
         str(args.workers),
     ]
     _run_tool_main(run_testnet_cycle_main, forwarded)
+    return 0
+
+
+def command_testnet_continuous(args: argparse.Namespace) -> int:
+    forwarded = [
+        "--server",
+        args.server,
+        "--identity-dir",
+        str(args.identity_dir),
+        "--miners",
+        str(args.miners),
+        "--loops",
+        str(args.loops),
+        "--workers",
+        str(args.workers),
+        "--sleep",
+        str(args.sleep),
+        "--faucet",
+        str(args.faucet),
+    ]
+    if not args.retro_audit:
+        forwarded.append("--no-retro-audit")
+    _run_tool_main(run_testnet_multi_miner_main, forwarded)
     return 0
 
 
@@ -210,13 +236,26 @@ def add_testnet_parser(subparsers: argparse._SubParsersAction) -> None:
     bootstrap_parser.add_argument("--miner-faucet", type=float, default=31.416)
     bootstrap_parser.set_defaults(func=command_testnet_bootstrap)
 
-    cycle_parser = testnet_subparsers.add_parser("cycle", help="Mine once and validate with two demo validators")
+    cycle_parser = testnet_subparsers.add_parser("cycle", help="Mine once and validate with three demo validators")
     cycle_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
     cycle_parser.add_argument("--miner-identity", type=Path, default=Path("data/testnet/identities/miner-alice.json"))
     cycle_parser.add_argument("--validator-one-identity", type=Path, default=Path("data/testnet/identities/validator-one.json"))
     cycle_parser.add_argument("--validator-two-identity", type=Path, default=Path("data/testnet/identities/validator-two.json"))
+    cycle_parser.add_argument("--validator-three-identity", type=Path, default=Path("data/testnet/identities/validator-three.json"))
     cycle_parser.add_argument("--workers", type=int, default=1)
     cycle_parser.set_defaults(func=command_testnet_cycle)
+
+    continuous_parser = testnet_subparsers.add_parser("continuous", help="Run continuous mining with multiple demo miners")
+    continuous_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    continuous_parser.add_argument("--identity-dir", type=Path, default=Path("data/testnet/identities"))
+    continuous_parser.add_argument("--miners", type=int, default=3)
+    continuous_parser.add_argument("--loops", type=int, default=3)
+    continuous_parser.add_argument("--workers", type=int, default=1)
+    continuous_parser.add_argument("--sleep", type=float, default=0.5)
+    continuous_parser.add_argument("--faucet", type=float, default=31.416)
+    continuous_parser.add_argument("--retro-audit", action="store_true", default=True)
+    continuous_parser.add_argument("--no-retro-audit", action="store_false", dest="retro_audit")
+    continuous_parser.set_defaults(func=command_testnet_continuous)
 
 
 def build_parser() -> argparse.ArgumentParser:

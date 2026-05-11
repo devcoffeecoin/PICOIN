@@ -7,6 +7,7 @@ const state = {
   blocks: [],
   validators: [],
   audit: null,
+  retroAudits: [],
   chain: null,
   health: null,
   node: null,
@@ -60,6 +61,7 @@ async function loadData() {
     blocks,
     validators,
     audit,
+    retroAudits,
     chain,
     health,
     node,
@@ -73,6 +75,7 @@ async function loadData() {
     fetchJson("/blocks"),
     fetchJson("/validators?limit=100"),
     fetchJson("/audit/full"),
+    fetchJson("/audit/retroactive?limit=8"),
     fetchJson("/blocks/verify"),
     fetchJson("/health"),
     fetchJson("/node/status"),
@@ -88,6 +91,7 @@ async function loadData() {
     blocks,
     validators,
     audit,
+    retroAudits,
     chain,
     health,
     node,
@@ -254,12 +258,27 @@ function renderAudit() {
   const issueSummary = state.audit.issues.length
     ? `${state.audit.issues.length} issues`
     : "sin issues";
+  const latestRetroAudit = state.retroAudits[0];
   $("auditSummary").innerHTML = `
     <div class="audit-box"><span>Balances esperados</span><strong>${fmt(state.audit.supply.expected_total_balances, 5)}</strong></div>
     <div class="audit-box"><span>Balances actuales</span><strong>${fmt(state.audit.supply.actual_total_balances, 5)}</strong></div>
     <div class="audit-box"><span>Minted rewards</span><strong>${fmt(state.audit.rewards.total_minted_rewards, 5)}</strong></div>
     <div class="audit-box"><span>Estado</span><strong>${issueSummary}</strong></div>
+    <div class="audit-box"><span>Retro audits</span><strong>${fmt(state.retroAudits.length, 0)}</strong></div>
+    <div class="audit-box"><span>Ultima retro</span><strong>${latestRetroAudit ? `#${latestRetroAudit.block_height} ${latestRetroAudit.passed ? "OK" : "Fail"}` : "-"}</strong></div>
   `;
+}
+
+async function runRetroAudit() {
+  $("retroAuditButton").disabled = true;
+  try {
+    await fetchJson("/audit/retroactive/run?sample_multiplier=2", { method: "POST" });
+    await loadData();
+  } catch (error) {
+    $("faucetResult").textContent = `Retro audit error: ${error.message}`;
+  } finally {
+    $("retroAuditButton").disabled = false;
+  }
 }
 
 async function submitFaucet(event) {
@@ -285,6 +304,7 @@ async function submitFaucet(event) {
 
 async function boot() {
   $("refreshButton").addEventListener("click", loadData);
+  $("retroAuditButton").addEventListener("click", runRetroAudit);
   $("faucetForm").addEventListener("submit", submitFaucet);
   try {
     await loadData();

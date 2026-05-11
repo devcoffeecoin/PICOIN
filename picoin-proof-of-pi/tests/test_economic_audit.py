@@ -69,12 +69,15 @@ def test_full_economic_audit_includes_additional_validator_rewards(tmp_path, mon
     miner, _ = _register_miner_with_keys("validator-reward-miner")
     first_keys = generate_keypair()
     second_keys = generate_keypair()
+    third_keys = generate_keypair()
     first_validator = register_validator("validator-reward-one", first_keys["public_key"])
     second_validator = register_validator("validator-reward-two", second_keys["public_key"])
+    third_validator = register_validator("validator-reward-three", third_keys["public_key"])
     job_id, task_id = _insert_validation_job(miner["miner_id"])
 
     _submit_vote(job_id, task_id, first_validator["validator_id"], first_keys["private_key"], "first")
-    response = _submit_vote(job_id, task_id, second_validator["validator_id"], second_keys["private_key"], "second")
+    _submit_vote(job_id, task_id, second_validator["validator_id"], second_keys["private_key"], "second")
+    response = _submit_vote(job_id, task_id, third_validator["validator_id"], third_keys["private_key"], "third")
 
     audit = get_full_economic_audit()
 
@@ -142,7 +145,8 @@ def _insert_validation_job(miner_id: str) -> tuple[str, str]:
 
 
 def _submit_vote(job_id: str, task_id: str, validator_id: str, private_key: str, label: str) -> dict:
-    signed_at = f"2026-05-10T00:00:0{1 if label == 'first' else 2}+00:00"
+    signed_at_by_label = {"first": 1, "second": 2, "third": 3}
+    signed_at = f"2026-05-10T00:00:0{signed_at_by_label[label]}+00:00"
     reason = f"accepted by {label}"
     signature = sign_payload(
         private_key,

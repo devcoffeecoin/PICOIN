@@ -227,6 +227,25 @@ class AuditFullResponse(BaseModel):
     issues: list[AuditIssue]
 
 
+class RetroactiveAuditResponse(BaseModel):
+    id: int
+    block_height: int
+    block_hash: str
+    audit_seed: str
+    sample_count: int
+    samples: list[dict[str, Any]]
+    expected_hash: str
+    actual_hash: str
+    passed: bool
+    reason: str
+    created_at: datetime
+
+
+class RetroactiveAuditRunResponse(BaseModel):
+    accepted: bool
+    audit: RetroactiveAuditResponse
+
+
 class MaintenanceCleanupResponse(BaseModel):
     expired_tasks: int
     expired_validation_jobs: int

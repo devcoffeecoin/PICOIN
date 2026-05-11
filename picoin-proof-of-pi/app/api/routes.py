@@ -18,6 +18,8 @@ from app.models.schemas import (
     PerformanceStatsResponse,
     ProtocolParamsResponse,
     ProtocolResponse,
+    RetroactiveAuditResponse,
+    RetroactiveAuditRunResponse,
     RetargetEventResponse,
     RetargetPreviewResponse,
     RetargetRunResponse,
@@ -56,6 +58,7 @@ from app.services.mining import (
     get_difficulty_status,
     get_retarget_history,
     get_recent_events,
+    get_retroactive_audits,
     get_stats,
     get_validation_job,
     get_validator,
@@ -66,6 +69,7 @@ from app.services.mining import (
     request_faucet,
     reveal_task,
     run_retarget,
+    run_retroactive_audit,
     submit_validation_result,
     submit_task,
     verify_chain,
@@ -88,6 +92,22 @@ def node_status() -> dict:
 @router.get("/events", response_model=list[NodeEventResponse])
 def recent_events(limit: int = Query(30, ge=1, le=100)) -> list[dict]:
     return get_recent_events(limit)
+
+
+@router.get("/audit/retroactive", response_model=list[RetroactiveAuditResponse])
+def retroactive_audits(limit: int = Query(20, ge=1, le=100)) -> list[dict]:
+    return get_retroactive_audits(limit)
+
+
+@router.post("/audit/retroactive/run", response_model=RetroactiveAuditRunResponse)
+def retroactive_audit_run(
+    block_height: int | None = Query(None, ge=1),
+    sample_multiplier: int = Query(2, ge=1, le=8),
+) -> dict:
+    try:
+        return run_retroactive_audit(block_height, sample_multiplier)
+    except MiningError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.post("/miners/register", response_model=MinerResponse, status_code=201)

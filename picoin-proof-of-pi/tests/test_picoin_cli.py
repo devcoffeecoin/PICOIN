@@ -47,3 +47,16 @@ def test_picoin_cli_parses_testnet_cycle_defaults() -> None:
     assert args.miner_identity == Path("data/testnet/identities/miner-alice.json")
     assert args.validator_one_identity == Path("data/testnet/identities/validator-one.json")
     assert args.validator_two_identity == Path("data/testnet/identities/validator-two.json")
+    assert args.validator_three_identity == Path("data/testnet/identities/validator-three.json")
+
+
+def test_picoin_cli_parses_testnet_continuous_defaults() -> None:
+    parser = build_parser()
+    args = parser.parse_args(["testnet", "continuous"])
+
+    assert args.command == "testnet"
+    assert args.testnet_command == "continuous"
+    assert args.miners == 3
+    assert args.loops == 3
+    assert args.identity_dir == Path("data/testnet/identities")
+    assert args.retro_audit is True

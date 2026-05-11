@@ -4,26 +4,26 @@ MVP funcional de **Proof of Pi**. Un coordinador asigna rangos pequenos de digit
 
 Este proyecto no implementa una blockchain completa. Usa una cadena local de bloques aceptados con `previous_hash` y `block_hash` para preparar una evolucion futura.
 
-## Protocolo v0.15
+## Protocolo v0.16
 
 Parametros actuales:
 
 ```text
-protocol_version = 0.15
+protocol_version = 0.16
 network_id = local
 algorithm = bbp_hex_v1
 validation_mode = external_commit_reveal
-required_validator_approvals = 2
+required_validator_approvals = 3
 range_assignment_mode = pseudo_random
 max_pi_position = 10000
 range_assignment_max_attempts = 512
 segment_size = 64
-sample_count = 8
+sample_count = 32
 task_expiration_seconds = 600
 max_active_tasks_per_miner = 1
 genesis_supply = 3141600.0
 base_reward = 3.1416
-difficulty = 1.0
+difficulty = 4.0
 reward_per_block = 3.1416
 validator_reward_percent = 10%
 validator_reward_pool_per_block = 0.31416
@@ -40,7 +40,7 @@ faucet_rate_limit = 3 credits / account / hour
 validator_selection_mode = weighted_reputation_stake_rotation
 ```
 
-El endpoint `GET /protocol` devuelve estos valores para que mineros y validadores sepan que reglas estan activas. Desde v0.15 estos parametros viven en SQLite, en `protocol_params`, y pueden cambiar automaticamente por epocas. `network_id` viene de `PICOIN_NETWORK`; por defecto es `local`.
+El endpoint `GET /protocol` devuelve estos valores para que mineros y validadores sepan que reglas estan activas. Desde v0.16 estos parametros viven en SQLite, en `protocol_params`, y pueden cambiar automaticamente por epocas. `network_id` viene de `PICOIN_NETWORK`; por defecto es `local`.
 
 La dificultad se calcula con una formula simple y auditable:
 
@@ -118,7 +118,7 @@ La base SQLite se crea automaticamente en `data/picoin.sqlite3`.
 
 ## Dashboard Local
 
-Desde v0.15, el nodo sirve un panel web operativo en:
+Desde v0.16, el nodo sirve un panel web operativo en:
 
 ```text
 http://127.0.0.1:8000/dashboard
@@ -132,6 +132,7 @@ El dashboard consume la API REST del mismo nodo y muestra:
 - Metricas de dificultad, progreso de epoca y preview de retarget.
 - Metricas de performance por asignacion, compute, commit, validacion y total.
 - Resumen de auditoria economica y estado de integridad de la cadena local.
+- Auditorias retroactivas manuales con doble muestra.
 - Estado operativo del nodo, readiness de mineria y eventos recientes.
 
 ## CLI Nodo Local
@@ -156,6 +157,7 @@ El CLI tambien envuelve minero, validador y testnet:
 .\.venv\Scripts\python.exe -m picoin testnet reset
 .\.venv\Scripts\python.exe -m picoin testnet bootstrap
 .\.venv\Scripts\python.exe -m picoin testnet cycle
+.\.venv\Scripts\python.exe -m picoin testnet continuous --miners 3 --loops 3
 ```
 
 Config local opcional:
@@ -249,14 +251,15 @@ La testnet local trae un flujo repetible con:
 
 - reset controlado de SQLite y archivos demo
 - identidad demo de minero
-- 2 identidades demo de validadores
+- 3 identidades demo de validadores
 - faucet local para el minero
 - servidor FastAPI local
-- ciclo completo: minar, revelar muestras, votar con 2 validadores y aceptar bloque por quorum
+- ciclo completo: minar, revelar 32 muestras, votar con 3 validadores y aceptar bloque por quorum
+- mineria continua con varios mineros y auditorias retroactivas de doble muestra
 
 ### Flujo automatico completo
 
-Este comando resetea, crea identidades, levanta el servidor en segundo plano, mina un bloque, ejecuta los 2 validadores y apaga el servidor al terminar:
+Este comando resetea, crea identidades, levanta el servidor en segundo plano, mina un bloque, ejecuta los 3 validadores y apaga el servidor al terminar:
 
 ```powershell
 .\scripts\testnet-all.ps1
@@ -294,6 +297,7 @@ Esto crea:
 data/testnet/identities/miner-alice.json
 data/testnet/identities/validator-one.json
 data/testnet/identities/validator-two.json
+data/testnet/identities/validator-three.json
 data/testnet/manifest.json
 ```
 
@@ -315,9 +319,24 @@ Tambien puedes ejecutar cada rol por separado:
 .\scripts\testnet-mine-once.ps1
 .\scripts\testnet-validator1.ps1
 .\scripts\testnet-validator2.ps1
+.\scripts\testnet-validator3.ps1
 ```
 
-El primer validador deja el job en `validation_pending`; el segundo completa el quorum y el coordinador acepta el bloque.
+Los dos primeros validadores dejan el job en `validation_pending`; el tercero completa el quorum y el coordinador acepta el bloque.
+
+### Mineria continua multi-minero
+
+Con el servidor levantado, puedes probar varios mineros compitiendo de forma repetible:
+
+```powershell
+.\.venv\Scripts\python.exe -m picoin testnet continuous --miners 3 --loops 3 --workers 1
+```
+
+Cada bloque aceptado dispara por defecto una auditoria retroactiva con `sample_multiplier = 2`, es decir, 64 muestras para bloques del protocolo v0.16. Para desactivarla en una corrida:
+
+```powershell
+.\.venv\Scripts\python.exe -m picoin testnet continuous --miners 3 --loops 3 --no-retro-audit
+```
 
 ### Faucet local
 
@@ -576,7 +595,7 @@ Respuesta antes de quorum:
   "accepted": true,
   "status": "validation_pending",
   "approvals": 1,
-  "required_approvals": 2,
+  "required_approvals": 3,
   "block": null
 }
 ```
@@ -645,6 +664,25 @@ curl http://127.0.0.1:8000/audit/full
 
 Si `valid = false`, la respuesta incluye `issues` con codigos como `account_balance_mismatch`, `total_balances_mismatch` o `rewards_table_mismatch`.
 
+### `GET /audit/retroactive`
+
+Lista auditorias retroactivas recientes. Cada auditoria guarda bloque, seed, cantidad de muestras, hash esperado, hash recalculado y resultado.
+
+```powershell
+curl "http://127.0.0.1:8000/audit/retroactive?limit=20"
+```
+
+### `POST /audit/retroactive/run`
+
+Ejecuta una auditoria aleatoria sobre un bloque aceptado, o sobre una altura especifica. Por defecto usa el doble de muestras del protocolo activo del bloque.
+
+```powershell
+curl -X POST "http://127.0.0.1:8000/audit/retroactive/run?sample_multiplier=2"
+curl -X POST "http://127.0.0.1:8000/audit/retroactive/run?block_height=3&sample_multiplier=2"
+```
+
+En v0.16 un bloque nuevo usa 32 muestras durante validacion normal y 64 muestras durante auditoria retroactiva. Como el MVP no guarda el segmento completo de pi ni una prueba criptografica completa, la auditoria recalcula el segmento del bloque auditado con BBP y compara el `result_hash` registrado.
+
 ### `GET /stats`
 
 Devuelve estadisticas globales del MVP.
@@ -710,6 +748,7 @@ Implementado:
 - Recompensa adicional para validadores aprobadores.
 - Balances persistentes y ledger auditable.
 - Auditoria economica completa en `/audit/full`.
+- Auditorias retroactivas aleatorias en `/audit/retroactive/run`.
 - Cooldown y ban por firmas invalidas repetidas.
 - Commit-reveal con `result_hash` y `merkle_root`.
 - Merkle proofs para cada muestra revelada.
@@ -815,7 +854,7 @@ El tamano del pool es:
 required_validator_approvals * 2
 ```
 
-Si hay menos validadores elegibles, usa todos los disponibles. Esto mantiene velocidad para testnet local, pero reduce concentracion cuando hay mas validadores que el quorum minimo.
+En v0.16, con `required_validator_approvals = 3`, el pool objetivo es de 6 validadores. Si hay menos validadores elegibles, usa todos los disponibles. Esto mantiene velocidad para testnet local, pero reduce concentracion cuando hay mas validadores que el quorum minimo.
 
 ## Economia MVP
 
@@ -891,6 +930,21 @@ Si todas las muestras pasan, cada validador firma una aprobacion. El coordinador
 
 Esto evita guardar pi, evita transmitir el segmento completo, separa el rol de validacion del rol de coordinacion y reduce el riesgo de depender de un unico validador.
 
+## Auditorias Retroactivas
+
+La validacion normal revisa 32 muestras reveladas por el minero. La auditoria retroactiva revisa un bloque ya aceptado con un reto nuevo y el doble de muestras. En v0.16 eso significa 64 posiciones.
+
+El flujo es:
+
+1. El coordinador elige un bloque aceptado al azar, o usa `block_height` si se indica.
+2. Genera `audit_seed` aleatorio.
+3. Recalcula el segmento BBP del bloque auditado.
+4. Comprueba que `hash_result(segmento, rango, algoritmo)` coincida con el `result_hash` guardado.
+5. Deriva 64 posiciones de muestra desde `audit_seed` y guarda los digitos observados.
+6. Registra el resultado en `retroactive_audits` y lo expone como evento reciente.
+
+Esto no guarda pi completo en la base de datos. Solo guarda muestras de auditoria, hashes y metadatos. La version actual recalcula el segmento porque los rangos del MVP son pequenos; mas adelante se puede reemplazar por pruebas mas compactas sin cambiar la interfaz de auditoria.
+
 ## Algoritmo De Pi
 
 El MVP usa `bbp_hex_v1`, basado en la formula Bailey-Borwein-Plouffe:
@@ -930,6 +984,7 @@ validation_jobs
 validation_votes
 submissions
 blocks
+retroactive_audits
 protocol_params
 retarget_events
 rewards
@@ -962,11 +1017,15 @@ python -m miner.client register --name alice
 python -m miner.client mine --once
 ```
 
-4. Ejecuta un validador externo:
+4. Ejecuta tres validadores externos:
 
 ```powershell
-python -m validator.client register --name val1
-python -m validator.client validate --once
+python -m validator.client --identity validator1.json register --name val1
+python -m validator.client --identity validator1.json validate --once
+python -m validator.client --identity validator2.json register --name val2
+python -m validator.client --identity validator2.json validate --once
+python -m validator.client --identity validator3.json register --name val3
+python -m validator.client --identity validator3.json validate --once
 ```
 
 5. Consulta bloques:
@@ -1022,6 +1081,8 @@ curl http://127.0.0.1:8000/balances
 curl http://127.0.0.1:8000/ledger
 curl http://127.0.0.1:8000/audit/summary
 curl http://127.0.0.1:8000/audit/full
+curl http://127.0.0.1:8000/audit/retroactive
+curl -X POST "http://127.0.0.1:8000/audit/retroactive/run?sample_multiplier=2"
 curl "http://127.0.0.1:8000/validators?eligible_only=true"
 ```
 

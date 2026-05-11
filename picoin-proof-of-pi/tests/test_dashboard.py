@@ -24,3 +24,5 @@ def test_dashboard_static_assets() -> None:
     assert 'fetchJson("/health")' in js
     assert 'fetchJson("/node/status")' in js
     assert 'fetchJson("/events?limit=14")' in js
+    assert 'fetchJson("/audit/retroactive?limit=8")' in js
+    assert 'fetchJson("/audit/retroactive/run?sample_multiplier=2"' in js

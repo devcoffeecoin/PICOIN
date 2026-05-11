@@ -56,6 +56,7 @@ def main() -> None:
     parser.add_argument("--miner-name", default="demo-miner-alice")
     parser.add_argument("--validator-one-name", default="demo-validator-one")
     parser.add_argument("--validator-two-name", default="demo-validator-two")
+    parser.add_argument("--validator-three-name", default="demo-validator-three")
     parser.add_argument("--miner-faucet", type=float, default=FAUCET_DEFAULT_AMOUNT)
     args = parser.parse_args()
 
@@ -64,6 +65,7 @@ def main() -> None:
     miner = create_miner_identity(args.miner_name, server_url)
     validator_one = create_validator_identity(args.validator_one_name, server_url)
     validator_two = create_validator_identity(args.validator_two_name, server_url)
+    validator_three = create_validator_identity(args.validator_three_name, server_url)
 
     faucet = request_faucet(miner["miner_id"], "miner", args.miner_faucet)
 
@@ -71,10 +73,12 @@ def main() -> None:
         "miner": args.identity_dir / "miner-alice.json",
         "validator_one": args.identity_dir / "validator-one.json",
         "validator_two": args.identity_dir / "validator-two.json",
+        "validator_three": args.identity_dir / "validator-three.json",
     }
     write_json(paths["miner"], miner)
     write_json(paths["validator_one"], validator_one)
     write_json(paths["validator_two"], validator_two)
+    write_json(paths["validator_three"], validator_three)
 
     manifest = {
         "server_url": server_url,
@@ -83,6 +87,7 @@ def main() -> None:
         "validators": [
             {"identity": str(paths["validator_one"]), "validator_id": validator_one["validator_id"]},
             {"identity": str(paths["validator_two"]), "validator_id": validator_two["validator_id"]},
+            {"identity": str(paths["validator_three"]), "validator_id": validator_three["validator_id"]},
         ],
         "faucet": faucet,
     }

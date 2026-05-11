@@ -14,6 +14,7 @@ from validator.client import submit_result, validate_job
 DEFAULT_MINER = Path("data/testnet/identities/miner-alice.json")
 DEFAULT_VALIDATOR_ONE = Path("data/testnet/identities/validator-one.json")
 DEFAULT_VALIDATOR_TWO = Path("data/testnet/identities/validator-two.json")
+DEFAULT_VALIDATOR_THREE = Path("data/testnet/identities/validator-three.json")
 DEFAULT_SERVER_URL = "http://127.0.0.1:8000"
 
 
@@ -39,6 +40,7 @@ def main() -> None:
     parser.add_argument("--miner", type=Path, default=DEFAULT_MINER)
     parser.add_argument("--validator-one", type=Path, default=DEFAULT_VALIDATOR_ONE)
     parser.add_argument("--validator-two", type=Path, default=DEFAULT_VALIDATOR_TWO)
+    parser.add_argument("--validator-three", type=Path, default=DEFAULT_VALIDATOR_THREE)
     parser.add_argument("--workers", type=int, default=1)
     args = parser.parse_args()
 
@@ -46,6 +48,7 @@ def main() -> None:
     miner_identity = load_miner_identity(args.miner)
     validator_one = load_validator_identity(args.validator_one)
     validator_two = load_validator_identity(args.validator_two)
+    validator_three = load_validator_identity(args.validator_three)
 
     print(f"Mining once as {miner_identity['miner_id']}")
     mined = mine_once(server_url, miner_identity, args.workers)
@@ -54,6 +57,7 @@ def main() -> None:
 
     first_result = validate_once(server_url, validator_one)
     second_result = validate_once(server_url, validator_two)
+    third_result = validate_once(server_url, validator_three)
 
     stats = requests.get(f"{server_url}/stats", timeout=20)
     stats.raise_for_status()
@@ -63,6 +67,7 @@ def main() -> None:
     summary = {
         "first_validator_status": None if first_result is None else first_result["status"],
         "second_validator_status": None if second_result is None else second_result["status"],
+        "third_validator_status": None if third_result is None else third_result["status"],
         "stats": stats.json(),
         "chain": verify.json(),
     }

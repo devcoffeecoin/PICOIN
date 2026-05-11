@@ -4,7 +4,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from app.core.crypto import canonical_json, hash_block, sha256_text
+from app.core.crypto import canonical_json, hash_block, hash_result, sha256_text
 from app.core.difficulty import calculate_difficulty, calculate_reward, propose_retarget_params
 from app.core.merkle import verify_merkle_proof
 from app.core.performance import elapsed_ms, now_perf
@@ -1683,9 +1683,103 @@ def get_recent_events(limit: int = 30) -> list[dict[str, Any]]:
         events.extend(_faucet_events(connection, limit))
         events.extend(_penalty_events(connection, limit))
         events.extend(_retarget_events(connection, limit))
+        events.extend(_retroactive_audit_events(connection, limit))
 
     events.sort(key=lambda event: parse_iso(event["created_at"]) or NODE_STARTED_AT, reverse=True)
     return events[:limit]
+
+
+def get_retroactive_audits(limit: int = 20) -> list[dict[str, Any]]:
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM retroactive_audits
+            ORDER BY id DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    return [_decode_retroactive_audit(row_to_dict(row)) for row in rows]
+
+
+def run_retroactive_audit(block_height: int | None = None, sample_multiplier: int = 2) -> dict[str, Any]:
+    with get_connection() as connection:
+        if block_height is None:
+            row = connection.execute(
+                "SELECT * FROM blocks ORDER BY RANDOM() LIMIT 1"
+            ).fetchone()
+        else:
+            row = connection.execute(
+                "SELECT * FROM blocks WHERE height = ?",
+                (block_height,),
+            ).fetchone()
+        block = _decode_block(row_to_dict(row))
+        if block is None:
+            raise MiningError(404, "block not found for retroactive audit")
+
+        params = _protocol_params_for_block(connection, block)
+        base_samples = int(params["sample_count"])
+        sample_count = min(block["range_end"] - block["range_start"] + 1, base_samples * sample_multiplier)
+        timestamp = utc_now()
+        audit_seed = sha256_text(
+            canonical_json(
+                {
+                    "audit_id": uuid.uuid4().hex,
+                    "block_hash": block["block_hash"],
+                    "block_height": block["height"],
+                    "created_at": timestamp,
+                    "sample_count": sample_count,
+                }
+            )
+        )
+        segment = calculate_pi_segment(block["range_start"], block["range_end"], block["algorithm"])
+        actual_hash = hash_result(segment, block["range_start"], block["range_end"], block["algorithm"])
+        requested_samples = _build_challenge_samples(
+            block["range_start"],
+            block["range_end"],
+            audit_seed,
+            sample_count,
+        )
+        samples = [
+            {
+                "position": sample["position"],
+                "digit": segment[sample["position"] - block["range_start"]],
+            }
+            for sample in requested_samples
+        ]
+        passed = actual_hash == block["result_hash"]
+        reason = "accepted" if passed else "result_hash mismatch"
+        cursor = connection.execute(
+            """
+            INSERT INTO retroactive_audits (
+                block_height, block_hash, audit_seed, sample_count, samples,
+                expected_hash, actual_hash, passed, reason, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                block["height"],
+                block["block_hash"],
+                audit_seed,
+                sample_count,
+                json.dumps(samples),
+                block["result_hash"],
+                actual_hash,
+                int(passed),
+                reason,
+                timestamp,
+            ),
+        )
+        audit = row_to_dict(
+            connection.execute(
+                "SELECT * FROM retroactive_audits WHERE id = ?",
+                (cursor.lastrowid,),
+            ).fetchone()
+        )
+
+    decoded = _decode_retroactive_audit(audit)
+    return {"accepted": bool(decoded["passed"]), "audit": decoded}
 
 
 def get_protocol() -> dict[str, Any]:
@@ -2319,6 +2413,32 @@ def _retarget_events(connection: Any, limit: int) -> list[dict[str, Any]]:
     ]
 
 
+def _retroactive_audit_events(connection: Any, limit: int) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT id, block_height, sample_count, passed, reason, created_at
+        FROM retroactive_audits
+        ORDER BY id DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    return [
+        _event(
+            event_id=f"retro_audit:{row['id']}",
+            event_type="retroactive_audit",
+            title="Auditoria retroactiva",
+            message=f"bloque {row['block_height']} con {row['sample_count']} samples: {row['reason']}",
+            severity="info" if row["passed"] else "bad",
+            created_at=row["created_at"],
+            related_id=str(row["id"]),
+            block_height=int(row["block_height"]),
+            metadata={"sample_count": row["sample_count"], "passed": bool(row["passed"])},
+        )
+        for row in rows
+    ]
+
+
 def _sum_query(connection: Any, query: str) -> float:
     row = connection.execute(query).fetchone()
     return round(float(row["total"]), 8)
@@ -2634,6 +2754,14 @@ def _decode_block(block: dict[str, Any] | None) -> dict[str, Any] | None:
     return block
 
 
+def _decode_retroactive_audit(audit: dict[str, Any] | None) -> dict[str, Any] | None:
+    if audit is None:
+        return None
+    audit["samples"] = json.loads(audit["samples"])
+    audit["passed"] = bool(audit["passed"])
+    return audit
+
+
 def _block_payload(block: dict[str, Any], include_protocol: bool) -> dict[str, Any]:
     payload = {
         "algorithm": block["algorithm"],
@@ -2712,6 +2840,15 @@ def _protocol_params_by_id(connection: Any, protocol_params_id: int) -> dict[str
 
 def _protocol_params_for_task(connection: Any, task: dict[str, Any]) -> dict[str, Any]:
     protocol_params_id = task.get("protocol_params_id")
+    if protocol_params_id is not None:
+        params = _protocol_params_by_id(connection, protocol_params_id)
+        if params is not None:
+            return params
+    return _active_protocol_params(connection)
+
+
+def _protocol_params_for_block(connection: Any, block: dict[str, Any]) -> dict[str, Any]:
+    protocol_params_id = block.get("protocol_params_id")
     if protocol_params_id is not None:
         params = _protocol_params_by_id(connection, protocol_params_id)
         if params is not None:
