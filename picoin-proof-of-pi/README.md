@@ -176,6 +176,98 @@ El validador:
 6. Firma el resultado.
 7. Envia aprobacion o rechazo a `POST /validation/results`.
 
+## Mining Testnet Local
+
+La testnet local trae un flujo repetible con:
+
+- reset controlado de SQLite y archivos demo
+- identidad demo de minero
+- 2 identidades demo de validadores
+- faucet local para el minero
+- servidor FastAPI local
+- ciclo completo: minar, revelar muestras, votar con 2 validadores y aceptar bloque por quorum
+
+### Flujo automatico completo
+
+Este comando resetea, crea identidades, levanta el servidor en segundo plano, mina un bloque, ejecuta los 2 validadores y apaga el servidor al terminar:
+
+```powershell
+.\scripts\testnet-all.ps1
+```
+
+Si PowerShell bloquea scripts locales por politica de ejecucion:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\testnet-all.ps1
+```
+
+Con puerto distinto:
+
+```powershell
+.\scripts\testnet-all.ps1 -Port 8001
+```
+
+### Flujo manual recomendado
+
+1. Reset controlado:
+
+```powershell
+.\scripts\testnet-reset.ps1
+```
+
+2. Crear identidades demo y faucet:
+
+```powershell
+.\scripts\testnet-bootstrap.ps1
+```
+
+Esto crea:
+
+```text
+data/testnet/identities/miner-alice.json
+data/testnet/identities/validator-one.json
+data/testnet/identities/validator-two.json
+data/testnet/manifest.json
+```
+
+3. Levantar servidor:
+
+```powershell
+.\scripts\testnet-server.ps1
+```
+
+4. En otra terminal, ejecutar un ciclo completo:
+
+```powershell
+.\scripts\testnet-cycle.ps1
+```
+
+Tambien puedes ejecutar cada rol por separado:
+
+```powershell
+.\scripts\testnet-mine-once.ps1
+.\scripts\testnet-validator1.ps1
+.\scripts\testnet-validator2.ps1
+```
+
+El primer validador deja el job en `validation_pending`; el segundo completa el quorum y el coordinador acepta el bloque.
+
+### Faucet local
+
+El faucet existe para pruebas locales, no para mainnet. Desde CLI:
+
+```powershell
+python -m app.tools.faucet miner_xxxxxxxxxxxxxxxx --type miner --amount 10
+```
+
+Desde API:
+
+```powershell
+curl -X POST http://127.0.0.1:8000/faucet `
+  -H "Content-Type: application/json" `
+  -d '{"account_id":"miner_xxxxxxxxxxxxxxxx","account_type":"miner","amount":10}'
+```
+
 ## Endpoints
 
 ### `GET /protocol`
@@ -316,6 +408,18 @@ Registra un validador externo.
 {
   "name": "val1",
   "public_key": "ed25519:base64url_public_key"
+}
+```
+
+### `POST /faucet`
+
+Acredita monedas demo desde `genesis` a una cuenta registrada. Esta ruta es solo para testnet local.
+
+```json
+{
+  "account_id": "miner_xxxxxxxxxxxxxxxx",
+  "account_type": "miner",
+  "amount": 10
 }
 ```
 
@@ -760,6 +864,6 @@ python -m app.tools.reset_db
 
 - Ajustar el tamano de epoca y objetivo de bloque con benchmarks reales.
 - Crear dashboard local de testnet.
-- Agregar faucet controlado para mineros/validadores.
-- Empaquetar scripts de arranque para servidor + minero + 2 validadores.
+- Agregar protecciones de entorno para desactivar faucet fuera de testnet.
+- Crear scripts equivalentes para Linux/macOS.
 - Evolucionar la lista local de bloques hacia consenso blockchain.

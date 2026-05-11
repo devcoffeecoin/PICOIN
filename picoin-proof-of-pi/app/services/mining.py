@@ -21,6 +21,8 @@ from app.core.signatures import (
 from app.core.settings import (
     COOLDOWN_AFTER_REJECTIONS,
     COOLDOWN_SECONDS,
+    FAUCET_DEFAULT_AMOUNT,
+    FAUCET_MAX_AMOUNT,
     GENESIS_ACCOUNT_ID,
     GENESIS_SUPPLY,
     MIN_VALIDATOR_STAKE,
@@ -1075,6 +1077,71 @@ def get_balances(limit: int = 100) -> list[dict[str, Any]]:
             (limit,),
         ).fetchall()
     return [row_to_dict(row) for row in rows]
+
+
+def request_faucet(account_id: str, account_type: str = "miner", amount: float | None = None) -> dict[str, Any]:
+    if account_type not in {"miner", "validator"}:
+        raise MiningError(400, "account_type must be miner or validator")
+
+    faucet_amount = FAUCET_DEFAULT_AMOUNT if amount is None else round(float(amount), 8)
+    if faucet_amount <= 0:
+        raise MiningError(400, "faucet amount must be positive")
+    if faucet_amount > FAUCET_MAX_AMOUNT:
+        raise MiningError(400, f"faucet amount exceeds max {FAUCET_MAX_AMOUNT}")
+
+    table_name = "miners" if account_type == "miner" else "validators"
+    id_column = "miner_id" if account_type == "miner" else "validator_id"
+
+    with get_connection() as connection:
+        account = connection.execute(
+            f"SELECT 1 FROM {table_name} WHERE {id_column} = ?",
+            (account_id,),
+        ).fetchone()
+        if account is None:
+            raise MiningError(404, f"{account_type} account not found")
+
+        genesis_balance = connection.execute(
+            "SELECT balance FROM balances WHERE account_id = ?",
+            (GENESIS_ACCOUNT_ID,),
+        ).fetchone()
+        if genesis_balance is None or float(genesis_balance["balance"]) < faucet_amount:
+            raise MiningError(409, "genesis faucet balance is insufficient")
+
+        _apply_ledger_entry(
+            connection,
+            account_id=GENESIS_ACCOUNT_ID,
+            account_type="genesis",
+            amount=-faucet_amount,
+            entry_type="faucet_debit",
+            related_id=account_id,
+            description=f"local testnet faucet debit for {account_type}",
+        )
+        _apply_ledger_entry(
+            connection,
+            account_id=account_id,
+            account_type=account_type,
+            amount=faucet_amount,
+            entry_type="faucet_credit",
+            related_id=GENESIS_ACCOUNT_ID,
+            description="local testnet faucet credit",
+        )
+        balance = connection.execute(
+            "SELECT balance FROM balances WHERE account_id = ?",
+            (account_id,),
+        ).fetchone()
+        next_genesis_balance = connection.execute(
+            "SELECT balance FROM balances WHERE account_id = ?",
+            (GENESIS_ACCOUNT_ID,),
+        ).fetchone()
+
+    return {
+        "account_id": account_id,
+        "account_type": account_type,
+        "amount": faucet_amount,
+        "balance": round(float(balance["balance"]), 8),
+        "genesis_balance": round(float(next_genesis_balance["balance"]), 8),
+        "message": "local testnet faucet credit applied",
+    }
 
 
 def get_ledger_entries(account_id: str | None = None, limit: int = 100) -> list[dict[str, Any]]:

@@ -5,6 +5,8 @@ from app.models.schemas import (
     BalanceResponse,
     BlockResponse,
     ChainVerificationResponse,
+    FaucetRequest,
+    FaucetResponse,
     LedgerEntryResponse,
     MinerRegisterRequest,
     MinerResponse,
@@ -51,6 +53,7 @@ from app.services.mining import (
     register_miner,
     register_validator,
     preview_retarget,
+    request_faucet,
     reveal_task,
     run_retarget,
     submit_validation_result,
@@ -78,6 +81,11 @@ def register_validator_endpoint(payload: ValidatorRegisterRequest) -> dict:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
+@router.get("/validators", response_model=list[ValidatorResponse])
+def validators(limit: int = Query(100, ge=1, le=500), eligible_only: bool = Query(False)) -> list[dict]:
+    return get_validators(limit, eligible_only)
+
+
 @router.get("/validators/{validator_id}", response_model=ValidatorResponse)
 def validator_by_id(validator_id: str) -> dict:
     validator = get_validator(validator_id)
@@ -86,9 +94,12 @@ def validator_by_id(validator_id: str) -> dict:
     return validator
 
 
-@router.get("/validators", response_model=list[ValidatorResponse])
-def validators(limit: int = Query(100, ge=1, le=500), eligible_only: bool = Query(False)) -> list[dict]:
-    return get_validators(limit, eligible_only)
+@router.post("/faucet", response_model=FaucetResponse)
+def faucet(payload: FaucetRequest) -> dict:
+    try:
+        return request_faucet(payload.account_id, payload.account_type, payload.amount)
+    except MiningError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.get("/tasks/next", response_model=TaskResponse)

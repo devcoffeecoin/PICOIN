@@ -28,6 +28,21 @@ class ValidatorRegisterRequest(BaseModel):
     public_key: str = Field(..., min_length=1, max_length=256)
 
 
+class FaucetRequest(BaseModel):
+    account_id: str = Field(..., min_length=1, max_length=128)
+    account_type: str = Field("miner", pattern="^(miner|validator)$")
+    amount: float | None = Field(default=None, gt=0)
+
+
+class FaucetResponse(BaseModel):
+    account_id: str
+    account_type: str
+    amount: float
+    balance: float
+    genesis_balance: float
+    message: str
+
+
 class ValidatorResponse(BaseModel):
     validator_id: str
     name: str
