@@ -21,11 +21,15 @@ from app.core.signatures import (
 from app.core.settings import (
     COOLDOWN_AFTER_REJECTIONS,
     COOLDOWN_SECONDS,
+    FAUCET_ALLOWED_NETWORKS,
     FAUCET_DEFAULT_AMOUNT,
     FAUCET_MAX_AMOUNT,
+    FAUCET_RATE_LIMIT_MAX_REQUESTS,
+    FAUCET_RATE_LIMIT_WINDOW_SECONDS,
     GENESIS_ACCOUNT_ID,
     GENESIS_SUPPLY,
     MIN_VALIDATOR_STAKE,
+    NETWORK_ID,
     PENALTY_DUPLICATE,
     PENALTY_INVALID_RESULT,
     PENALTY_INVALID_SIGNATURE,
@@ -34,6 +38,8 @@ from app.core.settings import (
     RETARGET_EPOCH_BLOCKS,
     RETARGET_TARGET_BLOCK_MS,
     RETARGET_TOLERANCE,
+    TASK_RATE_LIMIT_MAX_ASSIGNMENTS,
+    TASK_RATE_LIMIT_WINDOW_SECONDS,
     VALIDATOR_BAN_AFTER_INVALID_RESULTS,
     VALIDATOR_COOLDOWN_AFTER_INVALID_RESULTS,
     VALIDATOR_COOLDOWN_SECONDS,
@@ -47,6 +53,7 @@ from validator.proof import validate_submission
 
 
 GENESIS_HASH = "0" * 64
+ECONOMIC_AUDIT_TOLERANCE = 0.000001
 
 
 class MiningError(Exception):
@@ -65,6 +72,10 @@ def utc_now() -> str:
 
 def iso_at(seconds_from_now: int) -> str:
     return (utc_now_dt() + timedelta(seconds=seconds_from_now)).isoformat()
+
+
+def iso_ago(seconds_before_now: int) -> str:
+    return (utc_now_dt() - timedelta(seconds=seconds_before_now)).isoformat()
 
 
 def parse_iso(value: str | None) -> datetime | None:
@@ -224,6 +235,18 @@ def create_next_task(miner_id: str) -> dict[str, Any] | None:
             return row_to_dict(active_task)
 
         params = _active_protocol_params(connection)
+        recent_assignments = connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM tasks
+            WHERE miner_id = ?
+            AND created_at >= ?
+            """,
+            (miner_id, iso_ago(TASK_RATE_LIMIT_WINDOW_SECONDS)),
+        ).fetchone()["count"]
+        if recent_assignments >= TASK_RATE_LIMIT_MAX_ASSIGNMENTS:
+            raise MiningError(429, "miner task assignment rate limit exceeded")
+
         active_count = connection.execute(
             "SELECT COUNT(*) AS count FROM tasks WHERE miner_id = ? AND status IN ('assigned', 'committed', 'revealed')",
             (miner_id,),
@@ -1080,6 +1103,8 @@ def get_balances(limit: int = 100) -> list[dict[str, Any]]:
 
 
 def request_faucet(account_id: str, account_type: str = "miner", amount: float | None = None) -> dict[str, Any]:
+    if NETWORK_ID not in FAUCET_ALLOWED_NETWORKS:
+        raise MiningError(403, f"faucet is disabled on network '{NETWORK_ID}'")
     if account_type not in {"miner", "validator"}:
         raise MiningError(400, "account_type must be miner or validator")
 
@@ -1099,6 +1124,19 @@ def request_faucet(account_id: str, account_type: str = "miner", amount: float |
         ).fetchone()
         if account is None:
             raise MiningError(404, f"{account_type} account not found")
+
+        recent_requests = connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM ledger_entries
+            WHERE account_id = ?
+            AND entry_type = 'faucet_credit'
+            AND created_at >= ?
+            """,
+            (account_id, iso_ago(FAUCET_RATE_LIMIT_WINDOW_SECONDS)),
+        ).fetchone()["count"]
+        if recent_requests >= FAUCET_RATE_LIMIT_MAX_REQUESTS:
+            raise MiningError(429, "faucet rate limit exceeded for account")
 
         genesis_balance = connection.execute(
             "SELECT balance FROM balances WHERE account_id = ?",
@@ -1192,6 +1230,226 @@ def get_audit_summary() -> dict[str, Any]:
         "pending_validation_jobs": pending_jobs,
         "validator_count": validators["validator_count"],
         "eligible_validator_count": validators["eligible_count"],
+    }
+
+
+def get_full_economic_audit() -> dict[str, Any]:
+    issues: list[dict[str, Any]] = []
+    with get_connection() as connection:
+        _expire_assigned_tasks(connection)
+        protocol = _active_protocol_params(connection)
+        supply = _supply_snapshot(connection)
+        balance_rows = connection.execute("SELECT * FROM balances ORDER BY account_id ASC").fetchall()
+        balance_count = len(balance_rows)
+        actual_total_balances = _sum_query(connection, "SELECT COALESCE(SUM(balance), 0) AS total FROM balances")
+        actual_balances_by_type = _rows_to_float_map(
+            connection.execute(
+                """
+                SELECT account_type, COALESCE(SUM(balance), 0) AS total
+                FROM balances
+                GROUP BY account_type
+                """
+            ).fetchall(),
+            "account_type",
+            "total",
+        )
+        ledger_entry_count = int(
+            connection.execute("SELECT COUNT(*) AS count FROM ledger_entries").fetchone()["count"]
+        )
+        ledger_total_amount = _sum_query(connection, "SELECT COALESCE(SUM(amount), 0) AS total FROM ledger_entries")
+        ledger_by_type = _rows_to_float_map(
+            connection.execute(
+                """
+                SELECT entry_type, COALESCE(SUM(amount), 0) AS total
+                FROM ledger_entries
+                GROUP BY entry_type
+                """
+            ).fetchall(),
+            "entry_type",
+            "total",
+        )
+        ledger_by_account_type = _rows_to_float_map(
+            connection.execute(
+                """
+                SELECT account_type, COALESCE(SUM(amount), 0) AS total
+                FROM ledger_entries
+                GROUP BY account_type
+                """
+            ).fetchall(),
+            "account_type",
+            "total",
+        )
+        account_mismatches = _account_balance_mismatches(connection)
+
+        block_rewards = _sum_query(connection, "SELECT COALESCE(SUM(reward), 0) AS total FROM blocks")
+        reward_rows = connection.execute(
+            "SELECT COUNT(*) AS count, COALESCE(SUM(amount), 0) AS total FROM rewards"
+        ).fetchone()
+        reward_count = int(reward_rows["count"])
+        rewards_table_total = round(float(reward_rows["total"]), 8)
+        ledger_block_rewards = _sum_query(
+            connection,
+            "SELECT COALESCE(SUM(amount), 0) AS total FROM ledger_entries WHERE entry_type = 'block_reward'",
+        )
+        accepted_blocks = int(connection.execute("SELECT COUNT(*) AS count FROM blocks").fetchone()["count"])
+
+        validators = connection.execute(
+            """
+            SELECT
+                COUNT(*) AS count,
+                COALESCE(SUM(stake_locked), 0) AS stake_locked,
+                COALESCE(SUM(slashed_amount), 0) AS slashed_amount
+            FROM validators
+            """
+        ).fetchone()
+        validator_stake_locked = round(float(validators["stake_locked"]), 8)
+        validator_slashed_amount = round(float(validators["slashed_amount"]), 8)
+        ledger_validator_stake_locks = _sum_query(
+            connection,
+            "SELECT COALESCE(SUM(amount), 0) AS total FROM ledger_entries WHERE entry_type = 'validator_stake_lock'",
+        )
+        ledger_validator_slashes = _sum_query(
+            connection,
+            """
+            SELECT COALESCE(SUM(amount), 0) AS total
+            FROM ledger_entries
+            WHERE entry_type = 'validator_slash'
+            AND account_type = 'validator'
+            """,
+        )
+        ledger_genesis_slashes = _sum_query(
+            connection,
+            """
+            SELECT COALESCE(SUM(amount), 0) AS total
+            FROM ledger_entries
+            WHERE entry_type = 'validator_slash'
+            AND account_type = 'genesis'
+            """,
+        )
+
+    expected_total_balances = round(GENESIS_SUPPLY + block_rewards, 8)
+    expected_ledger_total = expected_total_balances
+    expected_validator_stake_locked = round(ledger_validator_stake_locks + ledger_validator_slashes, 8)
+
+    _audit_equal(
+        issues,
+        code="total_balances_mismatch",
+        message="sum(balances) must equal genesis supply plus minted block rewards",
+        expected=expected_total_balances,
+        actual=actual_total_balances,
+    )
+    _audit_equal(
+        issues,
+        code="ledger_total_mismatch",
+        message="sum(ledger_entries.amount) must equal genesis supply plus minted block rewards",
+        expected=expected_ledger_total,
+        actual=ledger_total_amount,
+    )
+    _audit_equal(
+        issues,
+        code="rewards_table_mismatch",
+        message="rewards table total must equal accepted block rewards",
+        expected=block_rewards,
+        actual=rewards_table_total,
+    )
+    _audit_equal(
+        issues,
+        code="ledger_block_rewards_mismatch",
+        message="block_reward ledger entries must equal accepted block rewards",
+        expected=block_rewards,
+        actual=ledger_block_rewards,
+    )
+    _audit_equal(
+        issues,
+        code="validator_stake_mismatch",
+        message="validator stake_locked must equal stake locks minus validator-side slashes",
+        expected=expected_validator_stake_locked,
+        actual=validator_stake_locked,
+    )
+    _audit_equal(
+        issues,
+        code="validator_slash_mismatch",
+        message="validator slashed_amount must match validator-side slash ledger entries",
+        expected=validator_slashed_amount,
+        actual=round(abs(ledger_validator_slashes), 8),
+    )
+    _audit_equal(
+        issues,
+        code="genesis_slash_mismatch",
+        message="genesis slash credits must match validator slashed_amount",
+        expected=validator_slashed_amount,
+        actual=ledger_genesis_slashes,
+    )
+
+    if accepted_blocks != reward_count:
+        issues.append(
+            {
+                "code": "reward_count_mismatch",
+                "severity": "error",
+                "message": "accepted block count must match reward row count",
+                "details": {"accepted_blocks": accepted_blocks, "reward_rows": reward_count},
+            }
+        )
+
+    for mismatch in account_mismatches:
+        issues.append(
+            {
+                "code": "account_balance_mismatch",
+                "severity": "error",
+                "message": "account balance does not match sum of its ledger entries",
+                "details": mismatch,
+            }
+        )
+
+    return {
+        "valid": not issues,
+        "network_id": NETWORK_ID,
+        "protocol_version": protocol["protocol_version"],
+        "checked_at": utc_now(),
+        "tolerance": ECONOMIC_AUDIT_TOLERANCE,
+        "supply": {
+            "genesis_supply": GENESIS_SUPPLY,
+            "expected_total_balances": expected_total_balances,
+            "actual_total_balances": actual_total_balances,
+            "circulating_supply": supply["circulating_supply"],
+            "genesis_balance": supply["genesis_balance"],
+            "miner_balances": supply["miner_balances"],
+            "validator_balances": supply["validator_balances"],
+            "balances_by_account_type": actual_balances_by_type,
+        },
+        "ledger": {
+            "entry_count": ledger_entry_count,
+            "total_amount": ledger_total_amount,
+            "expected_total_amount": expected_ledger_total,
+            "by_entry_type": ledger_by_type,
+            "by_account_type": ledger_by_account_type,
+            "account_mismatch_count": len(account_mismatches),
+        },
+        "rewards": {
+            "accepted_blocks": accepted_blocks,
+            "block_reward_total": block_rewards,
+            "reward_rows": reward_count,
+            "rewards_table_total": rewards_table_total,
+            "ledger_block_reward_total": ledger_block_rewards,
+        },
+        "validators": {
+            "validator_count": int(validators["count"]),
+            "stake_locked": validator_stake_locked,
+            "expected_stake_locked": expected_validator_stake_locked,
+            "slashed_amount": validator_slashed_amount,
+            "ledger_validator_slashes": ledger_validator_slashes,
+            "ledger_genesis_slashes": ledger_genesis_slashes,
+        },
+        "issues": issues,
+    }
+
+
+def cleanup_expired_tasks() -> dict[str, Any]:
+    with get_connection() as connection:
+        result = _expire_assigned_tasks(connection)
+    return {
+        **result,
+        "message": "expired tasks cleanup completed",
     }
 
 
@@ -1308,6 +1566,7 @@ def _protocol_payload(params: dict[str, Any]) -> dict[str, Any]:
     return {
         "project": PROJECT_NAME,
         "protocol_version": params["protocol_version"],
+        "network_id": NETWORK_ID,
         "algorithm": params["algorithm"],
         "validation_mode": params["validation_mode"],
         "required_validator_approvals": params["required_validator_approvals"],
@@ -1321,6 +1580,7 @@ def _protocol_payload(params: dict[str, Any]) -> dict[str, Any]:
         "base_reward": params["base_reward"],
         "difficulty": calculate_difficulty(params),
         "reward_per_block": calculate_reward(params),
+        "faucet_enabled": NETWORK_ID in FAUCET_ALLOWED_NETWORKS,
         "penalty_invalid_result": PENALTY_INVALID_RESULT,
         "penalty_duplicate": PENALTY_DUPLICATE,
         "penalty_invalid_signature": PENALTY_INVALID_SIGNATURE,
@@ -1408,8 +1668,8 @@ def _reject_in_connection(
     }
 
 
-def _expire_assigned_tasks(connection: Any) -> None:
-    connection.execute(
+def _expire_assigned_tasks(connection: Any) -> dict[str, int]:
+    task_cursor = connection.execute(
         """
         UPDATE tasks
         SET status = 'expired'
@@ -1419,6 +1679,23 @@ def _expire_assigned_tasks(connection: Any) -> None:
         """,
         (utc_now(),),
     )
+    job_cursor = connection.execute(
+        """
+        UPDATE validation_jobs
+        SET status = 'expired', completed_at = ?
+        WHERE status = 'pending'
+        AND task_id IN (
+            SELECT task_id
+            FROM tasks
+            WHERE status = 'expired'
+        )
+        """,
+        (utc_now(),),
+    )
+    return {
+        "expired_tasks": max(0, task_cursor.rowcount),
+        "expired_validation_jobs": max(0, job_cursor.rowcount),
+    }
 
 
 def _record_submission(
@@ -1440,6 +1717,76 @@ def _record_submission(
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (task_id, miner_id, result_hash, len(segment), signature, int(accepted), reason, utc_now()),
+    )
+
+
+def _sum_query(connection: Any, query: str) -> float:
+    row = connection.execute(query).fetchone()
+    return round(float(row["total"]), 8)
+
+
+def _rows_to_float_map(rows: list[Any], key_column: str, value_column: str) -> dict[str, float]:
+    return {str(row[key_column]): round(float(row[value_column]), 8) for row in rows}
+
+
+def _account_balance_mismatches(connection: Any) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT
+            balances.account_id,
+            balances.account_type,
+            balances.balance AS balance,
+            COALESCE(SUM(ledger_entries.amount), 0) AS ledger_balance
+        FROM balances
+        LEFT JOIN ledger_entries ON ledger_entries.account_id = balances.account_id
+        GROUP BY balances.account_id, balances.account_type, balances.balance
+        ORDER BY balances.account_id ASC
+        """
+    ).fetchall()
+    mismatches: list[dict[str, Any]] = []
+    for row in rows:
+        balance = round(float(row["balance"]), 8)
+        ledger_balance = round(float(row["ledger_balance"]), 8)
+        if not _money_equal(balance, ledger_balance):
+            mismatches.append(
+                {
+                    "account_id": row["account_id"],
+                    "account_type": row["account_type"],
+                    "balance": balance,
+                    "ledger_balance": ledger_balance,
+                    "delta": round(balance - ledger_balance, 8),
+                }
+            )
+    return mismatches
+
+
+def _money_equal(left: float, right: float) -> bool:
+    return abs(round(float(left) - float(right), 8)) <= ECONOMIC_AUDIT_TOLERANCE
+
+
+def _audit_equal(
+    issues: list[dict[str, Any]],
+    *,
+    code: str,
+    message: str,
+    expected: float,
+    actual: float,
+) -> None:
+    expected_value = round(float(expected), 8)
+    actual_value = round(float(actual), 8)
+    if _money_equal(expected_value, actual_value):
+        return
+    issues.append(
+        {
+            "code": code,
+            "severity": "error",
+            "message": message,
+            "details": {
+                "expected": expected_value,
+                "actual": actual_value,
+                "delta": round(actual_value - expected_value, 8),
+            },
+        }
     )
 
 

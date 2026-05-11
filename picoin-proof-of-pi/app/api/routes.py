@@ -2,12 +2,14 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.models.schemas import (
     AuditSummaryResponse,
+    AuditFullResponse,
     BalanceResponse,
     BlockResponse,
     ChainVerificationResponse,
     FaucetRequest,
     FaucetResponse,
     LedgerEntryResponse,
+    MaintenanceCleanupResponse,
     MinerRegisterRequest,
     MinerResponse,
     PerformanceStatsResponse,
@@ -32,9 +34,11 @@ from app.models.schemas import (
 )
 from app.services.mining import (
     MiningError,
+    cleanup_expired_tasks,
     commit_task,
     create_next_task,
     get_audit_summary,
+    get_full_economic_audit,
     get_balance,
     get_balances,
     get_block,
@@ -219,6 +223,16 @@ def ledger(account_id: str | None = Query(None), limit: int = Query(100, ge=1, l
 @router.get("/audit/summary", response_model=AuditSummaryResponse)
 def audit_summary() -> dict:
     return get_audit_summary()
+
+
+@router.get("/audit/full", response_model=AuditFullResponse)
+def audit_full() -> dict:
+    return get_full_economic_audit()
+
+
+@router.post("/maintenance/expire-tasks", response_model=MaintenanceCleanupResponse)
+def maintenance_expire_tasks() -> dict:
+    return cleanup_expired_tasks()
 
 
 @router.get("/stats", response_model=StatsResponse)

@@ -4,12 +4,13 @@ MVP funcional de **Proof of Pi**. Un coordinador asigna rangos pequenos de digit
 
 Este proyecto no implementa una blockchain completa. Usa una cadena local de bloques aceptados con `previous_hash` y `block_hash` para preparar una evolucion futura.
 
-## Protocolo v0.9
+## Protocolo v0.11
 
 Parametros actuales:
 
 ```text
-protocol_version = 0.9
+protocol_version = 0.11
+network_id = local
 algorithm = bbp_hex_v1
 validation_mode = external_commit_reveal
 required_validator_approvals = 2
@@ -31,9 +32,12 @@ penalty_duplicate = 3
 penalty_invalid_signature = 5
 cooldown_after_rejections = 3
 cooldown_seconds = 300
+task_rate_limit = 12 assignments / 60 seconds
+faucet_enabled_networks = local
+faucet_rate_limit = 3 credits / account / hour
 ```
 
-El endpoint `GET /protocol` devuelve estos valores para que mineros y validadores sepan que reglas estan activas. Desde v0.9 estos parametros viven en SQLite, en `protocol_params`, y pueden cambiar automaticamente por epocas.
+El endpoint `GET /protocol` devuelve estos valores para que mineros y validadores sepan que reglas estan activas. Desde v0.11 estos parametros viven en SQLite, en `protocol_params`, y pueden cambiar automaticamente por epocas. `network_id` viene de `PICOIN_NETWORK`; por defecto es `local`.
 
 La dificultad se calcula con una formula simple y auditable:
 
@@ -413,7 +417,7 @@ Registra un validador externo.
 
 ### `POST /faucet`
 
-Acredita monedas demo desde `genesis` a una cuenta registrada. Esta ruta es solo para testnet local.
+Acredita monedas demo desde `genesis` a una cuenta registrada. Esta ruta es solo para `network_id = local` y tiene limite por cuenta para evitar abuso en demos.
 
 ```json
 {
@@ -421,6 +425,14 @@ Acredita monedas demo desde `genesis` a una cuenta registrada. Esta ruta es solo
   "account_type": "miner",
   "amount": 10
 }
+```
+
+### `POST /maintenance/expire-tasks`
+
+Ejecuta limpieza controlada de tareas y jobs de validacion vencidos.
+
+```powershell
+curl -X POST http://127.0.0.1:8000/maintenance/expire-tasks
 ```
 
 ### `GET /validators/{validator_id}`
@@ -521,6 +533,23 @@ curl "http://127.0.0.1:8000/ledger?account_id=genesis"
 
 Devuelve resumen de emision, circulante, stake bloqueado, stake recortado, bloques aceptados y validadores elegibles.
 
+### `GET /audit/full`
+
+Ejecuta auditoria economica completa y devuelve un JSON verificable. Comprueba:
+
+- suma total de balances contra `genesis_supply + block_rewards`
+- suma total del ledger contra la misma politica monetaria
+- balance de cada cuenta contra sus movimientos de ledger
+- bloques aceptados contra tabla `rewards`
+- recompensas de bloque contra movimientos `block_reward`
+- stake bloqueado y slashing de validadores contra ledger
+
+```powershell
+curl http://127.0.0.1:8000/audit/full
+```
+
+Si `valid = false`, la respuesta incluye `issues` con codigos como `account_balance_mismatch`, `total_balances_mismatch` o `rewards_table_mismatch`.
+
 ### `GET /stats`
 
 Devuelve estadisticas globales del MVP.
@@ -582,13 +611,16 @@ Implementado:
 - Seleccion/gating de validadores por reputacion y stake minimo.
 - Stake simulado de validadores y slashing por firmas invalidas.
 - Balances persistentes y ledger auditable.
+- Auditoria economica completa en `/audit/full`.
 - Cooldown y ban por firmas invalidas repetidas.
 - Commit-reveal con `result_hash` y `merkle_root`.
 - Merkle proofs para cada muestra revelada.
 - Recalculo independiente por validador externo.
 - Muestras deterministicas generadas despues del commit.
 - Tareas con expiracion.
+- Limpieza manual de tareas y jobs expirados.
 - Maximo de una tarea activa por minero.
+- Rate limit simple de asignacion de tareas por minero.
 - Asignacion pseudoaleatoria de rangos basada en `previous_hash`.
 - Rechazo de solapes con rangos activos o aceptados.
 - Rechazo de tareas ya enviadas o expiradas.
@@ -600,13 +632,16 @@ Implementado:
 - Cache LRU para digitos BBP.
 - Metricas de performance por tarea, commit, validacion y bloque.
 - Dificultad dinamica inicial basada en tamano de segmento, muestras y posicion maxima.
+- Modo de red con `PICOIN_NETWORK`.
+- Faucet habilitado solo en red local.
+- Rate limit de faucet por cuenta.
 
 Limites intencionales:
 
 - No hay consenso distribuido.
 - No hay red P2P.
 - No hay wallet transferible entre usuarios; el ledger solo registra emision, recompensas, stake simulado y slashing.
-- La validacion v0.9 es probabilistica por muestras, no una prueba criptografica completa del calculo entero.
+- La validacion v0.11 es probabilistica por muestras, no una prueba criptografica completa del calculo entero.
 
 ## Performance
 
@@ -674,6 +709,14 @@ validator_slash_invalid_signature = 3.1416
 ```
 
 El genesis queda registrado en `ledger_entries` con `block_height = 0`. Cada bloque aceptado crea un movimiento `block_reward` para el minero. Los registros de stake y slashing tambien quedan en el ledger.
+
+Politica monetaria auditada en v0.11:
+
+```text
+expected_total_balances = genesis_supply + accepted_block_rewards
+```
+
+`genesis`, faucet, stake y slashing son movimientos internos. Las recompensas de bloque son emision nueva. Por eso el total de balances puede crecer con cada bloque aceptado, mientras el endpoint `/audit/full` verifica que ese crecimiento coincida exactamente con la suma de recompensas registradas.
 
 ## Firma Ed25519
 
@@ -845,6 +888,7 @@ curl http://127.0.0.1:8000/difficulty/history
 curl http://127.0.0.1:8000/balances
 curl http://127.0.0.1:8000/ledger
 curl http://127.0.0.1:8000/audit/summary
+curl http://127.0.0.1:8000/audit/full
 curl "http://127.0.0.1:8000/validators?eligible_only=true"
 ```
 

@@ -200,6 +200,32 @@ class AuditSummaryResponse(BaseModel):
     eligible_validator_count: int
 
 
+class AuditIssue(BaseModel):
+    code: str
+    severity: str
+    message: str
+    details: dict[str, Any] = {}
+
+
+class AuditFullResponse(BaseModel):
+    valid: bool
+    network_id: str
+    protocol_version: str
+    checked_at: datetime
+    tolerance: float
+    supply: dict[str, Any]
+    ledger: dict[str, Any]
+    rewards: dict[str, Any]
+    validators: dict[str, Any]
+    issues: list[AuditIssue]
+
+
+class MaintenanceCleanupResponse(BaseModel):
+    expired_tasks: int
+    expired_validation_jobs: int
+    message: str
+
+
 class PerformanceStatsResponse(BaseModel):
     accepted_blocks: int
     avg_compute_ms: float
@@ -217,6 +243,7 @@ class PerformanceStatsResponse(BaseModel):
 class ProtocolResponse(BaseModel):
     project: str
     protocol_version: str
+    network_id: str
     algorithm: str
     validation_mode: str
     required_validator_approvals: int
@@ -230,6 +257,7 @@ class ProtocolResponse(BaseModel):
     base_reward: float
     difficulty: float
     reward_per_block: float
+    faucet_enabled: bool
     penalty_invalid_result: int
     penalty_duplicate: int
     penalty_invalid_signature: int
