@@ -1455,11 +1455,14 @@ CLI distribuida:
 ```powershell
 python -m picoin node peers
 python -m picoin node sync-status
+python -m picoin node reconcile
+python -m picoin node reconcile --peer http://peer-node:8000
 python -m picoin wallet create --name alice --output data/alice-wallet.json
 python -m picoin wallet balance --address PI...
 python -m picoin tx send --wallet data/alice-wallet.json --to PI... --amount 1.5 --nonce 1 --fee 0.01
 python -m picoin consensus status
 python -m picoin consensus proposals
+python -m picoin consensus votes --proposal-id ...
 python -m picoin consensus propose-block --block data/block.json --proposer miner-node-1
 python -m picoin consensus vote --proposal-id ... --identity data/testnet/identities/validator-one.json
 python -m picoin consensus finalize --proposal-id ...
@@ -1471,7 +1474,7 @@ Consenso distribuido v0.17:
 1. Un nodo minero propone automaticamente el bloque cuando el flujo de mining alcanza quorum local, y tambien puede proponer manualmente con `POST /consensus/proposals`.
 2. Cada validador firma un voto Ed25519 sobre `proposal_id`, `block_hash`, `height`, decision y razon.
 3. Los votos se propagan por gossip HTTP best-effort a peers conectados.
-4. Si hay dos propuestas para la misma altura/padre, el fork-choice elige por mas aprobaciones, menos rechazos, creacion mas antigua y `block_hash` lexicografico.
+4. Si hay dos propuestas para la misma altura/padre, el fork-choice elige por peso de aprobaciones ponderado por reputacion/stake, luego peso de rechazos, votos planos, creacion mas antigua y `block_hash` lexicografico.
 5. Un validador no puede votar dos propuestas competidoras del mismo fork.
 6. Cuando hay `required_validator_approvals = 3`, solo la propuesta ganadora del fork-choice se finaliza.
 7. El replay canonico valida `previous_hash`, recalcula `block_hash`, rechaza rangos/resultados duplicados y crea el contexto minimo faltante (`miner`, `task`) antes de insertar el bloque.
@@ -1492,7 +1495,13 @@ PICOIN_GOSSIP_TIMEOUT_SECONDS=2.0
 PICOIN_GOSSIP_MAX_PEERS=16
 ```
 
-Esta version ya mueve el protocolo hacia propuesta/voto/finalizacion multi-nodo con gossip y fork-choice basico. La siguiente mejora es hacer gossip por WebSocket persistente, reconciliacion periodica de peers y fork-choice con peso economico/reputacion.
+Reconciliacion:
+
+- `POST /node/reconcile` consulta peers conectados y fusiona identidad, peers, mempool y propuestas.
+- `POST /node/reconcile?peer_address=http://peer:8000` fuerza reconciliacion contra un peer especifico.
+- La reconciliacion es pull-based y complementa el gossip: si un mensaje no llego, el nodo puede recuperar estado despues.
+
+Esta version ya mueve el protocolo hacia propuesta/voto/finalizacion multi-nodo con gossip, reconciliacion y fork-choice ponderado por reputacion/stake. La siguiente mejora es gossip WebSocket persistente, jobs de reconciliacion periodica en background y fork-choice con slashing/finality mas estricta.
 
 Docker testnet:
 
@@ -1521,9 +1530,62 @@ Si quieres reiniciar la demo desde bloque 1:
 python -m app.tools.reset_db
 ```
 
-## Siguiente Evolucion
+## Ruta a Mainnet
 
-- Ajustar el tamano de epoca y objetivo de bloque con benchmarks reales.
-- Agregar protecciones de entorno para desactivar faucet fuera de testnet.
-- Crear scripts equivalentes para Linux/macOS.
-- Evolucionar la lista local de bloques hacia consenso blockchain.
+Estado actual: Picoin ya tiene una L1 experimental con Proof of Pi, validadores, auditorias, economics 67/20/10/3, treasury timelocked, Science Reserve locked, mempool, wallets, peers, gossip, propuestas, votos, finalizacion y replay canonico inicial. Todavia no esta listo para mainnet con valor real.
+
+Fase 1 - Testnet distribuida estable:
+
+- Ejecutar nodos reales en maquinas distintas, no solo Docker local.
+- Reconciliacion periodica automatica en background.
+- Gossip WebSocket persistente con backoff, deduplicacion y limites por peer.
+- Persistir reputacion de peers y desconectar peers con spam o datos invalidos.
+- Exportar snapshots de cadena y restore deterministico.
+
+Fase 2 - Consenso y seguridad:
+
+- Definir fork-choice final: peso por stake/reputacion, edad, finality y penalizaciones.
+- Slashing real para doble voto, firma invalida, voto sobre bloque invalido y fraude confirmado.
+- Separar claramente bloque propuesto, bloque pre-finalizado y bloque final.
+- Agregar finality delay y ventana de disputa/auditoria antes de considerar irreversible.
+- Simular particiones de red, forks, nodos maliciosos y validadores offline.
+
+Fase 3 - Transacciones y estado:
+
+- Ejecutar transfers firmados desde mempool dentro de bloques.
+- Nonce/balance enforcement por cuenta.
+- Fees reales y politica anti-spam.
+- Incluir Merkle root de transacciones por bloque.
+- Rebuild completo de estado desde genesis usando solo bloques.
+
+Fase 4 - Nodos y operacion:
+
+- CLI de operador: backup, restore, snapshot, peer ban/unban, metrics.
+- Observabilidad: Prometheus/logs estructurados/alertas.
+- Configuracion de testnet publica: seeds, chain_id, genesis, puertos, dominios.
+- Binaries o Docker images versionadas.
+- Upgrade/migration plan por version de protocolo.
+
+Fase 5 - Auditoria economica/protocolo:
+
+- Revisar supply total, rewards, treasury, reserve y validator rewards bajo replay completo.
+- Congelar parametros iniciales de mainnet: reward, intervalo bloque, quorum, epoch, slashing, faucet off.
+- Auditoria externa de criptografia, firmas, replay, consenso y contabilidad.
+- Bug bounty en testnet publica.
+
+Fase 6 - Science L1 mainnet-ready:
+
+- Mantener Science Reserve locked hasta activar L2 por gobernanza timelocked.
+- Auditar staking cientifico, jobs abstractos, quotas y eventos L2-ready.
+- Definir condiciones exactas para activar marketplace L2 en el futuro.
+- No activar pagos de compute hasta tener workers/verificacion L2 probados.
+
+Fase 7 - Mainnet candidate:
+
+- Testnet publica con uptime sostenido.
+- Reset final de genesis mainnet y chain_id mainnet.
+- Desactivar faucet y endpoints de demo.
+- Multisig/governance real para treasury y reserve.
+- Publicar spec del protocolo, explorer y guia de nodo.
+
+Mainnet deberia esperar hasta que un nodo nuevo pueda descargar/reconciliar bloques, reconstruir balances desde cero, validar consensus/finality, rechazar forks invalidos y sobrevivir pruebas con varios nodos desconectandose/reconectandose sin intervencion manual.

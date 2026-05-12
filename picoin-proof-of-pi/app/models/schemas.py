@@ -530,6 +530,15 @@ class BlockSyncResponse(BaseModel):
     blocks: list[dict[str, Any]]
 
 
+class PeerReconcileResponse(BaseModel):
+    attempted: int = 0
+    transactions_imported: int = 0
+    proposals_imported: int = 0
+    peers_seen: int = 0
+    errors: int = 0
+    results: list[dict[str, Any]] = []
+
+
 class ConsensusBlockProposalRequest(BaseModel):
     block: dict[str, Any]
     proposer_node_id: str = Field(..., min_length=1, max_length=128)
@@ -557,6 +566,21 @@ class ConsensusProposalResponse(BaseModel):
     finalized_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+
+
+class ConsensusVoteResponse(BaseModel):
+    vote_id: str
+    proposal_id: str
+    block_hash: str
+    validator_id: str
+    approved: bool
+    reason: str
+    signature: str
+    signed_at: datetime
+    created_at: datetime
+    trust_score: float | None = None
+    stake_locked: float | None = None
+    weight: float = 0.0
 
 
 class ConsensusReplayResponse(BaseModel):

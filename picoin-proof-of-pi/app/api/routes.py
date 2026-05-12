@@ -13,6 +13,7 @@ from app.models.schemas import (
     ConsensusProposalResponse,
     ConsensusReplayResponse,
     ConsensusStatusResponse,
+    ConsensusVoteResponse,
     ConsensusVoteRequest,
     FaucetRequest,
     FaucetResponse,
@@ -28,6 +29,7 @@ from app.models.schemas import (
     NodeSyncStatusResponse,
     PerformanceStatsResponse,
     PeerRegisterRequest,
+    PeerReconcileResponse,
     PeerResponse,
     ProtocolParamsResponse,
     ProtocolResponse,
@@ -70,6 +72,7 @@ from app.services.consensus import (
     consensus_status,
     finalize_proposal,
     get_block_proposal,
+    list_consensus_votes,
     list_block_proposals,
     propose_block,
     replay_finalized_blocks,
@@ -84,6 +87,8 @@ from app.services.network import (
     list_peers,
     node_identity,
     receive_block_header,
+    reconcile_connected_peers,
+    reconcile_peer,
     register_peer,
     gossip_json,
     submit_transaction,
@@ -252,6 +257,24 @@ def node_receive_block(payload: BlockReceiveRequest) -> dict:
         raise _network_error(exc) from exc
 
 
+@router.post("/node/reconcile", response_model=PeerReconcileResponse)
+def node_reconcile(
+    peer_address: str | None = Query(None),
+    limit: int = Query(16, ge=1, le=100),
+) -> dict:
+    if peer_address:
+        result = reconcile_peer(peer_address)
+        return {
+            "attempted": 1,
+            "transactions_imported": result["transactions_imported"],
+            "proposals_imported": result["proposals_imported"],
+            "peers_seen": result["peers_seen"],
+            "errors": len(result["errors"]),
+            "results": [result],
+        }
+    return reconcile_connected_peers(limit)
+
+
 @router.get("/consensus/status", response_model=ConsensusStatusResponse)
 def consensus_status_route() -> dict:
     return consensus_status()
@@ -271,6 +294,13 @@ def consensus_proposal(proposal_id: str) -> dict:
     if proposal is None:
         raise HTTPException(status_code=404, detail="consensus proposal not found")
     return proposal
+
+
+@router.get("/consensus/proposals/{proposal_id}/votes", response_model=list[ConsensusVoteResponse])
+def consensus_votes(proposal_id: str) -> list[dict]:
+    if get_block_proposal(proposal_id) is None:
+        raise HTTPException(status_code=404, detail="consensus proposal not found")
+    return list_consensus_votes(proposal_id)
 
 
 @router.post("/consensus/proposals", response_model=ConsensusProposalResponse, status_code=201)

@@ -404,6 +404,98 @@ def gossip_json(
     }
 
 
+def reconcile_peer(peer_address: str) -> dict[str, Any]:
+    peer_address = peer_address.rstrip("/")
+    result = {
+        "peer_address": peer_address,
+        "identity_registered": False,
+        "peers_seen": 0,
+        "transactions_seen": 0,
+        "transactions_imported": 0,
+        "proposals_seen": 0,
+        "proposals_imported": 0,
+        "errors": [],
+    }
+    try:
+        identity = requests.get(f"{peer_address}/node/identity", timeout=GOSSIP_TIMEOUT_SECONDS).json()
+        register_peer(
+            node_id=identity["node_id"],
+            peer_address=identity["peer_address"],
+            peer_type=identity["peer_type"],
+            protocol_version=identity["protocol_version"],
+            network_id=identity["network_id"],
+            chain_id=identity["chain_id"],
+            genesis_hash=identity["genesis_hash"],
+            metadata={"source": "reconcile"},
+        )
+        result["identity_registered"] = True
+    except Exception as exc:
+        result["errors"].append(f"identity: {exc}")
+
+    try:
+        peer_rows = requests.get(f"{peer_address}/node/peers", timeout=GOSSIP_TIMEOUT_SECONDS).json()
+        for peer in peer_rows:
+            result["peers_seen"] += 1
+            try:
+                register_peer(
+                    node_id=peer["node_id"],
+                    peer_address=peer["peer_address"],
+                    peer_type=peer["peer_type"],
+                    protocol_version=peer["protocol_version"],
+                    network_id=peer["network_id"],
+                    chain_id=peer["chain_id"],
+                    genesis_hash=peer["genesis_hash"],
+                    metadata={"source": "peer_reconcile"},
+                )
+            except Exception as exc:
+                result["errors"].append(f"peer {peer.get('peer_address')}: {exc}")
+    except Exception as exc:
+        result["errors"].append(f"peers: {exc}")
+
+    try:
+        tx_rows = requests.get(f"{peer_address}/mempool?limit=100", timeout=GOSSIP_TIMEOUT_SECONDS).json()
+        for tx in tx_rows:
+            result["transactions_seen"] += 1
+            try:
+                submit_transaction(tx, propagated=True)
+                result["transactions_imported"] += 1
+            except Exception as exc:
+                result["errors"].append(f"tx {tx.get('tx_hash')}: {exc}")
+    except Exception as exc:
+        result["errors"].append(f"mempool: {exc}")
+
+    try:
+        from app.services.consensus import propose_block
+
+        proposals = requests.get(f"{peer_address}/consensus/proposals?limit=100", timeout=GOSSIP_TIMEOUT_SECONDS).json()
+        for proposal in proposals:
+            result["proposals_seen"] += 1
+            try:
+                propose_block(proposal["payload"], proposal["proposer_node_id"], gossip=False)
+                result["proposals_imported"] += 1
+            except Exception as exc:
+                result["errors"].append(f"proposal {proposal.get('proposal_id')}: {exc}")
+    except Exception as exc:
+        result["errors"].append(f"proposals: {exc}")
+
+    with get_connection() as connection:
+        _record_sync_event(connection, None, "peer_reconcile", "outbound", "completed", result)
+    return result
+
+
+def reconcile_connected_peers(limit: int = 16) -> dict[str, Any]:
+    peers = list_peers(include_stale=False)[:limit]
+    results = [reconcile_peer(peer["peer_address"]) for peer in peers]
+    return {
+        "attempted": len(results),
+        "transactions_imported": sum(item["transactions_imported"] for item in results),
+        "proposals_imported": sum(item["proposals_imported"] for item in results),
+        "peers_seen": sum(item["peers_seen"] for item in results),
+        "errors": sum(len(item["errors"]) for item in results),
+        "results": results,
+    }
+
+
 def get_transaction(tx_hash: str) -> dict[str, Any] | None:
     with get_connection() as connection:
         row = connection.execute("SELECT * FROM mempool_transactions WHERE tx_hash = ?", (tx_hash,)).fetchone()

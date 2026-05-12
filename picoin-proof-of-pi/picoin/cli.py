@@ -104,6 +104,14 @@ def command_node_sync_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_node_reconcile(args: argparse.Namespace) -> int:
+    path = f"/node/reconcile?limit={args.limit}"
+    if args.peer:
+        path = f"{path}&peer_address={args.peer}"
+    print_json(post_json(args.server, path))
+    return 0
+
+
 def command_wallet_create(args: argparse.Namespace) -> int:
     wallet = create_wallet(args.name)
     if args.output:
@@ -146,6 +154,11 @@ def command_consensus_proposals(args: argparse.Namespace) -> int:
     if args.status:
         path = f"{path}&status={args.status}"
     print_json(get_json(args.server, path))
+    return 0
+
+
+def command_consensus_votes(args: argparse.Namespace) -> int:
+    print_json(get_json(args.server, f"/consensus/proposals/{args.proposal_id}/votes"))
     return 0
 
 
@@ -439,6 +452,12 @@ def add_node_parser(subparsers: argparse._SubParsersAction) -> None:
     sync_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
     sync_parser.set_defaults(func=command_node_sync_status)
 
+    reconcile_parser = node_subparsers.add_parser("reconcile", help="Pull peers, mempool and proposals from connected peers")
+    reconcile_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    reconcile_parser.add_argument("--peer", help="Optional peer base URL")
+    reconcile_parser.add_argument("--limit", type=int, default=16)
+    reconcile_parser.set_defaults(func=command_node_reconcile)
+
 
 def add_wallet_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("wallet", help="Create wallets and query balances")
@@ -484,6 +503,10 @@ def add_consensus_parser(subparsers: argparse._SubParsersAction) -> None:
     proposals_parser.add_argument("--status")
     proposals_parser.add_argument("--limit", type=int, default=50)
     proposals_parser.set_defaults(func=command_consensus_proposals)
+
+    votes_parser = consensus_subparsers.add_parser("votes", help="List weighted votes for a proposal")
+    votes_parser.add_argument("--proposal-id", required=True)
+    votes_parser.set_defaults(func=command_consensus_votes)
 
     propose_parser = consensus_subparsers.add_parser("propose-block", help="Propose a block JSON to distributed consensus")
     propose_parser.add_argument("--block", type=Path, required=True)

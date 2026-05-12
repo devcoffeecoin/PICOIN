@@ -437,17 +437,33 @@ def select_fork_choice(height: int | None = None, connection: Any | None = None)
             if latest is None or latest["height"] is None:
                 return None
             height = int(latest["height"])
-        row = connection.execute(
+        rows = connection.execute(
             """
             SELECT *
             FROM consensus_block_proposals
             WHERE height = ? AND status NOT IN ('rejected')
-            ORDER BY approvals DESC, rejections ASC, created_at ASC, block_hash ASC
-            LIMIT 1
             """,
             (height,),
-        ).fetchone()
-        return _decode_proposal(row_to_dict(row))
+        ).fetchall()
+        choices = []
+        for row in rows:
+            proposal = _decode_proposal(row_to_dict(row))
+            proposal["approval_weight"] = _proposal_approval_weight(connection, proposal["proposal_id"])
+            proposal["rejection_weight"] = _proposal_rejection_weight(connection, proposal["proposal_id"])
+            choices.append(proposal)
+        if not choices:
+            return None
+        choices.sort(
+            key=lambda item: (
+                -float(item["approval_weight"]),
+                float(item["rejection_weight"]),
+                -int(item["approvals"]),
+                int(item["rejections"]),
+                item["created_at"],
+                item["block_hash"],
+            )
+        )
+        return choices[0]
     finally:
         if owns_connection:
             connection.close()
@@ -470,6 +486,27 @@ def list_block_proposals(status: str | None = None, limit: int = 100) -> list[di
 def get_block_proposal(proposal_id: str) -> dict[str, Any] | None:
     with get_connection() as connection:
         return _proposal_by_id(connection, proposal_id)
+
+
+def list_consensus_votes(proposal_id: str) -> list[dict[str, Any]]:
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT v.*, validators.trust_score, validators.stake_locked
+            FROM consensus_votes v
+            LEFT JOIN validators ON validators.validator_id = v.validator_id
+            WHERE v.proposal_id = ?
+            ORDER BY v.created_at ASC
+            """,
+            (proposal_id,),
+        ).fetchall()
+        votes = []
+        for row in rows:
+            vote = row_to_dict(row)
+            vote["approved"] = bool(vote["approved"])
+            vote["weight"] = _validator_weight(vote.get("trust_score"), vote.get("stake_locked"))
+            votes.append(vote)
+        return votes
 
 
 def consensus_status() -> dict[str, Any]:
@@ -510,6 +547,8 @@ def consensus_status() -> dict[str, Any]:
                 "block_hash": choice["block_hash"],
                 "approvals": choice["approvals"],
                 "rejections": choice["rejections"],
+                "approval_weight": choice.get("approval_weight", 0.0),
+                "rejection_weight": choice.get("rejection_weight", 0.0),
             }
             for choice in fork_choices
             if choice is not None
@@ -850,6 +889,34 @@ def _refresh_vote_counts(connection: Any, proposal_id: str) -> None:
         """,
         (counts["approvals"], counts["rejections"], utc_now(), proposal_id),
     )
+
+
+def _proposal_approval_weight(connection: Any, proposal_id: str) -> float:
+    return _proposal_vote_weight(connection, proposal_id, approved=True)
+
+
+def _proposal_rejection_weight(connection: Any, proposal_id: str) -> float:
+    return _proposal_vote_weight(connection, proposal_id, approved=False)
+
+
+def _proposal_vote_weight(connection: Any, proposal_id: str, approved: bool) -> float:
+    rows = connection.execute(
+        """
+        SELECT validators.trust_score, validators.stake_locked
+        FROM consensus_votes
+        LEFT JOIN validators ON validators.validator_id = consensus_votes.validator_id
+        WHERE consensus_votes.proposal_id = ? AND consensus_votes.approved = ?
+        """,
+        (proposal_id, 1 if approved else 0),
+    ).fetchall()
+    return round(sum(_validator_weight(row["trust_score"], row["stake_locked"]) for row in rows), 8)
+
+
+def _validator_weight(trust_score: Any, stake_locked: Any) -> float:
+    trust = max(0.0, float(trust_score if trust_score is not None else 0.0))
+    stake = max(0.0, float(stake_locked if stake_locked is not None else 0.0))
+    stake_units = min(stake / 31.416, 100.0)
+    return round(trust * (1.0 + stake_units), 8)
 
 
 def _proposal_by_id(connection: Any, proposal_id: str) -> dict[str, Any] | None:

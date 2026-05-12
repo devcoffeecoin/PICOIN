@@ -184,6 +184,37 @@ def test_fork_choice_prefers_more_approvals_and_blocks_double_vote(tmp_path, mon
         _vote(second, identity)
 
 
+def test_fork_choice_uses_validator_reputation_and_stake_weight(tmp_path, monkeypatch) -> None:
+    _init_consensus_db(tmp_path, monkeypatch, "consensus-weighted-fork.sqlite3")
+    low_weight, high_weight = _register_validators(2)
+    from app.db.database import get_connection
+
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE validators SET trust_score = 0.5, stake_locked = 31.416 WHERE validator_id = ?",
+            (low_weight["validator_id"],),
+        )
+        connection.execute(
+            "UPDATE validators SET trust_score = 1.0, stake_locked = 314.16 WHERE validator_id = ?",
+            (high_weight["validator_id"],),
+        )
+
+    first = propose_block(_block(), "miner-node-1")
+    fork_block = _block()
+    fork_block["range_start"] = 65
+    fork_block["range_end"] = 128
+    fork_block["result_hash"] = "d" * 64
+    fork_block["task_id"] = "distributed-task-weighted-fork"
+    second = propose_block(_rehash(fork_block), "miner-node-2")
+
+    _vote(first, low_weight)
+    _vote(second, high_weight)
+    winner = select_fork_choice(1)
+
+    assert winner["proposal_id"] == second["proposal_id"]
+    assert winner["approval_weight"] > 10
+
+
 def test_consensus_status_reports_proposals_and_finalizations(tmp_path, monkeypatch) -> None:
     _init_consensus_db(tmp_path, monkeypatch, "consensus-status.sqlite3")
     propose_block(_block(), "miner-node-1")

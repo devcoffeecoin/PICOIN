@@ -19,12 +19,15 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
 
     peers = parser.parse_args(["node", "peers", "--connected-only"])
     sync = parser.parse_args(["node", "sync-status"])
+    reconcile = parser.parse_args(["node", "reconcile", "--peer", "http://peer:8000"])
 
     assert peers.command == "node"
     assert peers.node_command == "peers"
     assert peers.include_stale is False
     assert sync.command == "node"
     assert sync.node_command == "sync-status"
+    assert reconcile.node_command == "reconcile"
+    assert reconcile.peer == "http://peer:8000"
 
 
 def test_picoin_cli_parses_wallet_and_tx_commands() -> None:
@@ -63,6 +66,7 @@ def test_picoin_cli_parses_consensus_commands() -> None:
     status = parser.parse_args(["consensus", "status"])
     propose = parser.parse_args(["consensus", "propose-block", "--block", "block.json", "--proposer", "miner-node"])
     vote = parser.parse_args(["consensus", "vote", "--proposal-id", "abc", "--identity", "validator.json"])
+    votes = parser.parse_args(["consensus", "votes", "--proposal-id", "abc"])
 
     assert status.command == "consensus"
     assert status.consensus_command == "status"
@@ -70,6 +74,7 @@ def test_picoin_cli_parses_consensus_commands() -> None:
     assert propose.proposer == "miner-node"
     assert vote.proposal_id == "abc"
     assert vote.identity == Path("validator.json")
+    assert votes.consensus_command == "votes"
 
 
 def test_picoin_cli_parses_miner_command() -> None:
