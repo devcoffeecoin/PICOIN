@@ -12,6 +12,8 @@ const state = {
   health: null,
   node: null,
   events: [],
+  treasury: null,
+  reserve: null,
 };
 
 const $ = (id) => document.getElementById(id);
@@ -66,6 +68,8 @@ async function loadData() {
     health,
     node,
     events,
+    treasury,
+    reserve,
   ] = await Promise.all([
     fetchJson("/protocol"),
     fetchJson("/stats"),
@@ -80,6 +84,8 @@ async function loadData() {
     fetchJson("/health"),
     fetchJson("/node/status"),
     fetchJson("/events?limit=14"),
+    fetchJson("/treasury/status"),
+    fetchJson("/reserve/status"),
   ]);
 
   Object.assign(state, {
@@ -96,6 +102,8 @@ async function loadData() {
     health,
     node,
     events,
+    treasury,
+    reserve,
   });
   render();
 }
@@ -263,6 +271,12 @@ function renderAudit() {
     <div class="audit-box"><span>Balances esperados</span><strong>${fmt(state.audit.supply.expected_total_balances, 5)}</strong></div>
     <div class="audit-box"><span>Balances actuales</span><strong>${fmt(state.audit.supply.actual_total_balances, 5)}</strong></div>
     <div class="audit-box"><span>Minted rewards</span><strong>${fmt(state.audit.rewards.total_minted_rewards, 5)}</strong></div>
+    <div class="audit-box"><span>Science reserve</span><strong>${fmt(state.audit.rewards.science_reserve_total, 5)}</strong></div>
+    <div class="audit-box"><span>Reserve disponible</span><strong>${fmt(state.reserve.available, 5)}</strong></div>
+    <div class="audit-box"><span>Compute pagado</span><strong>${fmt(state.reserve.total_paid, 5)}</strong></div>
+    <div class="audit-box"><span>Treasury locked</span><strong>${fmt(state.treasury.locked_balance, 5)}</strong></div>
+    <div class="audit-box"><span>Treasury unlocked</span><strong>${fmt(state.treasury.unlocked_balance, 5)}</strong></div>
+    <div class="audit-box"><span>Next unlock</span><strong>${escapeHtml(new Date(state.treasury.next_unlock_at).toLocaleDateString())}</strong></div>
     <div class="audit-box"><span>Audit rewards</span><strong>${fmt(state.audit.rewards.audit_reward_total, 5)}</strong></div>
     <div class="audit-box"><span>Estado</span><strong>${issueSummary}</strong></div>
     <div class="audit-box"><span>Retro audits</span><strong>${fmt(state.retroAudits.length, 0)}</strong></div>

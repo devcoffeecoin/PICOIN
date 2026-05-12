@@ -34,6 +34,7 @@ from app.core.settings import PROJECT_NAME
 DEFAULT_SERVER_URL = os.getenv("PICOIN_SERVER", "http://127.0.0.1:8000")
 DEFAULT_HOST = os.getenv("PICOIN_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.getenv("PICOIN_PORT", "8000"))
+DEFAULT_SCIENCE_ADDRESS = os.getenv("PICOIN_SCIENCE_ADDRESS", "local-science-user")
 
 
 def normalize_server_url(server: str) -> str:
@@ -46,6 +47,12 @@ def print_json(payload: Any) -> None:
 
 def get_json(server_url: str, path: str) -> Any:
     response = requests.get(f"{normalize_server_url(server_url)}{path}", timeout=20)
+    response.raise_for_status()
+    return response.json()
+
+
+def post_json(server_url: str, path: str, payload: dict[str, Any] | None = None) -> Any:
+    response = requests.post(f"{normalize_server_url(server_url)}{path}", json=payload, timeout=20)
     response.raise_for_status()
     return response.json()
 
@@ -81,6 +88,108 @@ def command_node_audit(args: argparse.Namespace) -> int:
 
 def command_node_protocol(args: argparse.Namespace) -> int:
     print_json(get_json(args.server, "/protocol"))
+    return 0
+
+
+def command_science_stake(args: argparse.Namespace) -> int:
+    print_json(post_json(args.server, "/science/stake", {"address": args.address, "amount": args.amount}))
+    return 0
+
+
+def command_science_account(args: argparse.Namespace) -> int:
+    print_json(get_json(args.server, f"/science/accounts/{args.address}"))
+    return 0
+
+
+def command_science_create_job(args: argparse.Namespace) -> int:
+    print_json(
+        post_json(
+            args.server,
+            "/science/jobs",
+            {
+                "requester_address": args.address,
+                "job_type": args.type,
+                "metadata_hash": args.metadata_hash,
+                "storage_pointer": args.storage_pointer,
+                "reward_budget": args.reward_budget,
+            },
+        )
+    )
+    return 0
+
+
+def command_science_jobs(args: argparse.Namespace) -> int:
+    path = f"/science/jobs?limit={args.limit}"
+    if args.address:
+        path = f"{path}&address={args.address}"
+    print_json(get_json(args.server, path))
+    return 0
+
+
+def command_science_accept_job(args: argparse.Namespace) -> int:
+    print_json(post_json(args.server, f"/science/jobs/{args.job_id}/accept"))
+    return 0
+
+
+def command_science_pay_worker(args: argparse.Namespace) -> int:
+    print_json(post_json(args.server, f"/science/jobs/{args.job_id}/pay"))
+    return 0
+
+
+def command_science_reserve(args: argparse.Namespace) -> int:
+    print_json(get_json(args.server, "/science/reserve"))
+    return 0
+
+
+def command_science_reserve_governance(args: argparse.Namespace) -> int:
+    print_json(get_json(args.server, "/science/reserve/governance"))
+    return 0
+
+
+def command_science_propose_activation(args: argparse.Namespace) -> int:
+    print_json(
+        post_json(
+            args.server,
+            "/science/reserve/governance/propose-activation",
+            {"signer": args.signer},
+        )
+    )
+    return 0
+
+
+def command_science_approve_activation(args: argparse.Namespace) -> int:
+    print_json(
+        post_json(
+            args.server,
+            "/science/reserve/governance/approve-activation",
+            {"signer": args.signer},
+        )
+    )
+    return 0
+
+
+def command_science_execute_activation(args: argparse.Namespace) -> int:
+    print_json(post_json(args.server, "/science/reserve/governance/execute-activation"))
+    return 0
+
+
+def command_treasury_status(args: argparse.Namespace) -> int:
+    print_json(get_json(args.server, "/treasury/status"))
+    return 0
+
+
+def command_treasury_claim(args: argparse.Namespace) -> int:
+    payload: dict[str, Any] = {}
+    if args.requested_by:
+        payload["requested_by"] = args.requested_by
+    if args.claim_to:
+        payload["claim_to"] = args.claim_to
+    print_json(post_json(args.server, "/treasury/claim", payload))
+    return 0
+
+
+def command_reserve_status(args: argparse.Namespace) -> int:
+    print_json(get_json(args.server, "/reserve/status"))
     return 0
 
 
@@ -222,6 +331,79 @@ def add_validator_parser(subparsers: argparse._SubParsersAction) -> None:
     validate_parser.set_defaults(func=command_validate)
 
 
+def add_science_parser(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser("science", help="Manage Science Compute Access Layer")
+    parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    parser.add_argument("--address", default=DEFAULT_SCIENCE_ADDRESS)
+    science_subparsers = parser.add_subparsers(dest="science_command", required=True)
+
+    stake_parser = science_subparsers.add_parser("stake", help="Stake PI for science compute access")
+    stake_parser.add_argument("--amount", type=float, required=True)
+    stake_parser.set_defaults(func=command_science_stake)
+
+    account_parser = science_subparsers.add_parser("account", help="Show science stake account")
+    account_parser.set_defaults(func=command_science_account)
+
+    create_job_parser = science_subparsers.add_parser("create-job", help="Create a science compute job record")
+    create_job_parser.add_argument("--type", required=True)
+    create_job_parser.add_argument("--metadata-hash", required=True)
+    create_job_parser.add_argument("--storage-pointer", required=True)
+    create_job_parser.add_argument("--reward-budget", type=float, default=0.0)
+    create_job_parser.set_defaults(func=command_science_create_job)
+
+    jobs_parser = science_subparsers.add_parser("jobs", help="List science jobs")
+    jobs_parser.add_argument("--limit", type=int, default=50)
+    jobs_parser.set_defaults(func=command_science_jobs)
+
+    accept_parser = science_subparsers.add_parser("accept-job", help="Mark a verified science job as accepted")
+    accept_parser.add_argument("--job-id", required=True)
+    accept_parser.set_defaults(func=command_science_accept_job)
+
+    pay_parser = science_subparsers.add_parser("pay-worker", help="Pay an accepted science worker")
+    pay_parser.add_argument("--job-id", required=True)
+    pay_parser.set_defaults(func=command_science_pay_worker)
+
+    reserve_parser = science_subparsers.add_parser("reserve", help="Show science compute reward reserve")
+    reserve_parser.set_defaults(func=command_science_reserve)
+
+    governance_parser = science_subparsers.add_parser("reserve-governance", help="Show science reserve governance lock")
+    governance_parser.set_defaults(func=command_science_reserve_governance)
+
+    propose_parser = science_subparsers.add_parser("propose-l2-activation", help="Propose timelocked L2 marketplace activation")
+    propose_parser.add_argument("--signer", required=True)
+    propose_parser.set_defaults(func=command_science_propose_activation)
+
+    approve_parser = science_subparsers.add_parser("approve-l2-activation", help="Approve timelocked L2 marketplace activation")
+    approve_parser.add_argument("--signer", required=True)
+    approve_parser.set_defaults(func=command_science_approve_activation)
+
+    execute_parser = science_subparsers.add_parser("execute-l2-activation", help="Execute L2 activation after timelock and multisig threshold")
+    execute_parser.set_defaults(func=command_science_execute_activation)
+
+
+def add_treasury_parser(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser("treasury", help="Inspect or claim the Scientific Development Fund")
+    parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    treasury_subparsers = parser.add_subparsers(dest="treasury_command", required=True)
+
+    status_parser = treasury_subparsers.add_parser("status", help="Show Scientific Development Fund status")
+    status_parser.set_defaults(func=command_treasury_status)
+
+    claim_parser = treasury_subparsers.add_parser("claim", help="Claim unlocked Scientific Development Fund balance")
+    claim_parser.add_argument("--requested-by")
+    claim_parser.add_argument("--claim-to")
+    claim_parser.set_defaults(func=command_treasury_claim)
+
+
+def add_reserve_parser(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser("reserve", help="Inspect the Science Compute Marketplace reserve")
+    parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    reserve_subparsers = parser.add_subparsers(dest="reserve_command", required=True)
+
+    status_parser = reserve_subparsers.add_parser("status", help="Show Science Compute Marketplace reserve status")
+    status_parser.set_defaults(func=command_reserve_status)
+
+
 def add_testnet_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("testnet", help="Manage local demo testnet")
     testnet_subparsers = parser.add_subparsers(dest="testnet_command", required=True)
@@ -265,6 +447,9 @@ def build_parser() -> argparse.ArgumentParser:
     add_node_parser(subparsers)
     add_miner_parser(subparsers)
     add_validator_parser(subparsers)
+    add_science_parser(subparsers)
+    add_treasury_parser(subparsers)
+    add_reserve_parser(subparsers)
     add_testnet_parser(subparsers)
     return parser
 

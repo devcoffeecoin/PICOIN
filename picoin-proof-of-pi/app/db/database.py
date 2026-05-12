@@ -18,6 +18,10 @@ from app.core.settings import (
     RANGE_ASSIGNMENT_MODE,
     REQUIRED_VALIDATOR_APPROVALS,
     SAMPLE_COUNT,
+    SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET,
+    SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID,
+    SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET,
+    SCIENCE_RESERVE_LOCKED_STATUS,
     TASK_EXPIRATION_SECONDS,
     TASK_SEGMENT_SIZE,
     VALIDATION_MODE,
@@ -290,6 +294,104 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 FOREIGN KEY(block_height) REFERENCES blocks(height)
             );
 
+            CREATE TABLE IF NOT EXISTS science_stake_accounts (
+                account_id TEXT PRIMARY KEY,
+                address TEXT NOT NULL UNIQUE,
+                stake_amount REAL NOT NULL,
+                tier TEXT,
+                compute_multiplier INTEGER NOT NULL DEFAULT 0,
+                monthly_quota_used REAL NOT NULL DEFAULT 0,
+                monthly_quota_epoch TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS science_jobs (
+                job_id TEXT PRIMARY KEY,
+                requester_address TEXT NOT NULL,
+                tier_at_creation TEXT NOT NULL,
+                job_type TEXT NOT NULL,
+                metadata_hash TEXT NOT NULL,
+                storage_pointer TEXT NOT NULL,
+                reward_budget REAL NOT NULL DEFAULT 0,
+                status TEXT NOT NULL,
+                worker_address TEXT,
+                result_hash TEXT,
+                proof_hash TEXT,
+                paid INTEGER NOT NULL DEFAULT 0,
+                paid_amount REAL NOT NULL DEFAULT 0,
+                paid_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                FOREIGN KEY(requester_address) REFERENCES science_stake_accounts(address)
+            );
+
+            CREATE TABLE IF NOT EXISTS science_reward_reserve (
+                epoch TEXT PRIMARY KEY,
+                total_reserved REAL NOT NULL DEFAULT 0,
+                total_paid REAL NOT NULL DEFAULT 0,
+                total_pending REAL NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS science_reserve_governance (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                status TEXT NOT NULL,
+                activation_requested_at TEXT,
+                activation_available_at TEXT,
+                activated_at TEXT,
+                approvals TEXT NOT NULL DEFAULT '[]',
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS scientific_development_treasury (
+                treasury_id TEXT PRIMARY KEY,
+                total_accumulated REAL NOT NULL DEFAULT 0,
+                total_claimed REAL NOT NULL DEFAULT 0,
+                locked_balance REAL NOT NULL DEFAULT 0,
+                unlocked_balance REAL NOT NULL DEFAULT 0,
+                current_epoch TEXT NOT NULL,
+                epoch_start_block INTEGER NOT NULL DEFAULT 0,
+                epoch_end_block INTEGER NOT NULL DEFAULT 0,
+                next_unlock_at TEXT NOT NULL,
+                last_claim_at TEXT,
+                treasury_wallet TEXT NOT NULL,
+                governance_wallet TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS scientific_development_treasury_epochs (
+                epoch TEXT PRIMARY KEY,
+                start_block INTEGER NOT NULL,
+                end_block INTEGER NOT NULL,
+                locked_amount REAL NOT NULL DEFAULT 0,
+                unlocked_amount REAL NOT NULL DEFAULT 0,
+                claimed_amount REAL NOT NULL DEFAULT 0,
+                unlock_at TEXT NOT NULL,
+                status TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS scientific_development_treasury_claims (
+                claim_id TEXT PRIMARY KEY,
+                amount REAL NOT NULL,
+                claim_to TEXT NOT NULL,
+                requested_by TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS science_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type TEXT NOT NULL,
+                address TEXT,
+                job_id TEXT,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
             CREATE INDEX IF NOT EXISTS idx_blocks_miner ON blocks(miner_id);
             CREATE INDEX IF NOT EXISTS idx_commitments_miner ON commitments(miner_id);
@@ -300,6 +402,10 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_ledger_account ON ledger_entries(account_id);
             CREATE INDEX IF NOT EXISTS idx_ledger_type ON ledger_entries(entry_type);
             CREATE INDEX IF NOT EXISTS idx_retroactive_audits_block ON retroactive_audits(block_height);
+            CREATE INDEX IF NOT EXISTS idx_science_jobs_requester ON science_jobs(requester_address);
+            CREATE INDEX IF NOT EXISTS idx_science_jobs_status ON science_jobs(status);
+            CREATE INDEX IF NOT EXISTS idx_science_events_type ON science_events(event_type);
+            CREATE INDEX IF NOT EXISTS idx_scientific_treasury_epochs_status ON scientific_development_treasury_epochs(status);
             """
         )
         _ensure_column(connection, "miners", "trust_score", "REAL NOT NULL DEFAULT 1.0")
@@ -332,6 +438,11 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "retroactive_audits", "reward", "REAL NOT NULL DEFAULT 0")
         _ensure_column(connection, "retroactive_audits", "reward_account_id", "TEXT")
         _ensure_column(connection, "retroactive_audits", "fraud_detected", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "science_jobs", "paid", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "science_jobs", "paid_amount", "REAL NOT NULL DEFAULT 0")
+        _ensure_column(connection, "science_jobs", "paid_at", "TEXT")
+        _ensure_science_reserve_governance(connection)
+        _ensure_scientific_development_treasury(connection)
         _ensure_column(connection, "commitments", "commit_ms", "INTEGER")
         _ensure_column(connection, "validation_jobs", "validation_ms", "INTEGER")
         _ensure_default_protocol_params(connection)
@@ -401,6 +512,48 @@ def _ensure_default_protocol_params(connection: sqlite3.Connection) -> None:
             TASK_EXPIRATION_SECONDS,
             MAX_ACTIVE_TASKS_PER_MINER,
             DEFAULT_REWARD,
+        ),
+    )
+
+
+def _ensure_science_reserve_governance(connection: sqlite3.Connection) -> None:
+    timestamp = datetime.now(timezone.utc).isoformat()
+    connection.execute(
+        """
+        INSERT INTO science_reserve_governance (
+            id, status, activation_requested_at, activation_available_at,
+            activated_at, approvals, updated_at
+        )
+        VALUES (1, ?, NULL, NULL, NULL, '[]', ?)
+        ON CONFLICT(id) DO NOTHING
+        """,
+        (SCIENCE_RESERVE_LOCKED_STATUS, timestamp),
+    )
+
+
+def _ensure_scientific_development_treasury(connection: sqlite3.Connection) -> None:
+    timestamp = datetime.now(timezone.utc).isoformat()
+    connection.execute(
+        """
+        INSERT INTO scientific_development_treasury (
+            treasury_id, total_accumulated, total_claimed, locked_balance,
+            unlocked_balance, current_epoch, epoch_start_block, epoch_end_block,
+            next_unlock_at, last_claim_at, treasury_wallet, governance_wallet,
+            created_at, updated_at
+        )
+        VALUES (?, 0, 0, 0, 0, 'bootstrap', 0, 0, ?, NULL, ?, ?, ?, ?)
+        ON CONFLICT(treasury_id) DO UPDATE SET
+            treasury_wallet = excluded.treasury_wallet,
+            governance_wallet = excluded.governance_wallet,
+            updated_at = excluded.updated_at
+        """,
+        (
+            SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID,
+            timestamp,
+            SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET,
+            SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET,
+            timestamp,
+            timestamp,
         ),
     )
 

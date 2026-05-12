@@ -29,6 +29,12 @@ def test_protocol_exposes_dynamic_difficulty_and_rewards(tmp_path, monkeypatch) 
     assert protocol["sample_count"] == 32
     assert protocol["difficulty"] == 4.0
     assert protocol["reward_per_block"] == protocol["base_reward"]
+    assert protocol["proof_of_pi_reward_percent"] == 0.67
+    assert protocol["science_compute_reward_percent"] == 0.20
+    assert protocol["validator_auditor_reward_percent"] == 0.10
+    assert protocol["scientific_development_reward_percent"] == 0.03
+    assert protocol["proof_of_pi_reward_per_block"] == 2.104872
+    assert protocol["scientific_development_treasury_per_block"] == 0.094248
     assert history[0]["active"] is True
     assert history[0]["difficulty"] == protocol["difficulty"]
 
@@ -68,7 +74,7 @@ def test_accepted_block_records_protocol_difficulty(tmp_path, monkeypatch) -> No
     protocol = get_protocol()
     assert response["accepted"] is True
     assert response["block"]["difficulty"] == protocol["difficulty"]
-    assert response["block"]["reward"] == protocol["reward_per_block"]
+    assert response["block"]["reward"] == protocol["proof_of_pi_reward_per_block"]
     assert response["block"]["protocol_version"] == protocol["protocol_version"]
 
 
@@ -80,7 +86,7 @@ def test_retarget_increases_difficulty_after_fast_epoch(tmp_path, monkeypatch) -
 
     keypair = generate_keypair()
     miner = register_miner("retarget-miner", keypair["public_key"])
-    _insert_epoch_blocks(miner["miner_id"], total_task_ms=1_000)
+    _insert_epoch_blocks(miner["miner_id"], total_task_ms=1_000, count=10)
 
     before = get_protocol()
     result = run_retarget()
@@ -92,8 +98,8 @@ def test_retarget_increases_difficulty_after_fast_epoch(tmp_path, monkeypatch) -
     assert result["event"]["action"] == "increase"
     assert after["difficulty"] > before["difficulty"]
     assert after["segment_size"] > before["segment_size"]
-    assert history[0]["epoch_block_count"] == 5
-    assert status["last_retarget_height"] == 5
+    assert history[0]["epoch_block_count"] == 10
+    assert status["last_retarget_height"] == 10
 
 
 def test_retarget_preview_does_not_mutate_protocol_or_history(tmp_path, monkeypatch) -> None:
@@ -104,7 +110,7 @@ def test_retarget_preview_does_not_mutate_protocol_or_history(tmp_path, monkeypa
 
     keypair = generate_keypair()
     miner = register_miner("preview-miner", keypair["public_key"])
-    _insert_epoch_blocks(miner["miner_id"], total_task_ms=1_000)
+    _insert_epoch_blocks(miner["miner_id"], total_task_ms=1_000, count=10)
 
     before = get_protocol()
     preview = preview_retarget()
@@ -125,7 +131,7 @@ def test_retarget_waits_until_epoch_is_complete(tmp_path, monkeypatch) -> None:
 
     keypair = generate_keypair()
     miner = register_miner("waiting-miner", keypair["public_key"])
-    _insert_epoch_blocks(miner["miner_id"], total_task_ms=1_000, count=4)
+    _insert_epoch_blocks(miner["miner_id"], total_task_ms=1_000, count=9)
 
     result = run_retarget()
     preview = preview_retarget()
@@ -144,7 +150,7 @@ def test_retarget_decreases_difficulty_after_slow_epoch(tmp_path, monkeypatch) -
 
     keypair = generate_keypair()
     miner = register_miner("slow-miner", keypair["public_key"])
-    _insert_epoch_blocks(miner["miner_id"], total_task_ms=100_000)
+    _insert_epoch_blocks(miner["miner_id"], total_task_ms=100_000, count=10)
 
     before = get_protocol()
     result = run_retarget()

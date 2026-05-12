@@ -60,3 +60,43 @@ def test_picoin_cli_parses_testnet_continuous_defaults() -> None:
     assert args.loops == 3
     assert args.identity_dir == Path("data/testnet/identities")
     assert args.retro_audit is True
+
+
+def test_picoin_cli_parses_science_create_job() -> None:
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "science",
+            "--address",
+            "addr-lab",
+            "create-job",
+            "--type",
+            "ai_inference",
+            "--metadata-hash",
+            "metadata_hash",
+            "--storage-pointer",
+            "ipfs://payload",
+            "--reward-budget",
+            "1.5",
+        ]
+    )
+
+    assert args.command == "science"
+    assert args.science_command == "create-job"
+    assert args.address == "addr-lab"
+    assert args.type == "ai_inference"
+    assert args.reward_budget == 1.5
+
+
+def test_picoin_cli_parses_treasury_and_reserve_commands() -> None:
+    parser = build_parser()
+
+    treasury = parser.parse_args(["treasury", "claim", "--requested-by", "gov", "--claim-to", "wallet"])
+    reserve = parser.parse_args(["reserve", "status"])
+
+    assert treasury.command == "treasury"
+    assert treasury.treasury_command == "claim"
+    assert treasury.requested_by == "gov"
+    assert treasury.claim_to == "wallet"
+    assert reserve.command == "reserve"
+    assert reserve.reserve_command == "status"

@@ -1,8 +1,8 @@
 # picoin-proof-of-pi
 
-MVP funcional de **Proof of Pi**. Un coordinador asigna rangos pequenos de digitos hexadecimales de pi, un minero calcula el segmento con BBP, el validador recalcula de forma independiente y el servidor registra bloques aceptados con recompensa simulada.
+MVP funcional de **Proof of Pi** con una extension L1 llamada **Science Compute Access Layer**. Un coordinador asigna rangos pequenos de digitos hexadecimales de pi, un minero calcula el segmento con BBP, el validador recalcula de forma independiente y el servidor registra bloques aceptados con recompensa simulada. La capa Science deja preparada la red para un futuro marketplace L2 de computo cientifico e IA.
 
-Este proyecto no implementa una blockchain completa. Usa una cadena local de bloques aceptados con `previous_hash` y `block_hash` para preparar una evolucion futura.
+Este proyecto no implementa una blockchain completa ni ejecuta IA/computo cientifico pesado. Usa una cadena local de bloques aceptados con `previous_hash` y `block_hash`, y en L1 coordina stake, acceso, jobs, hashes, reserva y pagos verificados para preparar una evolucion futura.
 
 ## Protocolo v0.16
 
@@ -27,6 +27,19 @@ difficulty = 4.0
 reward_per_block = 3.1416
 validator_reward_percent = 10%
 validator_reward_pool_per_block = 0.31416
+proof_of_pi_reward_percent = 67%
+proof_of_pi_reward_per_block = 2.104872
+science_compute_reward_percent = 20%
+science_compute_reserve_per_block = 0.62832
+science_reserve_account_id = science_compute_reserve
+science_reserve_status = RESERVE_LOCKED
+science_reserve_governance_timelock = 86400 seconds
+science_reserve_multisig_threshold = 2
+scientific_development_reward_percent = 3%
+scientific_development_treasury_per_block = 0.094248
+scientific_development_unlock_interval_days = 90
+science_base_monthly_quota_units = 100
+validator_auditor_reward_percent = 10%
 retroactive_audit_interval_blocks = 314
 retroactive_audit_sample_multiplier = 2
 retroactive_audit_reward_percent = 20%
@@ -57,14 +70,20 @@ difficulty =
   * (sample_count / 8)
   * (log10(max_pi_position) / log10(10000))
 
-miner_reward_per_block = base_reward
+miner_reward_per_block = base_reward * 0.67
 validator_reward_pool_per_block = base_reward * 0.10
+science_compute_reserve_per_block = base_reward * 0.20
+scientific_development_treasury_per_block = base_reward * 0.03
 retroactive_audit_reward_per_audit = base_reward * 0.20
 ```
 
-La dificultad regula el trabajo, no multiplica la emision. La recompensa del minero queda fija en `3.1416` por bloque aceptado. Adicionalmente, los validadores que aprobaron el bloque reciben una emision extra total de `0.31416`, repartida en partes iguales.
+La dificultad regula el trabajo, no multiplica la emision. El `base_reward` es la emision base total del bloque y se distribuye como `67/20/10/3`: `2.104872` para el minero Proof of Pi, `0.62832` para `science_compute_reserve`, `0.31416` para validadores/auditores y `0.094248` para el Scientific Development Fund con timelock.
 
-El genesis acredita `3,141,600` monedas a la cuenta `genesis`. Cada bloque aceptado acredita `3.1416` monedas al minero ganador y `0.31416` monedas adicionales repartidas entre validadores aprobadores en el ledger local. Cada auditoria retroactiva automatica acredita `0.62832` monedas adicionales a `audit_treasury`.
+Picoin finances scientific infrastructure and protocol development through a time-locked treasury sustained by ongoing network activity rather than large upfront premine allocations. La cuenta `genesis` del MVP se conserva como mecanismo local de testnet/faucet y stake simulado, no como modelo economico final de gran premine.
+
+Cada bloque aceptado acredita `2.104872` monedas al minero ganador, `0.62832` a la reserva cientifica, `0.094248` al Scientific Development Fund bloqueado y `0.31416` monedas repartidas entre validadores aprobadores cuando el flujo externo de validacion alcanza quorum. Cada auditoria retroactiva automatica acredita `0.62832` monedas adicionales a `audit_treasury`.
+
+El 20% cientifico no se paga automaticamente a workers. Por defecto se acumula como reserva bloqueada con `status = RESERVE_LOCKED`. Mientras siga bloqueada, no se puede transferir, reclamar, reservar presupuesto ni pagar workers. Solo cuando una futura L2 sea activada por gobernanza/multisig con timelock, la reserva podra usarse para jobs `accepted`, con worker, `result_hash`, `proof_hash` y presupuesto reservado. Jobs `rejected`, `disputed` o `expired` no pagan.
 
 Cada bloque guarda la dificultad y recompensa usadas al momento de aceptarse.
 Las tareas y bloques tambien guardan `protocol_params_id`, asi un retarget no cambia las reglas de una tarea que ya estaba asignada.
@@ -167,6 +186,28 @@ El CLI tambien envuelve minero, validador y testnet:
 .\.venv\Scripts\python.exe -m picoin testnet cycle
 .\.venv\Scripts\python.exe -m picoin testnet continuous --miners 3 --loops 3
 ```
+
+CLI de Science Compute Access Layer:
+
+```powershell
+.\.venv\Scripts\python.exe -m picoin science stake --amount 31416
+.\.venv\Scripts\python.exe -m picoin science account
+.\.venv\Scripts\python.exe -m picoin science create-job --type "ai_inference" --metadata-hash "hash..." --storage-pointer "ipfs://payload" --reward-budget 0
+.\.venv\Scripts\python.exe -m picoin science jobs
+.\.venv\Scripts\python.exe -m picoin science accept-job --job-id science_job_xxxxxxxxxxxxxxxx
+.\.venv\Scripts\python.exe -m picoin science pay-worker --job-id science_job_xxxxxxxxxxxxxxxx
+.\.venv\Scripts\python.exe -m picoin science reserve
+.\.venv\Scripts\python.exe -m picoin science reserve-governance
+.\.venv\Scripts\python.exe -m picoin science propose-l2-activation --signer signer-1
+.\.venv\Scripts\python.exe -m picoin science approve-l2-activation --signer signer-2
+.\.venv\Scripts\python.exe -m picoin science execute-l2-activation
+.\.venv\Scripts\python.exe -m picoin reserve status
+.\.venv\Scripts\python.exe -m picoin treasury status
+.\.venv\Scripts\python.exe -m picoin treasury claim
+```
+
+`pay-worker` existe para dejar el camino L2 listo, pero falla con `science compute reserve is locked until L2 marketplace activation` mientras la reserva este bloqueada.
+`treasury claim` solo mueve fondos si ya existe balance desbloqueado por el timelock de 90 dias y si el solicitante/destino coinciden con la governance wallet y treasury wallet configuradas.
 
 Config local opcional:
 
@@ -391,6 +432,162 @@ curl "http://127.0.0.1:8000/events?limit=20"
 ### `GET /protocol`
 
 Devuelve parametros activos del protocolo, incluyendo `base_reward`, `difficulty` y `reward_per_block`.
+
+Tambien expone la distribucion conceptual de trabajo util:
+
+```text
+proof_of_pi_reward_percent = 0.67
+science_compute_reward_percent = 0.20
+validator_auditor_reward_percent = 0.10
+scientific_development_reward_percent = 0.03
+```
+
+En esta L1, el porcentaje de Science se registra como reserva por bloque y no como pago directo. El 3% del Scientific Development Fund se registra en una treasury separada, bloqueada 90 dias por epoch trimestral.
+
+### `POST /science/stake`
+
+Registra o actualiza stake de acceso cientifico. El tier se deriva automaticamente:
+
+```text
+researcher   3,141.6 PI    multiplier 1x    priority low
+lab          31,416 PI     multiplier 10x   priority medium
+institution  314,160 PI    multiplier 100x  priority high
+```
+
+```powershell
+curl -X POST http://127.0.0.1:8000/science/stake `
+  -H "Content-Type: application/json" `
+  -d '{"address":"lab-1","amount":31416}'
+```
+
+### `POST /science/jobs`
+
+Crea un job cientifico L1. No ejecuta computo real ni guarda archivos pesados: solo `metadata_hash`, `storage_pointer`, presupuesto y estado.
+
+```powershell
+curl -X POST http://127.0.0.1:8000/science/jobs `
+  -H "Content-Type: application/json" `
+  -d '{"requester_address":"lab-1","job_type":"ai_inference","metadata_hash":"hash...","storage_pointer":"ipfs://payload","reward_budget":0}'
+```
+
+### `POST /science/jobs/{job_id}/transition`
+
+Avanza el estado del job con validaciones de transicion. Estados soportados:
+
+```text
+created -> queued -> assigned -> committed -> submitted -> verified -> accepted
+created/queued/assigned/committed/submitted/verified -> rejected/disputed/expired
+```
+
+`submitted`, `verified` y `accepted` requieren `worker_address`, `result_hash` y `proof_hash`. Por defecto el requester no puede ser worker de su propio job.
+
+### `POST /science/jobs/{job_id}/pay`
+
+Paga al worker solo si el job esta `accepted`, no fue pagado antes, tiene worker y tiene `reward_budget` reservado. Jobs `rejected`, `disputed` o `expired` no pagan. Mientras `science reserve status = RESERVE_LOCKED`, este endpoint esta deshabilitado y no mueve fondos.
+
+### `GET /science/reserve`
+
+Devuelve la reserva cientifica de la epoca actual:
+
+```text
+total_reserved
+total_pending
+total_paid
+available
+status
+activation_requested_at
+activation_available_at
+activated_at
+governance_approvals
+```
+
+### `GET /reserve/status`
+
+Alias operativo de `/science/reserve` para consultar la Science Compute Marketplace Reserve:
+
+```text
+total_reserved
+total_pending
+total_paid
+available
+status
+```
+
+### `GET /treasury/status`
+
+Devuelve el Scientific Development Fund:
+
+```text
+total_accumulated
+total_claimed
+locked_balance
+unlocked_balance
+claimable
+current_epoch
+next_unlock_at
+treasury_wallet
+governance_wallet
+history
+```
+
+### `POST /treasury/claim`
+
+Reclama solo el balance desbloqueado. Antes de 90 dias responde con timelock activo. La operacion queda auditada en `ledger_entries` y `scientific_development_treasury_claims`.
+
+```powershell
+curl -X POST http://127.0.0.1:8000/treasury/claim `
+  -H "Content-Type: application/json" `
+  -d '{"requested_by":"picoin_governance_multisig","claim_to":"picoin_scientific_development_wallet"}'
+```
+
+### `GET /science/reserve/governance`
+
+Devuelve el estado de gobernanza de la reserva cientifica. Por defecto:
+
+```text
+status = RESERVE_LOCKED
+threshold = 2
+timelock_seconds = 86400
+```
+
+### `POST /science/reserve/governance/propose-activation`
+
+Inicia el proceso timelocked de activacion L2. Mantiene la reserva bloqueada y registra la primera firma.
+
+```powershell
+curl -X POST http://127.0.0.1:8000/science/reserve/governance/propose-activation `
+  -H "Content-Type: application/json" `
+  -d '{"signer":"signer-1"}'
+```
+
+### `POST /science/reserve/governance/approve-activation`
+
+Agrega una aprobacion multisig. El MVP requiere 2 firmantes distintos.
+
+### `POST /science/reserve/governance/execute-activation`
+
+Activa la reserva solo si se cumplio el umbral multisig y vencio el timelock. Antes de eso, no se puede ejecutar ningun pago ni reserva de presupuesto.
+
+### `GET /science/events`
+
+Eventos L1 preparados para sincronizacion futura L2:
+
+```text
+ScienceStakeUpdated
+ScienceJobCreated
+ScienceJobAssigned
+ScienceJobCommitted
+ScienceJobSubmitted
+ScienceJobVerified
+ScienceJobAccepted
+ScienceJobRejected
+ScienceWorkerPaid
+ScienceJobDisputed
+ScienceReserveAccrued
+ScienceReserveActivationProposed
+ScienceReserveActivationApproved
+ScienceReserveActivated
+```
 
 ### `GET /protocol/history`
 
@@ -658,7 +855,7 @@ Devuelve resumen de emision, circulante, stake bloqueado, stake recortado, bloqu
 
 Ejecuta auditoria economica completa y devuelve un JSON verificable. Comprueba:
 
-- suma total de balances contra `genesis_supply + block_rewards`
+- suma total de balances contra `genesis_supply + block_rewards + science_reserve + validator_rewards + audit_rewards`
 - suma total del ledger contra la misma politica monetaria
 - balance de cada cuenta contra sus movimientos de ledger
 - bloques aceptados contra tabla `rewards`
@@ -756,6 +953,14 @@ Implementado:
 - Recompensa adicional para validadores aprobadores.
 - Balances persistentes y ledger auditable.
 - Auditoria economica completa en `/audit/full`.
+- Science Compute Access Layer en L1.
+- Staking cientifico por tiers `researcher`, `lab`, `institution`.
+- Reserva `science_compute_reserve` acumulada por bloque.
+- Reserva Science bloqueada por defecto con `RESERVE_LOCKED`.
+- Activacion futura por timelock + multisig antes de cualquier pago.
+- Registro de jobs cientificos por hashes y punteros externos.
+- Pagos a workers solo para jobs aceptados y no pagados previamente.
+- Eventos Science para futura sincronizacion L2.
 - Auditorias retroactivas aleatorias en `/audit/retroactive/run`.
 - Auditoria retroactiva automatica cada 314 bloques.
 - Marcado de bloques fraudulentos si una auditoria retroactiva falla.
@@ -789,6 +994,8 @@ Limites intencionales:
 - No hay consenso distribuido.
 - No hay red P2P.
 - No hay wallet transferible entre usuarios; el ledger solo registra emision, recompensas, stake simulado y slashing.
+- No hay ejecucion real de IA ni computo cientifico pesado en L1.
+- No hay marketplace L2 todavia; la L1 solo deja acceso, reserva, jobs, estados y pagos verificados.
 - La validacion actual es probabilistica por muestras, no una prueba criptografica completa del calculo entero.
 
 ## Performance
@@ -874,13 +1081,16 @@ Reglas actuales:
 ```text
 genesis_supply = 3141600.0
 block_emission = 3.1416
+miner_reward = 2.104872
+science_compute_reserve = 0.62832
 validator_reward_pool = 0.31416
-total_minted_per_accepted_block = 3.45576
+scientific_development_treasury = 0.094248
+total_minted_per_accepted_block = 3.1416
 validator_initial_stake = 31.416
 validator_slash_invalid_signature = 3.1416
 ```
 
-El genesis queda registrado en `ledger_entries` con `block_height = 0`. Cada bloque aceptado crea un movimiento `block_reward` para el minero y movimientos `validator_reward` para los validadores que aprobaron el bloque. Los registros de stake y slashing tambien quedan en el ledger.
+El genesis queda registrado en `ledger_entries` con `block_height = 0` para compatibilidad de testnet local. Cada bloque aceptado crea un movimiento `block_reward` para el minero, `science_reserve_accrual` para la reserva compute, `scientific_development_treasury_accrual` para el treasury time-locked y movimientos `validator_reward` para los validadores que aprobaron el bloque. Los registros de stake y slashing tambien quedan en el ledger.
 
 Politica monetaria auditada en v0.11:
 
@@ -888,11 +1098,68 @@ Politica monetaria auditada en v0.11:
 expected_total_balances =
   genesis_supply
   + accepted_block_rewards
+  + science_compute_reserve_accruals
   + validator_rewards
+  + scientific_development_treasury_accruals
   + retroactive_audit_rewards
 ```
 
-`genesis`, faucet, stake y slashing son movimientos internos. Las recompensas de minero, validador y auditoria son emision nueva. Por eso el total de balances puede crecer con cada bloque aceptado o auditoria automatica, mientras el endpoint `/audit/full` verifica que ese crecimiento coincida exactamente con la suma de recompensas registradas.
+`genesis`, faucet, stake, claims de treasury y slashing son movimientos internos. Las recompensas de minero, reserva cientifica, treasury, validador y auditoria son emision nueva. Por eso el total de balances puede crecer con cada bloque aceptado o auditoria automatica, mientras el endpoint `/audit/full` verifica que ese crecimiento coincida exactamente con la suma de recompensas registradas.
+
+## Scientific Development Fund
+
+El Scientific Development Fund reemplaza el concepto de gran premine por una treasury financiada continuamente por actividad real de la red. Recibe el `3%` de la emision base de cada bloque y queda bloqueado por `90` dias antes de poder reclamarse.
+
+Uso previsto:
+
+- desarrollo del protocolo;
+- auditorias;
+- infraestructura;
+- investigacion;
+- grants cientificos;
+- desarrollo del marketplace cientifico/IA;
+- soporte de nodos y tooling.
+
+La treasury es separada de `science_compute_reserve`. El 20% de compute solo paga jobs cientificos `completed/verified/accepted` cuando la futura L2 este activada; el 3% de treasury financia desarrollo del ecosistema mediante desbloqueos trimestrales auditables.
+
+## Science Compute Access Layer
+
+La capa Science es una extension L1 para preparar un marketplace L2 futuro de computo cientifico e IA. No ejecuta modelos, simulaciones ni workloads pesados en L1. Su objetivo es coordinar acceso, reserva, jobs, estados y pagos verificables.
+
+Entidades principales:
+
+```text
+science_stake_accounts
+science_jobs
+science_reward_reserve
+scientific_development_treasury
+scientific_development_treasury_epochs
+scientific_development_treasury_claims
+science_events
+```
+
+Tiers de acceso:
+
+```text
+Researcher    stake 3,141.6 PI    multiplier 1x    priority low
+Lab           stake 31,416 PI     multiplier 10x   priority medium
+Institution   stake 314,160 PI    multiplier 100x  priority high
+```
+
+El `compute_multiplier` no garantiza computo fijo. Es prioridad y acceso proporcional para que una L2 futura calcule cupos contra capacidad real de workers. En el MVP L1, cada job consume una unidad abstracta de cuota mensual: `science_base_monthly_quota_units * compute_multiplier`.
+
+Reglas:
+
+- solo cuentas Science activas pueden crear jobs;
+- si el stake baja de minimo, no crea nuevos jobs;
+- no se permite unstake si hay jobs activos;
+- jobs guardan hashes y punteros, no datos pesados;
+- mientras `RESERVE_LOCKED`, el `reward_budget` no puede reservarse contra `science_compute_reserve`;
+- luego de activacion L2 por timelock + multisig, `reward_budget` se reserva contra `science_compute_reserve`;
+- jobs `rejected`, `disputed` o `expired` liberan presupuesto pendiente y no pagan;
+- workers solo cobran si el job esta `accepted`;
+- cada job se paga una sola vez;
+- por defecto el requester no puede ser su propio worker.
 
 ## Firma Ed25519
 
@@ -1008,6 +1275,14 @@ validation_votes
 submissions
 blocks
 retroactive_audits
+science_stake_accounts
+science_jobs
+science_reward_reserve
+science_reserve_governance
+scientific_development_treasury
+scientific_development_treasury_epochs
+scientific_development_treasury_claims
+science_events
 protocol_params
 retarget_events
 rewards

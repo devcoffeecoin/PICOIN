@@ -37,6 +37,7 @@ from app.core.settings import (
     PENALTY_DUPLICATE,
     PENALTY_INVALID_RESULT,
     PENALTY_INVALID_SIGNATURE,
+    PROOF_OF_PI_REWARD_PERCENT,
     PROJECT_NAME,
     PROTOCOL_VERSION,
     RETROACTIVE_AUDIT_INTERVAL_BLOCKS,
@@ -46,6 +47,14 @@ from app.core.settings import (
     RETARGET_EPOCH_BLOCKS,
     RETARGET_TARGET_BLOCK_MS,
     RETARGET_TOLERANCE,
+    SCIENCE_BASE_MONTHLY_QUOTA_UNITS,
+    SCIENCE_COMPUTE_REWARD_PERCENT_OF_BLOCK,
+    SCIENCE_RESERVE_ACCOUNT_ID,
+    SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET,
+    SCIENTIFIC_DEVELOPMENT_REWARD_PERCENT_OF_BLOCK,
+    SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID,
+    SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET,
+    SCIENTIFIC_DEVELOPMENT_UNLOCK_INTERVAL_DAYS,
     TASK_RATE_LIMIT_MAX_ASSIGNMENTS,
     TASK_RATE_LIMIT_WINDOW_SECONDS,
     VALIDATOR_BAN_AFTER_INVALID_RESULTS,
@@ -56,6 +65,7 @@ from app.core.settings import (
     VALIDATOR_PENALTY_INVALID_SIGNATURE,
     VALIDATOR_ROTATION_WINDOW_SECONDS,
     VALIDATOR_REWARD_PERCENT_OF_BLOCK,
+    VALIDATOR_AUDITOR_REWARD_PERCENT,
     VALIDATOR_SELECTION_AVAILABILITY_WEIGHT,
     VALIDATOR_SELECTION_MODE,
     VALIDATOR_SELECTION_POOL_MULTIPLIER,
@@ -66,6 +76,8 @@ from app.core.settings import (
     VALIDATION_MODE,
 )
 from app.db.database import get_connection, row_to_dict
+from app.services.science import record_science_reserve_for_block, science_events_for_node
+from app.services.treasury import record_scientific_development_treasury_for_block
 from validator.proof import validate_submission
 
 
@@ -474,7 +486,8 @@ def submit_task(
             )
 
         params = _protocol_params_for_task(connection, task)
-        reward = calculate_reward(params)
+        total_block_reward = calculate_reward(params)
+        reward = calculate_miner_reward(params)
         difficulty = calculate_difficulty(params)
         latest_block = connection.execute(
             "SELECT height, block_hash FROM blocks ORDER BY height DESC LIMIT 1"
@@ -554,6 +567,8 @@ def submit_task(
             related_id=task_id,
             description="miner block reward",
         )
+        record_science_reserve_for_block(connection, next_height, total_block_reward)
+        record_scientific_development_treasury_for_block(connection, next_height, total_block_reward)
         _refresh_trust_score(connection, miner_id)
         _maybe_retarget_after_block(connection, next_height)
         _maybe_run_scheduled_retroactive_audit(connection, next_height)
@@ -1127,6 +1142,20 @@ def get_stats() -> dict[str, Any]:
             WHERE entry_type = 'retroactive_audit_reward'
             """
         ).fetchone()["rewards"]
+        science_rewards = connection.execute(
+            """
+            SELECT COALESCE(SUM(amount), 0) AS rewards
+            FROM ledger_entries
+            WHERE entry_type = 'science_reserve_accrual'
+            """
+        ).fetchone()["rewards"]
+        treasury_rewards = connection.execute(
+            """
+            SELECT COALESCE(SUM(amount), 0) AS rewards
+            FROM ledger_entries
+            WHERE entry_type = 'scientific_development_treasury_accrual'
+            """
+        ).fetchone()["rewards"]
         rejected = connection.execute("SELECT COUNT(*) AS count FROM submissions WHERE accepted = 0").fetchone()["count"]
         latest = connection.execute("SELECT block_hash FROM blocks ORDER BY height DESC LIMIT 1").fetchone()
         supply = _supply_snapshot(connection)
@@ -1140,8 +1169,14 @@ def get_stats() -> dict[str, Any]:
         "total_rewards": blocks["rewards"],
         "total_validator_rewards": round(float(validator_rewards), 8),
         "total_audit_rewards": round(float(audit_rewards), 8),
+        "total_science_reserve_rewards": round(float(science_rewards), 8),
+        "total_scientific_development_rewards": round(float(treasury_rewards), 8),
         "total_minted_rewards": round(
-            float(blocks["rewards"]) + float(validator_rewards) + float(audit_rewards),
+            float(blocks["rewards"])
+            + float(validator_rewards)
+            + float(audit_rewards)
+            + float(science_rewards)
+            + float(treasury_rewards),
             8,
         ),
         "circulating_supply": supply["circulating_supply"],
@@ -1357,6 +1392,18 @@ def get_full_economic_audit() -> dict[str, Any]:
             connection,
             "SELECT COALESCE(SUM(amount), 0) AS total FROM ledger_entries WHERE entry_type = 'retroactive_audit_reward'",
         )
+        science_reserve_rewards = _sum_query(
+            connection,
+            "SELECT COALESCE(SUM(amount), 0) AS total FROM ledger_entries WHERE entry_type = 'science_reserve_accrual'",
+        )
+        scientific_development_rewards = _sum_query(
+            connection,
+            """
+            SELECT COALESCE(SUM(amount), 0) AS total
+            FROM ledger_entries
+            WHERE entry_type = 'scientific_development_treasury_accrual'
+            """,
+        )
         reward_rows = connection.execute(
             "SELECT COUNT(*) AS count, COALESCE(SUM(amount), 0) AS total FROM rewards"
         ).fetchone()
@@ -1402,21 +1449,29 @@ def get_full_economic_audit() -> dict[str, Any]:
             """,
         )
 
-    expected_total_balances = round(GENESIS_SUPPLY + block_rewards + validator_rewards + audit_rewards, 8)
+    expected_total_balances = round(
+        GENESIS_SUPPLY
+        + block_rewards
+        + validator_rewards
+        + audit_rewards
+        + science_reserve_rewards
+        + scientific_development_rewards,
+        8,
+    )
     expected_ledger_total = expected_total_balances
     expected_validator_stake_locked = round(ledger_validator_stake_locks + ledger_validator_slashes, 8)
 
     _audit_equal(
         issues,
         code="total_balances_mismatch",
-        message="sum(balances) must equal genesis supply plus minted miner, validator and audit rewards",
+        message="sum(balances) must equal genesis supply plus minted miner, validator, audit, science reserve and scientific treasury rewards",
         expected=expected_total_balances,
         actual=actual_total_balances,
     )
     _audit_equal(
         issues,
         code="ledger_total_mismatch",
-        message="sum(ledger_entries.amount) must equal genesis supply plus minted miner, validator and audit rewards",
+        message="sum(ledger_entries.amount) must equal genesis supply plus minted miner, validator, audit, science reserve and scientific treasury rewards",
         expected=expected_ledger_total,
         actual=ledger_total_amount,
     )
@@ -1505,7 +1560,16 @@ def get_full_economic_audit() -> dict[str, Any]:
             "block_reward_total": block_rewards,
             "validator_reward_total": validator_rewards,
             "audit_reward_total": audit_rewards,
-            "total_minted_rewards": round(block_rewards + validator_rewards + audit_rewards, 8),
+            "science_reserve_total": science_reserve_rewards,
+            "scientific_development_treasury_total": scientific_development_rewards,
+            "total_minted_rewards": round(
+                block_rewards
+                + validator_rewards
+                + audit_rewards
+                + science_reserve_rewards
+                + scientific_development_rewards,
+                8,
+            ),
             "reward_rows": reward_count,
             "rewards_table_total": rewards_table_total,
             "ledger_block_reward_total": ledger_block_rewards,
@@ -1699,6 +1763,8 @@ def get_node_status() -> dict[str, Any]:
             "genesis_balance": supply["genesis_balance"],
             "miner_balances": supply["miner_balances"],
             "validator_balances": supply["validator_balances"],
+            "science_balances": supply["science_balances"],
+            "scientific_development_balances": supply["scientific_development_balances"],
         },
     }
 
@@ -1712,6 +1778,7 @@ def get_recent_events(limit: int = 30) -> list[dict[str, Any]]:
         events.extend(_penalty_events(connection, limit))
         events.extend(_retarget_events(connection, limit))
         events.extend(_retroactive_audit_events(connection, limit))
+        events.extend(science_events_for_node(connection, limit))
 
     events.sort(key=lambda event: parse_iso(event["created_at"]) or NODE_STARTED_AT, reverse=True)
     return events[:limit]
@@ -1833,8 +1900,24 @@ def _protocol_payload(params: dict[str, Any]) -> dict[str, Any]:
         "base_reward": params["base_reward"],
         "difficulty": calculate_difficulty(params),
         "reward_per_block": calculate_reward(params),
+        "proof_of_pi_reward_per_block": calculate_miner_reward(params),
+        "proof_of_pi_reward_percent": PROOF_OF_PI_REWARD_PERCENT,
+        "science_compute_reward_percent": SCIENCE_COMPUTE_REWARD_PERCENT_OF_BLOCK,
+        "science_compute_reserve_per_block": round(
+            calculate_reward(params) * SCIENCE_COMPUTE_REWARD_PERCENT_OF_BLOCK,
+            8,
+        ),
+        "science_reserve_account_id": SCIENCE_RESERVE_ACCOUNT_ID,
+        "science_base_monthly_quota_units": SCIENCE_BASE_MONTHLY_QUOTA_UNITS,
+        "validator_auditor_reward_percent": VALIDATOR_AUDITOR_REWARD_PERCENT,
         "validator_reward_percent": VALIDATOR_REWARD_PERCENT_OF_BLOCK,
         "validator_reward_pool_per_block": calculate_validator_reward_pool(params),
+        "scientific_development_reward_percent": SCIENTIFIC_DEVELOPMENT_REWARD_PERCENT_OF_BLOCK,
+        "scientific_development_treasury_per_block": calculate_scientific_development_treasury_reward(params),
+        "scientific_development_treasury_account_id": SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID,
+        "scientific_development_treasury_wallet": SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET,
+        "scientific_development_governance_wallet": SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET,
+        "scientific_development_unlock_interval_days": SCIENTIFIC_DEVELOPMENT_UNLOCK_INTERVAL_DAYS,
         "retroactive_audit_interval_blocks": RETROACTIVE_AUDIT_INTERVAL_BLOCKS,
         "retroactive_audit_sample_multiplier": RETROACTIVE_AUDIT_SAMPLE_MULTIPLIER,
         "retroactive_audit_reward_percent": RETROACTIVE_AUDIT_REWARD_PERCENT_OF_BLOCK,
@@ -1988,6 +2071,14 @@ def _record_submission(
 
 def calculate_validator_reward_pool(params: dict[str, Any]) -> float:
     return round(calculate_reward(params) * VALIDATOR_REWARD_PERCENT_OF_BLOCK, 8)
+
+
+def calculate_miner_reward(params: dict[str, Any]) -> float:
+    return round(calculate_reward(params) * PROOF_OF_PI_REWARD_PERCENT, 8)
+
+
+def calculate_scientific_development_treasury_reward(params: dict[str, Any]) -> float:
+    return round(calculate_reward(params) * SCIENTIFIC_DEVELOPMENT_REWARD_PERCENT_OF_BLOCK, 8)
 
 
 def _validator_reward_total(validator_id: str) -> float:
@@ -2558,7 +2649,9 @@ def _supply_snapshot(connection: Any) -> dict[str, float]:
             COALESCE(SUM(CASE WHEN account_id = ? THEN balance ELSE 0 END), 0) AS genesis_balance,
             COALESCE(SUM(CASE WHEN account_type = 'miner' THEN balance ELSE 0 END), 0) AS miner_balances,
             COALESCE(SUM(CASE WHEN account_type = 'validator' THEN balance ELSE 0 END), 0) AS validator_balances,
-            COALESCE(SUM(CASE WHEN account_type = 'audit' THEN balance ELSE 0 END), 0) AS audit_balances
+            COALESCE(SUM(CASE WHEN account_type = 'audit' THEN balance ELSE 0 END), 0) AS audit_balances,
+            COALESCE(SUM(CASE WHEN account_type IN ('science_reserve', 'science_worker') THEN balance ELSE 0 END), 0) AS science_balances,
+            COALESCE(SUM(CASE WHEN account_type IN ('scientific_development_treasury', 'treasury_wallet') THEN balance ELSE 0 END), 0) AS scientific_development_balances
         FROM balances
         """,
         (GENESIS_ACCOUNT_ID,),
@@ -2567,12 +2660,19 @@ def _supply_snapshot(connection: Any) -> dict[str, float]:
     miner_balances = round(float(row["miner_balances"]), 8)
     validator_balances = round(float(row["validator_balances"]), 8)
     audit_balances = round(float(row["audit_balances"]), 8)
+    science_balances = round(float(row["science_balances"]), 8)
+    scientific_development_balances = round(float(row["scientific_development_balances"]), 8)
     return {
         "genesis_balance": genesis_balance,
         "miner_balances": miner_balances,
         "validator_balances": validator_balances,
         "audit_balances": audit_balances,
-        "circulating_supply": round(miner_balances + validator_balances + audit_balances, 8),
+        "science_balances": science_balances,
+        "scientific_development_balances": scientific_development_balances,
+        "circulating_supply": round(
+            miner_balances + validator_balances + audit_balances + science_balances + scientific_development_balances,
+            8,
+        ),
     }
 
 
@@ -2793,7 +2893,7 @@ def _run_retroactive_audit_in_connection(
     ]
     passed = actual_hash == block["result_hash"]
     reason = "accepted" if passed else "fraud detected: result_hash mismatch"
-    reward = _apply_retroactive_audit_reward(connection, block, audit_seed) if automatic else 0.0
+    reward = _apply_retroactive_audit_reward(connection, block, params, audit_seed) if automatic else 0.0
     if not passed:
         if block.get("fraudulent"):
             reason = "fraud confirmed: result_hash mismatch"
@@ -2835,8 +2935,13 @@ def _run_retroactive_audit_in_connection(
     )
 
 
-def _apply_retroactive_audit_reward(connection: Any, block: dict[str, Any], audit_seed: str) -> float:
-    reward = round(float(block["reward"]) * RETROACTIVE_AUDIT_REWARD_PERCENT_OF_BLOCK, 8)
+def _apply_retroactive_audit_reward(
+    connection: Any,
+    block: dict[str, Any],
+    params: dict[str, Any],
+    audit_seed: str,
+) -> float:
+    reward = round(calculate_reward(params) * RETROACTIVE_AUDIT_REWARD_PERCENT_OF_BLOCK, 8)
     if reward <= 0:
         return 0.0
     _apply_ledger_entry(
@@ -3163,8 +3268,10 @@ def _retarget_preview(connection: Any, force: bool = False) -> dict[str, Any]:
     params = _active_protocol_params(connection)
     epoch_rows = _retarget_epoch_rows(connection, last_height)
     epoch_count = len(epoch_rows)
+    average_block_ms = _average_epoch_ms(epoch_rows) if epoch_rows else None
+    required_epoch_blocks = max(RETARGET_EPOCH_BLOCKS, DifficultyService.SMA_WINDOW)
     # El trigger de preparación ahora depende de la ventana SMA del servicio (10 bloques)
-    ready = bool(epoch_rows) and (force or epoch_count >= DifficultyService.SMA_WINDOW)
+    ready = bool(epoch_rows) and (force or epoch_count >= required_epoch_blocks)
     next_params = dict(params)
     meta = {
         "action": "wait",
@@ -3189,8 +3296,8 @@ def _retarget_preview(connection: Any, force: bool = False) -> dict[str, Any]:
         "epoch_start_height": int(epoch_rows[0]["height"]) if epoch_rows else None,
         "epoch_end_height": int(epoch_rows[-1]["height"]) if epoch_rows else None,
         "epoch_block_count": epoch_count,
-        "epoch_blocks_required": RETARGET_EPOCH_BLOCKS,
-        "blocks_until_ready": max(0, RETARGET_EPOCH_BLOCKS - epoch_count),
+        "epoch_blocks_required": required_epoch_blocks,
+        "blocks_until_ready": max(0, required_epoch_blocks - epoch_count),
         "average_block_ms": average_block_ms,
         "target_block_ms": RETARGET_TARGET_BLOCK_MS,
         "tolerance": RETARGET_TOLERANCE,
@@ -3335,7 +3442,8 @@ def _accept_block_in_connection(
 ) -> dict[str, Any]:
     if params is None:
         params = _protocol_params_for_task(connection, task)
-    reward = calculate_reward(params)
+    total_block_reward = calculate_reward(params)
+    reward = calculate_miner_reward(params)
     difficulty = calculate_difficulty(params)
     latest_block = connection.execute(
         "SELECT height, block_hash FROM blocks ORDER BY height DESC LIMIT 1"
@@ -3421,6 +3529,8 @@ def _accept_block_in_connection(
         related_id=task["task_id"],
         description="miner block reward",
     )
+    record_science_reserve_for_block(connection, next_height, total_block_reward)
+    record_scientific_development_treasury_for_block(connection, next_height, total_block_reward)
     validator_reward = {"pool": 0.0, "per_validator": 0.0, "validator_ids": []}
     if validation_job_id is not None:
         validator_reward = _apply_validator_rewards(

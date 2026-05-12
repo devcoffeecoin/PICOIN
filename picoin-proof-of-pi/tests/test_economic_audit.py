@@ -31,9 +31,11 @@ def test_full_economic_audit_passes_for_valid_local_economy(tmp_path, monkeypatc
 
     assert audit["valid"] is True
     assert audit["issues"] == []
-    assert audit["supply"]["expected_total_balances"] == 3_141_600.0 + 3.1416
+    assert audit["supply"]["expected_total_balances"] == pytest.approx(3_141_600.0 + 2.104872 + 0.62832 + 0.094248)
     assert audit["rewards"]["accepted_blocks"] == 1
-    assert audit["rewards"]["block_reward_total"] == 3.1416
+    assert audit["rewards"]["block_reward_total"] == 2.104872
+    assert audit["rewards"]["science_reserve_total"] == 0.62832
+    assert audit["rewards"]["scientific_development_treasury_total"] == 0.094248
     assert audit["ledger"]["account_mismatch_count"] == 0
     assert audit["validators"]["stake_locked"] == 31.416
 
@@ -84,10 +86,14 @@ def test_full_economic_audit_includes_additional_validator_rewards(tmp_path, mon
     assert response["status"] == "approved"
     assert response["block"]["validator_reward"]["pool"] == 0.31416
     assert audit["valid"] is True
-    assert audit["supply"]["expected_total_balances"] == pytest.approx(3_141_600.0 + 3.1416 + 0.31416)
-    assert audit["rewards"]["block_reward_total"] == 3.1416
+    assert audit["supply"]["expected_total_balances"] == pytest.approx(
+        3_141_600.0 + 2.104872 + 0.31416 + 0.62832 + 0.094248
+    )
+    assert audit["rewards"]["block_reward_total"] == 2.104872
     assert audit["rewards"]["validator_reward_total"] == 0.31416
-    assert audit["rewards"]["total_minted_rewards"] == 3.45576
+    assert audit["rewards"]["science_reserve_total"] == 0.62832
+    assert audit["rewards"]["scientific_development_treasury_total"] == 0.094248
+    assert audit["rewards"]["total_minted_rewards"] == 3.1416
 
 
 def _register_miner_with_keys(name: str) -> tuple[dict, dict]:

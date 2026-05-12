@@ -24,9 +24,20 @@ from app.models.schemas import (
     RetargetPreviewResponse,
     RetargetRunResponse,
     RetargetStatusResponse,
+    ScienceCreateJobRequest,
+    ScienceEventResponse,
+    ScienceJobResponse,
+    ScienceJobTransitionRequest,
+    ScienceReserveGovernanceRequest,
+    ScienceReserveGovernanceResponse,
+    ScienceRewardReserveResponse,
+    ScienceStakeAccountResponse,
+    ScienceStakeRequest,
+    ScientificDevelopmentTreasuryResponse,
     StatsResponse,
     TaskCommitRequest,
     TaskCommitResponse,
+    TreasuryClaimRequest,
     TaskRevealRequest,
     TaskResponse,
     TaskSubmitRequest,
@@ -36,6 +47,29 @@ from app.models.schemas import (
     ValidationResultResponse,
     ValidatorRegisterRequest,
     ValidatorResponse,
+)
+from app.services.treasury import (
+    TreasuryError,
+    claim_scientific_development_treasury,
+    get_scientific_development_treasury,
+)
+from app.services.science import (
+    ScienceError,
+    approve_science_reserve_activation,
+    create_science_job,
+    execute_science_reserve_activation,
+    get_science_account,
+    get_science_events,
+    get_science_job,
+    get_science_reserve,
+    get_science_reserve_governance,
+    list_science_accounts,
+    list_science_jobs,
+    pay_science_worker,
+    propose_science_reserve_activation,
+    stake_science_access,
+    transition_science_job,
+    unstake_science_access,
 )
 from app.services.mining import (
     MiningError,
@@ -79,6 +113,14 @@ from app.services.mining import (
 router = APIRouter()
 
 
+def _science_error(exc: ScienceError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+
+def _treasury_error(exc: TreasuryError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+
 @router.get("/health", response_model=HealthResponse)
 def health() -> dict:
     return get_health_status()
@@ -92,6 +134,153 @@ def node_status() -> dict:
 @router.get("/events", response_model=list[NodeEventResponse])
 def recent_events(limit: int = Query(30, ge=1, le=100)) -> list[dict]:
     return get_recent_events(limit)
+
+
+@router.post("/science/stake", response_model=ScienceStakeAccountResponse, status_code=201)
+def science_stake(payload: ScienceStakeRequest) -> dict:
+    try:
+        return stake_science_access(payload.address, payload.amount)
+    except ScienceError as exc:
+        raise _science_error(exc) from exc
+
+
+@router.post("/science/unstake", response_model=ScienceStakeAccountResponse)
+def science_unstake(address: str = Query(..., min_length=1)) -> dict:
+    try:
+        return unstake_science_access(address)
+    except ScienceError as exc:
+        raise _science_error(exc) from exc
+
+
+@router.get("/science/accounts", response_model=list[ScienceStakeAccountResponse])
+def science_accounts(limit: int = Query(100, ge=1, le=500)) -> list[dict]:
+    return list_science_accounts(limit)
+
+
+@router.get("/science/accounts/{address}", response_model=ScienceStakeAccountResponse)
+def science_account(address: str) -> dict:
+    account = get_science_account(address)
+    if account is None:
+        raise HTTPException(status_code=404, detail="science stake account not found")
+    return account
+
+
+@router.post("/science/jobs", response_model=ScienceJobResponse, status_code=201)
+def science_create_job(payload: ScienceCreateJobRequest) -> dict:
+    try:
+        return create_science_job(
+            payload.requester_address,
+            payload.job_type,
+            payload.metadata_hash,
+            payload.storage_pointer,
+            payload.reward_budget,
+        )
+    except ScienceError as exc:
+        raise _science_error(exc) from exc
+
+
+@router.get("/science/jobs", response_model=list[ScienceJobResponse])
+def science_jobs(
+    address: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+) -> list[dict]:
+    return list_science_jobs(address, limit)
+
+
+@router.get("/science/jobs/{job_id}", response_model=ScienceJobResponse)
+def science_job(job_id: str) -> dict:
+    job = get_science_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="science job not found")
+    return job
+
+
+@router.post("/science/jobs/{job_id}/transition", response_model=ScienceJobResponse)
+def science_transition_job(job_id: str, payload: ScienceJobTransitionRequest) -> dict:
+    try:
+        return transition_science_job(
+            job_id,
+            payload.status,
+            payload.worker_address,
+            payload.result_hash,
+            payload.proof_hash,
+        )
+    except ScienceError as exc:
+        raise _science_error(exc) from exc
+
+
+@router.post("/science/jobs/{job_id}/accept", response_model=ScienceJobResponse)
+def science_accept_job(job_id: str) -> dict:
+    try:
+        return transition_science_job(job_id, "accepted")
+    except ScienceError as exc:
+        raise _science_error(exc) from exc
+
+
+@router.post("/science/jobs/{job_id}/pay", response_model=ScienceJobResponse)
+def science_pay_job(job_id: str) -> dict:
+    try:
+        return pay_science_worker(job_id)
+    except ScienceError as exc:
+        raise _science_error(exc) from exc
+
+
+@router.get("/science/reserve", response_model=ScienceRewardReserveResponse)
+def science_reserve(epoch: str | None = Query(None)) -> dict:
+    return get_science_reserve(epoch)
+
+
+@router.get("/reserve/status", response_model=ScienceRewardReserveResponse)
+def reserve_status(epoch: str | None = Query(None)) -> dict:
+    return get_science_reserve(epoch)
+
+
+@router.get("/science/reserve/governance", response_model=ScienceReserveGovernanceResponse)
+def science_reserve_governance() -> dict:
+    return get_science_reserve_governance()
+
+
+@router.post("/science/reserve/governance/propose-activation", response_model=ScienceReserveGovernanceResponse)
+def science_reserve_propose_activation(payload: ScienceReserveGovernanceRequest) -> dict:
+    try:
+        return propose_science_reserve_activation(payload.signer)
+    except ScienceError as exc:
+        raise _science_error(exc) from exc
+
+
+@router.post("/science/reserve/governance/approve-activation", response_model=ScienceReserveGovernanceResponse)
+def science_reserve_approve_activation(payload: ScienceReserveGovernanceRequest) -> dict:
+    try:
+        return approve_science_reserve_activation(payload.signer)
+    except ScienceError as exc:
+        raise _science_error(exc) from exc
+
+
+@router.post("/science/reserve/governance/execute-activation", response_model=ScienceReserveGovernanceResponse)
+def science_reserve_execute_activation() -> dict:
+    try:
+        return execute_science_reserve_activation()
+    except ScienceError as exc:
+        raise _science_error(exc) from exc
+
+
+@router.get("/science/events", response_model=list[ScienceEventResponse])
+def science_events(limit: int = Query(30, ge=1, le=100)) -> list[dict]:
+    return get_science_events(limit)
+
+
+@router.get("/treasury/status", response_model=ScientificDevelopmentTreasuryResponse)
+def treasury_status() -> dict:
+    return get_scientific_development_treasury()
+
+
+@router.post("/treasury/claim", response_model=ScientificDevelopmentTreasuryResponse)
+def treasury_claim(payload: TreasuryClaimRequest | None = None) -> dict:
+    payload = payload or TreasuryClaimRequest()
+    try:
+        return claim_scientific_development_treasury(payload.requested_by, payload.claim_to)
+    except TreasuryError as exc:
+        raise _treasury_error(exc) from exc
 
 
 @router.get("/audit/retroactive", response_model=list[RetroactiveAuditResponse])

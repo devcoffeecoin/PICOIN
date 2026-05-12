@@ -171,6 +171,8 @@ class StatsResponse(BaseModel):
     total_rewards: float
     total_validator_rewards: float
     total_audit_rewards: float = 0.0
+    total_science_reserve_rewards: float = 0.0
+    total_scientific_development_rewards: float = 0.0
     total_minted_rewards: float
     circulating_supply: float
     genesis_balance: float
@@ -248,6 +250,152 @@ class RetroactiveAuditResponse(BaseModel):
 class RetroactiveAuditRunResponse(BaseModel):
     accepted: bool
     audit: RetroactiveAuditResponse
+
+
+class ScienceStakeRequest(BaseModel):
+    address: str
+    amount: float
+
+
+class ScienceStakeAccountResponse(BaseModel):
+    account_id: str
+    address: str
+    stake_amount: float
+    tier: str | None = None
+    compute_multiplier: int
+    monthly_quota_used: float
+    monthly_quota_epoch: str
+    monthly_quota_limit: float
+    priority: str | None = None
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScienceCreateJobRequest(BaseModel):
+    requester_address: str
+    job_type: str
+    metadata_hash: str
+    storage_pointer: str
+    reward_budget: float = 0.0
+
+
+class ScienceJobTransitionRequest(BaseModel):
+    status: str
+    worker_address: str | None = None
+    result_hash: str | None = None
+    proof_hash: str | None = None
+
+
+class ScienceJobResponse(BaseModel):
+    job_id: str
+    requester_address: str
+    tier_at_creation: str
+    job_type: str
+    metadata_hash: str
+    storage_pointer: str
+    reward_budget: float
+    status: str
+    worker_address: str | None = None
+    result_hash: str | None = None
+    proof_hash: str | None = None
+    paid: bool = False
+    paid_amount: float = 0.0
+    paid_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScienceRewardReserveResponse(BaseModel):
+    epoch: str
+    total_reserved: float
+    total_paid: float
+    total_pending: float
+    available: float
+    status: str
+    activation_requested_at: datetime | None = None
+    activation_available_at: datetime | None = None
+    activated_at: datetime | None = None
+    governance_approvals: list[str] = []
+    governance_threshold: int
+    updated_at: datetime
+
+
+class ScienceReserveGovernanceRequest(BaseModel):
+    signer: str
+
+
+class ScienceReserveGovernanceResponse(BaseModel):
+    id: int
+    status: str
+    activation_requested_at: datetime | None = None
+    activation_available_at: datetime | None = None
+    activated_at: datetime | None = None
+    approvals: list[str]
+    threshold: int
+    timelock_seconds: int
+    updated_at: datetime
+
+
+class TreasuryClaimRequest(BaseModel):
+    requested_by: str | None = None
+    claim_to: str | None = None
+
+
+class TreasuryClaimResponse(BaseModel):
+    claim_id: str
+    amount: float
+    claim_to: str
+    requested_by: str
+    created_at: datetime
+
+
+class ScientificDevelopmentTreasuryEpochResponse(BaseModel):
+    epoch: str
+    start_block: int
+    end_block: int
+    locked_amount: float
+    unlocked_amount: float
+    claimed_amount: float
+    unlock_at: datetime
+    status: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ScientificDevelopmentTreasuryResponse(BaseModel):
+    treasury_id: str
+    total_accumulated: float
+    total_claimed: float
+    locked_balance: float
+    unlocked_balance: float
+    claimable: float
+    current_epoch: str
+    epoch_start_block: int
+    epoch_end_block: int
+    next_unlock_at: datetime
+    last_claim_at: datetime | None = None
+    treasury_wallet: str
+    governance_wallet: str
+    unlock_interval_days: int
+    reward_percent: float
+    created_at: datetime
+    updated_at: datetime
+    history: list[ScientificDevelopmentTreasuryEpochResponse] = []
+    claim: TreasuryClaimResponse | None = None
+
+
+class ScienceEventResponse(BaseModel):
+    id: int
+    type: str
+    title: str
+    message: str
+    severity: str
+    created_at: datetime
+    related_id: str | None = None
+    block_height: int | None = None
+    actor_id: str | None = None
+    metadata: dict[str, Any] = {}
 
 
 class MaintenanceCleanupResponse(BaseModel):
@@ -336,8 +484,21 @@ class ProtocolResponse(BaseModel):
     base_reward: float
     difficulty: float
     reward_per_block: float
+    proof_of_pi_reward_per_block: float
+    proof_of_pi_reward_percent: float
+    science_compute_reward_percent: float
+    science_compute_reserve_per_block: float
+    science_reserve_account_id: str
+    science_base_monthly_quota_units: int
+    validator_auditor_reward_percent: float
     validator_reward_percent: float
     validator_reward_pool_per_block: float
+    scientific_development_reward_percent: float
+    scientific_development_treasury_per_block: float
+    scientific_development_treasury_account_id: str
+    scientific_development_treasury_wallet: str
+    scientific_development_governance_wallet: str
+    scientific_development_unlock_interval_days: int
     retroactive_audit_interval_blocks: int
     retroactive_audit_sample_multiplier: int
     retroactive_audit_reward_percent: float
