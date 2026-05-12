@@ -76,7 +76,11 @@ def test_picoin_cli_parses_science_create_job() -> None:
             "metadata_hash",
             "--storage-pointer",
             "ipfs://payload",
-            "--reward-budget",
+            "--max-compute-units",
+            "10",
+            "--reward-per-unit",
+            "0.25",
+            "--max-reward",
             "1.5",
         ]
     )
@@ -85,18 +89,21 @@ def test_picoin_cli_parses_science_create_job() -> None:
     assert args.science_command == "create-job"
     assert args.address == "addr-lab"
     assert args.type == "ai_inference"
-    assert args.reward_budget == 1.5
+    assert args.max_compute_units == 10
+    assert args.reward_per_unit == 0.25
+    assert args.max_reward == 1.5
 
 
 def test_picoin_cli_parses_treasury_and_reserve_commands() -> None:
     parser = build_parser()
 
     treasury = parser.parse_args(["treasury", "claim", "--requested-by", "gov", "--claim-to", "wallet"])
-    reserve = parser.parse_args(["reserve", "status"])
+    reserve = parser.parse_args(["reserve", "pause", "--signer", "signer-1"])
 
     assert treasury.command == "treasury"
     assert treasury.treasury_command == "claim"
     assert treasury.requested_by == "gov"
     assert treasury.claim_to == "wallet"
     assert reserve.command == "reserve"
-    assert reserve.reserve_command == "status"
+    assert reserve.reserve_command == "pause"
+    assert reserve.signer == "signer-1"

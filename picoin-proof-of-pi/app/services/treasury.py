@@ -1,3 +1,4 @@
+import json
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -114,6 +115,12 @@ def claim_scientific_development_treasury(
             WHERE treasury_id = ?
             """,
             (amount, now, now, SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID),
+        )
+        _record_science_event(
+            connection,
+            "ScientificTreasuryClaimed",
+            address=requested_by,
+            payload={"amount": amount, "claim_to": claim_to, "claim_id": claim_id},
         )
         treasury = _treasury_row(connection)
         history = _treasury_history(connection)
@@ -429,4 +436,21 @@ def _ensure_balance_account(connection: Any, account_id: str, account_type: str)
         ON CONFLICT(account_id) DO NOTHING
         """,
         (account_id, account_type, utc_now()),
+    )
+
+
+def _record_science_event(
+    connection: Any,
+    event_type: str,
+    *,
+    address: str | None = None,
+    job_id: str | None = None,
+    payload: dict[str, Any],
+) -> None:
+    connection.execute(
+        """
+        INSERT INTO science_events (event_type, address, job_id, payload, created_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (event_type, address, job_id, json.dumps(payload, sort_keys=True), utc_now()),
     )

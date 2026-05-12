@@ -26,6 +26,7 @@ from app.models.schemas import (
     RetargetStatusResponse,
     ScienceCreateJobRequest,
     ScienceEventResponse,
+    ScienceJobAcceptRequest,
     ScienceJobResponse,
     ScienceJobTransitionRequest,
     ScienceReserveGovernanceRequest,
@@ -66,9 +67,11 @@ from app.services.science import (
     list_science_accounts,
     list_science_jobs,
     pay_science_worker,
+    pause_science_reserve,
     propose_science_reserve_activation,
     stake_science_access,
     transition_science_job,
+    unpause_science_reserve,
     unstake_science_access,
 )
 from app.services.mining import (
@@ -174,6 +177,9 @@ def science_create_job(payload: ScienceCreateJobRequest) -> dict:
             payload.metadata_hash,
             payload.storage_pointer,
             payload.reward_budget,
+            payload.max_compute_units,
+            payload.reward_per_compute_unit,
+            payload.max_reward,
         )
     except ScienceError as exc:
         raise _science_error(exc) from exc
@@ -204,15 +210,23 @@ def science_transition_job(job_id: str, payload: ScienceJobTransitionRequest) ->
             payload.worker_address,
             payload.result_hash,
             payload.proof_hash,
+            payload.compute_units_used,
         )
     except ScienceError as exc:
         raise _science_error(exc) from exc
 
 
 @router.post("/science/jobs/{job_id}/accept", response_model=ScienceJobResponse)
-def science_accept_job(job_id: str) -> dict:
+def science_accept_job(job_id: str, payload: ScienceJobAcceptRequest) -> dict:
     try:
-        return transition_science_job(job_id, "accepted")
+        return transition_science_job(
+            job_id,
+            "accepted",
+            payload.worker_address,
+            payload.result_hash,
+            payload.proof_hash,
+            payload.compute_units_used,
+        )
     except ScienceError as exc:
         raise _science_error(exc) from exc
 
@@ -233,6 +247,22 @@ def science_reserve(epoch: str | None = Query(None)) -> dict:
 @router.get("/reserve/status", response_model=ScienceRewardReserveResponse)
 def reserve_status(epoch: str | None = Query(None)) -> dict:
     return get_science_reserve(epoch)
+
+
+@router.post("/reserve/pause", response_model=ScienceReserveGovernanceResponse)
+def reserve_pause(payload: ScienceReserveGovernanceRequest) -> dict:
+    try:
+        return pause_science_reserve(payload.signer)
+    except ScienceError as exc:
+        raise _science_error(exc) from exc
+
+
+@router.post("/reserve/unpause", response_model=ScienceReserveGovernanceResponse)
+def reserve_unpause(payload: ScienceReserveGovernanceRequest) -> dict:
+    try:
+        return unpause_science_reserve(payload.signer)
+    except ScienceError as exc:
+        raise _science_error(exc) from exc
 
 
 @router.get("/science/reserve/governance", response_model=ScienceReserveGovernanceResponse)

@@ -192,9 +192,9 @@ CLI de Science Compute Access Layer:
 ```powershell
 .\.venv\Scripts\python.exe -m picoin science stake --amount 31416
 .\.venv\Scripts\python.exe -m picoin science account
-.\.venv\Scripts\python.exe -m picoin science create-job --type "ai_inference" --metadata-hash "hash..." --storage-pointer "ipfs://payload" --reward-budget 0
+.\.venv\Scripts\python.exe -m picoin science create-job --type "ai_inference" --metadata-hash "hash..." --storage-pointer "ipfs://payload" --max-compute-units 10 --reward-per-unit 0.25 --max-reward 2.5
 .\.venv\Scripts\python.exe -m picoin science jobs
-.\.venv\Scripts\python.exe -m picoin science accept-job --job-id science_job_xxxxxxxxxxxxxxxx
+.\.venv\Scripts\python.exe -m picoin science accept-job --job-id science_job_xxxxxxxxxxxxxxxx --worker-address worker-1 --result-hash hash... --proof-hash proof... --compute-units-used 8
 .\.venv\Scripts\python.exe -m picoin science pay-worker --job-id science_job_xxxxxxxxxxxxxxxx
 .\.venv\Scripts\python.exe -m picoin science reserve
 .\.venv\Scripts\python.exe -m picoin science reserve-governance
@@ -202,6 +202,8 @@ CLI de Science Compute Access Layer:
 .\.venv\Scripts\python.exe -m picoin science approve-l2-activation --signer signer-2
 .\.venv\Scripts\python.exe -m picoin science execute-l2-activation
 .\.venv\Scripts\python.exe -m picoin reserve status
+.\.venv\Scripts\python.exe -m picoin reserve pause --signer signer-1
+.\.venv\Scripts\python.exe -m picoin reserve unpause --signer signer-2
 .\.venv\Scripts\python.exe -m picoin treasury status
 .\.venv\Scripts\python.exe -m picoin treasury claim
 ```
@@ -462,12 +464,18 @@ curl -X POST http://127.0.0.1:8000/science/stake `
 
 ### `POST /science/jobs`
 
-Crea un job cientifico L1. No ejecuta computo real ni guarda archivos pesados: solo `metadata_hash`, `storage_pointer`, presupuesto y estado.
+Crea un job cientifico L1. No ejecuta computo real ni guarda archivos pesados: solo `metadata_hash`, `storage_pointer`, unidades abstractas, limite economico y estado. La L2 futura certificara `compute_units_used`; la L1 solo liquidara el pago si el job llega a `accepted` y la reserva esta activa.
 
 ```powershell
 curl -X POST http://127.0.0.1:8000/science/jobs `
   -H "Content-Type: application/json" `
-  -d '{"requester_address":"lab-1","job_type":"ai_inference","metadata_hash":"hash...","storage_pointer":"ipfs://payload","reward_budget":0}'
+  -d '{"requester_address":"lab-1","job_type":"ai_inference","metadata_hash":"hash...","storage_pointer":"ipfs://payload","max_compute_units":10,"reward_per_compute_unit":0.25,"max_reward":2.5}'
+```
+
+El pago maximo queda acotado por:
+
+```text
+payout_amount = min(compute_units_used * reward_per_compute_unit, max_reward)
 ```
 
 ### `POST /science/jobs/{job_id}/transition`
@@ -475,15 +483,15 @@ curl -X POST http://127.0.0.1:8000/science/jobs `
 Avanza el estado del job con validaciones de transicion. Estados soportados:
 
 ```text
-created -> queued -> assigned -> committed -> submitted -> verified -> accepted
+created -> queued -> assigned -> committed -> submitted -> verified -> accepted -> paid
 created/queued/assigned/committed/submitted/verified -> rejected/disputed/expired
 ```
 
-`submitted`, `verified` y `accepted` requieren `worker_address`, `result_hash` y `proof_hash`. Por defecto el requester no puede ser worker de su propio job.
+`submitted`, `verified` y `accepted` requieren `worker_address`, `result_hash` y `proof_hash`. `accepted` requiere ademas `compute_units_used`, certificado en el futuro por L2. Por defecto el requester no puede ser worker de su propio job.
 
 ### `POST /science/jobs/{job_id}/pay`
 
-Paga al worker solo si el job esta `accepted`, no fue pagado antes, tiene worker y tiene `reward_budget` reservado. Jobs `rejected`, `disputed` o `expired` no pagan. Mientras `science reserve status = RESERVE_LOCKED`, este endpoint esta deshabilitado y no mueve fondos.
+Paga al worker solo si el job esta `accepted`, no fue pagado antes, tiene worker y tiene `payout_amount > 0`. Jobs `rejected`, `disputed`, `expired`, `submitted`, `verified` o incompletos no pagan. Mientras `science reserve status != L2_ACTIVE`, `payouts_enabled = false` o `emergency_paused = true`, este endpoint esta deshabilitado y no mueve fondos.
 
 ### `GET /science/reserve`
 
@@ -499,6 +507,12 @@ activation_requested_at
 activation_available_at
 activated_at
 governance_approvals
+authorized_signers
+payouts_enabled
+emergency_paused
+max_reward_per_job
+max_payout_per_epoch
+max_pending_per_requester
 ```
 
 ### `GET /reserve/status`
@@ -511,7 +525,17 @@ total_pending
 total_paid
 available
 status
+payouts_enabled
+emergency_paused
 ```
+
+### `POST /reserve/pause`
+
+Pausa pagos de emergencia. Requiere signer autorizado.
+
+### `POST /reserve/unpause`
+
+Quita la pausa. Si la reserva ya fue activada por timelock + multisig vuelve a `L2_ACTIVE`; si no, queda bloqueada.
 
 ### `GET /treasury/status`
 
@@ -566,7 +590,7 @@ Agrega una aprobacion multisig. El MVP requiere 2 firmantes distintos.
 
 ### `POST /science/reserve/governance/execute-activation`
 
-Activa la reserva solo si se cumplio el umbral multisig y vencio el timelock. Antes de eso, no se puede ejecutar ningun pago ni reserva de presupuesto.
+Activa la reserva solo si se cumplio el umbral multisig de signers autorizados y vencio el timelock. Antes de eso, `payouts_enabled = false` y no se puede ejecutar ningun pago.
 
 ### `GET /science/events`
 
@@ -581,12 +605,17 @@ ScienceJobSubmitted
 ScienceJobVerified
 ScienceJobAccepted
 ScienceJobRejected
-ScienceWorkerPaid
+ScienceJobPaid
 ScienceJobDisputed
 ScienceReserveAccrued
 ScienceReserveActivationProposed
 ScienceReserveActivationApproved
 ScienceReserveActivated
+ScienceReserveLocked
+ScienceReserveUnlocked
+ScienceReservePaused
+ScienceReserveUnpaused
+ScientificTreasuryClaimed
 ```
 
 ### `GET /protocol/history`
@@ -1153,12 +1182,14 @@ Reglas:
 - solo cuentas Science activas pueden crear jobs;
 - si el stake baja de minimo, no crea nuevos jobs;
 - no se permite unstake si hay jobs activos;
-- jobs guardan hashes y punteros, no datos pesados;
-- mientras `RESERVE_LOCKED`, el `reward_budget` no puede reservarse contra `science_compute_reserve`;
-- luego de activacion L2 por timelock + multisig, `reward_budget` se reserva contra `science_compute_reserve`;
+- jobs guardan hashes, punteros y compute units abstractas, no datos pesados;
+- `max_reward` queda reservado como pendiente contra `science_compute_reserve`;
+- `payout_amount = min(compute_units_used * reward_per_compute_unit, max_reward)`;
+- mientras `status != L2_ACTIVE`, `payouts_enabled = false` o `emergency_paused = true`, no se paga;
 - jobs `rejected`, `disputed` o `expired` liberan presupuesto pendiente y no pagan;
-- workers solo cobran si el job esta `accepted`;
+- workers solo cobran si el job esta `accepted` y luego queda `status = paid`;
 - cada job se paga una sola vez;
+- los limites `max_reward_per_job`, `max_payout_per_epoch` y `max_pending_per_requester` protegen la reserva;
 - por defecto el requester no puede ser su propio worker.
 
 ## Firma Ed25519

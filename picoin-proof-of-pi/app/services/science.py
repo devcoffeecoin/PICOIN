@@ -7,11 +7,17 @@ from app.core.settings import (
     SCIENCE_ALLOW_SELF_WORK,
     SCIENCE_BASE_MONTHLY_QUOTA_UNITS,
     SCIENCE_COMPUTE_REWARD_PERCENT_OF_BLOCK,
+    SCIENCE_MAX_PAYOUT_PER_EPOCH,
+    SCIENCE_MAX_PENDING_PER_REQUESTER,
+    SCIENCE_MAX_REWARD_PER_JOB,
     SCIENCE_RESERVE_ACTIVE_STATUS,
     SCIENCE_RESERVE_ACCOUNT_ID,
+    SCIENCE_RESERVE_AUTHORIZED_SIGNERS,
     SCIENCE_RESERVE_GOVERNANCE_MULTISIG_THRESHOLD,
     SCIENCE_RESERVE_GOVERNANCE_TIMELOCK_SECONDS,
     SCIENCE_RESERVE_LOCKED_STATUS,
+    SCIENCE_RESERVE_PAUSED_STATUS,
+    SCIENCE_RESERVE_PENDING_STATUS,
 )
 from app.db.database import get_connection, row_to_dict
 
@@ -22,7 +28,7 @@ SCIENCE_TIERS = {
     "institution": {"stake_required": 314_160.0, "compute_multiplier": 100, "priority": "high"},
 }
 ACTIVE_JOB_STATUSES = {"created", "queued", "assigned", "committed", "submitted", "verified", "accepted"}
-TERMINAL_JOB_STATUSES = {"rejected", "disputed", "expired"}
+TERMINAL_JOB_STATUSES = {"rejected", "disputed", "expired", "paid"}
 SCIENCE_EVENT_TITLES = {
     "ScienceStakeUpdated": "Science stake actualizado",
     "ScienceJobCreated": "Science job creado",
@@ -32,12 +38,17 @@ SCIENCE_EVENT_TITLES = {
     "ScienceJobVerified": "Science job verified",
     "ScienceJobAccepted": "Science job aceptado",
     "ScienceJobRejected": "Science job rechazado",
-    "ScienceWorkerPaid": "Science worker pagado",
+    "ScienceJobPaid": "Science job pagado",
     "ScienceJobDisputed": "Science job disputado",
     "ScienceReserveAccrued": "Science reserve acumulada",
     "ScienceReserveActivationProposed": "Science reserve activation proposed",
     "ScienceReserveActivationApproved": "Science reserve activation approved",
     "ScienceReserveActivated": "Science reserve activated",
+    "ScienceReserveLocked": "Science reserve locked",
+    "ScienceReserveUnlocked": "Science reserve unlocked",
+    "ScienceReservePaused": "Science reserve paused",
+    "ScienceReserveUnpaused": "Science reserve unpaused",
+    "ScientificTreasuryClaimed": "Scientific treasury claimed",
 }
 
 
@@ -201,15 +212,21 @@ def create_science_job(
     job_type: str,
     metadata_hash: str,
     storage_pointer: str,
-    reward_budget: float = 0.0,
+    reward_budget: float | None = None,
+    max_compute_units: float | None = None,
+    reward_per_compute_unit: float | None = None,
+    max_reward: float | None = None,
 ) -> dict[str, Any]:
     requester_address = _clean_address(requester_address)
     job_type = _clean_text(job_type, "job_type")
     metadata_hash = _clean_text(metadata_hash, "metadata_hash")
     storage_pointer = _clean_text(storage_pointer, "storage_pointer")
-    budget = round(float(reward_budget), 8)
-    if budget < 0:
-        raise ScienceError(400, "reward_budget cannot be negative")
+    compute_units, reward_per_unit, reward_cap = _normalize_compute_budget(
+        reward_budget=reward_budget,
+        max_compute_units=max_compute_units,
+        reward_per_compute_unit=reward_per_compute_unit,
+        max_reward=max_reward,
+    )
 
     with get_connection() as connection:
         account = _require_active_science_account(connection, requester_address)
@@ -217,8 +234,9 @@ def create_science_job(
         quota_limit = _monthly_quota_limit(account)
         if float(account["monthly_quota_used"]) + 1 > quota_limit:
             raise ScienceError(429, "monthly science quota exceeded")
-        if budget > 0:
-            _reserve_science_job_budget(connection, budget)
+        if reward_cap > 0:
+            _validate_requester_pending_limit(connection, requester_address, reward_cap)
+            _reserve_science_job_budget(connection, reward_cap)
 
         job_id = f"science_job_{uuid.uuid4().hex[:16]}"
         now = utc_now()
@@ -226,9 +244,10 @@ def create_science_job(
             """
             INSERT INTO science_jobs (
                 job_id, requester_address, tier_at_creation, job_type, metadata_hash,
-                storage_pointer, reward_budget, status, created_at, updated_at
+                storage_pointer, reward_budget, max_compute_units,
+                reward_per_compute_unit, max_reward, status, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'created', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'created', ?, ?)
             """,
             (
                 job_id,
@@ -237,7 +256,10 @@ def create_science_job(
                 job_type,
                 metadata_hash,
                 storage_pointer,
-                budget,
+                reward_cap,
+                compute_units,
+                reward_per_unit,
+                reward_cap,
                 now,
                 now,
             ),
@@ -261,7 +283,9 @@ def create_science_job(
                 "job_type": job_type,
                 "metadata_hash": metadata_hash,
                 "storage_pointer": storage_pointer,
-                "reward_budget": budget,
+                "max_compute_units": compute_units,
+                "reward_per_compute_unit": reward_per_unit,
+                "max_reward": reward_cap,
             },
         )
         job = _science_job_by_id(connection, job_id)
@@ -306,17 +330,20 @@ def transition_science_job(
     worker_address: str | None = None,
     result_hash: str | None = None,
     proof_hash: str | None = None,
+    compute_units_used: float | None = None,
 ) -> dict[str, Any]:
     status = status.strip().lower()
     with get_connection() as connection:
         job = _science_job_by_id(connection, job_id)
         if job is None:
             raise ScienceError(404, "science job not found")
-        _validate_science_transition(job, status, worker_address, result_hash, proof_hash)
+        _validate_science_transition(job, status, worker_address, result_hash, proof_hash, compute_units_used)
 
         next_worker = _clean_address(worker_address) if worker_address else job.get("worker_address")
         next_result = _clean_optional_hash(result_hash, "result_hash") or job.get("result_hash")
         next_proof = _clean_optional_hash(proof_hash, "proof_hash") or job.get("proof_hash")
+        next_compute_units = _compute_units_for_status(job, status, compute_units_used)
+        next_payout = _payout_amount(job, next_compute_units) if status == "accepted" else float(job.get("payout_amount") or 0)
         now = utc_now()
         connection.execute(
             """
@@ -325,10 +352,12 @@ def transition_science_job(
                 worker_address = ?,
                 result_hash = ?,
                 proof_hash = ?,
+                compute_units_used = ?,
+                payout_amount = ?,
                 updated_at = ?
             WHERE job_id = ?
             """,
-            (status, next_worker, next_result, next_proof, now, job_id),
+            (status, next_worker, next_result, next_proof, next_compute_units, next_payout, now, job_id),
         )
         updated = _science_job_by_id(connection, job_id)
         _record_science_event(
@@ -341,6 +370,8 @@ def transition_science_job(
                 "worker_address": next_worker,
                 "result_hash": next_result,
                 "proof_hash": next_proof,
+                "compute_units_used": next_compute_units,
+                "payout_amount": next_payout,
             },
         )
         if status in TERMINAL_JOB_STATUSES:
@@ -351,7 +382,7 @@ def transition_science_job(
 
 def pay_science_worker(job_id: str) -> dict[str, Any]:
     with get_connection() as connection:
-        _require_science_reserve_active(connection)
+        _require_science_payouts_enabled(connection)
         job = _science_job_by_id(connection, job_id)
         if job is None:
             raise ScienceError(404, "science job not found")
@@ -361,9 +392,10 @@ def pay_science_worker(job_id: str) -> dict[str, Any]:
             raise ScienceError(409, "science job has already been paid")
         if not job.get("worker_address"):
             raise ScienceError(409, "science job has no worker")
-        amount = round(float(job["reward_budget"]), 8)
+        amount = round(float(job["payout_amount"]), 8)
         if amount <= 0:
-            raise ScienceError(409, "science job has no reward budget")
+            raise ScienceError(409, "science job has no payable compute units")
+        _validate_epoch_payout_limit(connection, amount)
 
         _apply_ledger_entry(
             connection,
@@ -388,7 +420,8 @@ def pay_science_worker(job_id: str) -> dict[str, Any]:
         connection.execute(
             """
             UPDATE science_jobs
-            SET paid = 1,
+            SET status = 'paid',
+                paid = 1,
                 paid_amount = ?,
                 paid_at = ?,
                 updated_at = ?
@@ -398,10 +431,16 @@ def pay_science_worker(job_id: str) -> dict[str, Any]:
         )
         _record_science_event(
             connection,
-            "ScienceWorkerPaid",
+            "ScienceJobPaid",
             address=job["worker_address"],
             job_id=job_id,
-            payload={"amount": amount, "worker_address": job["worker_address"]},
+            payload={
+                "amount": amount,
+                "worker_address": job["worker_address"],
+                "compute_units_used": job["compute_units_used"],
+                "reward_per_compute_unit": job["reward_per_compute_unit"],
+                "max_reward": job["max_reward"],
+            },
         )
         paid_job = _science_job_by_id(connection, job_id)
     return _decode_science_job(paid_job)
@@ -420,6 +459,7 @@ def propose_science_reserve_activation(signer: str) -> dict[str, Any]:
         governance = _science_reserve_governance(connection)
         if governance["status"] == SCIENCE_RESERVE_ACTIVE_STATUS:
             raise ScienceError(409, "science reserve is already active")
+        _require_authorized_signer(governance, signer)
         approvals = _governance_approvals(governance)
         if signer not in approvals:
             approvals.append(signer)
@@ -432,11 +472,12 @@ def propose_science_reserve_activation(signer: str) -> dict[str, Any]:
                 activation_requested_at = ?,
                 activation_available_at = ?,
                 approvals = ?,
+                payouts_enabled = 0,
                 updated_at = ?
             WHERE id = 1
             """,
             (
-                SCIENCE_RESERVE_LOCKED_STATUS,
+                SCIENCE_RESERVE_PENDING_STATUS,
                 now.isoformat(),
                 available_at.isoformat(),
                 json.dumps(approvals),
@@ -448,7 +489,7 @@ def propose_science_reserve_activation(signer: str) -> dict[str, Any]:
             "ScienceReserveActivationProposed",
             address=signer,
             payload={
-                "status": SCIENCE_RESERVE_LOCKED_STATUS,
+                "status": SCIENCE_RESERVE_PENDING_STATUS,
                 "activation_available_at": available_at.isoformat(),
                 "approvals": approvals,
                 "threshold": SCIENCE_RESERVE_GOVERNANCE_MULTISIG_THRESHOLD,
@@ -466,6 +507,7 @@ def approve_science_reserve_activation(signer: str) -> dict[str, Any]:
             raise ScienceError(409, "science reserve is already active")
         if not governance["activation_requested_at"]:
             raise ScienceError(409, "science reserve activation has not been proposed")
+        _require_authorized_signer(governance, signer)
         approvals = _governance_approvals(governance)
         if signer not in approvals:
             approvals.append(signer)
@@ -510,6 +552,8 @@ def execute_science_reserve_activation() -> dict[str, Any]:
             UPDATE science_reserve_governance
             SET status = ?,
                 activated_at = ?,
+                payouts_enabled = 1,
+                emergency_paused = 0,
                 updated_at = ?
             WHERE id = 1
             """,
@@ -519,6 +563,71 @@ def execute_science_reserve_activation() -> dict[str, Any]:
             connection,
             "ScienceReserveActivated",
             payload={"status": SCIENCE_RESERVE_ACTIVE_STATUS, "approvals": approvals},
+        )
+        _record_science_event(
+            connection,
+            "ScienceReserveUnlocked",
+            payload={"status": SCIENCE_RESERVE_ACTIVE_STATUS, "payouts_enabled": True},
+        )
+        governance = _science_reserve_governance(connection)
+    return _decode_governance(governance)
+
+
+def pause_science_reserve(signer: str) -> dict[str, Any]:
+    signer = _clean_address(signer)
+    with get_connection() as connection:
+        governance = _science_reserve_governance(connection)
+        _require_authorized_signer(governance, signer)
+        now = utc_now()
+        connection.execute(
+            """
+            UPDATE science_reserve_governance
+            SET status = ?,
+                emergency_paused = 1,
+                payouts_enabled = 0,
+                updated_at = ?
+            WHERE id = 1
+            """,
+            (SCIENCE_RESERVE_PAUSED_STATUS, now),
+        )
+        _record_science_event(
+            connection,
+            "ScienceReservePaused",
+            address=signer,
+            payload={"status": SCIENCE_RESERVE_PAUSED_STATUS},
+        )
+        governance = _science_reserve_governance(connection)
+    return _decode_governance(governance)
+
+
+def unpause_science_reserve(signer: str) -> dict[str, Any]:
+    signer = _clean_address(signer)
+    with get_connection() as connection:
+        governance = _science_reserve_governance(connection)
+        _require_authorized_signer(governance, signer)
+        if not governance["activated_at"]:
+            next_status = SCIENCE_RESERVE_LOCKED_STATUS
+            payouts_enabled = 0
+        else:
+            next_status = SCIENCE_RESERVE_ACTIVE_STATUS
+            payouts_enabled = 1
+        now = utc_now()
+        connection.execute(
+            """
+            UPDATE science_reserve_governance
+            SET status = ?,
+                emergency_paused = 0,
+                payouts_enabled = ?,
+                updated_at = ?
+            WHERE id = 1
+            """,
+            (next_status, payouts_enabled, now),
+        )
+        _record_science_event(
+            connection,
+            "ScienceReserveUnpaused",
+            address=signer,
+            payload={"status": next_status, "payouts_enabled": bool(payouts_enabled)},
         )
         governance = _science_reserve_governance(connection)
     return _decode_governance(governance)
@@ -609,6 +718,7 @@ def _validate_science_transition(
     worker_address: str | None,
     result_hash: str | None,
     proof_hash: str | None,
+    compute_units_used: float | None = None,
 ) -> None:
     current = job["status"]
     allowed = {
@@ -619,6 +729,7 @@ def _validate_science_transition(
         "submitted": {"verified", "rejected", "disputed"},
         "verified": {"accepted", "rejected", "disputed"},
         "accepted": set(),
+        "paid": set(),
         "rejected": set(),
         "disputed": set(),
         "expired": set(),
@@ -636,6 +747,12 @@ def _validate_science_transition(
             raise ScienceError(400, "result_hash is required for submitted or later jobs")
         if not (proof_hash or job.get("proof_hash")):
             raise ScienceError(400, "proof_hash is required for submitted or later jobs")
+    if status == "accepted":
+        units = _clean_compute_units(compute_units_used, "compute_units_used")
+        if units <= 0:
+            raise ScienceError(400, "compute_units_used must be positive when accepting a science job")
+        if units > float(job["max_compute_units"]):
+            raise ScienceError(400, "compute_units_used cannot exceed max_compute_units")
 
 
 def _event_type_for_status(status: str) -> str:
@@ -648,6 +765,7 @@ def _event_type_for_status(status: str) -> str:
         "rejected": "ScienceJobRejected",
         "disputed": "ScienceJobDisputed",
         "expired": "ScienceJobRejected",
+        "paid": "ScienceJobPaid",
         "queued": "ScienceJobCreated",
     }[status]
 
@@ -682,8 +800,70 @@ def _reset_quota_if_needed(connection: Any, account: dict[str, Any]) -> dict[str
     return _science_account_by_address(connection, account["address"])
 
 
+def _normalize_compute_budget(
+    *,
+    reward_budget: float | None,
+    max_compute_units: float | None,
+    reward_per_compute_unit: float | None,
+    max_reward: float | None,
+) -> tuple[float, float, float]:
+    legacy_budget = _clean_non_negative(reward_budget, "reward_budget") if reward_budget is not None else None
+    if max_reward is None and legacy_budget is not None:
+        max_reward = legacy_budget
+    reward_cap = _clean_non_negative(max_reward or 0, "max_reward")
+    default_units = 1 if reward_cap > 0 and max_compute_units is None else 0
+    compute_units = _clean_non_negative(
+        max_compute_units if max_compute_units is not None else default_units,
+        "max_compute_units",
+    )
+    default_reward_per_unit = reward_cap if reward_cap > 0 and compute_units == 1 and reward_per_compute_unit is None else 0
+    reward_per_unit = _clean_non_negative(
+        reward_per_compute_unit if reward_per_compute_unit is not None else default_reward_per_unit,
+        "reward_per_compute_unit",
+    )
+    if reward_cap > SCIENCE_MAX_REWARD_PER_JOB:
+        raise ScienceError(400, "max_reward exceeds protocol max_reward_per_job")
+    if reward_cap > 0 and (compute_units <= 0 or reward_per_unit <= 0):
+        raise ScienceError(400, "max_compute_units and reward_per_compute_unit are required for paid science jobs")
+    computed_cap = round(compute_units * reward_per_unit, 8)
+    if reward_cap > computed_cap:
+        raise ScienceError(400, "max_reward cannot exceed max_compute_units * reward_per_compute_unit")
+    return compute_units, reward_per_unit, reward_cap
+
+
+def _validate_requester_pending_limit(connection: Any, requester_address: str, additional_max_reward: float) -> None:
+    row = connection.execute(
+        """
+        SELECT COALESCE(SUM(max_reward), 0) AS pending
+        FROM science_jobs
+        WHERE requester_address = ?
+        AND paid = 0
+        AND status IN ('created', 'queued', 'assigned', 'committed', 'submitted', 'verified', 'accepted')
+        """,
+        (requester_address,),
+    ).fetchone()
+    pending = round(float(row["pending"]) + additional_max_reward, 8)
+    if pending > SCIENCE_MAX_PENDING_PER_REQUESTER:
+        raise ScienceError(429, "requester science pending rewards exceed max_pending_per_requester")
+
+
+def _compute_units_for_status(job: dict[str, Any], status: str, compute_units_used: float | None) -> float:
+    if status == "accepted":
+        return _clean_compute_units(compute_units_used, "compute_units_used")
+    return round(float(job.get("compute_units_used") or 0), 8)
+
+
+def _payout_amount(job: dict[str, Any], compute_units_used: float) -> float:
+    return round(
+        min(
+            compute_units_used * float(job["reward_per_compute_unit"]),
+            float(job["max_reward"]),
+        ),
+        8,
+    )
+
+
 def _reserve_science_job_budget(connection: Any, amount: float) -> None:
-    _require_science_reserve_active(connection)
     epoch = current_epoch()
     reserve = _ensure_reserve_epoch(connection, epoch)
     available = round(float(reserve["total_reserved"]) - float(reserve["total_paid"]) - float(reserve["total_pending"]), 8)
@@ -701,7 +881,7 @@ def _reserve_science_job_budget(connection: Any, amount: float) -> None:
 
 
 def _release_science_job_budget(connection: Any, job: dict[str, Any]) -> None:
-    amount = round(float(job["reward_budget"]), 8)
+    amount = round(float(job["max_reward"]), 8)
     if amount <= 0 or int(job["paid"]):
         return
     epoch = current_epoch()
@@ -791,6 +971,7 @@ def _decode_science_job(job: dict[str, Any] | None) -> dict[str, Any] | None:
     if job is None:
         return None
     job["paid"] = bool(job["paid"])
+    job["reward_budget"] = float(job.get("max_reward") or job.get("reward_budget") or 0)
     return job
 
 
@@ -806,13 +987,22 @@ def _decode_reserve(reserve: dict[str, Any], governance: dict[str, Any] | None =
     reserve["activation_available_at"] = governance.get("activation_available_at")
     reserve["activated_at"] = governance.get("activated_at")
     reserve["governance_approvals"] = _governance_approvals(governance) if governance else []
+    reserve["authorized_signers"] = _authorized_signers(governance) if governance else list(SCIENCE_RESERVE_AUTHORIZED_SIGNERS)
     reserve["governance_threshold"] = SCIENCE_RESERVE_GOVERNANCE_MULTISIG_THRESHOLD
+    reserve["payouts_enabled"] = bool(governance.get("payouts_enabled", 0))
+    reserve["emergency_paused"] = bool(governance.get("emergency_paused", 0))
+    reserve["max_reward_per_job"] = SCIENCE_MAX_REWARD_PER_JOB
+    reserve["max_payout_per_epoch"] = SCIENCE_MAX_PAYOUT_PER_EPOCH
+    reserve["max_pending_per_requester"] = SCIENCE_MAX_PENDING_PER_REQUESTER
     return reserve
 
 
 def _decode_governance(governance: dict[str, Any]) -> dict[str, Any]:
     governance = dict(governance)
     governance["approvals"] = _governance_approvals(governance)
+    governance["authorized_signers"] = _authorized_signers(governance)
+    governance["payouts_enabled"] = bool(governance.get("payouts_enabled", 0))
+    governance["emergency_paused"] = bool(governance.get("emergency_paused", 0))
     governance["threshold"] = SCIENCE_RESERVE_GOVERNANCE_MULTISIG_THRESHOLD
     governance["timelock_seconds"] = SCIENCE_RESERVE_GOVERNANCE_TIMELOCK_SECONDS
     return governance
@@ -827,11 +1017,12 @@ def _science_reserve_governance(connection: Any) -> dict[str, Any]:
         """
         INSERT INTO science_reserve_governance (
             id, status, activation_requested_at, activation_available_at,
-            activated_at, approvals, updated_at
+            activated_at, approvals, authorized_signers, payouts_enabled,
+            emergency_paused, updated_at
         )
-        VALUES (1, ?, NULL, NULL, NULL, '[]', ?)
+        VALUES (1, ?, NULL, NULL, NULL, '[]', ?, 0, 0, ?)
         """,
-        (SCIENCE_RESERVE_LOCKED_STATUS, now),
+        (SCIENCE_RESERVE_LOCKED_STATUS, json.dumps(list(SCIENCE_RESERVE_AUTHORIZED_SIGNERS)), now),
     )
     return row_to_dict(connection.execute("SELECT * FROM science_reserve_governance WHERE id = 1").fetchone())
 
@@ -842,8 +1033,40 @@ def _require_science_reserve_active(connection: Any) -> None:
         raise ScienceError(423, "science compute reserve is locked until L2 marketplace activation")
 
 
+def _require_science_payouts_enabled(connection: Any) -> None:
+    governance = _science_reserve_governance(connection)
+    if governance["status"] != SCIENCE_RESERVE_ACTIVE_STATUS:
+        raise ScienceError(423, "science compute reserve is locked until L2 marketplace activation")
+    if bool(governance.get("emergency_paused", 0)):
+        raise ScienceError(423, "science compute reserve is emergency paused")
+    if not bool(governance.get("payouts_enabled", 0)):
+        raise ScienceError(423, "science compute reserve payouts are disabled")
+
+
+def _validate_epoch_payout_limit(connection: Any, amount: float) -> None:
+    reserve = _ensure_reserve_epoch(connection, current_epoch())
+    if round(float(reserve["total_paid"]) + amount, 8) > SCIENCE_MAX_PAYOUT_PER_EPOCH:
+        raise ScienceError(429, "science compute reserve max_payout_per_epoch exceeded")
+
+
+def _require_authorized_signer(governance: dict[str, Any], signer: str) -> None:
+    authorized = _authorized_signers(governance)
+    if authorized and signer not in authorized:
+        raise ScienceError(403, "signer is not authorized for science reserve governance")
+
+
 def _governance_approvals(governance: dict[str, Any]) -> list[str]:
     raw = governance.get("approvals") or "[]"
+    return _decode_string_list(raw)
+
+
+def _authorized_signers(governance: dict[str, Any]) -> list[str]:
+    raw = governance.get("authorized_signers") or "[]"
+    parsed = _decode_string_list(raw)
+    return parsed or list(SCIENCE_RESERVE_AUTHORIZED_SIGNERS)
+
+
+def _decode_string_list(raw: Any) -> list[str]:
     if isinstance(raw, list):
         return raw
     try:
@@ -894,6 +1117,8 @@ def _apply_ledger_entry(
         (account_id,),
     ).fetchone()
     balance_after = round(float(current["balance"]) + float(amount), 8)
+    if balance_after < 0:
+        raise ScienceError(409, "science ledger operation would create a negative balance")
     timestamp = utc_now()
     connection.execute(
         "UPDATE balances SET balance = ?, updated_at = ? WHERE account_id = ?",
@@ -940,8 +1165,10 @@ def _science_event_message(
 ) -> str:
     if event_type == "ScienceReserveAccrued":
         return f"reserve +{payload.get('amount')} en bloque {payload.get('block_height')}"
-    if event_type == "ScienceWorkerPaid":
+    if event_type == "ScienceJobPaid":
         return f"worker {address} cobro {payload.get('amount')} por {job_id}"
+    if event_type in {"ScienceReservePaused", "ScienceReserveUnpaused", "ScienceReserveLocked", "ScienceReserveUnlocked"}:
+        return f"reserve -> {payload.get('status', event_type)}"
     if job_id:
         return f"{job_id} -> {payload.get('status', event_type)}"
     return f"{address or 'science'} -> {event_type}"
@@ -963,6 +1190,18 @@ def _clean_text(value: str, field: str) -> str:
     if len(text) > 512:
         raise ScienceError(400, f"{field} is too long")
     return text
+
+
+def _clean_non_negative(value: float | None, field: str) -> float:
+    amount = round(float(value or 0), 8)
+    if amount < 0:
+        raise ScienceError(400, f"{field} cannot be negative")
+    return amount
+
+
+def _clean_compute_units(value: float | None, field: str) -> float:
+    units = _clean_non_negative(value, field)
+    return units
 
 
 def _clean_optional_hash(value: str | None, field: str) -> str | None:

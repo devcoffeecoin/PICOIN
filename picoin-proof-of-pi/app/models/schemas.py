@@ -277,7 +277,10 @@ class ScienceCreateJobRequest(BaseModel):
     job_type: str
     metadata_hash: str
     storage_pointer: str
-    reward_budget: float = 0.0
+    reward_budget: float | None = None
+    max_compute_units: float | None = Field(default=None, ge=0)
+    reward_per_compute_unit: float | None = Field(default=None, ge=0)
+    max_reward: float | None = Field(default=None, ge=0)
 
 
 class ScienceJobTransitionRequest(BaseModel):
@@ -285,6 +288,14 @@ class ScienceJobTransitionRequest(BaseModel):
     worker_address: str | None = None
     result_hash: str | None = None
     proof_hash: str | None = None
+    compute_units_used: float | None = Field(default=None, ge=0)
+
+
+class ScienceJobAcceptRequest(BaseModel):
+    worker_address: str | None = None
+    result_hash: str | None = None
+    proof_hash: str | None = None
+    compute_units_used: float = Field(..., gt=0)
 
 
 class ScienceJobResponse(BaseModel):
@@ -295,6 +306,11 @@ class ScienceJobResponse(BaseModel):
     metadata_hash: str
     storage_pointer: str
     reward_budget: float
+    max_compute_units: float
+    reward_per_compute_unit: float
+    max_reward: float
+    compute_units_used: float = 0.0
+    payout_amount: float = 0.0
     status: str
     worker_address: str | None = None
     result_hash: str | None = None
@@ -317,7 +333,13 @@ class ScienceRewardReserveResponse(BaseModel):
     activation_available_at: datetime | None = None
     activated_at: datetime | None = None
     governance_approvals: list[str] = []
+    authorized_signers: list[str] = []
     governance_threshold: int
+    payouts_enabled: bool = False
+    emergency_paused: bool = False
+    max_reward_per_job: float
+    max_payout_per_epoch: float
+    max_pending_per_requester: float
     updated_at: datetime
 
 
@@ -332,6 +354,9 @@ class ScienceReserveGovernanceResponse(BaseModel):
     activation_available_at: datetime | None = None
     activated_at: datetime | None = None
     approvals: list[str]
+    authorized_signers: list[str]
+    payouts_enabled: bool
+    emergency_paused: bool
     threshold: int
     timelock_seconds: int
     updated_at: datetime

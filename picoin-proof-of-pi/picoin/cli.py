@@ -111,7 +111,9 @@ def command_science_create_job(args: argparse.Namespace) -> int:
                 "job_type": args.type,
                 "metadata_hash": args.metadata_hash,
                 "storage_pointer": args.storage_pointer,
-                "reward_budget": args.reward_budget,
+                "max_compute_units": args.max_compute_units,
+                "reward_per_compute_unit": args.reward_per_unit,
+                "max_reward": args.max_reward,
             },
         )
     )
@@ -127,7 +129,18 @@ def command_science_jobs(args: argparse.Namespace) -> int:
 
 
 def command_science_accept_job(args: argparse.Namespace) -> int:
-    print_json(post_json(args.server, f"/science/jobs/{args.job_id}/accept"))
+    print_json(
+        post_json(
+            args.server,
+            f"/science/jobs/{args.job_id}/accept",
+            {
+                "worker_address": args.worker_address,
+                "result_hash": args.result_hash,
+                "proof_hash": args.proof_hash,
+                "compute_units_used": args.compute_units_used,
+            },
+        )
+    )
     return 0
 
 
@@ -190,6 +203,16 @@ def command_treasury_claim(args: argparse.Namespace) -> int:
 
 def command_reserve_status(args: argparse.Namespace) -> int:
     print_json(get_json(args.server, "/reserve/status"))
+    return 0
+
+
+def command_reserve_pause(args: argparse.Namespace) -> int:
+    print_json(post_json(args.server, "/reserve/pause", {"signer": args.signer}))
+    return 0
+
+
+def command_reserve_unpause(args: argparse.Namespace) -> int:
+    print_json(post_json(args.server, "/reserve/unpause", {"signer": args.signer}))
     return 0
 
 
@@ -348,7 +371,9 @@ def add_science_parser(subparsers: argparse._SubParsersAction) -> None:
     create_job_parser.add_argument("--type", required=True)
     create_job_parser.add_argument("--metadata-hash", required=True)
     create_job_parser.add_argument("--storage-pointer", required=True)
-    create_job_parser.add_argument("--reward-budget", type=float, default=0.0)
+    create_job_parser.add_argument("--max-compute-units", type=float, required=True)
+    create_job_parser.add_argument("--reward-per-unit", type=float, required=True)
+    create_job_parser.add_argument("--max-reward", type=float, required=True)
     create_job_parser.set_defaults(func=command_science_create_job)
 
     jobs_parser = science_subparsers.add_parser("jobs", help="List science jobs")
@@ -357,6 +382,10 @@ def add_science_parser(subparsers: argparse._SubParsersAction) -> None:
 
     accept_parser = science_subparsers.add_parser("accept-job", help="Mark a verified science job as accepted")
     accept_parser.add_argument("--job-id", required=True)
+    accept_parser.add_argument("--worker-address")
+    accept_parser.add_argument("--result-hash")
+    accept_parser.add_argument("--proof-hash")
+    accept_parser.add_argument("--compute-units-used", type=float, required=True)
     accept_parser.set_defaults(func=command_science_accept_job)
 
     pay_parser = science_subparsers.add_parser("pay-worker", help="Pay an accepted science worker")
@@ -402,6 +431,14 @@ def add_reserve_parser(subparsers: argparse._SubParsersAction) -> None:
 
     status_parser = reserve_subparsers.add_parser("status", help="Show Science Compute Marketplace reserve status")
     status_parser.set_defaults(func=command_reserve_status)
+
+    pause_parser = reserve_subparsers.add_parser("pause", help="Emergency pause Science Compute Marketplace payouts")
+    pause_parser.add_argument("--signer", required=True)
+    pause_parser.set_defaults(func=command_reserve_pause)
+
+    unpause_parser = reserve_subparsers.add_parser("unpause", help="Unpause Science Compute Marketplace payouts")
+    unpause_parser.add_argument("--signer", required=True)
+    unpause_parser.set_defaults(func=command_reserve_unpause)
 
 
 def add_testnet_parser(subparsers: argparse._SubParsersAction) -> None:

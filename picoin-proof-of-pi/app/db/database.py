@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -21,6 +22,7 @@ from app.core.settings import (
     SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET,
     SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID,
     SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET,
+    SCIENCE_RESERVE_AUTHORIZED_SIGNERS,
     SCIENCE_RESERVE_LOCKED_STATUS,
     TASK_EXPIRATION_SECONDS,
     TASK_SEGMENT_SIZE,
@@ -315,6 +317,11 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 metadata_hash TEXT NOT NULL,
                 storage_pointer TEXT NOT NULL,
                 reward_budget REAL NOT NULL DEFAULT 0,
+                max_compute_units REAL NOT NULL DEFAULT 0,
+                reward_per_compute_unit REAL NOT NULL DEFAULT 0,
+                max_reward REAL NOT NULL DEFAULT 0,
+                compute_units_used REAL NOT NULL DEFAULT 0,
+                payout_amount REAL NOT NULL DEFAULT 0,
                 status TEXT NOT NULL,
                 worker_address TEXT,
                 result_hash TEXT,
@@ -342,6 +349,9 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 activation_available_at TEXT,
                 activated_at TEXT,
                 approvals TEXT NOT NULL DEFAULT '[]',
+                authorized_signers TEXT NOT NULL DEFAULT '[]',
+                payouts_enabled INTEGER NOT NULL DEFAULT 0,
+                emergency_paused INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL
             );
 
@@ -441,6 +451,24 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "science_jobs", "paid", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "science_jobs", "paid_amount", "REAL NOT NULL DEFAULT 0")
         _ensure_column(connection, "science_jobs", "paid_at", "TEXT")
+        _ensure_column(connection, "science_jobs", "max_compute_units", "REAL NOT NULL DEFAULT 0")
+        _ensure_column(connection, "science_jobs", "reward_per_compute_unit", "REAL NOT NULL DEFAULT 0")
+        _ensure_column(connection, "science_jobs", "max_reward", "REAL NOT NULL DEFAULT 0")
+        _ensure_column(connection, "science_jobs", "compute_units_used", "REAL NOT NULL DEFAULT 0")
+        _ensure_column(connection, "science_jobs", "payout_amount", "REAL NOT NULL DEFAULT 0")
+        connection.execute(
+            """
+            UPDATE science_jobs
+            SET max_reward = reward_budget,
+                max_compute_units = CASE WHEN reward_budget > 0 AND max_compute_units = 0 THEN 1 ELSE max_compute_units END,
+                reward_per_compute_unit = CASE WHEN reward_budget > 0 AND reward_per_compute_unit = 0 THEN reward_budget ELSE reward_per_compute_unit END,
+                payout_amount = CASE WHEN paid_amount > 0 AND payout_amount = 0 THEN paid_amount ELSE payout_amount END
+            WHERE max_reward = 0
+            """
+        )
+        _ensure_column(connection, "science_reserve_governance", "authorized_signers", "TEXT NOT NULL DEFAULT '[]'")
+        _ensure_column(connection, "science_reserve_governance", "payouts_enabled", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "science_reserve_governance", "emergency_paused", "INTEGER NOT NULL DEFAULT 0")
         _ensure_science_reserve_governance(connection)
         _ensure_scientific_development_treasury(connection)
         _ensure_column(connection, "commitments", "commit_ms", "INTEGER")
@@ -518,16 +546,24 @@ def _ensure_default_protocol_params(connection: sqlite3.Connection) -> None:
 
 def _ensure_science_reserve_governance(connection: sqlite3.Connection) -> None:
     timestamp = datetime.now(timezone.utc).isoformat()
+    authorized_signers = json.dumps(list(SCIENCE_RESERVE_AUTHORIZED_SIGNERS))
     connection.execute(
         """
         INSERT INTO science_reserve_governance (
             id, status, activation_requested_at, activation_available_at,
-            activated_at, approvals, updated_at
+            activated_at, approvals, authorized_signers, payouts_enabled,
+            emergency_paused, updated_at
         )
-        VALUES (1, ?, NULL, NULL, NULL, '[]', ?)
-        ON CONFLICT(id) DO NOTHING
+        VALUES (1, ?, NULL, NULL, NULL, '[]', ?, 0, 0, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            authorized_signers = CASE
+                WHEN science_reserve_governance.authorized_signers = '[]'
+                THEN excluded.authorized_signers
+                ELSE science_reserve_governance.authorized_signers
+            END,
+            updated_at = excluded.updated_at
         """,
-        (SCIENCE_RESERVE_LOCKED_STATUS, timestamp),
+        (SCIENCE_RESERVE_LOCKED_STATUS, authorized_signers, timestamp),
     )
 
 
