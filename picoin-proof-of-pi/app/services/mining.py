@@ -79,6 +79,7 @@ from app.db.database import get_connection, row_to_dict
 from app.services.consensus import record_local_block_proposal
 from app.services.science import record_science_reserve_for_block, science_events_for_node
 from app.services.treasury import record_scientific_development_treasury_for_block
+from app.services.transactions import apply_block_transactions, select_block_transactions, transaction_commitment
 from validator.proof import validate_submission
 
 
@@ -478,6 +479,8 @@ def submit_task(
         next_height = 1 if latest_block is None else latest_block["height"] + 1
         previous_hash = GENESIS_HASH if latest_block is None else latest_block["block_hash"]
         timestamp = utc_now()
+        block_transactions = select_block_transactions(connection)
+        tx_commitment = transaction_commitment(block_transactions)
 
         block_payload = {
             "algorithm": task["algorithm"],
@@ -498,16 +501,22 @@ def submit_task(
             "fraud_reason": None,
             "fraud_detected_at": None,
         }
+        if tx_commitment["tx_count"]:
+            block_payload["tx_merkle_root"] = tx_commitment["tx_merkle_root"]
+            block_payload["tx_count"] = tx_commitment["tx_count"]
+            block_payload["tx_hashes"] = tx_commitment["tx_hashes"]
+            block_payload["fee_reward"] = tx_commitment["fee_reward"]
         block_hash = hash_block(block_payload)
 
         connection.execute(
             """
             INSERT INTO blocks (
                 height, previous_hash, miner_id, range_start, range_end, algorithm,
-                result_hash, samples, timestamp, block_hash, reward, difficulty, task_id,
-                protocol_params_id, protocol_version, validation_mode
+                result_hash, samples, timestamp, block_hash, reward, tx_merkle_root,
+                tx_count, tx_hashes, fee_reward, difficulty, task_id, protocol_params_id,
+                protocol_version, validation_mode
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 next_height,
@@ -521,6 +530,10 @@ def submit_task(
                 timestamp,
                 block_hash,
                 reward,
+                tx_commitment["tx_merkle_root"],
+                tx_commitment["tx_count"],
+                json.dumps(tx_commitment["tx_hashes"], sort_keys=True),
+                tx_commitment["fee_reward"],
                 difficulty,
                 task_id,
                 params["id"],
@@ -550,6 +563,13 @@ def submit_task(
             related_id=task_id,
             description="miner block reward",
         )
+        tx_execution = apply_block_transactions(
+            connection,
+            miner_id=miner_id,
+            block_height=next_height,
+            transactions=block_transactions,
+            timestamp=timestamp,
+        )
         record_science_reserve_for_block(connection, next_height, total_block_reward)
         record_scientific_development_treasury_for_block(connection, next_height, total_block_reward)
         _refresh_trust_score(connection, miner_id)
@@ -568,6 +588,12 @@ def submit_task(
             "timestamp": timestamp,
             "block_hash": block_hash,
             "reward": reward,
+            "tx_merkle_root": tx_commitment["tx_merkle_root"],
+            "tx_count": tx_commitment["tx_count"],
+            "tx_hashes": tx_commitment["tx_hashes"],
+            "fee_reward": tx_commitment["fee_reward"],
+            "transactions": block_transactions,
+            "transaction_execution": tx_execution,
             "difficulty": difficulty,
             "protocol_params_id": params["id"],
             "protocol_version": params["protocol_version"],

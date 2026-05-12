@@ -150,6 +150,10 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 timestamp TEXT NOT NULL,
                 block_hash TEXT NOT NULL UNIQUE,
                 reward REAL NOT NULL,
+                tx_merkle_root TEXT,
+                tx_count INTEGER NOT NULL DEFAULT 0,
+                tx_hashes TEXT NOT NULL DEFAULT '[]',
+                fee_reward REAL NOT NULL DEFAULT 0,
                 difficulty REAL,
                 task_id TEXT NOT NULL UNIQUE,
                 protocol_params_id INTEGER,
@@ -546,6 +550,10 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "tasks", "compute_ms", "INTEGER")
         _ensure_column(connection, "tasks", "protocol_params_id", "INTEGER")
         _ensure_column(connection, "blocks", "merkle_root", "TEXT")
+        _ensure_column(connection, "blocks", "tx_merkle_root", "TEXT")
+        _ensure_column(connection, "blocks", "tx_count", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "blocks", "tx_hashes", "TEXT NOT NULL DEFAULT '[]'")
+        _ensure_column(connection, "blocks", "fee_reward", "REAL NOT NULL DEFAULT 0")
         _ensure_column(connection, "blocks", "difficulty", "REAL")
         _ensure_column(connection, "blocks", "protocol_params_id", "INTEGER")
         _ensure_column(connection, "blocks", "total_task_ms", "INTEGER")
