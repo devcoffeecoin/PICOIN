@@ -21,7 +21,7 @@ segment_size = 64
 sample_count = 32
 task_expiration_seconds = 600
 max_active_tasks_per_miner = 1
-genesis_supply = 3141600.0
+genesis_supply = 3.1416
 base_reward = 3.1416
 difficulty = 4.0
 reward_per_block = 3.1416
@@ -79,7 +79,7 @@ retroactive_audit_reward_per_audit = base_reward * 0.20
 
 La dificultad regula el trabajo, no multiplica la emision. El `base_reward` es la emision base total del bloque y se distribuye como `67/20/10/3`: `2.104872` para el minero Proof of Pi, `0.62832` para `science_compute_reserve`, `0.31416` para validadores/auditores y `0.094248` para el Scientific Development Fund con timelock.
 
-Picoin finances scientific infrastructure and protocol development through a time-locked treasury sustained by ongoing network activity rather than large upfront premine allocations. La cuenta `genesis` del MVP se conserva como mecanismo local de testnet/faucet y stake simulado, no como modelo economico final de gran premine.
+Picoin finances scientific infrastructure and protocol development through a time-locked treasury sustained by ongoing network activity rather than large upfront premine allocations. La cuenta `genesis` ya no representa una gran premine: queda limitada a una emision normal de `3.1416` para compatibilidad local de testnet/faucet. El stake de validador actual es metadata/collateral simulado hasta implementar staking real por transaccion.
 
 Cada bloque aceptado acredita `2.104872` monedas al minero ganador, `0.62832` a la reserva cientifica, `0.094248` al Scientific Development Fund bloqueado y `0.31416` monedas repartidas entre validadores aprobadores cuando el flujo externo de validacion alcanza quorum. Cada auditoria retroactiva automatica acredita `0.62832` monedas adicionales a `audit_treasury`.
 
@@ -1108,7 +1108,7 @@ En v0.16, con `required_validator_approvals = 3`, el pool objetivo es de 6 valid
 Reglas actuales:
 
 ```text
-genesis_supply = 3141600.0
+genesis_supply = 3.1416
 block_emission = 3.1416
 miner_reward = 2.104872
 science_compute_reserve = 0.62832
@@ -1119,7 +1119,7 @@ validator_initial_stake = 31.416
 validator_slash_invalid_signature = 3.1416
 ```
 
-El genesis queda registrado en `ledger_entries` con `block_height = 0` para compatibilidad de testnet local. Cada bloque aceptado crea un movimiento `block_reward` para el minero, `science_reserve_accrual` para la reserva compute, `scientific_development_treasury_accrual` para el treasury time-locked y movimientos `validator_reward` para los validadores que aprobaron el bloque. Los registros de stake y slashing tambien quedan en el ledger.
+El genesis queda registrado en `ledger_entries` con `block_height = 0` para compatibilidad de testnet local, pero solo por `3.1416`. Cada bloque aceptado crea un movimiento `block_reward` para el minero, `science_reserve_accrual` para la reserva compute, `scientific_development_treasury_accrual` para el treasury time-locked y movimientos `validator_reward` para los validadores que aprobaron el bloque. El stake inicial de validador no se financia desde genesis; es un parametro simulado de elegibilidad hasta activar staking real.
 
 Politica monetaria auditada en v0.11:
 
@@ -1133,7 +1133,7 @@ expected_total_balances =
   + retroactive_audit_rewards
 ```
 
-`genesis`, faucet, stake, claims de treasury y slashing son movimientos internos. Las recompensas de minero, reserva cientifica, treasury, validador y auditoria son emision nueva. Por eso el total de balances puede crecer con cada bloque aceptado o auditoria automatica, mientras el endpoint `/audit/full` verifica que ese crecimiento coincida exactamente con la suma de recompensas registradas.
+`genesis`, faucet local, claims de treasury y slashing son movimientos internos o metadata de testnet. Las recompensas de minero, reserva cientifica, treasury, validador y auditoria son emision nueva. Por eso el total de balances puede crecer con cada bloque aceptado o auditoria automatica, mientras el endpoint `/audit/full` verifica que ese crecimiento coincida exactamente con la suma de recompensas registradas.
 
 ## Scientific Development Fund
 

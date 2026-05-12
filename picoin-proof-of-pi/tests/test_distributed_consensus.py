@@ -127,7 +127,7 @@ def test_block_proposal_reaches_quorum_and_imports_canonical_block(tmp_path, mon
     assert proposal["status"] == "imported"
     assert imported["block_hash"] == proposal["block_hash"]
     assert get_balance("distributed-miner")["balance"] == 2.104872
-    assert get_balance(identities[0]["validator_id"])["balance"] == 31.52072
+    assert get_balance(identities[0]["validator_id"])["balance"] == 0.10472
     assert reserve["total_reserved"] == 0.62832
     assert treasury["locked_balance"] == 0.094248
     assert chain["valid"] is True

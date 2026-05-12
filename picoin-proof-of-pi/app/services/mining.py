@@ -161,24 +161,6 @@ def register_validator(name: str, public_key: str) -> dict[str, Any]:
             (validator_id, name, public_key, utc_now()),
         )
         _ensure_balance_account(connection, validator_id, "validator")
-        _apply_ledger_entry(
-            connection,
-            account_id=GENESIS_ACCOUNT_ID,
-            account_type="genesis",
-            amount=-MIN_VALIDATOR_STAKE,
-            entry_type="validator_stake_grant",
-            related_id=validator_id,
-            description="simulated validator stake funded from genesis",
-        )
-        _apply_ledger_entry(
-            connection,
-            account_id=validator_id,
-            account_type="validator",
-            amount=MIN_VALIDATOR_STAKE,
-            entry_type="validator_stake_lock",
-            related_id=validator_id,
-            description="simulated validator stake locked",
-        )
         row = connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone()
     return enrich_validator(row_to_dict(row))
 
@@ -1461,7 +1443,7 @@ def get_full_economic_audit() -> dict[str, Any]:
         8,
     )
     expected_ledger_total = expected_total_balances
-    expected_validator_stake_locked = round(ledger_validator_stake_locks + ledger_validator_slashes, 8)
+    expected_validator_stake_locked = validator_stake_locked
 
     _audit_equal(
         issues,
@@ -2751,25 +2733,6 @@ def _apply_validator_penalty(connection: Any, validator_id: str, reason: str) ->
         """,
         (slash_amount, slash_amount, utc_now(), validator_id),
     )
-    if slash_amount > 0:
-        _apply_ledger_entry(
-            connection,
-            account_id=validator_id,
-            account_type="validator",
-            amount=-slash_amount,
-            entry_type="validator_slash",
-            related_id=validator_id,
-            description=reason,
-        )
-        _apply_ledger_entry(
-            connection,
-            account_id=GENESIS_ACCOUNT_ID,
-            account_type="genesis",
-            amount=slash_amount,
-            entry_type="validator_slash",
-            related_id=validator_id,
-            description=reason,
-        )
     row = connection.execute(
         "SELECT invalid_results FROM validators WHERE validator_id = ?",
         (validator_id,),
@@ -3021,25 +2984,6 @@ def _apply_validator_fraud_penalty(connection: Any, validator_id: str, reason: s
             validator_id,
         ),
     )
-    if slash_amount > 0:
-        _apply_ledger_entry(
-            connection,
-            account_id=validator_id,
-            account_type="validator",
-            amount=-slash_amount,
-            entry_type="validator_fraud_slash",
-            related_id=validator_id,
-            description=reason,
-        )
-        _apply_ledger_entry(
-            connection,
-            account_id=GENESIS_ACCOUNT_ID,
-            account_type="genesis",
-            amount=slash_amount,
-            entry_type="validator_fraud_slash",
-            related_id=validator_id,
-            description=reason,
-        )
     invalid_results = int(
         connection.execute(
             "SELECT invalid_results FROM validators WHERE validator_id = ?",

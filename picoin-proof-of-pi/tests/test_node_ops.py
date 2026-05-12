@@ -39,7 +39,7 @@ def test_node_status_and_events_report_operational_testnet(tmp_path, monkeypatch
     register_validator("node-validator-one", first_validator_key["public_key"])
     register_validator("node-validator-two", second_validator_key["public_key"])
     register_validator("node-validator-three", third_validator_key["public_key"])
-    request_faucet(miner["miner_id"], "miner", 5.0)
+    request_faucet(miner["miner_id"], "miner", 1.0)
 
     health = get_health_status()
     status = get_node_status()

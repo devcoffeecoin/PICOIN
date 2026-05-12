@@ -24,14 +24,14 @@ def test_full_economic_audit_passes_for_valid_local_economy(tmp_path, monkeypatc
     miner, miner_keys = _register_miner_with_keys("audit-miner")
     validator_keys = generate_keypair()
     register_validator("audit-validator", validator_keys["public_key"])
-    request_faucet(miner["miner_id"], "miner", 10.0)
+    request_faucet(miner["miner_id"], "miner", 1.0)
     _mine_legacy_block(miner["miner_id"], miner_keys["private_key"])
 
     audit = get_full_economic_audit()
 
     assert audit["valid"] is True
     assert audit["issues"] == []
-    assert audit["supply"]["expected_total_balances"] == pytest.approx(3_141_600.0 + 2.104872 + 0.62832 + 0.094248)
+    assert audit["supply"]["expected_total_balances"] == pytest.approx(3.1416 + 2.104872 + 0.62832 + 0.094248)
     assert audit["rewards"]["accepted_blocks"] == 1
     assert audit["rewards"]["block_reward_total"] == 2.104872
     assert audit["rewards"]["science_reserve_total"] == 0.62832
@@ -47,7 +47,7 @@ def test_full_economic_audit_detects_tampered_balance(tmp_path, monkeypatch) -> 
     init_db(db_path)
 
     miner, _ = _register_miner_with_keys("tampered-miner")
-    request_faucet(miner["miner_id"], "miner", 10.0)
+    request_faucet(miner["miner_id"], "miner", 1.0)
     with get_connection() as connection:
         connection.execute(
             "UPDATE balances SET balance = balance + 1 WHERE account_id = ?",
@@ -87,7 +87,7 @@ def test_full_economic_audit_includes_additional_validator_rewards(tmp_path, mon
     assert response["block"]["validator_reward"]["pool"] == 0.31416
     assert audit["valid"] is True
     assert audit["supply"]["expected_total_balances"] == pytest.approx(
-        3_141_600.0 + 2.104872 + 0.31416 + 0.62832 + 0.094248
+        3.1416 + 2.104872 + 0.31416 + 0.62832 + 0.094248
     )
     assert audit["rewards"]["block_reward_total"] == 2.104872
     assert audit["rewards"]["validator_reward_total"] == 0.31416

@@ -141,9 +141,9 @@ def test_block_is_accepted_after_validator_quorum(tmp_path, monkeypatch) -> None
     third_validator_balance = get_balance(third_validator["validator_id"])
     ledger = get_ledger_entries(miner_id)
     assert miner_balance["balance"] == 2.104872
-    assert first_validator_balance["balance"] == 31.52072
-    assert second_validator_balance["balance"] == 31.52072
-    assert third_validator_balance["balance"] == 31.52072
+    assert first_validator_balance["balance"] == 0.10472
+    assert second_validator_balance["balance"] == 0.10472
+    assert third_validator_balance["balance"] == 0.10472
     assert ledger[0]["entry_type"] == "block_reward"
     assert get_validator(first_validator["validator_id"])["accepted_jobs"] == 1
     assert get_validator(first_validator["validator_id"])["total_rewards"] == 0.10472
@@ -166,10 +166,10 @@ def test_genesis_balance_and_validator_stake_are_persisted(tmp_path, monkeypatch
     audit = get_audit_summary()
     eligible = get_validators(eligible_only=True)
 
-    assert genesis["balance"] == 3_141_600.0 - 31.416
-    assert validator_balance["balance"] == 31.416
+    assert genesis["balance"] == 3.1416
+    assert validator_balance["balance"] == 0.0
     assert validator["stake_locked"] == 31.416
-    assert audit["genesis_supply"] == 3_141_600.0
+    assert audit["genesis_supply"] == 3.1416
     assert audit["eligible_validator_count"] == 1
     assert eligible[0]["validator_id"] == validator["validator_id"]
 
