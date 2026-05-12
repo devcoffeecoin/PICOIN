@@ -1,21 +1,34 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from app.models.schemas import (
     AuditSummaryResponse,
     AuditFullResponse,
     BalanceResponse,
+    BlockReceiveRequest,
+    BlockReceiveResponse,
     BlockResponse,
+    BlockSyncResponse,
     ChainVerificationResponse,
+    ConsensusBlockProposalRequest,
+    ConsensusProposalResponse,
+    ConsensusReplayResponse,
+    ConsensusStatusResponse,
+    ConsensusVoteRequest,
     FaucetRequest,
     FaucetResponse,
     HealthResponse,
     LedgerEntryResponse,
     MaintenanceCleanupResponse,
+    MempoolTransactionResponse,
     MinerRegisterRequest,
     MinerResponse,
     NodeEventResponse,
+    NodeIdentityResponse,
     NodeStatusResponse,
+    NodeSyncStatusResponse,
     PerformanceStatsResponse,
+    PeerRegisterRequest,
+    PeerResponse,
     ProtocolParamsResponse,
     ProtocolResponse,
     RetroactiveAuditResponse,
@@ -35,6 +48,7 @@ from app.models.schemas import (
     ScienceStakeAccountResponse,
     ScienceStakeRequest,
     ScientificDevelopmentTreasuryResponse,
+    SignedTransactionRequest,
     StatsResponse,
     TaskCommitRequest,
     TaskCommitResponse,
@@ -48,12 +62,38 @@ from app.models.schemas import (
     ValidationResultResponse,
     ValidatorRegisterRequest,
     ValidatorResponse,
+    WalletCreateRequest,
+    WalletCreateResponse,
+)
+from app.services.consensus import (
+    ConsensusError,
+    consensus_status,
+    finalize_proposal,
+    get_block_proposal,
+    list_block_proposals,
+    propose_block,
+    replay_finalized_blocks,
+    vote_on_proposal,
+)
+from app.services.network import (
+    NetworkError,
+    get_blocks_since,
+    get_sync_status,
+    heartbeat_peer,
+    list_mempool,
+    list_peers,
+    node_identity,
+    receive_block_header,
+    register_peer,
+    gossip_json,
+    submit_transaction,
 )
 from app.services.treasury import (
     TreasuryError,
     claim_scientific_development_treasury,
     get_scientific_development_treasury,
 )
+from app.services.wallet import create_wallet
 from app.services.science import (
     ScienceError,
     approve_science_reserve_activation,
@@ -124,6 +164,25 @@ def _treasury_error(exc: TreasuryError) -> HTTPException:
     return HTTPException(status_code=exc.status_code, detail=exc.detail)
 
 
+def _network_error(exc: NetworkError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+
+def _consensus_error(exc: ConsensusError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+
+def _gossip_block_from_response(response: dict) -> None:
+    block = response.get("block") if isinstance(response, dict) else None
+    if not block:
+        return
+    gossip_json(
+        "/consensus/proposals?gossip=false",
+        {"block": block, "proposer_node_id": block.get("miner_id", "local-miner")},
+        "mined_block_proposal_gossip",
+    )
+
+
 @router.get("/health", response_model=HealthResponse)
 def health() -> dict:
     return get_health_status()
@@ -132,6 +191,196 @@ def health() -> dict:
 @router.get("/node/status", response_model=NodeStatusResponse)
 def node_status() -> dict:
     return get_node_status()
+
+
+@router.get("/node/identity", response_model=NodeIdentityResponse)
+def node_identity_route() -> dict:
+    return node_identity()
+
+
+@router.get("/node/peers", response_model=list[PeerResponse])
+def node_peers(include_stale: bool = Query(True)) -> list[dict]:
+    return list_peers(include_stale)
+
+
+@router.post("/node/peers/register", response_model=PeerResponse, status_code=201)
+def node_register_peer(payload: PeerRegisterRequest) -> dict:
+    try:
+        return register_peer(
+            node_id=payload.node_id,
+            peer_address=payload.peer_address,
+            peer_type=payload.peer_type,
+            protocol_version=payload.protocol_version,
+            network_id=payload.network_id,
+            chain_id=payload.chain_id,
+            genesis_hash=payload.genesis_hash,
+            metadata=payload.metadata,
+        )
+    except NetworkError as exc:
+        raise _network_error(exc) from exc
+
+
+@router.post("/node/peers/{peer_id}/heartbeat", response_model=PeerResponse)
+def node_peer_heartbeat(peer_id: str) -> dict:
+    try:
+        return heartbeat_peer(peer_id)
+    except NetworkError as exc:
+        raise _network_error(exc) from exc
+
+
+@router.get("/node/sync-status", response_model=NodeSyncStatusResponse)
+def node_sync_status() -> dict:
+    return get_sync_status()
+
+
+@router.get("/node/sync/blocks", response_model=BlockSyncResponse)
+def node_sync_blocks(
+    from_height: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=500),
+) -> dict:
+    try:
+        return get_blocks_since(from_height, limit)
+    except NetworkError as exc:
+        raise _network_error(exc) from exc
+
+
+@router.post("/node/blocks/receive", response_model=BlockReceiveResponse)
+def node_receive_block(payload: BlockReceiveRequest) -> dict:
+    try:
+        return receive_block_header(payload.block, payload.source_peer_id)
+    except NetworkError as exc:
+        raise _network_error(exc) from exc
+
+
+@router.get("/consensus/status", response_model=ConsensusStatusResponse)
+def consensus_status_route() -> dict:
+    return consensus_status()
+
+
+@router.get("/consensus/proposals", response_model=list[ConsensusProposalResponse])
+def consensus_proposals(
+    status: str | None = Query(None),
+    limit: int = Query(100, ge=1, le=500),
+) -> list[dict]:
+    return list_block_proposals(status, limit)
+
+
+@router.get("/consensus/proposals/{proposal_id}", response_model=ConsensusProposalResponse)
+def consensus_proposal(proposal_id: str) -> dict:
+    proposal = get_block_proposal(proposal_id)
+    if proposal is None:
+        raise HTTPException(status_code=404, detail="consensus proposal not found")
+    return proposal
+
+
+@router.post("/consensus/proposals", response_model=ConsensusProposalResponse, status_code=201)
+def consensus_propose(payload: ConsensusBlockProposalRequest, gossip: bool = Query(True)) -> dict:
+    try:
+        return propose_block(payload.block, payload.proposer_node_id, gossip=gossip)
+    except ConsensusError as exc:
+        raise _consensus_error(exc) from exc
+
+
+@router.post("/consensus/proposals/{proposal_id}/vote", response_model=ConsensusProposalResponse)
+def consensus_vote(proposal_id: str, payload: ConsensusVoteRequest, gossip: bool = Query(True)) -> dict:
+    try:
+        return vote_on_proposal(
+            proposal_id,
+            payload.validator_id,
+            payload.approved,
+            payload.reason,
+            payload.signature,
+            payload.signed_at.isoformat(),
+            gossip=gossip,
+        )
+    except ConsensusError as exc:
+        raise _consensus_error(exc) from exc
+
+
+@router.post("/consensus/proposals/{proposal_id}/finalize", response_model=ConsensusProposalResponse)
+def consensus_finalize(proposal_id: str, gossip: bool = Query(True)) -> dict:
+    try:
+        proposal = finalize_proposal(proposal_id)
+        if gossip:
+            gossip_json(
+                f"/consensus/proposals/{proposal_id}/finalize?gossip=false",
+                {},
+                "consensus_finalization_gossip",
+            )
+        return proposal
+    except ConsensusError as exc:
+        raise _consensus_error(exc) from exc
+
+
+@router.post("/consensus/replay", response_model=ConsensusReplayResponse)
+def consensus_replay(limit: int = Query(100, ge=1, le=500)) -> dict:
+    try:
+        return replay_finalized_blocks(limit)
+    except ConsensusError as exc:
+        raise _consensus_error(exc) from exc
+
+
+@router.get("/mempool", response_model=list[MempoolTransactionResponse])
+def mempool(status: str | None = Query(None), limit: int = Query(100, ge=1, le=500)) -> list[dict]:
+    return list_mempool(status, limit)
+
+
+@router.post("/tx/submit", response_model=MempoolTransactionResponse, status_code=201)
+def tx_submit(payload: SignedTransactionRequest) -> dict:
+    try:
+        return submit_transaction(payload.model_dump(mode="json"), propagated=False)
+    except NetworkError as exc:
+        raise _network_error(exc) from exc
+
+
+@router.post("/tx/receive", response_model=MempoolTransactionResponse, status_code=201)
+def tx_receive(payload: SignedTransactionRequest) -> dict:
+    try:
+        return submit_transaction(payload.model_dump(mode="json"), propagated=True)
+    except NetworkError as exc:
+        raise _network_error(exc) from exc
+
+
+@router.post("/wallet/create", response_model=WalletCreateResponse, status_code=201)
+def wallet_create(payload: WalletCreateRequest) -> dict:
+    return create_wallet(payload.name)
+
+
+@router.websocket("/p2p/ws")
+async def p2p_websocket(websocket: WebSocket) -> None:
+    await websocket.accept()
+    try:
+        await websocket.send_json({"type": "hello", "node": node_identity()})
+        while True:
+            message = await websocket.receive_json()
+            message_type = message.get("type")
+            if message_type == "ping":
+                await websocket.send_json({"type": "pong", "node": node_identity()})
+            elif message_type == "sync_status":
+                await websocket.send_json({"type": "sync_status", "payload": get_sync_status()})
+            elif message_type == "tx":
+                tx = submit_transaction(message.get("payload") or {}, propagated=True)
+                await websocket.send_json({"type": "tx_ack", "payload": tx})
+            elif message_type == "block":
+                block = receive_block_header(message.get("payload") or {}, message.get("source_peer_id"))
+                await websocket.send_json({"type": "block_ack", "payload": block})
+            elif message_type == "block_proposal":
+                proposal = propose_block(
+                    message.get("payload") or {},
+                    message.get("proposer_node_id") or "p2p-peer",
+                    gossip=False,
+                )
+                await websocket.send_json({"type": "block_proposal_ack", "payload": proposal})
+            else:
+                await websocket.send_json({"type": "error", "detail": "unsupported p2p message type"})
+    except WebSocketDisconnect:
+        return
+    except NetworkError as exc:
+        await websocket.send_json({"type": "error", "detail": exc.detail, "status_code": exc.status_code})
+        await websocket.close(code=1008)
+    except ConsensusError as exc:
+        await websocket.send_json({"type": "error", "detail": exc.detail, "status_code": exc.status_code})
+        await websocket.close(code=1008)
 
 
 @router.get("/events", response_model=list[NodeEventResponse])
@@ -379,7 +628,7 @@ def next_task(miner_id: str = Query(..., min_length=1)) -> dict:
 
 @router.post("/tasks/submit", response_model=TaskSubmitResponse)
 def submit_task_endpoint(payload: TaskSubmitRequest) -> dict:
-    return submit_task(
+    response = submit_task(
         task_id=payload.task_id,
         miner_id=payload.miner_id,
         result_hash=payload.result_hash,
@@ -387,6 +636,8 @@ def submit_task_endpoint(payload: TaskSubmitRequest) -> dict:
         signature=payload.signature,
         signed_at=payload.signed_at.isoformat(),
     )
+    _gossip_block_from_response(response)
+    return response
 
 
 @router.post("/tasks/commit", response_model=TaskCommitResponse)
@@ -404,13 +655,15 @@ def commit_task_endpoint(payload: TaskCommitRequest) -> dict:
 
 @router.post("/tasks/reveal", response_model=TaskSubmitResponse)
 def reveal_task_endpoint(payload: TaskRevealRequest) -> dict:
-    return reveal_task(
+    response = reveal_task(
         task_id=payload.task_id,
         miner_id=payload.miner_id,
         revealed_samples=[sample.model_dump() for sample in payload.samples],
         signature=payload.signature,
         signed_at=payload.signed_at.isoformat(),
     )
+    _gossip_block_from_response(response)
+    return response
 
 
 @router.get("/validation/jobs", response_model=ValidationJobResponse | None)
@@ -424,7 +677,7 @@ def validation_job(validator_id: str = Query(..., min_length=1)) -> dict | None:
 @router.post("/validation/results", response_model=ValidationResultResponse)
 def validation_result(payload: ValidationResultRequest) -> dict:
     try:
-        return submit_validation_result(
+        response = submit_validation_result(
             job_id=payload.job_id,
             validator_id=payload.validator_id,
             approved=payload.approved,
@@ -432,6 +685,8 @@ def validation_result(payload: ValidationResultRequest) -> dict:
             signature=payload.signature,
             signed_at=payload.signed_at.isoformat(),
         )
+        _gossip_block_from_response(response)
+        return response
     except MiningError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 

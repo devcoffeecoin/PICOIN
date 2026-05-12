@@ -5,13 +5,16 @@ from pathlib import Path
 from typing import Any
 
 from app.core.settings import (
+    CHAIN_ID,
     DATA_DIR,
     DATABASE_PATH,
     DEFAULT_REWARD,
     GENESIS_ACCOUNT_ID,
+    GENESIS_HASH,
     GENESIS_SUPPLY,
     MAX_ACTIVE_TASKS_PER_MINER,
     MAX_PI_POSITION,
+    NETWORK_ID,
     MIN_VALIDATOR_STAKE,
     PI_ALGORITHM,
     PROTOCOL_VERSION,
@@ -150,7 +153,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 difficulty REAL,
                 task_id TEXT NOT NULL UNIQUE,
                 protocol_params_id INTEGER,
-                protocol_version TEXT NOT NULL DEFAULT '0.16',
+                protocol_version TEXT NOT NULL DEFAULT '0.17',
                 validation_mode TEXT NOT NULL DEFAULT 'external_commit_reveal',
                 total_task_ms INTEGER,
                 validation_ms INTEGER,
@@ -402,6 +405,106 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS network_peers (
+                peer_id TEXT PRIMARY KEY,
+                node_id TEXT NOT NULL,
+                peer_address TEXT NOT NULL UNIQUE,
+                peer_type TEXT NOT NULL,
+                protocol_version TEXT NOT NULL,
+                network_id TEXT NOT NULL,
+                chain_id TEXT NOT NULL,
+                genesis_hash TEXT NOT NULL,
+                connected_at TEXT NOT NULL,
+                last_seen TEXT NOT NULL,
+                status TEXT NOT NULL,
+                metadata TEXT NOT NULL DEFAULT '{}'
+            );
+
+            CREATE TABLE IF NOT EXISTS mempool_transactions (
+                tx_hash TEXT PRIMARY KEY,
+                tx_type TEXT NOT NULL,
+                sender TEXT NOT NULL,
+                recipient TEXT,
+                amount REAL NOT NULL DEFAULT 0,
+                nonce INTEGER NOT NULL,
+                fee REAL NOT NULL DEFAULT 0,
+                payload TEXT NOT NULL,
+                public_key TEXT NOT NULL,
+                signature TEXT NOT NULL,
+                status TEXT NOT NULL,
+                propagated INTEGER NOT NULL DEFAULT 0,
+                block_height INTEGER,
+                rejection_reason TEXT,
+                expires_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                UNIQUE(sender, nonce)
+            );
+
+            CREATE TABLE IF NOT EXISTS network_block_headers (
+                block_hash TEXT PRIMARY KEY,
+                height INTEGER NOT NULL,
+                previous_hash TEXT NOT NULL,
+                source_peer_id TEXT,
+                status TEXT NOT NULL,
+                reason TEXT,
+                payload TEXT NOT NULL,
+                received_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS network_sync_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                peer_id TEXT,
+                event_type TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                status TEXT NOT NULL,
+                details TEXT NOT NULL DEFAULT '{}',
+                created_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS consensus_block_proposals (
+                proposal_id TEXT PRIMARY KEY,
+                block_hash TEXT NOT NULL UNIQUE,
+                height INTEGER NOT NULL,
+                previous_hash TEXT NOT NULL,
+                proposer_node_id TEXT NOT NULL,
+                status TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                approvals INTEGER NOT NULL DEFAULT 0,
+                rejections INTEGER NOT NULL DEFAULT 0,
+                rejection_reason TEXT,
+                finalized_at TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS consensus_votes (
+                vote_id TEXT PRIMARY KEY,
+                proposal_id TEXT NOT NULL,
+                block_hash TEXT NOT NULL,
+                validator_id TEXT NOT NULL,
+                approved INTEGER NOT NULL,
+                reason TEXT NOT NULL,
+                signature TEXT NOT NULL,
+                signed_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(proposal_id, validator_id),
+                FOREIGN KEY(proposal_id) REFERENCES consensus_block_proposals(proposal_id)
+            );
+
+            CREATE TABLE IF NOT EXISTS consensus_finalizations (
+                finalization_id TEXT PRIMARY KEY,
+                proposal_id TEXT NOT NULL UNIQUE,
+                block_hash TEXT NOT NULL UNIQUE,
+                height INTEGER NOT NULL,
+                quorum INTEGER NOT NULL,
+                approvals INTEGER NOT NULL,
+                validator_ids TEXT NOT NULL,
+                imported INTEGER NOT NULL DEFAULT 0,
+                finalized_at TEXT NOT NULL,
+                FOREIGN KEY(proposal_id) REFERENCES consensus_block_proposals(proposal_id)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
             CREATE INDEX IF NOT EXISTS idx_blocks_miner ON blocks(miner_id);
             CREATE INDEX IF NOT EXISTS idx_commitments_miner ON commitments(miner_id);
@@ -416,6 +519,14 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_science_jobs_status ON science_jobs(status);
             CREATE INDEX IF NOT EXISTS idx_science_events_type ON science_events(event_type);
             CREATE INDEX IF NOT EXISTS idx_scientific_treasury_epochs_status ON scientific_development_treasury_epochs(status);
+            CREATE INDEX IF NOT EXISTS idx_network_peers_status ON network_peers(status);
+            CREATE INDEX IF NOT EXISTS idx_network_peers_last_seen ON network_peers(last_seen);
+            CREATE INDEX IF NOT EXISTS idx_mempool_status ON mempool_transactions(status);
+            CREATE INDEX IF NOT EXISTS idx_mempool_sender_nonce ON mempool_transactions(sender, nonce);
+            CREATE INDEX IF NOT EXISTS idx_network_block_headers_height ON network_block_headers(height);
+            CREATE INDEX IF NOT EXISTS idx_consensus_block_proposals_status ON consensus_block_proposals(status);
+            CREATE INDEX IF NOT EXISTS idx_consensus_block_proposals_height ON consensus_block_proposals(height);
+            CREATE INDEX IF NOT EXISTS idx_consensus_votes_proposal ON consensus_votes(proposal_id);
             """
         )
         _ensure_column(connection, "miners", "trust_score", "REAL NOT NULL DEFAULT 1.0")
@@ -439,7 +550,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "blocks", "protocol_params_id", "INTEGER")
         _ensure_column(connection, "blocks", "total_task_ms", "INTEGER")
         _ensure_column(connection, "blocks", "validation_ms", "INTEGER")
-        _ensure_column(connection, "blocks", "protocol_version", "TEXT NOT NULL DEFAULT '0.16'")
+        _ensure_column(connection, "blocks", "protocol_version", "TEXT NOT NULL DEFAULT '0.17'")
         _ensure_column(connection, "blocks", "validation_mode", "TEXT NOT NULL DEFAULT 'external_commit_reveal'")
         _ensure_column(connection, "blocks", "fraudulent", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "blocks", "fraud_reason", "TEXT")
@@ -469,8 +580,11 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "science_reserve_governance", "authorized_signers", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_column(connection, "science_reserve_governance", "payouts_enabled", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "science_reserve_governance", "emergency_paused", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "network_peers", "genesis_hash", f"TEXT NOT NULL DEFAULT '{GENESIS_HASH}'")
+        _ensure_column(connection, "mempool_transactions", "expires_at", "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'")
         _ensure_science_reserve_governance(connection)
         _ensure_scientific_development_treasury(connection)
+        _ensure_network_genesis(connection)
         _ensure_column(connection, "commitments", "commit_ms", "INTEGER")
         _ensure_column(connection, "validation_jobs", "validation_ms", "INTEGER")
         _ensure_default_protocol_params(connection)
@@ -589,6 +703,38 @@ def _ensure_scientific_development_treasury(connection: sqlite3.Connection) -> N
             SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET,
             SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET,
             timestamp,
+            timestamp,
+        ),
+    )
+
+
+def _ensure_network_genesis(connection: sqlite3.Connection) -> None:
+    timestamp = datetime.now(timezone.utc).isoformat()
+    existing = connection.execute(
+        """
+        SELECT 1
+        FROM network_sync_events
+        WHERE event_type = 'network_genesis' AND status = 'active'
+        LIMIT 1
+        """
+    ).fetchone()
+    if existing is not None:
+        return
+    connection.execute(
+        """
+        INSERT INTO network_sync_events (peer_id, event_type, direction, status, details, created_at)
+        VALUES (NULL, 'network_genesis', 'local', 'active', ?, ?)
+        """,
+        (
+            json.dumps(
+                {
+                    "chain_id": CHAIN_ID,
+                    "network_id": NETWORK_ID,
+                    "genesis_hash": GENESIS_HASH,
+                    "protocol_version": PROTOCOL_VERSION,
+                },
+                sort_keys=True,
+            ),
             timestamp,
         ),
     )

@@ -14,6 +14,9 @@ const state = {
   events: [],
   treasury: null,
   reserve: null,
+  sync: null,
+  peers: [],
+  mempool: [],
 };
 
 const $ = (id) => document.getElementById(id);
@@ -70,6 +73,9 @@ async function loadData() {
     events,
     treasury,
     reserve,
+    sync,
+    peers,
+    mempool,
   ] = await Promise.all([
     fetchJson("/protocol"),
     fetchJson("/stats"),
@@ -86,6 +92,9 @@ async function loadData() {
     fetchJson("/events?limit=14"),
     fetchJson("/treasury/status"),
     fetchJson("/reserve/status"),
+    fetchJson("/node/sync-status"),
+    fetchJson("/node/peers"),
+    fetchJson("/mempool?limit=12"),
   ]);
 
   Object.assign(state, {
@@ -104,6 +113,9 @@ async function loadData() {
     events,
     treasury,
     reserve,
+    sync,
+    peers,
+    mempool,
   });
   render();
 }
@@ -111,6 +123,7 @@ async function loadData() {
 function render() {
   renderMetrics();
   renderNode();
+  renderNetwork();
   renderEvents();
   renderBlocks();
   renderValidators();
@@ -146,6 +159,39 @@ function renderNode() {
     <div class="summary-box"><span>Asignacion</span><strong>${state.health.can_assign_tasks ? "activa" : "bloqueada"}</strong></div>
     <div class="summary-box"><span>Cadena</span><strong>${state.node.chain_valid ? "valida" : "revisar"}</strong></div>
   `;
+}
+
+function renderNetwork() {
+  const connected = state.sync.peer_counts.connected || 0;
+  const total = state.sync.peer_counts.total || 0;
+  text("peerStatus", `${connected}/${total} peers`);
+  $("peerStatus").className = `status-pill ${connected > 0 ? "ok" : "warn"}`;
+  $("networkSummary").innerHTML = `
+    <div class="summary-box"><span>Chain ID</span><strong>${escapeHtml(state.sync.chain_id)}</strong></div>
+    <div class="summary-box"><span>Node ID</span><strong>${escapeHtml(state.sync.node_id)}</strong></div>
+    <div class="summary-box"><span>Mempool pending</span><strong>${fmt(state.sync.mempool.pending || 0, 0)}</strong></div>
+    <div class="summary-box"><span>Replay queue</span><strong>${fmt(state.sync.pending_replay_blocks, 0)}</strong></div>
+    <div class="summary-box"><span>Propuestas</span><strong>${fmt((state.sync.consensus && state.sync.consensus.pending) || 0, 0)}</strong></div>
+    <div class="summary-box"><span>Finalizados</span><strong>${fmt((state.sync.consensus && (state.sync.consensus.finalized || state.sync.consensus.imported)) || 0, 0)}</strong></div>
+  `;
+  if (!state.peers.length) {
+    $("peersList").innerHTML = `<div class="empty">Sin peers registrados</div>`;
+    return;
+  }
+  $("peersList").innerHTML = state.peers
+    .slice(0, 6)
+    .map(
+      (peer) => `
+        <article class="event-row">
+          <header>
+            <strong>${escapeHtml(peer.peer_type)}:${escapeHtml(peer.node_id)}</strong>
+            <span class="status-pill ${peer.status === "connected" ? "ok" : "warn"}">${escapeHtml(peer.status)}</span>
+          </header>
+          <p class="mono">${escapeHtml(peer.peer_address)}</p>
+        </article>
+      `
+    )
+    .join("");
 }
 
 function renderEvents() {

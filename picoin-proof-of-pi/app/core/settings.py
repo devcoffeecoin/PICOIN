@@ -7,8 +7,24 @@ DATA_DIR = BASE_DIR / "data"
 DATABASE_PATH = DATA_DIR / "picoin.sqlite3"
 
 PROJECT_NAME = "picoin-proof-of-pi"
-PROTOCOL_VERSION = "0.16"
+PROTOCOL_VERSION = "0.17"
 NETWORK_ID = os.getenv("PICOIN_NETWORK", "local").strip().lower() or "local"
+CHAIN_ID = os.getenv("PICOIN_CHAIN_ID", f"picoin-{NETWORK_ID}-testnet").strip() or f"picoin-{NETWORK_ID}-testnet"
+GENESIS_HASH = os.getenv("PICOIN_GENESIS_HASH", "0" * 64).strip() or ("0" * 64)
+NODE_ID = os.getenv("PICOIN_NODE_ID", "local-node").strip() or "local-node"
+NODE_TYPE = os.getenv("PICOIN_NODE_TYPE", "full").strip().lower() or "full"
+NODE_PUBLIC_ADDRESS = os.getenv("PICOIN_NODE_ADDRESS", "http://127.0.0.1:8000").strip()
+BOOTSTRAP_PEERS = tuple(
+    peer.strip().rstrip("/")
+    for peer in os.getenv("PICOIN_BOOTSTRAP_PEERS", "").split(",")
+    if peer.strip()
+)
+PEER_TIMEOUT_SECONDS = int(os.getenv("PICOIN_PEER_TIMEOUT_SECONDS", "90"))
+MEMPOOL_TX_TTL_SECONDS = int(os.getenv("PICOIN_MEMPOOL_TX_TTL_SECONDS", "3600"))
+MEMPOOL_MAX_FEE = float(os.getenv("PICOIN_MEMPOOL_MAX_FEE", "31.416"))
+GOSSIP_ENABLED = os.getenv("PICOIN_GOSSIP_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
+GOSSIP_TIMEOUT_SECONDS = float(os.getenv("PICOIN_GOSSIP_TIMEOUT_SECONDS", "2.0"))
+GOSSIP_MAX_PEERS = int(os.getenv("PICOIN_GOSSIP_MAX_PEERS", "16"))
 VALIDATION_MODE = "external_commit_reveal"
 REQUIRED_VALIDATOR_APPROVALS = 3
 RANGE_ASSIGNMENT_MODE = "pseudo_random"

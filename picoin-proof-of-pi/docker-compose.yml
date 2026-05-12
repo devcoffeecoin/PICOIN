@@ -1,0 +1,146 @@
+services:
+  bootstrap:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+      - bootstrap-data:/app/data
+    environment:
+      PICOIN_NETWORK: distributed-testnet
+      PICOIN_CHAIN_ID: picoin-distributed-testnet-v017
+      PICOIN_NODE_ID: bootstrap-1
+      PICOIN_NODE_TYPE: bootstrap
+      PICOIN_NODE_ADDRESS: http://bootstrap:8000
+      PICOIN_PORT: 8000
+    command: sh -c "pip install -r requirements.txt && python -m picoin node start --host 0.0.0.0 --port 8000"
+    ports:
+      - "8000:8000"
+
+  miner-one:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+      - miner-one-data:/app/data
+    environment:
+      PICOIN_NETWORK: distributed-testnet
+      PICOIN_CHAIN_ID: picoin-distributed-testnet-v017
+      PICOIN_NODE_ID: miner-1
+      PICOIN_NODE_TYPE: miner
+      PICOIN_NODE_ADDRESS: http://miner-one:8000
+      PICOIN_BOOTSTRAP_PEERS: http://bootstrap:8000
+    command: sh -c "pip install -r requirements.txt && python -m picoin node start --host 0.0.0.0 --port 8000"
+    depends_on:
+      - bootstrap
+
+  miner-two:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+      - miner-two-data:/app/data
+    environment:
+      PICOIN_NETWORK: distributed-testnet
+      PICOIN_CHAIN_ID: picoin-distributed-testnet-v017
+      PICOIN_NODE_ID: miner-2
+      PICOIN_NODE_TYPE: miner
+      PICOIN_NODE_ADDRESS: http://miner-two:8000
+      PICOIN_BOOTSTRAP_PEERS: http://bootstrap:8000
+    command: sh -c "pip install -r requirements.txt && python -m picoin node start --host 0.0.0.0 --port 8000"
+    depends_on:
+      - bootstrap
+
+  miner-three:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+      - miner-three-data:/app/data
+    environment:
+      PICOIN_NETWORK: distributed-testnet
+      PICOIN_CHAIN_ID: picoin-distributed-testnet-v017
+      PICOIN_NODE_ID: miner-3
+      PICOIN_NODE_TYPE: miner
+      PICOIN_NODE_ADDRESS: http://miner-three:8000
+      PICOIN_BOOTSTRAP_PEERS: http://bootstrap:8000
+    command: sh -c "pip install -r requirements.txt && python -m picoin node start --host 0.0.0.0 --port 8000"
+    depends_on:
+      - bootstrap
+
+  validator-one:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+      - validator-one-data:/app/data
+    environment:
+      PICOIN_NETWORK: distributed-testnet
+      PICOIN_CHAIN_ID: picoin-distributed-testnet-v017
+      PICOIN_NODE_ID: validator-1
+      PICOIN_NODE_TYPE: validator
+      PICOIN_NODE_ADDRESS: http://validator-one:8000
+      PICOIN_BOOTSTRAP_PEERS: http://bootstrap:8000
+    command: sh -c "pip install -r requirements.txt && python -m picoin node start --host 0.0.0.0 --port 8000"
+    depends_on:
+      - bootstrap
+
+  validator-two:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+      - validator-two-data:/app/data
+    environment:
+      PICOIN_NETWORK: distributed-testnet
+      PICOIN_CHAIN_ID: picoin-distributed-testnet-v017
+      PICOIN_NODE_ID: validator-2
+      PICOIN_NODE_TYPE: validator
+      PICOIN_NODE_ADDRESS: http://validator-two:8000
+      PICOIN_BOOTSTRAP_PEERS: http://bootstrap:8000
+    command: sh -c "pip install -r requirements.txt && python -m picoin node start --host 0.0.0.0 --port 8000"
+    depends_on:
+      - bootstrap
+
+  validator-three:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+      - validator-three-data:/app/data
+    environment:
+      PICOIN_NETWORK: distributed-testnet
+      PICOIN_CHAIN_ID: picoin-distributed-testnet-v017
+      PICOIN_NODE_ID: validator-3
+      PICOIN_NODE_TYPE: validator
+      PICOIN_NODE_ADDRESS: http://validator-three:8000
+      PICOIN_BOOTSTRAP_PEERS: http://bootstrap:8000
+    command: sh -c "pip install -r requirements.txt && python -m picoin node start --host 0.0.0.0 --port 8000"
+    depends_on:
+      - bootstrap
+
+  auditor:
+    image: python:3.12-slim
+    working_dir: /app
+    volumes:
+      - .:/app
+      - auditor-data:/app/data
+    environment:
+      PICOIN_NETWORK: distributed-testnet
+      PICOIN_CHAIN_ID: picoin-distributed-testnet-v017
+      PICOIN_NODE_ID: auditor-1
+      PICOIN_NODE_TYPE: auditor
+      PICOIN_NODE_ADDRESS: http://auditor:8000
+      PICOIN_BOOTSTRAP_PEERS: http://bootstrap:8000
+    command: sh -c "pip install -r requirements.txt && python -m picoin node start --host 0.0.0.0 --port 8000"
+    depends_on:
+      - bootstrap
+
+volumes:
+  bootstrap-data:
+  miner-one-data:
+  miner-two-data:
+  miner-three-data:
+  validator-one-data:
+  validator-two-data:
+  validator-three-data:
+  auditor-data:

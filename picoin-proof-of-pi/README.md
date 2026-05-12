@@ -2,14 +2,14 @@
 
 MVP funcional de **Proof of Pi** con una extension L1 llamada **Science Compute Access Layer**. Un coordinador asigna rangos pequenos de digitos hexadecimales de pi, un minero calcula el segmento con BBP, el validador recalcula de forma independiente y el servidor registra bloques aceptados con recompensa simulada. La capa Science deja preparada la red para un futuro marketplace L2 de computo cientifico e IA.
 
-Este proyecto no implementa una blockchain completa ni ejecuta IA/computo cientifico pesado. Usa una cadena local de bloques aceptados con `previous_hash` y `block_hash`, y en L1 coordina stake, acceso, jobs, hashes, reserva y pagos verificados para preparar una evolucion futura.
+Este proyecto no ejecuta IA/computo cientifico pesado. Desde v0.17 incluye una base de testnet distribuida con peers, mempool, wallets y sync inicial; el consenso distribuido completo todavia esta en evolucion. En L1 coordina stake, acceso, jobs, hashes, reserva y pagos verificados para preparar una evolucion futura.
 
-## Protocolo v0.16
+## Protocolo v0.17
 
 Parametros actuales:
 
 ```text
-protocol_version = 0.16
+protocol_version = 0.17
 network_id = local
 algorithm = bbp_hex_v1
 validation_mode = external_commit_reveal
@@ -1020,9 +1020,9 @@ Implementado:
 
 Limites intencionales:
 
-- No hay consenso distribuido.
-- No hay red P2P.
-- No hay wallet transferible entre usuarios; el ledger solo registra emision, recompensas, stake simulado y slashing.
+- El consenso distribuido completo sigue en desarrollo; v0.17 agrega peers, mempool, wallet y sync inicial.
+- La red P2P actual es basica: REST/WebSocket, heartbeat y cola de replay, no gossip optimizado.
+- Las wallets firman transacciones para mempool; la liquidacion final de transfers en ledger queda para la siguiente fase.
 - No hay ejecucion real de IA ni computo cientifico pesado en L1.
 - No hay marketplace L2 todavia; la L1 solo deja acceso, reserva, jobs, estados y pagos verificados.
 - La validacion actual es probabilistica por muestras, no una prueba criptografica completa del calculo entero.
@@ -1414,6 +1414,100 @@ curl http://127.0.0.1:8000/audit/retroactive
 curl -X POST "http://127.0.0.1:8000/audit/retroactive/run?sample_multiplier=2"
 curl "http://127.0.0.1:8000/validators?eligible_only=true"
 ```
+
+## Distributed Testnet v0.17
+
+Picoin ahora incluye una base L1 para testnet distribuida multi-nodo. Esta fase agrega networking, peers, mempool, wallets y transacciones firmadas sin activar IA real, marketplace L2, bridges, zk proofs ni smart contracts complejos.
+
+Componentes nuevos:
+
+- `network_peers`: registro de peers con `node_id`, `peer_address`, tipo, version, `network_id`, `chain_id` y `genesis_hash`.
+- `mempool_transactions`: transacciones firmadas Ed25519 con nonce, fee, payload canonico, estado y expiracion.
+- `network_block_headers`: cola de headers/bloques propagados para replay distribuido.
+- `network_sync_events`: bitacora de peers, heartbeats, tx y bloques recibidos.
+- `consensus_block_proposals`: propuestas de bloque propagables.
+- `consensus_votes`: votos Ed25519 de validadores por propuesta.
+- `consensus_finalizations`: finalizaciones con quorum e importacion/replay.
+- Wallets con direcciones `PI...` derivadas de la clave publica Ed25519.
+
+Endpoints principales:
+
+```powershell
+curl http://127.0.0.1:8000/node/identity
+curl http://127.0.0.1:8000/node/peers
+curl http://127.0.0.1:8000/node/sync-status
+curl "http://127.0.0.1:8000/node/sync/blocks?from_height=0"
+curl http://127.0.0.1:8000/mempool
+curl http://127.0.0.1:8000/consensus/status
+curl http://127.0.0.1:8000/consensus/proposals
+```
+
+Registrar peer:
+
+```powershell
+curl -X POST http://127.0.0.1:8000/node/peers/register `
+  -H "Content-Type: application/json" `
+  -d "{\"node_id\":\"validator-1\",\"peer_address\":\"http://validator-1:8000\",\"peer_type\":\"validator\",\"protocol_version\":\"0.17\",\"network_id\":\"local\",\"chain_id\":\"picoin-local-testnet\",\"genesis_hash\":\"0000000000000000000000000000000000000000000000000000000000000000\"}"
+```
+
+CLI distribuida:
+
+```powershell
+python -m picoin node peers
+python -m picoin node sync-status
+python -m picoin wallet create --name alice --output data/alice-wallet.json
+python -m picoin wallet balance --address PI...
+python -m picoin tx send --wallet data/alice-wallet.json --to PI... --amount 1.5 --nonce 1 --fee 0.01
+python -m picoin consensus status
+python -m picoin consensus proposals
+python -m picoin consensus propose-block --block data/block.json --proposer miner-node-1
+python -m picoin consensus vote --proposal-id ... --identity data/testnet/identities/validator-one.json
+python -m picoin consensus finalize --proposal-id ...
+python -m picoin consensus replay
+```
+
+Consenso distribuido v0.17:
+
+1. Un nodo minero propone automaticamente el bloque cuando el flujo de mining alcanza quorum local, y tambien puede proponer manualmente con `POST /consensus/proposals`.
+2. Cada validador firma un voto Ed25519 sobre `proposal_id`, `block_hash`, `height`, decision y razon.
+3. Los votos se propagan por gossip HTTP best-effort a peers conectados.
+4. Si hay dos propuestas para la misma altura/padre, el fork-choice elige por mas aprobaciones, menos rechazos, creacion mas antigua y `block_hash` lexicografico.
+5. Un validador no puede votar dos propuestas competidoras del mismo fork.
+6. Cuando hay `required_validator_approvals = 3`, solo la propuesta ganadora del fork-choice se finaliza.
+7. El replay canonico valida `previous_hash`, recalcula `block_hash`, rechaza rangos/resultados duplicados y crea el contexto minimo faltante (`miner`, `task`) antes de insertar el bloque.
+8. Al importar, aplica contabilidad deterministica: reward del minero, pool de validadores, Science Compute Reserve 20% y Scientific Development Treasury 3%.
+
+Gossip automatico:
+
+- `POST /tx/submit` propaga a peers usando `/tx/receive`.
+- `POST /consensus/proposals` propaga a peers usando `?gossip=false` para evitar loops.
+- `POST /consensus/proposals/{proposal_id}/vote` propaga votos usando `?gossip=false`.
+- Cuando `/tasks/submit`, `/tasks/reveal` o `/validation/results` producen un bloque aceptado, la API propaga automaticamente una propuesta de consenso con el bloque completo.
+
+Variables utiles:
+
+```text
+PICOIN_GOSSIP_ENABLED=1
+PICOIN_GOSSIP_TIMEOUT_SECONDS=2.0
+PICOIN_GOSSIP_MAX_PEERS=16
+```
+
+Esta version ya mueve el protocolo hacia propuesta/voto/finalizacion multi-nodo con gossip y fork-choice basico. La siguiente mejora es hacer gossip por WebSocket persistente, reconciliacion periodica de peers y fork-choice con peso economico/reputacion.
+
+Docker testnet:
+
+```powershell
+docker compose up
+```
+
+El `docker-compose.yml` levanta:
+
+- 1 bootstrap node
+- 3 miner nodes
+- 3 validator nodes
+- 1 auditor node
+
+Cada nodo usa su propio volumen SQLite. La capa actual sincroniza identidad, peers, mempool, propuestas, votos, finalizaciones y replay canonico inicial.
 
 ## Pruebas
 

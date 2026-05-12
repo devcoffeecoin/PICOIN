@@ -76,6 +76,7 @@ from app.core.settings import (
     VALIDATION_MODE,
 )
 from app.db.database import get_connection, row_to_dict
+from app.services.consensus import record_local_block_proposal
 from app.services.science import record_science_reserve_for_block, science_events_for_node
 from app.services.treasury import record_scientific_development_treasury_for_block
 from validator.proof import validate_submission
@@ -590,6 +591,7 @@ def submit_task(
             "protocol_version": params["protocol_version"],
             "validation_mode": params["validation_mode"],
         }
+        block["consensus_proposal"] = record_local_block_proposal(connection, block, proposer_node_id=miner_id)
 
     return {
         "accepted": True,
@@ -3543,7 +3545,7 @@ def _accept_block_in_connection(
     _maybe_retarget_after_block(connection, next_height)
     _maybe_run_scheduled_retroactive_audit(connection, next_height)
 
-    return {
+    block = {
         "height": next_height,
         "previous_hash": previous_hash,
         "miner_id": miner_id,
@@ -3567,6 +3569,8 @@ def _accept_block_in_connection(
         "fraud_reason": None,
         "fraud_detected_at": None,
     }
+    block["consensus_proposal"] = record_local_block_proposal(connection, block, proposer_node_id=miner_id)
+    return block
 
 
 def blocks_or_zero(value: Any) -> float:

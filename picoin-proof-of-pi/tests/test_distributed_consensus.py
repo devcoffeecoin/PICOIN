@@ -1,0 +1,195 @@
+import pytest
+
+from app.core.crypto import hash_block
+from app.core.settings import GENESIS_HASH, PROTOCOL_VERSION, REQUIRED_VALIDATOR_APPROVALS, VALIDATION_MODE
+from app.core.signatures import generate_keypair, sign_payload
+from app.db.database import init_db
+from app.services.consensus import (
+    ConsensusError,
+    consensus_status,
+    consensus_vote_payload,
+    finalize_proposal,
+    propose_block,
+    select_fork_choice,
+    vote_on_proposal,
+)
+from app.services.mining import get_balance, get_block, register_validator, verify_chain
+from app.services.science import get_science_reserve
+from app.services.treasury import get_scientific_development_treasury
+
+
+def _init_consensus_db(tmp_path, monkeypatch, name: str) -> None:
+    db_path = tmp_path / name
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+
+def _block(height: int = 1, previous_hash: str = GENESIS_HASH) -> dict:
+    block = {
+        "height": height,
+        "previous_hash": previous_hash,
+        "miner_id": "distributed-miner",
+        "range_start": 1,
+        "range_end": 64,
+        "algorithm": "bbp_hex_v1",
+        "result_hash": "a" * 64,
+        "merkle_root": "b" * 64,
+        "samples": [{"position": 1, "digit": "2"}],
+        "timestamp": "2026-05-12T00:00:00+00:00",
+        "reward": 2.104872,
+        "difficulty": 4.0,
+        "protocol_params_id": 1,
+        "protocol_version": PROTOCOL_VERSION,
+        "validation_mode": VALIDATION_MODE,
+        "task_id": "distributed-task-1",
+    }
+    payload = {
+        "algorithm": block["algorithm"],
+        "height": block["height"],
+        "miner_id": block["miner_id"],
+        "previous_hash": block["previous_hash"],
+        "range_end": block["range_end"],
+        "range_start": block["range_start"],
+        "result_hash": block["result_hash"],
+        "reward": block["reward"],
+        "samples": block["samples"],
+        "timestamp": block["timestamp"],
+        "difficulty": block["difficulty"],
+        "protocol_params_id": block["protocol_params_id"],
+        "merkle_root": block["merkle_root"],
+        "protocol_version": block["protocol_version"],
+        "validation_mode": block["validation_mode"],
+    }
+    block["block_hash"] = hash_block(payload)
+    return block
+
+
+def _rehash(block: dict) -> dict:
+    payload = {
+        "algorithm": block["algorithm"],
+        "height": block["height"],
+        "miner_id": block["miner_id"],
+        "previous_hash": block["previous_hash"],
+        "range_end": block["range_end"],
+        "range_start": block["range_start"],
+        "result_hash": block["result_hash"],
+        "reward": block["reward"],
+        "samples": block["samples"],
+        "timestamp": block["timestamp"],
+        "difficulty": block["difficulty"],
+        "protocol_params_id": block["protocol_params_id"],
+        "merkle_root": block["merkle_root"],
+        "protocol_version": block["protocol_version"],
+        "validation_mode": block["validation_mode"],
+    }
+    block["block_hash"] = hash_block(payload)
+    return block
+
+
+def _register_validators(count: int = REQUIRED_VALIDATOR_APPROVALS) -> list[dict]:
+    identities = []
+    for index in range(count):
+        keys = generate_keypair()
+        validator = register_validator(f"validator-{index}", keys["public_key"])
+        identities.append({**validator, **keys})
+    return identities
+
+
+def _vote(proposal: dict, identity: dict, approved: bool = True, reason: str = "accepted") -> dict:
+    signed_at = "2026-05-12T00:00:01+00:00"
+    payload = consensus_vote_payload(
+        proposal_id=proposal["proposal_id"],
+        block_hash=proposal["block_hash"],
+        height=proposal["height"],
+        validator_id=identity["validator_id"],
+        approved=approved,
+        reason=reason,
+        signed_at=signed_at,
+    )
+    signature = sign_payload(identity["private_key"], payload)
+    return vote_on_proposal(proposal["proposal_id"], identity["validator_id"], approved, reason, signature, signed_at)
+
+
+def test_block_proposal_reaches_quorum_and_imports_canonical_block(tmp_path, monkeypatch) -> None:
+    _init_consensus_db(tmp_path, monkeypatch, "consensus-import.sqlite3")
+    identities = _register_validators()
+    proposal = propose_block(_block(), "miner-node-1")
+
+    for identity in identities:
+        proposal = _vote(proposal, identity)
+
+    imported = get_block(1)
+    chain = verify_chain()
+    reserve = get_science_reserve()
+    treasury = get_scientific_development_treasury()
+
+    assert proposal["status"] == "imported"
+    assert imported["block_hash"] == proposal["block_hash"]
+    assert get_balance("distributed-miner")["balance"] == 2.104872
+    assert get_balance(identities[0]["validator_id"])["balance"] == 31.52072
+    assert reserve["total_reserved"] == 0.62832
+    assert treasury["locked_balance"] == 0.094248
+    assert chain["valid"] is True
+
+
+def test_finalize_requires_validator_quorum(tmp_path, monkeypatch) -> None:
+    _init_consensus_db(tmp_path, monkeypatch, "consensus-quorum.sqlite3")
+    identity = _register_validators(1)[0]
+    proposal = propose_block(_block(), "miner-node-1")
+    _vote(proposal, identity)
+
+    with pytest.raises(ConsensusError, match="quorum not reached"):
+        finalize_proposal(proposal["proposal_id"])
+
+
+def test_invalid_block_proposal_is_rejected(tmp_path, monkeypatch) -> None:
+    _init_consensus_db(tmp_path, monkeypatch, "consensus-invalid.sqlite3")
+    block = _block()
+    block["reward"] = 99
+
+    with pytest.raises(ConsensusError, match="block_hash"):
+        propose_block(block, "miner-node-1")
+
+
+def test_rejection_quorum_rejects_proposal(tmp_path, monkeypatch) -> None:
+    _init_consensus_db(tmp_path, monkeypatch, "consensus-reject.sqlite3")
+    identities = _register_validators()
+    proposal = propose_block(_block(), "miner-node-1")
+
+    for identity in identities:
+        proposal = _vote(proposal, identity, approved=False, reason="bad samples")
+
+    assert proposal["status"] == "rejected"
+    assert get_block(1) is None
+
+
+def test_fork_choice_prefers_more_approvals_and_blocks_double_vote(tmp_path, monkeypatch) -> None:
+    _init_consensus_db(tmp_path, monkeypatch, "consensus-fork-choice.sqlite3")
+    identity = _register_validators(1)[0]
+    first = propose_block(_block(), "miner-node-1")
+    fork_block = _block()
+    fork_block["range_start"] = 65
+    fork_block["range_end"] = 128
+    fork_block["result_hash"] = "c" * 64
+    fork_block["task_id"] = "distributed-task-fork"
+    second = propose_block(_rehash(fork_block), "miner-node-2")
+
+    first = _vote(first, identity)
+    winner = select_fork_choice(1)
+
+    assert winner["proposal_id"] == first["proposal_id"]
+    assert winner["proposal_id"] != second["proposal_id"]
+    with pytest.raises(ConsensusError, match="competing fork"):
+        _vote(second, identity)
+
+
+def test_consensus_status_reports_proposals_and_finalizations(tmp_path, monkeypatch) -> None:
+    _init_consensus_db(tmp_path, monkeypatch, "consensus-status.sqlite3")
+    propose_block(_block(), "miner-node-1")
+
+    status = consensus_status()
+
+    assert status["required_validator_approvals"] == 3
+    assert status["proposals"]["pending"] == 1
+    assert status["latest_block_height"] == 0

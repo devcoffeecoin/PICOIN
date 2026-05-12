@@ -423,6 +423,171 @@ class ScienceEventResponse(BaseModel):
     metadata: dict[str, Any] = {}
 
 
+class PeerRegisterRequest(BaseModel):
+    node_id: str = Field(..., min_length=1, max_length=128)
+    peer_address: str = Field(..., min_length=1, max_length=256)
+    peer_type: str = Field("full", pattern="^(full|miner|validator|auditor|bootstrap)$")
+    protocol_version: str
+    network_id: str
+    chain_id: str
+    genesis_hash: str
+    metadata: dict[str, Any] = {}
+
+
+class PeerResponse(BaseModel):
+    peer_id: str
+    node_id: str
+    peer_address: str
+    peer_type: str
+    protocol_version: str
+    network_id: str
+    chain_id: str
+    genesis_hash: str
+    connected_at: datetime
+    last_seen: datetime
+    status: str
+    metadata: dict[str, Any] = {}
+
+
+class NodeIdentityResponse(BaseModel):
+    project: str
+    node_id: str
+    peer_id: str
+    peer_address: str
+    peer_type: str
+    protocol_version: str
+    network_id: str
+    chain_id: str
+    genesis_hash: str
+    bootstrap_peers: list[str] = []
+
+
+class NodeSyncStatusResponse(NodeIdentityResponse):
+    latest_block_height: int
+    latest_block_hash: str
+    peer_counts: dict[str, Any]
+    mempool: dict[str, int]
+    pending_replay_blocks: int
+    consensus: dict[str, int] = {}
+    sync_mode: str
+    checked_at: datetime
+
+
+class SignedTransactionRequest(BaseModel):
+    tx_hash: str = Field(..., min_length=64, max_length=64)
+    tx_type: str = Field(..., pattern="^(transfer|stake|unstake|science_job_create|governance_action|treasury_claim)$")
+    sender: str = Field(..., min_length=3, max_length=80)
+    recipient: str | None = Field(default=None, max_length=80)
+    amount: float = Field(default=0, ge=0)
+    nonce: int = Field(..., ge=0)
+    fee: float = Field(default=0, ge=0)
+    payload: dict[str, Any] = {}
+    timestamp: datetime
+    network_id: str
+    chain_id: str
+    public_key: str = Field(..., min_length=1, max_length=256)
+    signature: str = Field(..., min_length=1, max_length=256)
+
+
+class MempoolTransactionResponse(BaseModel):
+    tx_hash: str
+    tx_type: str
+    sender: str
+    recipient: str | None = None
+    amount: float
+    nonce: int
+    fee: float
+    payload: dict[str, Any] = {}
+    network_id: str
+    chain_id: str
+    timestamp: datetime
+    public_key: str
+    signature: str
+    status: str
+    propagated: bool
+    block_height: int | None = None
+    rejection_reason: str | None = None
+    expires_at: datetime
+    created_at: datetime
+    updated_at: datetime
+
+
+class BlockReceiveRequest(BaseModel):
+    block: dict[str, Any]
+    source_peer_id: str | None = None
+
+
+class BlockReceiveResponse(BaseModel):
+    accepted: bool
+    status: str
+    reason: str
+    block_hash: str
+
+
+class BlockSyncResponse(BaseModel):
+    from_height: int
+    count: int
+    blocks: list[dict[str, Any]]
+
+
+class ConsensusBlockProposalRequest(BaseModel):
+    block: dict[str, Any]
+    proposer_node_id: str = Field(..., min_length=1, max_length=128)
+
+
+class ConsensusVoteRequest(BaseModel):
+    validator_id: str = Field(..., min_length=1, max_length=128)
+    approved: bool
+    reason: str = Field(..., min_length=1, max_length=512)
+    signature: str = Field(..., min_length=1, max_length=256)
+    signed_at: datetime
+
+
+class ConsensusProposalResponse(BaseModel):
+    proposal_id: str
+    block_hash: str
+    height: int
+    previous_hash: str
+    proposer_node_id: str
+    status: str
+    payload: dict[str, Any]
+    approvals: int
+    rejections: int
+    rejection_reason: str | None = None
+    finalized_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConsensusReplayResponse(BaseModel):
+    imported: int
+    skipped: int
+
+
+class ConsensusStatusResponse(BaseModel):
+    required_validator_approvals: int
+    latest_block_height: int
+    latest_block_hash: str
+    proposals: dict[str, int]
+    finalizations: int
+    fork_choices: list[dict[str, Any]] = []
+    checked_at: datetime
+
+
+class WalletCreateRequest(BaseModel):
+    name: str = Field("picoin-wallet", min_length=1, max_length=80)
+
+
+class WalletCreateResponse(BaseModel):
+    name: str
+    address: str
+    public_key: str
+    private_key: str
+    network_id: str
+    chain_id: str
+    created_at: datetime
+
+
 class MaintenanceCleanupResponse(BaseModel):
     expired_tasks: int
     expired_validation_jobs: int

@@ -29,6 +29,9 @@ def load_env_file(path: Path = Path(".env")) -> None:
 load_env_file()
 
 from app.core.settings import PROJECT_NAME
+from app.core.signatures import sign_payload
+from app.services.consensus import consensus_vote_payload
+from app.services.wallet import create_wallet, sign_transaction
 
 
 DEFAULT_SERVER_URL = os.getenv("PICOIN_SERVER", "http://127.0.0.1:8000")
@@ -89,6 +92,119 @@ def command_node_audit(args: argparse.Namespace) -> int:
 def command_node_protocol(args: argparse.Namespace) -> int:
     print_json(get_json(args.server, "/protocol"))
     return 0
+
+
+def command_node_peers(args: argparse.Namespace) -> int:
+    print_json(get_json(args.server, f"/node/peers?include_stale={str(args.include_stale).lower()}"))
+    return 0
+
+
+def command_node_sync_status(args: argparse.Namespace) -> int:
+    print_json(get_json(args.server, "/node/sync-status"))
+    return 0
+
+
+def command_wallet_create(args: argparse.Namespace) -> int:
+    wallet = create_wallet(args.name)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(wallet, indent=2, sort_keys=True), encoding="utf-8")
+    print_json(wallet)
+    return 0
+
+
+def command_wallet_balance(args: argparse.Namespace) -> int:
+    print_json(get_json(args.server, f"/balances/{args.address}"))
+    return 0
+
+
+def command_tx_send(args: argparse.Namespace) -> int:
+    wallet = json.loads(args.wallet.read_text(encoding="utf-8"))
+    payload = json.loads(args.payload) if args.payload else {}
+    tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type=args.type,
+        sender=args.sender or wallet["address"],
+        recipient=args.to,
+        amount=args.amount,
+        nonce=args.nonce,
+        fee=args.fee,
+        payload=payload,
+    )
+    print_json(post_json(args.server, "/tx/submit", tx))
+    return 0
+
+
+def command_consensus_status(args: argparse.Namespace) -> int:
+    print_json(get_json(args.server, "/consensus/status"))
+    return 0
+
+
+def command_consensus_proposals(args: argparse.Namespace) -> int:
+    path = f"/consensus/proposals?limit={args.limit}"
+    if args.status:
+        path = f"{path}&status={args.status}"
+    print_json(get_json(args.server, path))
+    return 0
+
+
+def command_consensus_propose(args: argparse.Namespace) -> int:
+    block = json.loads(args.block.read_text(encoding="utf-8"))
+    print_json(
+        post_json(
+            args.server,
+            "/consensus/proposals",
+            {"block": block, "proposer_node_id": args.proposer},
+        )
+    )
+    return 0
+
+
+def command_consensus_vote(args: argparse.Namespace) -> int:
+    identity = json.loads(args.identity.read_text(encoding="utf-8"))
+    proposal = get_json(args.server, f"/consensus/proposals/{args.proposal_id}")
+    signed_at = _utc_now()
+    payload = consensus_vote_payload(
+        proposal_id=args.proposal_id,
+        block_hash=proposal["block_hash"],
+        height=proposal["height"],
+        validator_id=identity["validator_id"],
+        approved=not args.reject,
+        reason=args.reason,
+        signed_at=signed_at,
+    )
+    signature = sign_payload(identity["private_key"], payload)
+    print_json(
+        post_json(
+            args.server,
+            f"/consensus/proposals/{args.proposal_id}/vote",
+            {
+                "validator_id": identity["validator_id"],
+                "approved": not args.reject,
+                "reason": args.reason,
+                "signature": signature,
+                "signed_at": signed_at,
+            },
+        )
+    )
+    return 0
+
+
+def command_consensus_finalize(args: argparse.Namespace) -> int:
+    print_json(post_json(args.server, f"/consensus/proposals/{args.proposal_id}/finalize"))
+    return 0
+
+
+def command_consensus_replay(args: argparse.Namespace) -> int:
+    print_json(post_json(args.server, f"/consensus/replay?limit={args.limit}"))
+    return 0
+
+
+def _utc_now() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
 
 
 def command_science_stake(args: argparse.Namespace) -> int:
@@ -313,6 +429,82 @@ def add_node_parser(subparsers: argparse._SubParsersAction) -> None:
     protocol_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
     protocol_parser.set_defaults(func=command_node_protocol)
 
+    peers_parser = node_subparsers.add_parser("peers", help="Show distributed testnet peers")
+    peers_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    peers_parser.add_argument("--include-stale", action="store_true", default=True)
+    peers_parser.add_argument("--connected-only", action="store_false", dest="include_stale")
+    peers_parser.set_defaults(func=command_node_peers)
+
+    sync_parser = node_subparsers.add_parser("sync-status", help="Show distributed sync and mempool status")
+    sync_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    sync_parser.set_defaults(func=command_node_sync_status)
+
+
+def add_wallet_parser(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser("wallet", help="Create wallets and query balances")
+    parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    wallet_subparsers = parser.add_subparsers(dest="wallet_command", required=True)
+
+    create_parser = wallet_subparsers.add_parser("create", help="Create an Ed25519 Picoin wallet")
+    create_parser.add_argument("--name", default="picoin-wallet")
+    create_parser.add_argument("--output", type=Path)
+    create_parser.set_defaults(func=command_wallet_create)
+
+    balance_parser = wallet_subparsers.add_parser("balance", help="Query a wallet/account balance")
+    balance_parser.add_argument("--address", required=True)
+    balance_parser.set_defaults(func=command_wallet_balance)
+
+
+def add_tx_parser(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser("tx", help="Create and submit signed transactions")
+    parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    tx_subparsers = parser.add_subparsers(dest="tx_command", required=True)
+
+    send_parser = tx_subparsers.add_parser("send", help="Submit a signed transfer transaction to the mempool")
+    send_parser.add_argument("--wallet", type=Path, required=True)
+    send_parser.add_argument("--to", required=True)
+    send_parser.add_argument("--amount", type=float, required=True)
+    send_parser.add_argument("--fee", type=float, default=0.0)
+    send_parser.add_argument("--nonce", type=int, required=True)
+    send_parser.add_argument("--type", default="transfer")
+    send_parser.add_argument("--sender")
+    send_parser.add_argument("--payload", help="Optional JSON payload")
+    send_parser.set_defaults(func=command_tx_send)
+
+
+def add_consensus_parser(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser("consensus", help="Distributed block proposal, voting and replay")
+    parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    consensus_subparsers = parser.add_subparsers(dest="consensus_command", required=True)
+
+    status_parser = consensus_subparsers.add_parser("status", help="Show distributed consensus status")
+    status_parser.set_defaults(func=command_consensus_status)
+
+    proposals_parser = consensus_subparsers.add_parser("proposals", help="List block proposals")
+    proposals_parser.add_argument("--status")
+    proposals_parser.add_argument("--limit", type=int, default=50)
+    proposals_parser.set_defaults(func=command_consensus_proposals)
+
+    propose_parser = consensus_subparsers.add_parser("propose-block", help="Propose a block JSON to distributed consensus")
+    propose_parser.add_argument("--block", type=Path, required=True)
+    propose_parser.add_argument("--proposer", required=True)
+    propose_parser.set_defaults(func=command_consensus_propose)
+
+    vote_parser = consensus_subparsers.add_parser("vote", help="Sign and submit a validator vote")
+    vote_parser.add_argument("--proposal-id", required=True)
+    vote_parser.add_argument("--identity", type=Path, required=True)
+    vote_parser.add_argument("--reason", default="distributed validator accepted block proposal")
+    vote_parser.add_argument("--reject", action="store_true")
+    vote_parser.set_defaults(func=command_consensus_vote)
+
+    finalize_parser = consensus_subparsers.add_parser("finalize", help="Finalize a proposal after quorum")
+    finalize_parser.add_argument("--proposal-id", required=True)
+    finalize_parser.set_defaults(func=command_consensus_finalize)
+
+    replay_parser = consensus_subparsers.add_parser("replay", help="Replay finalized blocks into the local canonical chain")
+    replay_parser.add_argument("--limit", type=int, default=100)
+    replay_parser.set_defaults(func=command_consensus_replay)
+
 
 def add_miner_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("miner", help="Register or run a local miner")
@@ -482,6 +674,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="store_true", help="Show CLI version context and exit")
     subparsers = parser.add_subparsers(dest="command")
     add_node_parser(subparsers)
+    add_wallet_parser(subparsers)
+    add_tx_parser(subparsers)
+    add_consensus_parser(subparsers)
     add_miner_parser(subparsers)
     add_validator_parser(subparsers)
     add_science_parser(subparsers)

@@ -14,6 +14,64 @@ def test_picoin_cli_parses_node_start_defaults() -> None:
     assert args.reload is False
 
 
+def test_picoin_cli_parses_distributed_node_commands() -> None:
+    parser = build_parser()
+
+    peers = parser.parse_args(["node", "peers", "--connected-only"])
+    sync = parser.parse_args(["node", "sync-status"])
+
+    assert peers.command == "node"
+    assert peers.node_command == "peers"
+    assert peers.include_stale is False
+    assert sync.command == "node"
+    assert sync.node_command == "sync-status"
+
+
+def test_picoin_cli_parses_wallet_and_tx_commands() -> None:
+    parser = build_parser()
+
+    wallet = parser.parse_args(["wallet", "create", "--name", "alice", "--output", "alice.json"])
+    tx = parser.parse_args(
+        [
+            "tx",
+            "send",
+            "--wallet",
+            "alice.json",
+            "--to",
+            "PIB",
+            "--amount",
+            "1.5",
+            "--nonce",
+            "1",
+            "--fee",
+            "0.01",
+        ]
+    )
+
+    assert wallet.command == "wallet"
+    assert wallet.wallet_command == "create"
+    assert wallet.output == Path("alice.json")
+    assert tx.command == "tx"
+    assert tx.tx_command == "send"
+    assert tx.wallet == Path("alice.json")
+    assert tx.amount == 1.5
+
+
+def test_picoin_cli_parses_consensus_commands() -> None:
+    parser = build_parser()
+
+    status = parser.parse_args(["consensus", "status"])
+    propose = parser.parse_args(["consensus", "propose-block", "--block", "block.json", "--proposer", "miner-node"])
+    vote = parser.parse_args(["consensus", "vote", "--proposal-id", "abc", "--identity", "validator.json"])
+
+    assert status.command == "consensus"
+    assert status.consensus_command == "status"
+    assert propose.block == Path("block.json")
+    assert propose.proposer == "miner-node"
+    assert vote.proposal_id == "abc"
+    assert vote.identity == Path("validator.json")
+
+
 def test_picoin_cli_parses_miner_command() -> None:
     parser = build_parser()
     args = parser.parse_args(
