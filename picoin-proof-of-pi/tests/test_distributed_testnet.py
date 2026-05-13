@@ -537,6 +537,33 @@ def test_header_replay_marks_matching_proposal_imported(tmp_path, monkeypatch) -
     assert row["status"] == "imported"
 
 
+def test_replay_normalizes_existing_block_proposals(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "existing-proposal-normalize.sqlite3")
+
+    miner_key = generate_keypair()
+    miner = register_miner("existing-proposal-normalize-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    block = get_block(1)
+    proposal = propose_block(block, "peer-a", gossip=False)
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE consensus_block_proposals SET status = 'pending' WHERE proposal_id = ?",
+            (proposal["proposal_id"],),
+        )
+
+    replay = replay_finalized_blocks()
+    status = get_sync_status()
+
+    assert replay["normalized"] == 1
+    assert status["consensus"].get("pending", 0) == 0
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT status FROM consensus_block_proposals WHERE proposal_id = ?",
+            (proposal["proposal_id"],),
+        ).fetchone()
+    assert row["status"] == "imported"
+
+
 def test_canonical_snapshot_import_rejects_tampered_balances(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "snapshot-import-tamper.sqlite3")
 
