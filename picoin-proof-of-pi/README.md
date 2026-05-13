@@ -103,6 +103,7 @@ La ruta hacia mainnet ya incluye contabilidad basica de transacciones firmadas:
 - Los checkpoints canonicos guardan `height`, `block_hash`, `state_root`, `balances_hash`, `snapshot_hash` y contadores de ledger para acelerar sync futura y verificar snapshots sin confiar en archivos pesados.
 - Un snapshot canonico exportado incluye metadata del checkpoint y balances agregados por cuenta. El import valida `chain_id`, `network_id`, `genesis_hash`, `balances_hash`, `state_root` y `snapshot_hash` antes de guardarlo como referencia externa.
 - Un snapshot importado puede activarse como `active_snapshot_base`; desde ahi el nodo pide a peers solo bloques con `height` posterior al snapshot y acepta el siguiente bloque si su `previous_hash` apunta al `block_hash` del checkpoint.
+- Para fast-sync real, un snapshot importado puede aplicarse como estado inicial local si el nodo aun no tiene bloques locales. Esto restaura balances agregados desde el snapshot y luego permite replay canonico de bloques posteriores.
 - `stake` bloquea PI desde la wallet hacia `science_stake:<address>` y actualiza el tier cientifico de forma deterministica.
 - `unstake` libera el stake cientifico completo si la direccion no tiene jobs activos.
 - `science_job_create` crea jobs L1 desde payload firmado, con `job_id` deterministico si no se provee uno.
@@ -1487,6 +1488,7 @@ python -m picoin node checkpoint verify --height 10
 python -m picoin node checkpoint export --height 10 --output data/checkpoint-10.json
 python -m picoin node checkpoint import --file data/checkpoint-10.json --source bootstrap-node
 python -m picoin node checkpoint activate --snapshot-hash <snapshot_hash>
+python -m picoin node checkpoint apply --snapshot-hash <snapshot_hash>
 python -m picoin node checkpoint imports
 python -m picoin wallet create --name alice --output data/alice-wallet.json
 python -m picoin wallet balance --address PI...
