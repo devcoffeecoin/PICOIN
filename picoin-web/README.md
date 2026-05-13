@@ -1,30 +1,27 @@
 # Picoin Web
 
-Static public website for Picoin Testnet Alpha.
+Static informational website for Picoin.
 
-## Configure API
+This site does not fetch live network statistics. Protocol stats belong in the explorer/dashboard.
 
-Edit `config.js` before deployment:
+## Links To Update Before Launch
 
-```js
-window.PICOIN_CONFIG = {
-  apiBaseUrl: "https://your-testnet-api.example.com"
-};
+In `index.html`, update the explorer URL when the public explorer domain is ready:
+
+```html
+https://explorer.picoin.science
 ```
 
-For a raw droplet IP during testnet:
+Current public links:
 
-```js
-window.PICOIN_CONFIG = {
-  apiBaseUrl: "http://YOUR_DROPLET_IP:8000"
-};
-```
+- Docs: https://solvency.gitbook.io/picoin
+- X: https://x.com/Picoin_science
+- GitHub: https://github.com/devcoffeecoin/PICOIN
 
 ## Local Preview
 
-From this folder:
-
 ```bash
+cd picoin-web
 python -m http.server 8080
 ```
 
@@ -36,13 +33,4 @@ http://127.0.0.1:8080
 
 ## Hosting
 
-This folder is static and can be deployed to Netlify, Vercel, Cloudflare Pages, GitHub Pages, or any static hosting provider.
-
-## Picoin API CORS
-
-If this website is hosted on another domain, the Picoin node must allow that origin:
-
-```bash
-export PICOIN_CORS_ORIGINS="https://your-site.example.com,http://localhost:8080"
-python -m picoin node start --host 0.0.0.0 --port 8000
-```
+Deploy this folder to Netlify, Vercel, Cloudflare Pages, GitHub Pages, or any static hosting provider.

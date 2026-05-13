@@ -3,10 +3,10 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Picoin | Proof of Pi for Scientific Compute</title>
+    <title>Picoin | Proof of Pi for Useful Scientific Compute</title>
     <meta
       name="description"
-      content="Picoin is a Proof of Pi testnet preparing scientific compute infrastructure with auditable rewards, checkpoints, validators, and a future L2 compute marketplace."
+      content="Picoin is a Proof of Pi protocol designed to connect verifiable mathematical work with useful scientific computation."
     />
     <link rel="icon" href="./assets/picoin-logo.png" />
     <link rel="stylesheet" href="./styles.css" />
@@ -18,102 +18,94 @@
         <span>Picoin</span>
       </a>
       <nav aria-label="Primary navigation">
-        <a href="#testnet">Testnet</a>
+        <a href="#protocol">Protocol</a>
+        <a href="#compute">Compute</a>
         <a href="#economy">Economy</a>
-        <a href="#science">Science</a>
-        <a href="#run">Run</a>
+        <a href="#links">Links</a>
       </nav>
     </header>
 
     <main id="top">
       <section class="hero" aria-labelledby="hero-title">
         <div class="hero-copy">
-          <p class="eyebrow">Proof of Pi · Scientific Compute Infrastructure</p>
-          <h1 id="hero-title">Picoin turns mathematical verification into a foundation for useful science.</h1>
+          <p class="eyebrow">Proof of Pi · Compute for Science</p>
+          <h1 id="hero-title">A useful computation network secured by mathematical verification.</h1>
           <p class="hero-lede">
-            A testnet protocol where miners compute verifiable hexadecimal ranges of pi, validators secure accepted
-            blocks, and scientific compute rewards accumulate for a future L2 marketplace.
+            Picoin transforms Proof of Work into Proof of Pi: miners perform deterministic pi computation,
+            validators verify the work, and the protocol routes value toward scientific compute infrastructure.
           </p>
           <div class="hero-actions">
-            <a class="button primary" href="#testnet">View Testnet</a>
-            <a class="button secondary" href="#run">Run a Node</a>
+            <a class="button primary" href="https://solvency.gitbook.io/picoin" target="_blank" rel="noreferrer">Read Docs</a>
+            <a class="button secondary" href="https://explorer.picoin.science" target="_blank" rel="noreferrer">Open Explorer</a>
           </div>
         </div>
       </section>
 
-      <section id="testnet" class="section">
+      <section id="protocol" class="section intro-section">
         <div class="section-heading">
-          <p class="eyebrow">Live Testnet Alpha</p>
-          <h2>Picoin Testnet Alpha</h2>
-          <span id="apiStatus" class="status-pill warn">Connecting</span>
+          <p class="eyebrow">Protocol</p>
+          <h2>Proof of Pi turns computation into verifiable network security.</h2>
         </div>
-        <div class="metric-grid">
-          <article class="metric">
-            <span>Height</span>
-            <strong id="metricHeight">-</strong>
+        <div class="feature-grid">
+          <article>
+            <h3>Deterministic work</h3>
+            <p>
+              Miners compute assigned hexadecimal ranges of pi using a deterministic algorithm, producing compact
+              hashes and commitments instead of storing large decimal data on-chain.
+            </p>
           </article>
-          <article class="metric">
-            <span>Chain</span>
-            <strong id="metricChain">-</strong>
+          <article>
+            <h3>Independent validation</h3>
+            <p>
+              Validators verify commitments, samples, hashes and block proposals. Quorum-based approval keeps the
+              chain focused on accepted, reproducible computation.
+            </p>
           </article>
-          <article class="metric">
-            <span>Supply</span>
-            <strong id="metricSupply">-</strong>
-          </article>
-          <article class="metric">
-            <span>Validators</span>
-            <strong id="metricValidators">-</strong>
-          </article>
-          <article class="metric">
-            <span>Science Reserve</span>
-            <strong id="metricReserve">-</strong>
-          </article>
-          <article class="metric">
-            <span>Treasury</span>
-            <strong id="metricTreasury">-</strong>
+          <article>
+            <h3>Auditable state</h3>
+            <p>
+              Blocks, rewards, reserves, checkpoints and treasury balances are designed to remain inspectable through
+              explorer and protocol-level audit tools.
+            </p>
           </article>
         </div>
-        <div id="apiErrors" class="api-errors" aria-live="polite"></div>
       </section>
 
-      <section class="section split">
-        <div>
-          <div class="section-heading compact-heading">
-            <p class="eyebrow">Explorer</p>
-            <h2>Latest blocks</h2>
-          </div>
-          <div class="table-wrap">
-            <table>
-              <thead>
-                <tr>
-                  <th>Height</th>
-                  <th>Hash</th>
-                  <th>Miner</th>
-                  <th>Reward</th>
-                  <th>Range</th>
-                </tr>
-              </thead>
-              <tbody id="blocksTable">
-                <tr><td colspan="5" class="empty">Waiting for blocks</td></tr>
-              </tbody>
-            </table>
-          </div>
+      <section id="compute" class="section science-band">
+        <div class="section-heading">
+          <p class="eyebrow">Useful Computation</p>
+          <h2>Scientific compute is part of the protocol design, not an afterthought.</h2>
         </div>
-        <div>
-          <div class="section-heading compact-heading">
-            <p class="eyebrow">Events</p>
-            <h2>Recent activity</h2>
+        <div class="compute-layout">
+          <div class="statement">
+            <p>
+              Picoin extends beyond mathematical mining with a Science Compute Layer: staking-based access,
+              job accounting, reward reserves, verification states, and lightweight on-chain records for scientific
+              and AI compute workflows.
+            </p>
+            <p>
+              The L1 stores only what should be permanent: stake, access, hashes, metadata references, job states,
+              compute units, reserve accounting and payment rules.
+            </p>
           </div>
-          <div id="eventsList" class="event-list">
-            <div class="empty">Waiting for events</div>
+          <div class="link-stack">
+            <a href="https://solvency.gitbook.io/picoin/core-concepts/useful-computation" target="_blank" rel="noreferrer">
+              Useful Computation
+            </a>
+            <a href="https://solvency.gitbook.io/picoin/core-concepts/scientific-compute" target="_blank" rel="noreferrer">
+              Scientific Compute
+            </a>
+            <a href="https://solvency.gitbook.io/picoin/core-concepts/science-compute-layer" target="_blank" rel="noreferrer">
+              Science Compute Layer
+            </a>
           </div>
         </div>
       </section>
 
       <section id="economy" class="section">
         <div class="section-heading">
-          <p class="eyebrow">Protocol Economy</p>
-          <h2>Continuous emission, no large premine</h2>
+          <p class="eyebrow">Economy</p>
+          <h2>Continuous emission aligned with miners, validators and science.</h2>
         </div>
         <div class="allocation-grid">
           <article>
@@ -135,52 +127,59 @@
         </div>
       </section>
 
-      <section id="science" class="section science-band">
+      <section class="section principles-section">
         <div class="section-heading">
-          <p class="eyebrow">Science Compute Access Layer</p>
-          <h2>L1 accounting for future scientific and AI compute</h2>
+          <p class="eyebrow">Design Principles</p>
+          <h2>Built for clarity, verification and long-term scientific utility.</h2>
         </div>
-        <div class="feature-grid">
+        <div class="principle-list">
           <article>
-            <h3>Locked reserve</h3>
-            <p>The 20% science allocation accumulates by block and remains locked until the future L2 marketplace is activated.</p>
+            <span>01</span>
+            <h3>Do not store heavy compute data on-chain.</h3>
+            <p>Use hashes, metadata pointers, proofs and state transitions for durable L1 records.</p>
           </article>
           <article>
-            <h3>Verified jobs only</h3>
-            <p>L1 stores hashes, stake, job states, compute units, and payout rules without executing heavy AI workloads.</p>
+            <span>02</span>
+            <h3>Pay only for accepted work.</h3>
+            <p>Rewards are tied to completed, verified and accepted computation paths.</p>
           </article>
           <article>
-            <h3>Time-locked treasury</h3>
-            <p>The 3% development fund unlocks by 90-day epochs for protocol, audits, infrastructure, grants, and tooling.</p>
+            <span>03</span>
+            <h3>Keep science funding auditable.</h3>
+            <p>The reserve and treasury are separated so marketplace rewards and protocol development remain clear.</p>
           </article>
         </div>
       </section>
 
-      <section id="run" class="section run-section">
+      <section id="links" class="section links-section">
         <div class="section-heading">
-          <p class="eyebrow">Testnet Participation</p>
-          <h2>Run Picoin locally or on a droplet</h2>
+          <p class="eyebrow">Links</p>
+          <h2>Explore Picoin.</h2>
         </div>
-        <div class="command-grid">
-          <pre><code>git clone https://github.com/devcoffeecoin/PICOIN.git
-cd PICOIN/picoin-proof-of-pi
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt</code></pre>
-          <pre><code>python -m picoin node start --host 0.0.0.0 --port 8000
-python -m picoin testnet bootstrap
-python -m picoin testnet continuous --miners 1 --loops 20 --faucet 0
-python -m picoin node audit</code></pre>
+        <div class="resource-grid">
+          <a href="https://explorer.picoin.science" target="_blank" rel="noreferrer">
+            <span>Explorer</span>
+            <strong>Blocks, validators, treasury and reserve.</strong>
+          </a>
+          <a href="https://solvency.gitbook.io/picoin" target="_blank" rel="noreferrer">
+            <span>Docs</span>
+            <strong>Protocol concepts and technical documentation.</strong>
+          </a>
+          <a href="https://x.com/Picoin_science" target="_blank" rel="noreferrer">
+            <span>X</span>
+            <strong>Project updates and public announcements.</strong>
+          </a>
+          <a href="https://github.com/devcoffeecoin/PICOIN" target="_blank" rel="noreferrer">
+            <span>GitHub</span>
+            <strong>Open-source protocol implementation.</strong>
+          </a>
         </div>
       </section>
     </main>
 
     <footer class="site-footer">
-      <span>Picoin Testnet Alpha</span>
+      <span>Picoin</span>
       <span>Proof of Pi · Compute for Science</span>
     </footer>
-
-    <script src="./config.js"></script>
-    <script src="./app.js"></script>
   </body>
 </html>
