@@ -633,6 +633,7 @@ class ConsensusReplayResponse(BaseModel):
     skipped: int
     headers_imported: int = 0
     headers_skipped: int = 0
+    normalized: int = 0
     errors: list[str] = Field(default_factory=list)
 
 

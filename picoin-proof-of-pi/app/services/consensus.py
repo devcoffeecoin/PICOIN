@@ -409,12 +409,14 @@ def finalize_proposal(proposal_id: str, connection: Any | None = None) -> dict[s
 
 
 def replay_finalized_blocks(limit: int = 100) -> dict[str, Any]:
+    normalized = 0
     imported = 0
     skipped = 0
     headers_imported = 0
     headers_skipped = 0
     errors: list[str] = []
     with get_connection() as connection:
+        normalized += _mark_existing_block_proposals_imported(connection)
         rows = connection.execute(
             """
             SELECT p.proposal_id, p.payload
@@ -451,8 +453,29 @@ def replay_finalized_blocks(limit: int = 100) -> dict[str, Any]:
         "skipped": skipped,
         "headers_imported": headers_imported,
         "headers_skipped": headers_skipped,
+        "normalized": normalized,
         "errors": errors,
     }
+
+
+def _mark_existing_block_proposals_imported(connection: Any) -> int:
+    timestamp = utc_now()
+    cursor = connection.execute(
+        """
+        UPDATE consensus_block_proposals
+        SET status = 'imported',
+            rejection_reason = COALESCE(rejection_reason, 'block already imported locally'),
+            updated_at = ?
+        WHERE status NOT IN ('imported', 'rejected')
+          AND EXISTS (
+              SELECT 1
+              FROM blocks
+              WHERE blocks.block_hash = consensus_block_proposals.block_hash
+          )
+        """,
+        (timestamp,),
+    )
+    return int(cursor.rowcount)
 
 
 def _replay_pending_block_headers(connection: Any, limit: int) -> dict[str, Any]:
