@@ -13,6 +13,7 @@
         <h1>Dashboard Local</h1>
       </div>
       <div class="topbar-actions">
+        <span id="connectionBadge" class="status-pill warn">conectando</span>
         <span id="nodeStatusBadge" class="status-pill">node</span>
         <span id="networkBadge" class="badge">network</span>
         <button id="refreshButton" type="button">Actualizar</button>
@@ -47,6 +48,33 @@
         </article>
       </section>
 
+      <div id="dashboardErrors" class="connection-errors" aria-live="polite"></div>
+
+      <section class="panel wide explorer-panel">
+        <div class="panel-header">
+          <h2>Explorador de bloques</h2>
+          <span id="chainStatus" class="status-pill">sin datos</span>
+        </div>
+        <div class="table-wrap">
+          <table class="blocks-table">
+            <thead>
+              <tr>
+                <th>Height</th>
+                <th>Hash</th>
+                <th>Prev</th>
+                <th>Minero</th>
+                <th>Rango</th>
+                <th>Reward</th>
+                <th>TX</th>
+                <th>State root</th>
+                <th>Timestamp</th>
+              </tr>
+            </thead>
+            <tbody id="blocksTable"></tbody>
+          </table>
+        </div>
+      </section>
+
       <section class="panel wide">
         <div class="panel-header">
           <h2>Estado del nodo</h2>
@@ -70,28 +98,6 @@
           <span id="eventsCount" class="status-pill">0</span>
         </div>
         <div id="eventsList" class="event-list"></div>
-      </section>
-
-      <section class="panel wide">
-        <div class="panel-header">
-          <h2>Explorador de bloques</h2>
-          <span id="chainStatus" class="status-pill">sin datos</span>
-        </div>
-        <div class="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Height</th>
-                <th>Minero</th>
-                <th>Rango</th>
-                <th>Reward</th>
-                <th>Dificultad</th>
-                <th>Hash</th>
-              </tr>
-            </thead>
-            <tbody id="blocksTable"></tbody>
-          </table>
-        </div>
       </section>
 
       <section class="panel">
@@ -121,7 +127,7 @@
           </label>
           <label>
             Monto
-            <input id="faucetAmount" name="amount" type="number" min="0.000001" step="0.000001" value="10" required />
+            <input id="faucetAmount" name="amount" type="number" min="0.000001" max="3.1416" step="0.000001" value="3.1416" required />
           </label>
           <button type="submit">Enviar faucet</button>
         </form>

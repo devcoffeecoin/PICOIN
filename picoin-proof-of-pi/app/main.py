@@ -31,5 +31,10 @@ def dashboard() -> FileResponse:
     return FileResponse(WEB_DIR / "dashboard.html")
 
 
+@app.get("/dashboard/", include_in_schema=False)
+def dashboard_slash() -> FileResponse:
+    return dashboard()
+
+
 app.include_router(router)
 app.mount("/dashboard/static", StaticFiles(directory=STATIC_DIR), name="dashboard-static")

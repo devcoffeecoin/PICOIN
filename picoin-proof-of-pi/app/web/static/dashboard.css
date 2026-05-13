@@ -122,7 +122,7 @@ button:disabled {
 
 .layout {
   display: grid;
-  grid-template-columns: minmax(0, 1.35fr) minmax(360px, 0.65fr);
+  grid-template-columns: minmax(0, 1.55fr) minmax(340px, 0.45fr);
   gap: 16px;
   padding: 20px 32px 36px;
 }
@@ -172,6 +172,34 @@ button:disabled {
   grid-column: span 1;
 }
 
+.explorer-panel,
+.connection-errors {
+  grid-column: 1 / -1;
+}
+
+.connection-errors {
+  display: grid;
+  gap: 8px;
+}
+
+.connection-errors:empty {
+  display: none;
+}
+
+.error-row {
+  border: 1px solid #f2c8bf;
+  border-left: 4px solid var(--red);
+  border-radius: 8px;
+  background: #fff7f5;
+  color: #6f241c;
+  padding: 10px 12px;
+  font-size: 13px;
+}
+
+.explorer-panel {
+  border-color: #b9d6d2;
+}
+
 .table-wrap {
   width: 100%;
   overflow-x: auto;
@@ -182,6 +210,10 @@ table {
   width: 100%;
   min-width: 760px;
   border-collapse: collapse;
+}
+
+.blocks-table {
+  min-width: 1120px;
 }
 
 th,
