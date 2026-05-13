@@ -293,6 +293,14 @@ cd /opt/picoin/picoin-proof-of-pi
 
 Para conectar un segundo droplet, configura `PICOIN_BOOTSTRAP_PEERS=http://BOOTSTRAP_PUBLIC_IP:8000`, usa un `PICOIN_NODE_ID` unico, reinicia el servicio y ejecuta `python -m picoin node reconcile` en ambos nodos.
 
+Para sincronizar un nodo atrasado en una sola operacion:
+
+```bash
+python -m picoin node catch-up --peer http://BOOTSTRAP_PUBLIC_IP:8000
+```
+
+`node catch-up` ejecuta rondas de reconcile, consensus replay, sync-status y audit. Termina con `status=ok` cuando no quedan bloques pendientes y la auditoria economica es valida.
+
 ## Correr Un Minero
 
 En otra terminal:
@@ -1525,6 +1533,7 @@ python -m picoin node sync-status
 python -m picoin node doctor
 python -m picoin node reconcile
 python -m picoin node reconcile --peer http://peer-node:8000
+python -m picoin node catch-up --peer http://peer-node:8000
 python -m picoin node checkpoint create --height 10
 python -m picoin node checkpoint latest
 python -m picoin node checkpoint verify --height 10

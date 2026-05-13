@@ -142,9 +142,12 @@ For continuous mining:
 
 ```bash
 .venv/bin/python -m picoin node reconcile
+.venv/bin/python -m picoin node catch-up --peer http://BOOTSTRAP_PUBLIC_IP:8000
 .venv/bin/python -m picoin node peers
 .venv/bin/python -m picoin node sync-status
 ```
+
+`node catch-up` runs reconcile, consensus replay, sync-status and audit in bounded rounds. It should end with `status=ok`, `pending_replay_blocks=0` and `audit_valid=true`.
 
 Both nodes should eventually report compatible `network_id`, `chain_id`, `genesis_hash`, latest height and latest block hash.
 
