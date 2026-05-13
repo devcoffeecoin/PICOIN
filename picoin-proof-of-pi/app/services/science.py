@@ -771,7 +771,10 @@ def get_science_events(limit: int = 20) -> list[dict[str, Any]]:
 
 
 def science_events_for_node(connection: Any, limit: int) -> list[dict[str, Any]]:
-    return _science_events_from_connection(connection, limit)
+    events = _science_events_from_connection(connection, limit)
+    for event in events:
+        event["id"] = f"science:{event['id']}"
+    return events
 
 
 def _science_events_from_connection(connection: Any, limit: int) -> list[dict[str, Any]]:
