@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Picoin Explorer</title>
+    <meta name="description" content="Picoin block explorer for blocks, validators, events, treasury and science reserve." />
+    <link rel="icon" href="./assets/picoin-logo.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body class="explorer-page">
+    <header class="site-header">
+      <a class="brand" href="./index.html" aria-label="Picoin home">
+        <img src="./assets/picoin-logo.png" alt="Picoin logo" />
+        <span>Picoin</span>
+      </a>
+      <nav aria-label="Explorer navigation">
+        <a href="./index.html">Home</a>
+        <a href="#blocks">Blocks</a>
+        <a href="#validators">Validators</a>
+        <a href="#events">Events</a>
+        <a href="https://solvency.gitbook.io/picoin" target="_blank" rel="noreferrer">Docs</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="explorer-hero section">
+        <div class="section-heading">
+          <p class="eyebrow">Explorer</p>
+          <h1>Picoin Explorer</h1>
+          <span id="apiStatus" class="status-pill warn">Connecting</span>
+        </div>
+        <div class="explorer-metrics">
+          <article>
+            <span>Height</span>
+            <strong id="metricHeight">-</strong>
+          </article>
+          <article>
+            <span>Chain</span>
+            <strong id="metricChain">-</strong>
+          </article>
+          <article>
+            <span>Supply</span>
+            <strong id="metricSupply">-</strong>
+          </article>
+          <article>
+            <span>Validators</span>
+            <strong id="metricValidators">-</strong>
+          </article>
+          <article>
+            <span>Science Reserve</span>
+            <strong id="metricReserve">-</strong>
+          </article>
+          <article>
+            <span>Treasury</span>
+            <strong id="metricTreasury">-</strong>
+          </article>
+        </div>
+        <div id="apiErrors" class="api-errors" aria-live="polite"></div>
+      </section>
+
+      <section id="blocks" class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Blocks</p>
+          <h2>Latest accepted blocks</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Height</th>
+                <th>Hash</th>
+                <th>Previous</th>
+                <th>Miner</th>
+                <th>Range</th>
+                <th>Reward</th>
+                <th>Timestamp</th>
+              </tr>
+            </thead>
+            <tbody id="blocksTable">
+              <tr><td colspan="7" class="empty">Waiting for blocks</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="validators" class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Validators</p>
+          <h2>Validator set</h2>
+        </div>
+        <div id="validatorsGrid" class="validator-grid">
+          <div class="empty">Waiting for validators</div>
+        </div>
+      </section>
+
+      <section id="events" class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Events</p>
+          <h2>Recent protocol activity</h2>
+        </div>
+        <div id="eventsList" class="event-list">
+          <div class="empty">Waiting for events</div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>Picoin Explorer</span>
+      <span>Proof of Pi · Compute for Science</span>
+    </footer>
+
+    <script src="./explorer-config.js"></script>
+    <script src="./explorer.js"></script>
+  </body>
+</html>

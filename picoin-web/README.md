@@ -2,21 +2,26 @@
 
 Static informational website for Picoin.
 
-This site does not fetch live network statistics. Protocol stats belong in the explorer/dashboard.
+The home page is informational. Live protocol statistics belong in `explorer.html`.
 
 ## Links To Update Before Launch
 
-In `index.html`, update the explorer URL when the public explorer domain is ready:
-
-```html
-https://explorer.picoin.science
-```
-
 Current public links:
 
+- Explorer page: `explorer.html`
 - Docs: https://solvency.gitbook.io/picoin
 - X: https://x.com/Picoin_science
 - GitHub: https://github.com/devcoffeecoin/PICOIN
+
+## Explorer API
+
+Edit `explorer-config.js` before deployment:
+
+```js
+window.PICOIN_EXPLORER_CONFIG = {
+  apiBaseUrl: "https://your-public-picoin-api.example.com"
+};
+```
 
 ## Local Preview
 
