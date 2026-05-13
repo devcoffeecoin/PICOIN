@@ -375,6 +375,46 @@ def test_apply_snapshot_state_bootstraps_balances_for_fast_sync(tmp_path, monkey
     assert audit["supply"]["economic_base_total"] == pytest.approx(snapshot["checkpoint"]["total_balance"])
 
 
+def test_init_db_does_not_reinsert_genesis_ledger_after_snapshot_apply(tmp_path, monkeypatch) -> None:
+    source_db_path = tmp_path / "snapshot-init-cleanup-source.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", source_db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", source_db_path)
+    init_db(source_db_path)
+
+    miner_key = generate_keypair()
+    miner = register_miner("snapshot-init-cleanup-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    snapshot = export_canonical_snapshot(height=1)
+
+    target_db_path = tmp_path / "snapshot-init-cleanup-target.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", target_db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", target_db_path)
+    init_db(target_db_path)
+    imported = import_canonical_snapshot(snapshot, source="peer-a")
+    apply_imported_snapshot_state(imported["snapshot"]["snapshot_hash"])
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO ledger_entries (
+                account_id, account_type, amount, balance_after, entry_type,
+                block_height, related_id, description, created_at
+            )
+            VALUES ('genesis', 'genesis', ?, ?, 'genesis', 0, 'genesis', 'legacy duplicate genesis', ?)
+            """,
+            (3.1416, 3.1416, "1970-01-01T00:00:00+00:00"),
+        )
+
+    init_db(target_db_path)
+    audit = get_full_economic_audit()
+
+    assert audit["valid"] is True
+    assert "genesis" not in audit["ledger"]["by_entry_type"]
+    assert audit["ledger"]["by_entry_type"]["snapshot_state_import"] == pytest.approx(
+        snapshot["checkpoint"]["total_balance"]
+    )
+
+
 def test_reconcile_peer_fetches_blocks_after_active_snapshot_base(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "snapshot-reconcile-source.sqlite3")
 
