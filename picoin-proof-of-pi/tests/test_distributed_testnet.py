@@ -7,7 +7,15 @@ from app.core.pi import calculate_pi_segment
 from app.core.settings import CHAIN_ID, GENESIS_HASH, NETWORK_ID, PROTOCOL_VERSION
 from app.core.signatures import build_submission_signature_payload, generate_keypair, sign_payload
 from app.db.database import get_connection, init_db
-from app.services.mining import create_next_task, get_balance_amount, get_block, register_miner, submit_task, verify_chain
+from app.services.mining import (
+    create_next_task,
+    get_balance_amount,
+    get_block,
+    get_full_economic_audit,
+    register_miner,
+    submit_task,
+    verify_chain,
+)
 from app.services.network import (
     NetworkError,
     get_transaction,
@@ -350,14 +358,19 @@ def test_apply_snapshot_state_bootstraps_balances_for_fast_sync(tmp_path, monkey
     applied = apply_imported_snapshot_state(imported["snapshot"]["snapshot_hash"])
     status = get_sync_status()
     chain = verify_chain()
+    audit = get_full_economic_audit()
 
     assert applied["applied"] is True
     assert applied["balances_applied"] == snapshot["checkpoint"]["balances_count"]
     assert applied["snapshot"]["state_applied"] is True
     assert status["active_snapshot_base"]["state_applied"] is True
+    assert status["effective_latest_block_height"] == 1
+    assert status["effective_latest_block_hash"] == snapshot["checkpoint"]["block_hash"]
     assert get_balance_amount(miner["miner_id"]) == pytest.approx(expected_miner_balance)
     assert chain["valid"] is True
     assert chain["latest_block_hash"] == snapshot["checkpoint"]["block_hash"]
+    assert audit["valid"] is True
+    assert audit["supply"]["economic_base_total"] == pytest.approx(snapshot["checkpoint"]["total_balance"])
 
 
 def test_reconcile_peer_fetches_blocks_after_active_snapshot_base(tmp_path, monkeypatch) -> None:

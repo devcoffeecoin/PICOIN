@@ -80,6 +80,7 @@ from app.services.consensus import record_local_block_proposal
 from app.services.science import record_science_reserve_for_block, science_events_for_node
 from app.services.state import (
     active_snapshot_base,
+    active_snapshot_base_in_connection,
     calculate_state_root,
     maybe_create_checkpoint_in_connection,
     update_block_state_root,
@@ -1402,6 +1403,13 @@ def get_full_economic_audit() -> dict[str, Any]:
             "total",
         )
         account_mismatches = _account_balance_mismatches(connection)
+        snapshot_base = active_snapshot_base_in_connection(connection)
+        snapshot_base_total = (
+            round(float(snapshot_base.get("total_balance") or 0), 8)
+            if snapshot_base and snapshot_base.get("state_applied")
+            else 0.0
+        )
+        economic_base_total = snapshot_base_total if snapshot_base_total > 0 else GENESIS_SUPPLY
 
         block_rewards = _sum_query(connection, "SELECT COALESCE(SUM(reward), 0) AS total FROM blocks")
         validator_rewards = _sum_query(
@@ -1470,7 +1478,7 @@ def get_full_economic_audit() -> dict[str, Any]:
         )
 
     expected_total_balances = round(
-        GENESIS_SUPPLY
+        economic_base_total
         + block_rewards
         + validator_rewards
         + audit_rewards
@@ -1559,6 +1567,8 @@ def get_full_economic_audit() -> dict[str, Any]:
         "tolerance": ECONOMIC_AUDIT_TOLERANCE,
         "supply": {
             "genesis_supply": GENESIS_SUPPLY,
+            "economic_base_total": economic_base_total,
+            "active_snapshot_base": snapshot_base,
             "expected_total_balances": expected_total_balances,
             "actual_total_balances": actual_total_balances,
             "circulating_supply": supply["circulating_supply"],
