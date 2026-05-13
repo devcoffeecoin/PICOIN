@@ -92,7 +92,16 @@ def propose_block(block: dict[str, Any], proposer_node_id: str, gossip: bool = T
                 status = "known"
                 reason = "block already exists locally"
             else:
-                raise ConsensusError(409, "proposal conflicts with local finalized chain")
+                active_base = active_snapshot_base_in_connection(connection)
+                if (
+                    active_base is not None
+                    and int(active_base["height"]) == normalized["height"]
+                    and active_base["block_hash"] == normalized["block_hash"]
+                ):
+                    status = "known"
+                    reason = "block already covered by active snapshot base"
+                else:
+                    raise ConsensusError(409, "proposal conflicts with local finalized chain")
         elif normalized["height"] == tip["height"] + 1 and normalized["previous_hash"] != tip["block_hash"]:
             raise ConsensusError(409, "proposal previous_hash does not match local chain tip")
         elif normalized["height"] > tip["height"] + 1:
@@ -402,6 +411,9 @@ def finalize_proposal(proposal_id: str, connection: Any | None = None) -> dict[s
 def replay_finalized_blocks(limit: int = 100) -> dict[str, Any]:
     imported = 0
     skipped = 0
+    headers_imported = 0
+    headers_skipped = 0
+    errors: list[str] = []
     with get_connection() as connection:
         rows = connection.execute(
             """
@@ -428,7 +440,78 @@ def replay_finalized_blocks(limit: int = 100) -> dict[str, Any]:
                 )
             else:
                 skipped += 1
-    return {"imported": imported, "skipped": skipped}
+        remaining = max(int(limit) - imported - skipped, 0)
+        if remaining:
+            header_result = _replay_pending_block_headers(connection, remaining)
+            headers_imported = header_result["imported"]
+            headers_skipped = header_result["skipped"]
+            errors.extend(header_result["errors"])
+    return {
+        "imported": imported,
+        "skipped": skipped,
+        "headers_imported": headers_imported,
+        "headers_skipped": headers_skipped,
+        "errors": errors,
+    }
+
+
+def _replay_pending_block_headers(connection: Any, limit: int) -> dict[str, Any]:
+    rows = connection.execute(
+        """
+        SELECT block_hash, height, payload
+        FROM network_block_headers
+        WHERE status = 'pending_replay'
+        ORDER BY height ASC, received_at ASC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    imported = 0
+    skipped = 0
+    errors: list[str] = []
+    for row in rows:
+        block_hash = row["block_hash"]
+        block = json.loads(row["payload"])
+        connection.execute("SAVEPOINT replay_pending_header")
+        try:
+            did_import = _import_finalized_block(connection, block, f"header:{block_hash}")
+            connection.execute("RELEASE SAVEPOINT replay_pending_header")
+        except Exception as exc:
+            connection.execute("ROLLBACK TO SAVEPOINT replay_pending_header")
+            connection.execute("RELEASE SAVEPOINT replay_pending_header")
+            skipped += 1
+            reason = str(exc)
+            errors.append(f"header {block_hash}: {reason}")
+            connection.execute(
+                """
+                UPDATE network_block_headers
+                SET reason = ?
+                WHERE block_hash = ?
+                """,
+                (reason, block_hash),
+            )
+            continue
+        if did_import:
+            imported += 1
+            connection.execute(
+                """
+                UPDATE network_block_headers
+                SET status = 'imported', reason = 'imported via canonical header replay'
+                WHERE block_hash = ?
+                """,
+                (block_hash,),
+            )
+        else:
+            skipped += 1
+            connection.execute(
+                """
+                UPDATE network_block_headers
+                SET status = 'known', reason = 'block already known locally'
+                WHERE block_hash = ?
+                """,
+                (block_hash,),
+            )
+    return {"imported": imported, "skipped": skipped, "errors": errors}
 
 
 def select_fork_choice(height: int | None = None, connection: Any | None = None) -> dict[str, Any] | None:
@@ -657,7 +740,7 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
     total_block_reward = round(float(block["reward"]) / PROOF_OF_PI_REWARD_PERCENT, 8)
     record_science_reserve_for_block(connection, block["height"], total_block_reward)
     record_scientific_development_treasury_for_block(connection, block["height"], total_block_reward)
-    _apply_distributed_validator_rewards(connection, block["height"], proposal_id, total_block_reward, timestamp)
+    _apply_distributed_validator_rewards(connection, block, proposal_id, total_block_reward, timestamp)
     state_root = update_block_state_root(connection, block["height"], timestamp)
     if block.get("state_root") and block["state_root"] != state_root:
         raise ConsensusError(422, "state_root mismatch after canonical replay")
@@ -667,27 +750,36 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
 
 def _apply_distributed_validator_rewards(
     connection: Any,
-    block_height: int,
+    block: dict[str, Any],
     proposal_id: str,
     total_block_reward: float,
     timestamp: str,
 ) -> None:
-    validator_rows = connection.execute(
-        """
-        SELECT validator_id
-        FROM consensus_votes
-        WHERE proposal_id = ? AND approved = 1
-        ORDER BY created_at ASC
-        LIMIT ?
-        """,
-        (proposal_id, REQUIRED_VALIDATOR_APPROVALS),
-    ).fetchall()
-    if not validator_rows:
+    block_height = int(block["height"])
+    payload_reward = block.get("validator_reward") if isinstance(block.get("validator_reward"), dict) else {}
+    validator_ids = list(payload_reward.get("validator_ids") or [])
+    if not validator_ids:
+        validator_rows = connection.execute(
+            """
+            SELECT validator_id
+            FROM consensus_votes
+            WHERE proposal_id = ? AND approved = 1
+            ORDER BY created_at ASC
+            LIMIT ?
+            """,
+            (proposal_id, REQUIRED_VALIDATOR_APPROVALS),
+        ).fetchall()
+        validator_ids = [row["validator_id"] for row in validator_rows]
+    if not validator_ids:
         return
-    pool = round(total_block_reward * VALIDATOR_REWARD_PERCENT_OF_BLOCK, 8)
-    per_validator = round(pool / len(validator_rows), 8)
-    for row in validator_rows:
-        validator_id = row["validator_id"]
+    pool = round(float(payload_reward.get("pool") or 0), 8)
+    if pool <= 0:
+        pool = round(total_block_reward * VALIDATOR_REWARD_PERCENT_OF_BLOCK, 8)
+    per_validator = round(float(payload_reward.get("per_validator") or 0), 8)
+    if per_validator <= 0:
+        per_validator = round(pool / len(validator_ids), 8)
+    for validator_id in validator_ids:
+        _ensure_validator(connection, validator_id, timestamp)
         _apply_account_delta(
             connection,
             validator_id,
@@ -707,6 +799,19 @@ def _apply_distributed_validator_rewards(
             """,
             (timestamp, validator_id),
         )
+
+
+def _ensure_validator(connection: Any, validator_id: str, timestamp: str) -> None:
+    existing = connection.execute("SELECT 1 FROM validators WHERE validator_id = ?", (validator_id,)).fetchone()
+    if existing is not None:
+        return
+    connection.execute(
+        """
+        INSERT INTO validators (validator_id, name, public_key, registered_at, last_seen_at)
+        VALUES (?, ?, '', ?, ?)
+        """,
+        (validator_id, f"distributed:{validator_id}", timestamp, timestamp),
+    )
 
 
 def _apply_account_delta(

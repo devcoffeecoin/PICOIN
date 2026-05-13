@@ -631,6 +631,9 @@ class ConsensusVoteResponse(BaseModel):
 class ConsensusReplayResponse(BaseModel):
     imported: int
     skipped: int
+    headers_imported: int = 0
+    headers_skipped: int = 0
+    errors: list[str] = Field(default_factory=list)
 
 
 class ConsensusStatusResponse(BaseModel):

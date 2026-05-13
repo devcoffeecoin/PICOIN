@@ -7,6 +7,7 @@ from app.core.pi import calculate_pi_segment
 from app.core.settings import CHAIN_ID, GENESIS_HASH, NETWORK_ID, PROTOCOL_VERSION
 from app.core.signatures import build_submission_signature_payload, generate_keypair, sign_payload
 from app.db.database import get_connection, init_db
+from app.services.consensus import replay_finalized_blocks
 from app.services.mining import (
     create_next_task,
     get_balance_amount,
@@ -18,6 +19,7 @@ from app.services.mining import (
 )
 from app.services.network import (
     NetworkError,
+    get_blocks_since,
     get_transaction,
     get_sync_status,
     heartbeat_peer,
@@ -411,7 +413,20 @@ def test_reconcile_peer_fetches_blocks_after_active_snapshot_base(tmp_path, monk
         if url.endswith("/mempool?limit=100"):
             return FakeResponse([])
         if url.endswith("/consensus/proposals?limit=100"):
-            return FakeResponse([])
+            return FakeResponse(
+                [
+                    {
+                        "proposal_id": "snapshot-covered",
+                        "proposer_node_id": "peer-a",
+                        "payload": {
+                            "height": 1,
+                            "previous_hash": snapshot["checkpoint"]["previous_hash"],
+                            "block_hash": snapshot["checkpoint"]["block_hash"],
+                            "timestamp": "2026-05-12T00:00:00+00:00",
+                        },
+                    }
+                ]
+            )
         if "/node/sync/blocks?from_height=1" in url:
             return FakeResponse(
                 {
@@ -435,6 +450,38 @@ def test_reconcile_peer_fetches_blocks_after_active_snapshot_base(tmp_path, monk
     assert result["sync_from_height"] == 1
     assert result["blocks_seen"] == 1
     assert result["blocks_imported"] == 1
+    assert result["proposals_seen"] == 1
+    assert result["proposals_imported"] == 0
+    assert result["errors"] == []
+
+
+def test_replay_imports_pending_headers_after_active_snapshot_base(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "snapshot-header-replay-source.sqlite3")
+
+    miner_key = generate_keypair()
+    miner = register_miner("snapshot-header-replay-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    snapshot = export_canonical_snapshot(height=1)
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    next_block = get_blocks_since(1)["blocks"][0]
+    expected_height = next_block["height"]
+    expected_hash = next_block["block_hash"]
+
+    _init_network_db(tmp_path, monkeypatch, "snapshot-header-replay-target.sqlite3")
+    imported = import_canonical_snapshot(snapshot, source="peer-a")
+    apply_imported_snapshot_state(imported["snapshot"]["snapshot_hash"])
+    received = receive_block_header(next_block, source_peer_id="peer-a")
+    replay = replay_finalized_blocks()
+    status = get_sync_status()
+    audit = get_full_economic_audit()
+
+    assert received["status"] == "pending_replay"
+    assert replay["headers_imported"] == 1
+    assert replay["errors"] == []
+    assert status["latest_block_height"] == expected_height
+    assert status["latest_block_hash"] == expected_hash
+    assert status["effective_latest_block_height"] == expected_height
+    assert audit["valid"] is True
 
 
 def test_canonical_snapshot_import_rejects_tampered_balances(tmp_path, monkeypatch) -> None:

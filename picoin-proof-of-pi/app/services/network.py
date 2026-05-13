@@ -228,6 +228,7 @@ def get_sync_status() -> dict[str, Any]:
 def get_blocks_since(from_height: int, limit: int = 100) -> dict[str, Any]:
     if from_height < 0:
         raise NetworkError(422, "from_height must be >= 0")
+    blocks = []
     with get_connection() as connection:
         rows = connection.execute(
             """
@@ -243,15 +244,40 @@ def get_blocks_since(from_height: int, limit: int = 100) -> dict[str, Any]:
             """,
             (from_height, limit),
         ).fetchall()
-    blocks = []
-    for row in rows:
-        block = row_to_dict(row) or {}
-        block["samples"] = _decode_json(block.get("samples"), [])
-        block["tx_hashes"] = _decode_json(block.get("tx_hashes"), [])
-        block["tx_count"] = int(block.get("tx_count") or 0)
-        block["fee_reward"] = round(float(block.get("fee_reward") or 0), 8)
-        block["fraudulent"] = bool(block.get("fraudulent"))
-        blocks.append(block)
+        for row in rows:
+            block = row_to_dict(row) or {}
+            block["samples"] = _decode_json(block.get("samples"), [])
+            block["tx_hashes"] = _decode_json(block.get("tx_hashes"), [])
+            block["tx_count"] = int(block.get("tx_count") or 0)
+            block["fee_reward"] = round(float(block.get("fee_reward") or 0), 8)
+            block["fraudulent"] = bool(block.get("fraudulent"))
+            validator_rows = connection.execute(
+                """
+                SELECT account_id, amount
+                FROM ledger_entries
+                WHERE block_height = ? AND entry_type = 'validator_reward'
+                ORDER BY id ASC
+                """,
+                (block["height"],),
+            ).fetchall()
+            validator_ids = [item["account_id"] for item in validator_rows]
+            validator_pool = round(sum(float(item["amount"]) for item in validator_rows), 8)
+            block["validator_reward"] = {
+                "pool": validator_pool,
+                "per_validator": round(validator_pool / len(validator_ids), 8) if validator_ids else 0.0,
+                "validator_ids": validator_ids,
+            }
+            tx_rows = connection.execute(
+                """
+                SELECT *
+                FROM mempool_transactions
+                WHERE block_height = ?
+                ORDER BY created_at ASC
+                """,
+                (block["height"],),
+            ).fetchall()
+            block["transactions"] = [_decode_tx(row_to_dict(tx_row)) for tx_row in tx_rows]
+            blocks.append(block)
     return {"from_height": from_height, "count": len(blocks), "blocks": blocks}
 
 
@@ -535,8 +561,11 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
         proposals = requests.get(f"{peer_address}/consensus/proposals?limit=100", timeout=GOSSIP_TIMEOUT_SECONDS).json()
         for proposal in proposals:
             result["proposals_seen"] += 1
+            payload = proposal.get("payload") or {}
+            if int(payload.get("height") or 0) <= int(result["sync_from_height"]):
+                continue
             try:
-                propose_block(proposal["payload"], proposal["proposer_node_id"], gossip=False)
+                propose_block(payload, proposal["proposer_node_id"], gossip=False)
                 result["proposals_imported"] += 1
             except Exception as exc:
                 result["errors"].append(f"proposal {proposal.get('proposal_id')}: {exc}")
