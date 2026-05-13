@@ -1,0 +1,160 @@
+# Picoin Public Testnet Deployment Kit v0.18
+
+This kit turns the current Picoin node into a repeatable public testnet deployment for Ubuntu/DigitalOcean.
+
+It does not activate Science Compute L2, AI execution, bridges, smart contracts or mainnet economics. The Science Compute Reserve remains locked by default.
+
+## Recommended Droplet
+
+For the first bootstrap node:
+
+- Ubuntu 24.04 LTS
+- Basic Premium Intel or AMD
+- 1 vCPU / 2 GB RAM / 70 GB disk is enough for early testnet
+- Open inbound TCP `22` and `8000`
+- Keep the public website on separate hosting
+
+For longer-running public nodes, move to 2 vCPU / 4 GB RAM before inviting external miners.
+
+## Install
+
+```bash
+sudo apt update
+sudo apt install -y git python3 python3-venv python3-pip sqlite3 curl ufw
+sudo useradd --system --create-home --home-dir /opt/picoin --shell /bin/bash picoin
+sudo -u picoin git clone https://github.com/devcoffeecoin/PICOIN.git /opt/picoin/PICOIN
+sudo -u picoin bash -lc 'cd /opt/picoin/PICOIN/picoin-proof-of-pi && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt'
+sudo -u picoin bash -lc 'ln -s /opt/picoin/PICOIN/picoin-proof-of-pi /opt/picoin/picoin-proof-of-pi'
+sudo PICOIN_REPO_DIR=/opt/picoin/picoin-proof-of-pi /opt/picoin/picoin-proof-of-pi/deploy/scripts/install-systemd-service.sh
+```
+
+Edit the public testnet environment:
+
+```bash
+sudo nano /etc/picoin/picoin.env
+```
+
+For the first bootstrap node set:
+
+```bash
+PICOIN_NODE_ID=bootstrap-nyc1-1
+PICOIN_NODE_TYPE=bootstrap
+PICOIN_NODE_ADDRESS=http://YOUR_PUBLIC_IP:8000
+PICOIN_BOOTSTRAP_PEERS=
+```
+
+For a second node set:
+
+```bash
+PICOIN_NODE_ID=validator-nyc1-1
+PICOIN_NODE_TYPE=validator
+PICOIN_NODE_ADDRESS=http://SECOND_PUBLIC_IP:8000
+PICOIN_BOOTSTRAP_PEERS=http://BOOTSTRAP_PUBLIC_IP:8000
+```
+
+Start:
+
+```bash
+sudo systemctl start picoin-node
+sudo systemctl status picoin-node --no-pager
+```
+
+## Firewall
+
+```bash
+sudo ufw allow OpenSSH
+sudo ufw allow 8000/tcp
+sudo ufw enable
+sudo ufw status
+```
+
+## Public Checks
+
+On the node:
+
+```bash
+cd /opt/picoin/picoin-proof-of-pi
+.venv/bin/python -m picoin node doctor
+.venv/bin/python -m picoin node sync-status
+.venv/bin/python -m picoin node audit
+```
+
+From another machine:
+
+```bash
+curl http://YOUR_PUBLIC_IP:8000/health
+curl http://YOUR_PUBLIC_IP:8000/node/sync-status
+```
+
+The deployment script also installs a standalone health checker:
+
+```bash
+PICOIN_SERVER=http://127.0.0.1:8000 /opt/picoin/picoin-proof-of-pi/deploy/scripts/health-check.sh
+```
+
+## Backups
+
+Run a manual SQLite backup:
+
+```bash
+sudo -u picoin PICOIN_HOME=/opt/picoin/picoin-proof-of-pi /opt/picoin/picoin-proof-of-pi/deploy/scripts/backup-sqlite.sh
+```
+
+Suggested cron:
+
+```bash
+sudo crontab -u picoin -e
+```
+
+```cron
+*/30 * * * * PICOIN_HOME=/opt/picoin/picoin-proof-of-pi /opt/picoin/picoin-proof-of-pi/deploy/scripts/backup-sqlite.sh >/opt/picoin/picoin-proof-of-pi/backups/latest.log 2>&1
+```
+
+## Bootstrap Flow
+
+For a fresh one-node public testnet:
+
+```bash
+cd /opt/picoin/picoin-proof-of-pi
+.venv/bin/python -m picoin testnet reset
+sudo systemctl restart picoin-node
+.venv/bin/python -m picoin testnet bootstrap
+.venv/bin/python -m picoin testnet cycle
+.venv/bin/python -m picoin node checkpoint create
+.venv/bin/python -m picoin node doctor --require-checkpoint
+```
+
+For continuous mining:
+
+```bash
+.venv/bin/python -m picoin testnet continuous --miners 1 --loops 10 --workers 1 --faucet 0
+.venv/bin/python -m picoin node audit
+.venv/bin/python -m picoin node checkpoint latest
+```
+
+## Connect A Second Droplet
+
+1. Install the same kit.
+2. Set `PICOIN_BOOTSTRAP_PEERS=http://BOOTSTRAP_PUBLIC_IP:8000`.
+3. Set a unique `PICOIN_NODE_ID`.
+4. Start the node.
+5. On each node run:
+
+```bash
+.venv/bin/python -m picoin node reconcile
+.venv/bin/python -m picoin node peers
+.venv/bin/python -m picoin node sync-status
+```
+
+Both nodes should eventually report compatible `network_id`, `chain_id`, `genesis_hash`, latest height and latest block hash.
+
+## Operational Checklist
+
+- `/health` returns `status=ok`.
+- `node doctor` has no errors.
+- `node audit` reports `valid=true`.
+- Latest block hash is stable across nodes.
+- At least one checkpoint exists after mining.
+- Backups are being created.
+- Science Compute Reserve status remains locked until a future governance activation.
+- Treasury claims remain protected by the 90-day timelock.

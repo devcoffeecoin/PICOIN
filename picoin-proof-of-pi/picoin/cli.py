@@ -28,7 +28,7 @@ def load_env_file(path: Path = Path(".env")) -> None:
 
 load_env_file()
 
-from app.core.settings import FAUCET_DEFAULT_AMOUNT, PROJECT_NAME
+from app.core.settings import FAUCET_DEFAULT_AMOUNT, PROJECT_NAME, PROTOCOL_VERSION
 from app.core.signatures import sign_payload
 from app.services.consensus import consensus_vote_payload
 from app.services.wallet import create_wallet, sign_transaction
@@ -102,6 +102,72 @@ def command_node_peers(args: argparse.Namespace) -> int:
 def command_node_sync_status(args: argparse.Namespace) -> int:
     print_json(get_json(args.server, "/node/sync-status"))
     return 0
+
+
+def command_node_doctor(args: argparse.Namespace) -> int:
+    server_url = normalize_server_url(args.server)
+    checks: list[dict[str, Any]] = []
+    payloads: dict[str, Any] = {}
+
+    def record(name: str, ok: bool, detail: str, severity: str = "error") -> None:
+        checks.append({"name": name, "ok": ok, "detail": detail, "severity": severity})
+
+    try:
+        health = get_json(server_url, "/health")
+        payloads["health"] = health
+        record("api_health", health.get("status") == "ok", f"status={health.get('status')}")
+        record("database", bool(health.get("database", {}).get("connected")), "database connected")
+        record("chain", bool(health.get("chain", {}).get("valid")), "chain validation")
+        record("audit", bool(health.get("audit", {}).get("valid")), "ledger audit")
+        record("mining_ready", bool(health.get("mining_ready")), "node can assign mining tasks", "warning")
+    except requests.RequestException as exc:
+        record("api_health", False, f"cannot reach /health: {exc}")
+
+    try:
+        status = get_json(server_url, "/node/status")
+        payloads["status"] = status
+        record("node_status", True, f"node_id={status.get('node_id', 'unknown')}")
+    except requests.RequestException as exc:
+        record("node_status", False, f"cannot reach /node/status: {exc}")
+
+    try:
+        sync = get_json(server_url, "/node/sync-status")
+        payloads["sync"] = sync
+        latest_height = sync.get("latest_block_height", 0)
+        record("sync_status", True, f"height={latest_height}")
+        peer_total = sync.get("peer_counts", {}).get("total", 0)
+        peer_connected = sync.get("peer_counts", {}).get("connected", 0)
+        peer_ok = peer_connected > 0 or not args.require_peers
+        record("peers", peer_ok, f"connected={peer_connected}, total={peer_total}", "warning")
+    except requests.RequestException as exc:
+        record("sync_status", False, f"cannot reach /node/sync-status: {exc}")
+
+    try:
+        checkpoint = get_json(server_url, "/node/checkpoints/latest")
+        payloads["latest_checkpoint"] = checkpoint
+        if checkpoint:
+            record("latest_checkpoint", True, f"height={checkpoint.get('height')}")
+        else:
+            record("latest_checkpoint", not args.require_checkpoint, "no canonical checkpoint yet", "warning")
+    except requests.RequestException as exc:
+        record("latest_checkpoint", False, f"cannot reach /node/checkpoints/latest: {exc}", "warning")
+
+    failures = [check for check in checks if not check["ok"] and check["severity"] == "error"]
+    warnings = [check for check in checks if not check["ok"] and check["severity"] == "warning"]
+    output = {
+        "server": server_url,
+        "status": "fail" if failures else "warn" if warnings else "ok",
+        "checks": checks,
+        "summary": {
+            "errors": len(failures),
+            "warnings": len(warnings),
+            "checked": len(checks),
+        },
+    }
+    if args.verbose:
+        output["payloads"] = payloads
+    print_json(output)
+    return 1 if failures else 0
 
 
 def command_node_reconcile(args: argparse.Namespace) -> int:
@@ -508,6 +574,13 @@ def add_node_parser(subparsers: argparse._SubParsersAction) -> None:
     sync_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
     sync_parser.set_defaults(func=command_node_sync_status)
 
+    doctor_parser = node_subparsers.add_parser("doctor", help="Run public testnet readiness checks")
+    doctor_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    doctor_parser.add_argument("--require-peers", action="store_true")
+    doctor_parser.add_argument("--require-checkpoint", action="store_true")
+    doctor_parser.add_argument("--verbose", action="store_true")
+    doctor_parser.set_defaults(func=command_node_doctor)
+
     reconcile_parser = node_subparsers.add_parser("reconcile", help="Pull peers, mempool and proposals from connected peers")
     reconcile_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
     reconcile_parser.add_argument("--peer", help="Optional peer base URL")
@@ -817,7 +890,7 @@ def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
     if args.version:
-        print_json({"project": PROJECT_NAME, "cli": "picoin", "mode": "local-node"})
+        print_json({"project": PROJECT_NAME, "cli": "picoin", "protocol_version": PROTOCOL_VERSION, "mode": "local-node"})
         raise SystemExit(0)
     if not hasattr(args, "func"):
         parser.print_help()

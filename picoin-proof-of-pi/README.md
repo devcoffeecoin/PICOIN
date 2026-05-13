@@ -2,14 +2,14 @@
 
 MVP funcional de **Proof of Pi** con una extension L1 llamada **Science Compute Access Layer**. Un coordinador asigna rangos pequenos de digitos hexadecimales de pi, un minero calcula el segmento con BBP, el validador recalcula de forma independiente y el servidor registra bloques aceptados con recompensa simulada. La capa Science deja preparada la red para un futuro marketplace L2 de computo cientifico e IA.
 
-Este proyecto no ejecuta IA/computo cientifico pesado. Desde v0.17 incluye una base de testnet distribuida con peers, mempool, wallets, sync inicial, propuestas de bloque, votos de validadores, finalizacion y replay. En L1 coordina stake, acceso, jobs, hashes, reserva y pagos verificados para preparar una evolucion futura.
+Este proyecto no ejecuta IA/computo cientifico pesado. Desde v0.18 incluye un Public Testnet Deployment Kit para correr nodos en droplets/servidores reales con env publico, systemd, health checks y backups. En L1 coordina stake, acceso, jobs, hashes, reserva y pagos verificados para preparar una evolucion futura.
 
-## Protocolo v0.17
+## Protocolo v0.18
 
 Parametros actuales:
 
 ```text
-protocol_version = 0.17
+protocol_version = 0.18
 network_id = local
 algorithm = bbp_hex_v1
 validation_mode = external_commit_reveal
@@ -197,6 +197,7 @@ Desde v0.13, Picoin incluye un CLI local unificado:
 .\.venv\Scripts\python.exe -m picoin node status
 .\.venv\Scripts\python.exe -m picoin node audit
 .\.venv\Scripts\python.exe -m picoin node protocol
+.\.venv\Scripts\python.exe -m picoin node doctor
 ```
 
 El CLI tambien envuelve minero, validador y testnet:
@@ -246,10 +247,51 @@ Variables soportadas:
 
 ```text
 PICOIN_NETWORK=local
+PICOIN_CHAIN_ID=picoin-local-testnet
+PICOIN_NODE_ID=local-node
+PICOIN_NODE_TYPE=full
+PICOIN_NODE_ADDRESS=http://127.0.0.1:8000
+PICOIN_BOOTSTRAP_PEERS=
 PICOIN_HOST=127.0.0.1
 PICOIN_PORT=8000
 PICOIN_SERVER=http://127.0.0.1:8000
 ```
+
+## Public Testnet Deployment Kit v0.18
+
+Picoin incluye una carpeta `deploy/` para levantar un nodo publico en Ubuntu/DigitalOcean sin mezclar la web institucional con el nodo:
+
+- `deploy/public-testnet.env.example`: variables para bootstrap, full node, miner, validator o auditor.
+- `deploy/systemd/picoin-node.service`: servicio `systemd` con restart automatico.
+- `deploy/scripts/install-systemd-service.sh`: instalador del servicio y `/etc/picoin/picoin.env`.
+- `deploy/scripts/health-check.sh`: revision externa de `/health`, sync, auditoria y checkpoint.
+- `deploy/scripts/backup-sqlite.sh`: backup comprimido de `data/picoin.sqlite3`.
+- `deploy/README-public-testnet.md`: guia de despliegue paso a paso.
+
+Comandos base en el droplet:
+
+```bash
+sudo apt update
+sudo apt install -y git python3 python3-venv python3-pip sqlite3 curl ufw
+sudo useradd --system --create-home --home-dir /opt/picoin --shell /bin/bash picoin
+sudo -u picoin git clone https://github.com/devcoffeecoin/PICOIN.git /opt/picoin/PICOIN
+sudo -u picoin bash -lc 'cd /opt/picoin/PICOIN/picoin-proof-of-pi && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt'
+sudo -u picoin bash -lc 'ln -s /opt/picoin/PICOIN/picoin-proof-of-pi /opt/picoin/picoin-proof-of-pi'
+sudo PICOIN_REPO_DIR=/opt/picoin/picoin-proof-of-pi /opt/picoin/picoin-proof-of-pi/deploy/scripts/install-systemd-service.sh
+sudo nano /etc/picoin/picoin.env
+sudo systemctl start picoin-node
+```
+
+Chequeos de readiness:
+
+```bash
+cd /opt/picoin/picoin-proof-of-pi
+.venv/bin/python -m picoin node doctor --require-checkpoint
+.venv/bin/python -m picoin node audit
+.venv/bin/python -m picoin node sync-status
+```
+
+Para conectar un segundo droplet, configura `PICOIN_BOOTSTRAP_PEERS=http://BOOTSTRAP_PUBLIC_IP:8000`, usa un `PICOIN_NODE_ID` unico, reinicia el servicio y ejecuta `python -m picoin node reconcile` en ambos nodos.
 
 ## Correr Un Minero
 
@@ -1045,7 +1087,7 @@ Implementado:
 
 Limites intencionales:
 
-- El consenso distribuido sigue en evolucion; v0.17 agrega peers, mempool, wallets, propuestas, votos, finalizacion y replay inicial.
+- El consenso distribuido sigue en evolucion; v0.18 agrega el kit de despliegue publico sobre peers, mempool, wallets, propuestas, votos, finalizacion y replay inicial.
 - La red P2P actual es basica: REST/WebSocket, heartbeat y cola de replay, no gossip optimizado.
 - Las wallets firman transacciones para mempool; `transfer`, `stake` y `science_job_create` ya se liquidan en ledger al entrar en bloque.
 - No hay ejecucion real de IA ni computo cientifico pesado en L1.
@@ -1440,7 +1482,7 @@ curl -X POST "http://127.0.0.1:8000/audit/retroactive/run?sample_multiplier=2"
 curl "http://127.0.0.1:8000/validators?eligible_only=true"
 ```
 
-## Distributed Testnet v0.17
+## Distributed Testnet v0.18
 
 Picoin ahora incluye una base L1 para testnet distribuida multi-nodo. Esta fase agrega networking, peers, mempool, wallets y transacciones firmadas sin activar IA real, marketplace L2, bridges, zk proofs ni smart contracts complejos.
 
@@ -1472,7 +1514,7 @@ Registrar peer:
 ```powershell
 curl -X POST http://127.0.0.1:8000/node/peers/register `
   -H "Content-Type: application/json" `
-  -d "{\"node_id\":\"validator-1\",\"peer_address\":\"http://validator-1:8000\",\"peer_type\":\"validator\",\"protocol_version\":\"0.17\",\"network_id\":\"local\",\"chain_id\":\"picoin-local-testnet\",\"genesis_hash\":\"0000000000000000000000000000000000000000000000000000000000000000\"}"
+  -d "{\"node_id\":\"validator-1\",\"peer_address\":\"http://validator-1:8000\",\"peer_type\":\"validator\",\"protocol_version\":\"0.18\",\"network_id\":\"local\",\"chain_id\":\"picoin-local-testnet\",\"genesis_hash\":\"0000000000000000000000000000000000000000000000000000000000000000\"}"
 ```
 
 CLI distribuida:
@@ -1480,6 +1522,7 @@ CLI distribuida:
 ```powershell
 python -m picoin node peers
 python -m picoin node sync-status
+python -m picoin node doctor
 python -m picoin node reconcile
 python -m picoin node reconcile --peer http://peer-node:8000
 python -m picoin node checkpoint create --height 10
@@ -1509,7 +1552,7 @@ python -m picoin consensus finalize --proposal-id ...
 python -m picoin consensus replay
 ```
 
-Consenso distribuido v0.17:
+Consenso distribuido v0.18:
 
 1. Un nodo minero propone automaticamente el bloque cuando el flujo de mining alcanza quorum local, y tambien puede proponer manualmente con `POST /consensus/proposals`.
 2. Cada validador firma un voto Ed25519 sobre `proposal_id`, `block_hash`, `height`, decision y razon.

@@ -24,7 +24,7 @@ def test_protocol_exposes_dynamic_difficulty_and_rewards(tmp_path, monkeypatch) 
     protocol = get_protocol()
     history = get_protocol_history()
 
-    assert protocol["protocol_version"] == "0.17"
+    assert protocol["protocol_version"] == "0.18"
     assert protocol["required_validator_approvals"] == 3
     assert protocol["sample_count"] == 32
     assert protocol["difficulty"] == 4.0
