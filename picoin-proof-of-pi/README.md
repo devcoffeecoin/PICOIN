@@ -301,6 +301,14 @@ python -m picoin node catch-up --peer http://BOOTSTRAP_PUBLIC_IP:8000
 
 `node catch-up` ejecuta rondas de reconcile, consensus replay, sync-status y audit. Si se pasa `--peer`, tambien compara `network_id`, `chain_id`, `genesis_hash`, altura y ultimo block hash contra el peer. Termina con `status=ok` cuando no quedan bloques pendientes, la auditoria economica es valida y el nodo coincide con el peer.
 
+Para un reporte pass/fail sin modificar estado:
+
+```bash
+python -m picoin node report --peer http://BOOTSTRAP_PUBLIC_IP:8000
+```
+
+`node report` revisa health, auditoria, backlog de replay, consenso, reserve/treasury y comparacion contra peer.
+
 ## Correr Un Minero
 
 En otra terminal:
@@ -1534,6 +1542,7 @@ python -m picoin node doctor
 python -m picoin node reconcile
 python -m picoin node reconcile --peer http://peer-node:8000
 python -m picoin node catch-up --peer http://peer-node:8000
+python -m picoin node report --peer http://peer-node:8000
 python -m picoin node checkpoint create --height 10
 python -m picoin node checkpoint latest
 python -m picoin node checkpoint verify --height 10

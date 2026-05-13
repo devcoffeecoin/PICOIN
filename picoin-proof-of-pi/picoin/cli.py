@@ -270,6 +270,107 @@ def command_node_catch_up(args: argparse.Namespace) -> int:
     return 0 if output["status"] == "ok" else 1
 
 
+def command_node_report(args: argparse.Namespace) -> int:
+    server_url = normalize_server_url(args.server)
+    peer_url = normalize_server_url(args.peer) if args.peer else None
+    checks: list[dict[str, Any]] = []
+    payloads: dict[str, Any] = {}
+
+    def add_check(name: str, ok: bool, detail: str, severity: str = "error") -> None:
+        checks.append({"name": name, "ok": ok, "detail": detail, "severity": severity})
+
+    health = get_json(server_url, "/health")
+    sync = get_json(server_url, "/node/sync-status")
+    audit = get_json(server_url, "/audit/full")
+    consensus = get_json(server_url, "/consensus/status")
+    reserve = get_json(server_url, "/reserve/status")
+    treasury = get_json(server_url, "/treasury/status")
+    payloads.update(
+        {
+            "health": health,
+            "sync": sync,
+            "audit": audit,
+            "consensus": consensus,
+            "reserve": reserve,
+            "treasury": treasury,
+        }
+    )
+
+    add_check("api_health", health.get("status") == "ok", f"status={health.get('status')}")
+    add_check("database", bool(health.get("database", {}).get("connected")), "database connected")
+    add_check("chain", bool(health.get("chain", {}).get("valid")), "chain validation")
+    add_check("audit", bool(audit.get("valid")), f"issues={len(audit.get('issues', []))}")
+    add_check(
+        "pending_replay",
+        int(sync.get("pending_replay_blocks", 0)) == 0,
+        f"pending_replay_blocks={sync.get('pending_replay_blocks', 0)}",
+    )
+    add_check(
+        "peers",
+        int(sync.get("peer_counts", {}).get("connected", 0)) > 0 or not args.require_peers,
+        f"connected={sync.get('peer_counts', {}).get('connected', 0)}, total={sync.get('peer_counts', {}).get('total', 0)}",
+        "warning",
+    )
+    consensus_counts = consensus.get("proposals", {})
+    add_check(
+        "consensus_backlog",
+        int(consensus_counts.get("pending_missing_ancestors", 0)) == 0,
+        f"pending_missing_ancestors={consensus_counts.get('pending_missing_ancestors', 0)}",
+    )
+    reserve_status = str(reserve.get("status") or "")
+    add_check(
+        "science_reserve_locked",
+        reserve_status in {"RESERVE_LOCKED", "L2_PENDING", "EMERGENCY_PAUSED"},
+        f"status={reserve_status}, payouts_enabled={reserve.get('payouts_enabled')}",
+        "warning",
+    )
+    add_check(
+        "treasury_accounting",
+        float(treasury.get("locked_balance", 0) or 0) >= 0 and float(treasury.get("unlocked_balance", 0) or 0) >= 0,
+        f"locked={treasury.get('locked_balance')}, unlocked={treasury.get('unlocked_balance')}",
+    )
+
+    peer_sync: dict[str, Any] | None = None
+    if peer_url:
+        peer_sync = get_json(peer_url, "/node/sync-status")
+        payloads["peer_sync"] = peer_sync
+        add_check("network_match", sync.get("network_id") == peer_sync.get("network_id"), f"peer={peer_sync.get('network_id')}")
+        add_check("chain_match", sync.get("chain_id") == peer_sync.get("chain_id"), f"peer={peer_sync.get('chain_id')}")
+        add_check(
+            "genesis_match",
+            sync.get("genesis_hash") == peer_sync.get("genesis_hash"),
+            f"peer={peer_sync.get('genesis_hash')}",
+        )
+        add_check(
+            "height_match",
+            int(sync.get("latest_block_height", 0)) == int(peer_sync.get("latest_block_height", 0)),
+            f"local={sync.get('latest_block_height')}, peer={peer_sync.get('latest_block_height')}",
+        )
+        add_check(
+            "block_hash_match",
+            sync.get("latest_block_hash") == peer_sync.get("latest_block_hash"),
+            f"local={sync.get('latest_block_hash')}, peer={peer_sync.get('latest_block_hash')}",
+        )
+
+    failures = [check for check in checks if not check["ok"] and check["severity"] == "error"]
+    warnings = [check for check in checks if not check["ok"] and check["severity"] == "warning"]
+    output = {
+        "server": server_url,
+        "peer": peer_url,
+        "status": "fail" if failures else "warn" if warnings else "ok",
+        "height": sync.get("latest_block_height", 0),
+        "block_hash": sync.get("latest_block_hash"),
+        "network_id": sync.get("network_id"),
+        "chain_id": sync.get("chain_id"),
+        "checks": checks,
+        "summary": {"errors": len(failures), "warnings": len(warnings), "checked": len(checks)},
+    }
+    if args.verbose:
+        output["payloads"] = payloads
+    print_json(output)
+    return 1 if failures else 0
+
+
 def command_node_checkpoint_list(args: argparse.Namespace) -> int:
     print_json(get_json(args.server, f"/node/checkpoints?limit={args.limit}"))
     return 0
@@ -686,6 +787,13 @@ def add_node_parser(subparsers: argparse._SubParsersAction) -> None:
     catch_up_parser.add_argument("--reconcile-limit", type=int, default=16)
     catch_up_parser.add_argument("--replay-limit", type=int, default=100)
     catch_up_parser.set_defaults(func=command_node_catch_up)
+
+    report_parser = node_subparsers.add_parser("report", help="Run public testnet pass/fail readiness report")
+    report_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    report_parser.add_argument("--peer", help="Optional peer base URL")
+    report_parser.add_argument("--require-peers", action="store_true")
+    report_parser.add_argument("--verbose", action="store_true")
+    report_parser.set_defaults(func=command_node_report)
 
     checkpoint_parser = node_subparsers.add_parser("checkpoint", help="Create and verify canonical state checkpoints")
     checkpoint_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
