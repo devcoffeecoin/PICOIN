@@ -299,7 +299,7 @@ Para sincronizar un nodo atrasado en una sola operacion:
 python -m picoin node catch-up --peer http://BOOTSTRAP_PUBLIC_IP:8000
 ```
 
-`node catch-up` ejecuta rondas de reconcile, consensus replay, sync-status y audit. Termina con `status=ok` cuando no quedan bloques pendientes y la auditoria economica es valida.
+`node catch-up` ejecuta rondas de reconcile, consensus replay, sync-status y audit. Si se pasa `--peer`, tambien compara `network_id`, `chain_id`, `genesis_hash`, altura y ultimo block hash contra el peer. Termina con `status=ok` cuando no quedan bloques pendientes, la auditoria economica es valida y el nodo coincide con el peer.
 
 ## Correr Un Minero
 

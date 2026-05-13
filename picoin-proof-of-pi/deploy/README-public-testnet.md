@@ -147,7 +147,7 @@ For continuous mining:
 .venv/bin/python -m picoin node sync-status
 ```
 
-`node catch-up` runs reconcile, consensus replay, sync-status and audit in bounded rounds. It should end with `status=ok`, `pending_replay_blocks=0` and `audit_valid=true`.
+`node catch-up` runs reconcile, consensus replay, sync-status and audit in bounded rounds. With `--peer`, it also compares `network_id`, `chain_id`, `genesis_hash`, latest height and latest block hash against the peer. It should end with `status=ok`, `peer_matches=true`, `pending_replay_blocks=0` and `audit_valid=true`.
 
 Both nodes should eventually report compatible `network_id`, `chain_id`, `genesis_hash`, latest height and latest block hash.
 
