@@ -92,6 +92,16 @@ The deployment script also installs a standalone health checker:
 PICOIN_SERVER=http://127.0.0.1:8000 /opt/picoin/picoin-proof-of-pi/deploy/scripts/health-check.sh
 ```
 
+For a full public-testnet smoke check:
+
+```bash
+PICOIN_SERVER=http://127.0.0.1:8000 \
+PICOIN_BOOTSTRAP_PEER=http://BOOTSTRAP_PUBLIC_IP:8000 \
+/opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-smoke.sh
+```
+
+On the bootstrap node, omit `PICOIN_BOOTSTRAP_PEER`. The smoke script runs `node catch-up`, `node report` and `node audit`, stores JSON output in `data/testnet/smoke`, prints `PICOIN_SMOKE_STATUS=ok` on success and exits non-zero on failure.
+
 ## Backups
 
 Run a manual SQLite backup:
@@ -154,11 +164,24 @@ For continuous mining:
 
 Both nodes should eventually report compatible `network_id`, `chain_id`, `genesis_hash`, latest height and latest block hash.
 
+After both nodes are connected, the short operational check is:
+
+```bash
+PICOIN_BOOTSTRAP_PEER=http://BOOTSTRAP_PUBLIC_IP:8000 deploy/scripts/public-testnet-smoke.sh
+```
+
+Suggested monitoring cron:
+
+```cron
+*/5 * * * * PICOIN_HOME=/opt/picoin/picoin-proof-of-pi PICOIN_SERVER=http://127.0.0.1:8000 PICOIN_BOOTSTRAP_PEER=http://BOOTSTRAP_PUBLIC_IP:8000 /opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-smoke.sh >>/opt/picoin/picoin-proof-of-pi/data/testnet/smoke/cron.log 2>&1
+```
+
 ## Operational Checklist
 
 - `/health` returns `status=ok`.
 - `node doctor` has no errors.
 - `node audit` reports `valid=true`.
+- `deploy/scripts/public-testnet-smoke.sh` exits with `PICOIN_SMOKE_STATUS=ok`.
 - Latest block hash is stable across nodes.
 - At least one checkpoint exists after mining.
 - Backups are being created.
