@@ -83,6 +83,12 @@ function defaultState() {
     peers: [],
     mempool: [],
     apiErrors: [],
+    ui: {
+      endpoint_count: 0,
+      failed_endpoint_count: 0,
+      load_ms: 0,
+      last_updated_at: null,
+    },
   };
 }
 
@@ -170,6 +176,7 @@ async function safeFetchJson(key, path) {
 }
 
 async function loadData() {
+  const startedAt = window.performance.now();
   text("connectionBadge", "conectando");
   $("connectionBadge").className = "status-pill warn";
 
@@ -183,6 +190,12 @@ async function loadData() {
     if (result.error) apiErrors.push(result.error);
   });
   state.apiErrors = apiErrors;
+  state.ui = {
+    endpoint_count: results.length,
+    failed_endpoint_count: apiErrors.length,
+    load_ms: Math.round(window.performance.now() - startedAt),
+    last_updated_at: new Date().toISOString(),
+  };
   render();
 }
 
@@ -341,19 +354,46 @@ function renderEvents() {
 function renderValidators() {
   const list = $("validatorsList");
   const eligible = state.validators.filter((validator) => !validator.is_banned && validator.stake_locked > 0);
+  const banned = state.validators.filter((validator) => validator.is_banned);
+  const total = state.validators.length;
+  const ordered = [...state.validators].sort((a, b) => {
+    const aEligible = !a.is_banned && Number(a.stake_locked || 0) > 0 ? 1 : 0;
+    const bEligible = !b.is_banned && Number(b.stake_locked || 0) > 0 ? 1 : 0;
+    if (aEligible !== bEligible) return bEligible - aEligible;
+    if (Boolean(a.is_banned) !== Boolean(b.is_banned)) return Number(a.is_banned) - Number(b.is_banned);
+    const scoreDiff = Number(b.selection_score || 0) - Number(a.selection_score || 0);
+    if (scoreDiff !== 0) return scoreDiff;
+    return String(a.validator_id || "").localeCompare(String(b.validator_id || ""));
+  });
+  const visible = ordered.slice(0, 100);
+
   text("eligibleCount", `${eligible.length} elegibles`);
+  text("validatorDisplayCount", `${visible.length}/${total} visibles`);
+  const avgTrust = eligible.length
+    ? eligible.reduce((sum, validator) => sum + Number(validator.trust_score || 0), 0) / eligible.length
+    : 0;
+  const totalStake = eligible.reduce((sum, validator) => sum + Number(validator.stake_locked || 0), 0);
+  $("validatorSummary").innerHTML = `
+    <div class="summary-box"><span>Total registrados</span><strong>${fmt(total, 0)}</strong></div>
+    <div class="summary-box"><span>Baneados</span><strong>${fmt(banned.length, 0)}</strong></div>
+    <div class="summary-box"><span>Stake elegible</span><strong>${fmt(totalStake, 5)}</strong></div>
+    <div class="summary-box"><span>Trust promedio</span><strong>${fmt(avgTrust, 4)}</strong></div>
+  `;
   if (!state.validators.length) {
     list.innerHTML = `<div class="empty">Sin validadores registrados</div>`;
     return;
   }
-  list.innerHTML = state.validators
-    .slice(0, 6)
+  list.innerHTML = visible
     .map(
-      (validator) => `
+      (validator) => {
+        const isEligible = !validator.is_banned && Number(validator.stake_locked || 0) > 0;
+        const statusClass = validator.is_banned ? "bad" : isEligible ? "ok" : "warn";
+        const statusLabel = validator.is_banned ? "ban" : isEligible ? "elegible" : "sin stake";
+        return `
         <article class="validator-row">
           <header>
             <strong class="mono">${escapeHtml(validator.validator_id)}</strong>
-            <span class="status-pill ${validator.is_banned ? "bad" : "ok"}">${validator.is_banned ? "ban" : "activo"}</span>
+            <span class="status-pill ${statusClass}">${statusLabel}</span>
           </header>
           <div class="validator-stats">
             <div><span>Score</span><strong>${fmt(validator.selection_score, 4)}</strong></div>
@@ -364,7 +404,8 @@ function renderValidators() {
             <div><span>Avg ms</span><strong>${fmt(validator.avg_validation_ms, 0)}</strong></div>
           </div>
         </article>
-      `
+      `;
+      }
     )
     .join("");
 }
@@ -402,6 +443,12 @@ function renderPerformance() {
     })
     .join("");
   text("cacheStats", `${state.performance.bbp_digit_cache_hits}/${state.performance.bbp_digit_cache_misses}`);
+  $("dashboardPerformance").innerHTML = `
+    <div class="summary-box"><span>Refresh UI</span><strong>${fmt(state.ui.load_ms, 0)} ms</strong></div>
+    <div class="summary-box"><span>Endpoints OK</span><strong>${fmt(state.ui.endpoint_count - state.ui.failed_endpoint_count, 0)} / ${fmt(state.ui.endpoint_count, 0)}</strong></div>
+    <div class="summary-box"><span>Endpoints error</span><strong>${fmt(state.ui.failed_endpoint_count, 0)}</strong></div>
+    <div class="summary-box"><span>Ultima carga</span><strong>${escapeHtml(formatDate(state.ui.last_updated_at))}</strong></div>
+  `;
 }
 
 function renderAudit() {

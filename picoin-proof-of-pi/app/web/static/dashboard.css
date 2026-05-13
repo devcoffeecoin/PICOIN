@@ -64,6 +64,13 @@ h2 {
   font-size: 17px;
 }
 
+h3 {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 700;
+}
+
 .topbar-actions,
 .panel-header,
 .panel-actions {
@@ -173,6 +180,7 @@ button:disabled {
 }
 
 .explorer-panel,
+.performance-panel,
 .connection-errors {
   grid-column: 1 / -1;
 }
@@ -241,6 +249,9 @@ td.hash,
   display: grid;
   gap: 10px;
   margin-top: 14px;
+  max-height: 520px;
+  overflow: auto;
+  padding-right: 2px;
 }
 
 .validator-row {
@@ -407,6 +418,18 @@ select {
   font-size: 13px;
 }
 
+.performance-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.65fr);
+  gap: 16px;
+  margin-top: 14px;
+}
+
+.performance-layout .bars,
+.performance-layout .summary-grid {
+  margin-top: 10px;
+}
+
 .audit-summary {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -435,7 +458,8 @@ select {
   .layout,
   .metric-grid,
   .audit-summary,
-  .summary-grid {
+  .summary-grid,
+  .performance-layout {
     grid-template-columns: 1fr 1fr;
   }
 
@@ -457,7 +481,8 @@ select {
   .audit-summary,
   .summary-grid,
   .validator-stats,
-  .difficulty-grid {
+  .difficulty-grid,
+  .performance-layout {
     grid-template-columns: 1fr;
   }
 

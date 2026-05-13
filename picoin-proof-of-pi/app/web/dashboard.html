@@ -103,8 +103,12 @@
       <section class="panel">
         <div class="panel-header">
           <h2>Validadores</h2>
-          <span id="eligibleCount" class="status-pill">0 elegibles</span>
+          <div class="panel-actions">
+            <span id="eligibleCount" class="status-pill">0 elegibles</span>
+            <span id="validatorDisplayCount" class="badge">0/0 visibles</span>
+          </div>
         </div>
+        <div id="validatorSummary" class="summary-grid compact"></div>
         <div id="validatorsList" class="validator-list"></div>
       </section>
 
@@ -162,12 +166,21 @@
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel wide performance-panel">
         <div class="panel-header">
           <h2>Performance</h2>
           <span id="cacheStats" class="status-pill">cache</span>
         </div>
-        <div id="performanceBars" class="bars"></div>
+        <div class="performance-layout">
+          <div>
+            <h3>Pipeline de mineria</h3>
+            <div id="performanceBars" class="bars"></div>
+          </div>
+          <div>
+            <h3>Dashboard/API</h3>
+            <div id="dashboardPerformance" class="summary-grid compact"></div>
+          </div>
+        </div>
       </section>
 
       <section class="panel wide">

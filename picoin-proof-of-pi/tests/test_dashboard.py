@@ -21,14 +21,21 @@ def test_dashboard_static_assets() -> None:
     assert "connectionBadge" in html
     assert "dashboardErrors" in html
     assert "explorer-panel" in html
+    assert "validatorDisplayCount" in html
+    assert "validatorSummary" in html
+    assert "dashboardPerformance" in html
     assert 'value="3.1416"' in html
     assert "/dashboard/static/dashboard.css" in html
     assert "/dashboard/static/dashboard.js" in html
     assert "metric-grid" in css
     assert "connection-errors" in css
+    assert "performance-layout" in css
     assert "fetchJson" in js
     assert "safeFetchJson" in js
     assert "renderConnection" in js
+    assert "validatorDisplayCount" in js
+    assert "slice(0, 100)" in js
+    assert "dashboardPerformance" in js
     assert 'health: "/health"' in js
     assert 'node: "/node/status"' in js
     assert 'events: "/events?limit=14"' in js
