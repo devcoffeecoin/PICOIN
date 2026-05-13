@@ -7,7 +7,7 @@ from app.core.pi import calculate_pi_segment
 from app.core.settings import CHAIN_ID, GENESIS_HASH, NETWORK_ID, PROTOCOL_VERSION
 from app.core.signatures import build_submission_signature_payload, generate_keypair, sign_payload
 from app.db.database import get_connection, init_db
-from app.services.consensus import replay_finalized_blocks
+from app.services.consensus import propose_block, replay_finalized_blocks
 from app.services.mining import (
     create_next_task,
     get_balance_amount,
@@ -481,6 +481,31 @@ def test_replay_imports_pending_headers_after_active_snapshot_base(tmp_path, mon
     assert status["latest_block_height"] == expected_height
     assert status["latest_block_hash"] == expected_hash
     assert status["effective_latest_block_height"] == expected_height
+    assert audit["valid"] is True
+
+
+def test_replay_enriches_pending_header_from_matching_proposal_payload(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "snapshot-header-enrich-source.sqlite3")
+
+    miner_key = generate_keypair()
+    miner = register_miner("snapshot-header-enrich-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    snapshot = export_canonical_snapshot(height=1)
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    full_block = get_blocks_since(1)["blocks"][0]
+    sparse_header = {key: full_block[key] for key in ("height", "previous_hash", "block_hash", "timestamp")}
+
+    _init_network_db(tmp_path, monkeypatch, "snapshot-header-enrich-target.sqlite3")
+    imported = import_canonical_snapshot(snapshot, source="peer-a")
+    apply_imported_snapshot_state(imported["snapshot"]["snapshot_hash"])
+    receive_block_header(sparse_header, source_peer_id="peer-a")
+    propose_block(full_block, "peer-a", gossip=False)
+    replay = replay_finalized_blocks()
+    audit = get_full_economic_audit()
+
+    assert replay["headers_imported"] == 1
+    assert replay["errors"] == []
+    assert get_block(full_block["height"])["block_hash"] == full_block["block_hash"]
     assert audit["valid"] is True
 
 

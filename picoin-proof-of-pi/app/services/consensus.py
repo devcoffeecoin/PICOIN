@@ -471,7 +471,7 @@ def _replay_pending_block_headers(connection: Any, limit: int) -> dict[str, Any]
     errors: list[str] = []
     for row in rows:
         block_hash = row["block_hash"]
-        block = json.loads(row["payload"])
+        block = _replay_payload_for_block_header(connection, block_hash, row["payload"])
         connection.execute("SAVEPOINT replay_pending_header")
         try:
             did_import = _import_finalized_block(connection, block, f"header:{block_hash}")
@@ -512,6 +512,33 @@ def _replay_pending_block_headers(connection: Any, limit: int) -> dict[str, Any]
                 (block_hash,),
             )
     return {"imported": imported, "skipped": skipped, "errors": errors}
+
+
+def _replay_payload_for_block_header(connection: Any, block_hash: str, header_payload: str) -> dict[str, Any]:
+    block = json.loads(header_payload)
+    proposal = connection.execute(
+        """
+        SELECT payload
+        FROM consensus_block_proposals
+        WHERE block_hash = ? AND status NOT IN ('rejected')
+        ORDER BY
+            CASE status
+                WHEN 'imported' THEN 0
+                WHEN 'finalized' THEN 1
+                WHEN 'pending' THEN 2
+                ELSE 3
+            END,
+            updated_at DESC
+        LIMIT 1
+        """,
+        (block_hash,),
+    ).fetchone()
+    if proposal is None:
+        return block
+    proposal_block = json.loads(proposal["payload"])
+    if proposal_block.get("block_hash") != block_hash:
+        return block
+    return {**block, **proposal_block}
 
 
 def select_fork_choice(height: int | None = None, connection: Any | None = None) -> dict[str, Any] | None:
