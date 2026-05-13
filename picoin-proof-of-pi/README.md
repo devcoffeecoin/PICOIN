@@ -309,6 +309,14 @@ python -m picoin node report --peer http://BOOTSTRAP_PUBLIC_IP:8000
 
 `node report` revisa health, auditoria, backlog de replay, consenso, reserve/treasury y comparacion contra peer.
 
+Para automatizar el chequeo publico de un nodo:
+
+```bash
+PICOIN_BOOTSTRAP_PEER=http://BOOTSTRAP_PUBLIC_IP:8000 deploy/scripts/public-testnet-smoke.sh
+```
+
+El smoke test ejecuta `node catch-up`, `node report` y `node audit`, deja los JSON en `data/testnet/smoke` y termina con `PICOIN_SMOKE_STATUS=ok` solo cuando el nodo esta sincronizado, la auditoria es valida y coincide con el peer configurado.
+
 ## Correr Un Minero
 
 En otra terminal:
