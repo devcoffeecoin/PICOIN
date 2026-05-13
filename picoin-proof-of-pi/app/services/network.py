@@ -26,6 +26,7 @@ from app.core.settings import (
 )
 from app.core.signatures import verify_payload_signature
 from app.db.database import get_connection, row_to_dict
+from app.services.state import active_snapshot_base_in_connection, latest_checkpoint_in_connection
 from app.services.wallet import address_from_public_key, transaction_hash, unsigned_transaction_payload
 
 
@@ -198,12 +199,16 @@ def get_sync_status() -> dict[str, Any]:
             GROUP BY status
             """
         ).fetchall()
+        checkpoint = latest_checkpoint_in_connection(connection)
+        active_base = active_snapshot_base_in_connection(connection)
     latest_height = int(latest_block["height"]) if latest_block else 0
     latest_hash = latest_block["block_hash"] if latest_block else GENESIS_HASH
     return {
         **node_identity(),
         "latest_block_height": latest_height,
         "latest_block_hash": latest_hash,
+        "latest_checkpoint": checkpoint,
+        "active_snapshot_base": active_base,
         "peer_counts": dict(peer_counts) if peer_counts else {"total": 0, "connected": 0, "stale": 0},
         "mempool": {row["status"]: row["count"] for row in mempool_counts},
         "pending_replay_blocks": pending_headers["count"] if pending_headers else 0,
@@ -221,6 +226,7 @@ def get_blocks_since(from_height: int, limit: int = 100) -> dict[str, Any]:
             """
             SELECT height, previous_hash, miner_id, range_start, range_end, algorithm,
                    result_hash, merkle_root, samples, timestamp, block_hash, reward,
+                   tx_merkle_root, tx_count, tx_hashes, fee_reward, state_root,
                    difficulty, task_id, protocol_params_id, protocol_version,
                    validation_mode, fraudulent, fraud_reason, fraud_detected_at
             FROM blocks
@@ -234,6 +240,9 @@ def get_blocks_since(from_height: int, limit: int = 100) -> dict[str, Any]:
     for row in rows:
         block = row_to_dict(row) or {}
         block["samples"] = _decode_json(block.get("samples"), [])
+        block["tx_hashes"] = _decode_json(block.get("tx_hashes"), [])
+        block["tx_count"] = int(block.get("tx_count") or 0)
+        block["fee_reward"] = round(float(block.get("fee_reward") or 0), 8)
         block["fraudulent"] = bool(block.get("fraudulent"))
         blocks.append(block)
     return {"from_height": from_height, "count": len(blocks), "blocks": blocks}
@@ -266,10 +275,34 @@ def receive_block_header(block: dict[str, Any], source_peer_id: str | None = Non
         elif local is not None and local["block_hash"] != block["block_hash"]:
             raise NetworkError(409, "conflicting block at height")
         elif int(block["height"]) == latest_height + 1 and block["previous_hash"] != latest_hash:
-            raise NetworkError(409, "previous_hash does not match local chain tip")
+            active_base = active_snapshot_base_in_connection(connection)
+            continues_snapshot = (
+                active_base is not None
+                and latest_height == 0
+                and int(block["height"]) == int(active_base["height"]) + 1
+                and block["previous_hash"] == active_base["block_hash"]
+            )
+            if continues_snapshot:
+                status = "pending_replay"
+                reason = "accepted after active snapshot base"
+            else:
+                raise NetworkError(409, "previous_hash does not match local chain tip")
         elif int(block["height"]) > latest_height + 1:
-            status = "pending_missing_ancestors"
-            reason = "accepted but missing ancestor blocks"
+            active_base = active_snapshot_base_in_connection(connection)
+            if (
+                active_base is not None
+                and latest_height == 0
+                and int(block["height"]) == int(active_base["height"]) + 1
+                and block["previous_hash"] == active_base["block_hash"]
+            ):
+                status = "pending_replay"
+                reason = "accepted after active snapshot base"
+            elif active_base is not None and int(block["height"]) > int(active_base["height"]) + 1:
+                status = "pending_missing_ancestors"
+                reason = "accepted after snapshot base but missing intermediate blocks"
+            else:
+                status = "pending_missing_ancestors"
+                reason = "accepted but missing ancestor blocks"
         connection.execute(
             """
             INSERT INTO network_block_headers (
@@ -414,6 +447,9 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
         "transactions_imported": 0,
         "proposals_seen": 0,
         "proposals_imported": 0,
+        "blocks_seen": 0,
+        "blocks_imported": 0,
+        "sync_from_height": 0,
         "errors": [],
     }
     try:
@@ -465,6 +501,28 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
         result["errors"].append(f"mempool: {exc}")
 
     try:
+        with get_connection() as connection:
+            latest = connection.execute("SELECT COALESCE(MAX(height), 0) AS height FROM blocks").fetchone()
+            latest_height = int(latest["height"] if latest else 0)
+            active_base = active_snapshot_base_in_connection(connection)
+            base_height = int(active_base["height"]) if active_base is not None else 0
+            sync_from_height = max(latest_height, base_height)
+        result["sync_from_height"] = sync_from_height
+        block_rows = requests.get(
+            f"{peer_address}/node/sync/blocks?from_height={sync_from_height}&limit=100",
+            timeout=GOSSIP_TIMEOUT_SECONDS,
+        ).json()
+        for block in block_rows.get("blocks", []):
+            result["blocks_seen"] += 1
+            try:
+                receive_block_header(block, source_peer_id=None)
+                result["blocks_imported"] += 1
+            except Exception as exc:
+                result["errors"].append(f"block {block.get('height')}: {exc}")
+    except Exception as exc:
+        result["errors"].append(f"blocks: {exc}")
+
+    try:
         from app.services.consensus import propose_block
 
         proposals = requests.get(f"{peer_address}/consensus/proposals?limit=100", timeout=GOSSIP_TIMEOUT_SECONDS).json()
@@ -490,6 +548,7 @@ def reconcile_connected_peers(limit: int = 16) -> dict[str, Any]:
         "attempted": len(results),
         "transactions_imported": sum(item["transactions_imported"] for item in results),
         "proposals_imported": sum(item["proposals_imported"] for item in results),
+        "blocks_imported": sum(item["blocks_imported"] for item in results),
         "peers_seen": sum(item["peers_seen"] for item in results),
         "errors": sum(len(item["errors"]) for item in results),
         "results": results,

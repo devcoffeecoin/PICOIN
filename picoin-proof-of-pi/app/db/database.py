@@ -154,6 +154,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 tx_count INTEGER NOT NULL DEFAULT 0,
                 tx_hashes TEXT NOT NULL DEFAULT '[]',
                 fee_reward REAL NOT NULL DEFAULT 0,
+                state_root TEXT,
                 difficulty REAL,
                 task_id TEXT NOT NULL UNIQUE,
                 protocol_params_id INTEGER,
@@ -509,6 +510,45 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 FOREIGN KEY(proposal_id) REFERENCES consensus_block_proposals(proposal_id)
             );
 
+            CREATE TABLE IF NOT EXISTS canonical_checkpoints (
+                checkpoint_id TEXT PRIMARY KEY,
+                height INTEGER NOT NULL UNIQUE,
+                block_hash TEXT NOT NULL,
+                previous_hash TEXT NOT NULL,
+                state_root TEXT NOT NULL,
+                balances_hash TEXT NOT NULL,
+                snapshot_hash TEXT NOT NULL UNIQUE,
+                balances_count INTEGER NOT NULL,
+                ledger_entries_count INTEGER NOT NULL,
+                total_balance REAL NOT NULL DEFAULT 0,
+                trusted INTEGER NOT NULL DEFAULT 1,
+                source TEXT NOT NULL DEFAULT 'local',
+                created_at TEXT NOT NULL,
+                verified_at TEXT,
+                payload TEXT NOT NULL,
+                FOREIGN KEY(height) REFERENCES blocks(height)
+            );
+
+            CREATE TABLE IF NOT EXISTS canonical_snapshot_imports (
+                import_id TEXT PRIMARY KEY,
+                height INTEGER NOT NULL,
+                block_hash TEXT NOT NULL,
+                previous_hash TEXT NOT NULL,
+                state_root TEXT NOT NULL,
+                balances_hash TEXT NOT NULL,
+                snapshot_hash TEXT NOT NULL UNIQUE,
+                balances_count INTEGER NOT NULL,
+                total_balance REAL NOT NULL DEFAULT 0,
+                source TEXT NOT NULL DEFAULT 'import',
+                active INTEGER NOT NULL DEFAULT 0,
+                activated_at TEXT,
+                state_applied INTEGER NOT NULL DEFAULT 0,
+                state_applied_at TEXT,
+                imported_at TEXT NOT NULL,
+                verified_at TEXT NOT NULL,
+                payload TEXT NOT NULL
+            );
+
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
             CREATE INDEX IF NOT EXISTS idx_blocks_miner ON blocks(miner_id);
             CREATE INDEX IF NOT EXISTS idx_commitments_miner ON commitments(miner_id);
@@ -531,6 +571,8 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_consensus_block_proposals_status ON consensus_block_proposals(status);
             CREATE INDEX IF NOT EXISTS idx_consensus_block_proposals_height ON consensus_block_proposals(height);
             CREATE INDEX IF NOT EXISTS idx_consensus_votes_proposal ON consensus_votes(proposal_id);
+            CREATE INDEX IF NOT EXISTS idx_canonical_checkpoints_height ON canonical_checkpoints(height);
+            CREATE INDEX IF NOT EXISTS idx_canonical_snapshot_imports_height ON canonical_snapshot_imports(height);
             """
         )
         _ensure_column(connection, "miners", "trust_score", "REAL NOT NULL DEFAULT 1.0")
@@ -554,6 +596,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "blocks", "tx_count", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "blocks", "tx_hashes", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_column(connection, "blocks", "fee_reward", "REAL NOT NULL DEFAULT 0")
+        _ensure_column(connection, "blocks", "state_root", "TEXT")
         _ensure_column(connection, "blocks", "difficulty", "REAL")
         _ensure_column(connection, "blocks", "protocol_params_id", "INTEGER")
         _ensure_column(connection, "blocks", "total_task_ms", "INTEGER")
@@ -590,6 +633,10 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "science_reserve_governance", "emergency_paused", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "network_peers", "genesis_hash", f"TEXT NOT NULL DEFAULT '{GENESIS_HASH}'")
         _ensure_column(connection, "mempool_transactions", "expires_at", "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'")
+        _ensure_column(connection, "canonical_snapshot_imports", "active", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "canonical_snapshot_imports", "activated_at", "TEXT")
+        _ensure_column(connection, "canonical_snapshot_imports", "state_applied", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "canonical_snapshot_imports", "state_applied_at", "TEXT")
         _ensure_science_reserve_governance(connection)
         _ensure_scientific_development_treasury(connection)
         _ensure_network_genesis(connection)

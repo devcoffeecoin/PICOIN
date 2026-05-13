@@ -20,6 +20,10 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
     peers = parser.parse_args(["node", "peers", "--connected-only"])
     sync = parser.parse_args(["node", "sync-status"])
     reconcile = parser.parse_args(["node", "reconcile", "--peer", "http://peer:8000"])
+    checkpoint = parser.parse_args(["node", "checkpoint", "verify", "--height", "10"])
+    snapshot_export = parser.parse_args(["node", "checkpoint", "export", "--height", "10", "--output", "snap.json"])
+    snapshot_import = parser.parse_args(["node", "checkpoint", "import", "--file", "snap.json", "--source", "peer"])
+    snapshot_activate = parser.parse_args(["node", "checkpoint", "activate", "--snapshot-hash", "a" * 64])
 
     assert peers.command == "node"
     assert peers.node_command == "peers"
@@ -28,6 +32,16 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
     assert sync.node_command == "sync-status"
     assert reconcile.node_command == "reconcile"
     assert reconcile.peer == "http://peer:8000"
+    assert checkpoint.node_command == "checkpoint"
+    assert checkpoint.checkpoint_command == "verify"
+    assert checkpoint.height == 10
+    assert snapshot_export.checkpoint_command == "export"
+    assert snapshot_export.output == Path("snap.json")
+    assert snapshot_import.checkpoint_command == "import"
+    assert snapshot_import.file == Path("snap.json")
+    assert snapshot_import.source == "peer"
+    assert snapshot_activate.checkpoint_command == "activate"
+    assert snapshot_activate.snapshot_hash == "a" * 64
 
 
 def test_picoin_cli_parses_wallet_and_tx_commands() -> None:
@@ -58,6 +72,31 @@ def test_picoin_cli_parses_wallet_and_tx_commands() -> None:
     assert tx.tx_command == "send"
     assert tx.wallet == Path("alice.json")
     assert tx.amount == 1.5
+
+    stake = parser.parse_args(
+        ["tx", "send", "--wallet", "alice.json", "--type", "stake", "--amount", "3141.6", "--nonce", "2"]
+    )
+    unstake = parser.parse_args(["tx", "send", "--wallet", "alice.json", "--type", "unstake", "--nonce", "3"])
+    science_job = parser.parse_args(
+        [
+            "tx",
+            "send",
+            "--wallet",
+            "alice.json",
+            "--type",
+            "science_job_create",
+            "--nonce",
+            "3",
+            "--payload",
+            '{"job_type":"ai","metadata_hash":"meta","storage_pointer":"ipfs://job"}',
+        ]
+    )
+    assert stake.to is None
+    assert stake.amount == 3141.6
+    assert unstake.amount == 0.0
+    assert unstake.type == "unstake"
+    assert science_job.amount == 0.0
+    assert science_job.type == "science_job_create"
 
 
 def test_picoin_cli_parses_consensus_commands() -> None:

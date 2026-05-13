@@ -47,6 +47,22 @@ def claim_scientific_development_treasury(
     requested_by: str | None = None,
     claim_to: str | None = None,
 ) -> dict[str, Any]:
+    with get_connection() as connection:
+        return claim_scientific_development_treasury_in_connection(
+            connection,
+            requested_by=requested_by,
+            claim_to=claim_to,
+        )
+
+
+def claim_scientific_development_treasury_in_connection(
+    connection: Any,
+    requested_by: str | None = None,
+    claim_to: str | None = None,
+    *,
+    claim_id: str | None = None,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
     requested_by = _clean_address(requested_by or SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET)
     claim_to = _clean_address(claim_to or SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET)
     if requested_by != SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET:
@@ -54,76 +70,79 @@ def claim_scientific_development_treasury(
     if claim_to != SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET:
         raise TreasuryError(403, "treasury claim destination must match configured treasury wallet")
 
-    with get_connection() as connection:
-        _unlock_matured_epochs(connection)
-        treasury = _treasury_row(connection)
-        amount = round(float(treasury["unlocked_balance"]), 8)
-        if amount <= 0:
-            raise TreasuryError(423, f"treasury funds are locked until {treasury['next_unlock_at']}")
+    now_dt = _parse_iso(timestamp) if timestamp else utc_now_dt()
+    now = now_dt.isoformat()
+    _unlock_matured_epochs(connection, now_dt=now_dt)
+    treasury = _treasury_row(connection)
+    amount = round(float(treasury["unlocked_balance"]), 8)
+    if amount <= 0:
+        raise TreasuryError(423, f"treasury funds are locked until {treasury['next_unlock_at']}")
 
-        current_balance = _balance_amount(connection, SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID)
-        if current_balance < amount:
-            raise TreasuryError(500, "treasury ledger balance is lower than unlocked treasury balance")
+    current_balance = _balance_amount(connection, SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID)
+    if current_balance < amount:
+        raise TreasuryError(500, "treasury ledger balance is lower than unlocked treasury balance")
 
-        claim_id = f"treasury_claim_{uuid.uuid4().hex[:16]}"
-        now = utc_now()
-        _apply_ledger_entry(
-            connection,
-            account_id=SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID,
-            account_type="scientific_development_treasury",
-            amount=-amount,
-            entry_type=TREASURY_EVENT_CLAIM,
-            related_id=claim_id,
-            description="scientific development treasury claim debit",
+    claim_id = claim_id or f"treasury_claim_{uuid.uuid4().hex[:16]}"
+    _apply_ledger_entry(
+        connection,
+        account_id=SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID,
+        account_type="scientific_development_treasury",
+        amount=-amount,
+        entry_type=TREASURY_EVENT_CLAIM,
+        related_id=claim_id,
+        description="scientific development treasury claim debit",
+        timestamp=now,
+    )
+    _apply_ledger_entry(
+        connection,
+        account_id=claim_to,
+        account_type="treasury_wallet",
+        amount=amount,
+        entry_type=TREASURY_EVENT_CLAIM,
+        related_id=claim_id,
+        description="scientific development treasury claim",
+        timestamp=now,
+    )
+    connection.execute(
+        """
+        INSERT INTO scientific_development_treasury_claims (
+            claim_id, amount, claim_to, requested_by, created_at
         )
-        _apply_ledger_entry(
-            connection,
-            account_id=claim_to,
-            account_type="treasury_wallet",
-            amount=amount,
-            entry_type=TREASURY_EVENT_CLAIM,
-            related_id=claim_id,
-            description="scientific development treasury claim",
-        )
-        connection.execute(
-            """
-            INSERT INTO scientific_development_treasury_claims (
-                claim_id, amount, claim_to, requested_by, created_at
-            )
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (claim_id, amount, claim_to, requested_by, now),
-        )
-        connection.execute(
-            """
-            UPDATE scientific_development_treasury_epochs
-            SET claimed_amount = claimed_amount + unlocked_amount,
-                unlocked_amount = 0,
-                status = 'claimed',
-                updated_at = ?
-            WHERE unlocked_amount > 0
-            """,
-            (now,),
-        )
-        connection.execute(
-            """
-            UPDATE scientific_development_treasury
-            SET total_claimed = total_claimed + ?,
-                unlocked_balance = 0,
-                last_claim_at = ?,
-                updated_at = ?
-            WHERE treasury_id = ?
-            """,
-            (amount, now, now, SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID),
-        )
-        _record_science_event(
-            connection,
-            "ScientificTreasuryClaimed",
-            address=requested_by,
-            payload={"amount": amount, "claim_to": claim_to, "claim_id": claim_id},
-        )
-        treasury = _treasury_row(connection)
-        history = _treasury_history(connection)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (claim_id, amount, claim_to, requested_by, now),
+    )
+    connection.execute(
+        """
+        UPDATE scientific_development_treasury_epochs
+        SET claimed_amount = claimed_amount + unlocked_amount,
+            unlocked_amount = 0,
+            status = 'claimed',
+            updated_at = ?
+        WHERE unlocked_amount > 0
+        """,
+        (now,),
+    )
+    connection.execute(
+        """
+        UPDATE scientific_development_treasury
+        SET total_claimed = total_claimed + ?,
+            unlocked_balance = 0,
+            last_claim_at = ?,
+            updated_at = ?
+        WHERE treasury_id = ?
+        """,
+        (amount, now, now, SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID),
+    )
+    _record_science_event(
+        connection,
+        "ScientificTreasuryClaimed",
+        address=requested_by,
+        payload={"amount": amount, "claim_to": claim_to, "claim_id": claim_id},
+        timestamp=now,
+    )
+    treasury = _treasury_row(connection)
+    history = _treasury_history(connection)
     decoded = _decode_treasury(treasury, history)
     decoded["claim"] = {
         "claim_id": claim_id,
@@ -159,6 +178,7 @@ def record_scientific_development_treasury_for_block(
         UPDATE scientific_development_treasury_epochs
         SET locked_amount = locked_amount + ?,
             end_block = MAX(end_block, ?),
+            status = 'locked',
             updated_at = ?
         WHERE epoch = ?
         """,
@@ -200,8 +220,8 @@ def record_scientific_development_treasury_for_block(
     return amount
 
 
-def _unlock_matured_epochs(connection: Any) -> None:
-    now_dt = utc_now_dt()
+def _unlock_matured_epochs(connection: Any, now_dt: datetime | None = None) -> None:
+    now_dt = now_dt or utc_now_dt()
     now = now_dt.isoformat()
     rows = connection.execute(
         """
@@ -391,6 +411,7 @@ def _apply_ledger_entry(
     block_height: int | None = None,
     related_id: str | None = None,
     description: str | None = None,
+    timestamp: str | None = None,
 ) -> None:
     amount = round(float(amount), 8)
     _ensure_balance_account(connection, account_id, account_type)
@@ -401,7 +422,7 @@ def _apply_ledger_entry(
     balance_after = round(float(current["balance"]) + amount, 8)
     if balance_after < 0:
         raise TreasuryError(409, "treasury operation would create a negative balance")
-    timestamp = utc_now()
+    timestamp = timestamp or utc_now()
     connection.execute(
         "UPDATE balances SET balance = ?, updated_at = ? WHERE account_id = ?",
         (balance_after, timestamp, account_id),
@@ -446,11 +467,12 @@ def _record_science_event(
     address: str | None = None,
     job_id: str | None = None,
     payload: dict[str, Any],
+    timestamp: str | None = None,
 ) -> None:
     connection.execute(
         """
         INSERT INTO science_events (event_type, address, job_id, payload, created_at)
         VALUES (?, ?, ?, ?, ?)
         """,
-        (event_type, address, job_id, json.dumps(payload, sort_keys=True), utc_now()),
+        (event_type, address, job_id, json.dumps(payload, sort_keys=True), timestamp or utc_now()),
     )

@@ -17,7 +17,13 @@ from app.core.settings import (
 from app.core.signatures import verify_payload_signature
 from app.db.database import get_connection, row_to_dict
 from app.services.science import record_science_reserve_for_block
+from app.services.state import active_snapshot_base_in_connection, maybe_create_checkpoint_in_connection, update_block_state_root
 from app.services.treasury import record_scientific_development_treasury_for_block
+from app.services.transactions import (
+    apply_block_transactions,
+    ensure_block_transactions_in_mempool,
+    transaction_commitment,
+)
 
 
 class ConsensusError(Exception):
@@ -577,14 +583,23 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
     task_id = _ensure_task(connection, block)
     timestamp = block["timestamp"]
     samples_json = json.dumps(block["samples"], sort_keys=True)
+    transactions = block.get("transactions") or []
+    if int(block.get("tx_count") or 0) > 0:
+        commitment = transaction_commitment(transactions)
+        if commitment["tx_count"] != int(block.get("tx_count") or 0):
+            raise ConsensusError(422, "block transactions are missing from proposal payload")
+        if commitment["tx_merkle_root"] != block.get("tx_merkle_root"):
+            raise ConsensusError(422, "block transaction merkle root mismatch")
+        ensure_block_transactions_in_mempool(connection, transactions, timestamp)
     connection.execute(
         """
         INSERT INTO blocks (
             height, previous_hash, miner_id, range_start, range_end, algorithm,
-            result_hash, merkle_root, samples, timestamp, block_hash, reward, difficulty,
-            task_id, protocol_params_id, protocol_version, validation_mode, total_task_ms, validation_ms
+            result_hash, merkle_root, samples, timestamp, block_hash, reward, tx_merkle_root,
+            tx_count, tx_hashes, fee_reward, state_root, difficulty, task_id, protocol_params_id,
+            protocol_version, validation_mode, total_task_ms, validation_ms
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             block["height"],
@@ -599,11 +614,18 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
             timestamp,
             block["block_hash"],
             block["reward"],
+            block.get("tx_merkle_root"),
+            int(block.get("tx_count") or 0),
+            json.dumps(block.get("tx_hashes") or [], sort_keys=True),
+            round(float(block.get("fee_reward") or 0), 8),
+            block.get("state_root"),
             block.get("difficulty"),
             task_id,
             block.get("protocol_params_id"),
             block.get("protocol_version", PROTOCOL_VERSION),
             block.get("validation_mode", VALIDATION_MODE),
+            None,
+            None,
         ),
     )
     connection.execute(
@@ -624,10 +646,22 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
         "distributed finalized miner reward",
         timestamp,
     )
+    if transactions:
+        apply_block_transactions(
+            connection,
+            miner_id=block["miner_id"],
+            block_height=block["height"],
+            transactions=transactions,
+            timestamp=timestamp,
+        )
     total_block_reward = round(float(block["reward"]) / PROOF_OF_PI_REWARD_PERCENT, 8)
     record_science_reserve_for_block(connection, block["height"], total_block_reward)
     record_scientific_development_treasury_for_block(connection, block["height"], total_block_reward)
     _apply_distributed_validator_rewards(connection, block["height"], proposal_id, total_block_reward, timestamp)
+    state_root = update_block_state_root(connection, block["height"], timestamp)
+    if block.get("state_root") and block["state_root"] != state_root:
+        raise ConsensusError(422, "state_root mismatch after canonical replay")
+    maybe_create_checkpoint_in_connection(connection, block["height"])
     return True
 
 
@@ -811,6 +845,14 @@ def _normalize_block(block: dict[str, Any]) -> dict[str, Any]:
         normalized["difficulty"] = float(normalized["difficulty"])
     if normalized.get("protocol_params_id") is not None:
         normalized["protocol_params_id"] = int(normalized["protocol_params_id"])
+    if isinstance(normalized.get("tx_hashes"), str):
+        normalized["tx_hashes"] = json.loads(normalized["tx_hashes"])
+    normalized["tx_count"] = int(normalized.get("tx_count") or 0)
+    normalized["fee_reward"] = round(float(normalized.get("fee_reward") or 0), 8)
+    if normalized.get("state_root") is not None and len(str(normalized["state_root"])) != 64:
+        raise ConsensusError(422, "invalid state_root length")
+    if normalized["tx_count"] > 0 and not normalized.get("tx_merkle_root"):
+        normalized["tx_merkle_root"] = transaction_commitment(normalized.get("transactions") or [])["tx_merkle_root"]
     normalized["protocol_version"] = normalized.get("protocol_version") or PROTOCOL_VERSION
     normalized["validation_mode"] = normalized.get("validation_mode") or VALIDATION_MODE
     return normalized
@@ -835,6 +877,11 @@ def _canonical_block_payload(block: dict[str, Any], include_protocol: bool) -> d
         payload["protocol_params_id"] = int(block["protocol_params_id"])
     if block.get("merkle_root"):
         payload["merkle_root"] = block["merkle_root"]
+    if int(block.get("tx_count") or 0) > 0:
+        payload["tx_merkle_root"] = block.get("tx_merkle_root")
+        payload["tx_count"] = int(block.get("tx_count") or 0)
+        payload["tx_hashes"] = block.get("tx_hashes") or []
+        payload["fee_reward"] = round(float(block.get("fee_reward") or 0), 8)
     if include_protocol:
         payload["protocol_version"] = block.get("protocol_version", PROTOCOL_VERSION)
         payload["validation_mode"] = block.get("validation_mode", VALIDATION_MODE)
@@ -862,6 +909,9 @@ def _block_hash_candidates(block: dict[str, Any]) -> set[str]:
 def _latest_tip(connection: Any) -> dict[str, Any]:
     latest = connection.execute("SELECT height, block_hash FROM blocks ORDER BY height DESC LIMIT 1").fetchone()
     if latest is None:
+        active_base = active_snapshot_base_in_connection(connection)
+        if active_base is not None and active_base.get("state_applied"):
+            return {"height": int(active_base["height"]), "block_hash": active_base["block_hash"]}
         return {"height": 0, "block_hash": GENESIS_HASH}
     return {"height": int(latest["height"]), "block_hash": latest["block_hash"]}
 

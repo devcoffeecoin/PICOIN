@@ -112,6 +112,62 @@ def command_node_reconcile(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_node_checkpoint_list(args: argparse.Namespace) -> int:
+    print_json(get_json(args.server, f"/node/checkpoints?limit={args.limit}"))
+    return 0
+
+
+def command_node_checkpoint_latest(args: argparse.Namespace) -> int:
+    print_json(get_json(args.server, "/node/checkpoints/latest"))
+    return 0
+
+
+def command_node_checkpoint_create(args: argparse.Namespace) -> int:
+    query = f"trusted={str(args.trusted).lower()}&source={args.source}"
+    if args.height is not None:
+        query = f"height={args.height}&{query}"
+    print_json(post_json(args.server, f"/node/checkpoints?{query}"))
+    return 0
+
+
+def command_node_checkpoint_verify(args: argparse.Namespace) -> int:
+    print_json(post_json(args.server, f"/node/checkpoints/{args.height}/verify"))
+    return 0
+
+
+def command_node_checkpoint_export(args: argparse.Namespace) -> int:
+    path = "/node/snapshots/export"
+    if args.height is not None:
+        path = f"{path}?height={args.height}"
+    snapshot = get_json(args.server, path)
+    if args.output:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        args.output.write_text(json.dumps(snapshot, indent=2, sort_keys=True), encoding="utf-8")
+    print_json(snapshot)
+    return 0
+
+
+def command_node_checkpoint_import(args: argparse.Namespace) -> int:
+    snapshot = json.loads(args.file.read_text(encoding="utf-8"))
+    print_json(post_json(args.server, "/node/snapshots/import", {"snapshot": snapshot, "source": args.source}))
+    return 0
+
+
+def command_node_checkpoint_imports(args: argparse.Namespace) -> int:
+    print_json(get_json(args.server, f"/node/snapshots/imports?limit={args.limit}"))
+    return 0
+
+
+def command_node_checkpoint_activate(args: argparse.Namespace) -> int:
+    print_json(post_json(args.server, f"/node/snapshots/{args.snapshot_hash}/activate"))
+    return 0
+
+
+def command_node_checkpoint_apply(args: argparse.Namespace) -> int:
+    print_json(post_json(args.server, f"/node/snapshots/{args.snapshot_hash}/apply"))
+    return 0
+
+
 def command_wallet_create(args: argparse.Namespace) -> int:
     wallet = create_wallet(args.name)
     if args.output:
@@ -458,6 +514,50 @@ def add_node_parser(subparsers: argparse._SubParsersAction) -> None:
     reconcile_parser.add_argument("--limit", type=int, default=16)
     reconcile_parser.set_defaults(func=command_node_reconcile)
 
+    checkpoint_parser = node_subparsers.add_parser("checkpoint", help="Create and verify canonical state checkpoints")
+    checkpoint_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    checkpoint_subparsers = checkpoint_parser.add_subparsers(dest="checkpoint_command", required=True)
+
+    checkpoint_list = checkpoint_subparsers.add_parser("list", help="List canonical checkpoints")
+    checkpoint_list.add_argument("--limit", type=int, default=50)
+    checkpoint_list.set_defaults(func=command_node_checkpoint_list)
+
+    checkpoint_latest = checkpoint_subparsers.add_parser("latest", help="Show latest canonical checkpoint")
+    checkpoint_latest.set_defaults(func=command_node_checkpoint_latest)
+
+    checkpoint_create = checkpoint_subparsers.add_parser("create", help="Create a canonical checkpoint")
+    checkpoint_create.add_argument("--height", type=int)
+    checkpoint_create.add_argument("--source", default="manual")
+    checkpoint_create.add_argument("--trusted", action="store_true", default=True)
+    checkpoint_create.add_argument("--untrusted", action="store_false", dest="trusted")
+    checkpoint_create.set_defaults(func=command_node_checkpoint_create)
+
+    checkpoint_verify = checkpoint_subparsers.add_parser("verify", help="Verify a checkpoint against local replay")
+    checkpoint_verify.add_argument("--height", type=int, required=True)
+    checkpoint_verify.set_defaults(func=command_node_checkpoint_verify)
+
+    checkpoint_export = checkpoint_subparsers.add_parser("export", help="Export a canonical checkpoint snapshot JSON")
+    checkpoint_export.add_argument("--height", type=int)
+    checkpoint_export.add_argument("--output", type=Path)
+    checkpoint_export.set_defaults(func=command_node_checkpoint_export)
+
+    checkpoint_import = checkpoint_subparsers.add_parser("import", help="Import and verify a canonical snapshot JSON")
+    checkpoint_import.add_argument("--file", type=Path, required=True)
+    checkpoint_import.add_argument("--source", default="cli")
+    checkpoint_import.set_defaults(func=command_node_checkpoint_import)
+
+    checkpoint_imports = checkpoint_subparsers.add_parser("imports", help="List imported canonical snapshots")
+    checkpoint_imports.add_argument("--limit", type=int, default=50)
+    checkpoint_imports.set_defaults(func=command_node_checkpoint_imports)
+
+    checkpoint_activate = checkpoint_subparsers.add_parser("activate", help="Use an imported snapshot as sync base")
+    checkpoint_activate.add_argument("--snapshot-hash", required=True)
+    checkpoint_activate.set_defaults(func=command_node_checkpoint_activate)
+
+    checkpoint_apply = checkpoint_subparsers.add_parser("apply", help="Apply an imported snapshot as local fast-sync state")
+    checkpoint_apply.add_argument("--snapshot-hash", required=True)
+    checkpoint_apply.set_defaults(func=command_node_checkpoint_apply)
+
 
 def add_wallet_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("wallet", help="Create wallets and query balances")
@@ -479,13 +579,17 @@ def add_tx_parser(subparsers: argparse._SubParsersAction) -> None:
     parser.add_argument("--server", default=DEFAULT_SERVER_URL)
     tx_subparsers = parser.add_subparsers(dest="tx_command", required=True)
 
-    send_parser = tx_subparsers.add_parser("send", help="Submit a signed transfer transaction to the mempool")
+    send_parser = tx_subparsers.add_parser("send", help="Submit a signed transaction to the mempool")
     send_parser.add_argument("--wallet", type=Path, required=True)
-    send_parser.add_argument("--to", required=True)
-    send_parser.add_argument("--amount", type=float, required=True)
+    send_parser.add_argument("--to")
+    send_parser.add_argument("--amount", type=float, default=0.0)
     send_parser.add_argument("--fee", type=float, default=0.0)
     send_parser.add_argument("--nonce", type=int, required=True)
-    send_parser.add_argument("--type", default="transfer")
+    send_parser.add_argument(
+        "--type",
+        default="transfer",
+        choices=["transfer", "stake", "unstake", "science_job_create", "governance_action", "treasury_claim"],
+    )
     send_parser.add_argument("--sender")
     send_parser.add_argument("--payload", help="Optional JSON payload")
     send_parser.set_defaults(func=command_tx_send)

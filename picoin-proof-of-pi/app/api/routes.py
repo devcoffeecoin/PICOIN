@@ -8,7 +8,9 @@ from app.models.schemas import (
     BlockReceiveResponse,
     BlockResponse,
     BlockSyncResponse,
+    CanonicalCheckpointResponse,
     ChainVerificationResponse,
+    CheckpointVerificationResponse,
     ConsensusBlockProposalRequest,
     ConsensusProposalResponse,
     ConsensusReplayResponse,
@@ -51,6 +53,8 @@ from app.models.schemas import (
     ScienceStakeRequest,
     ScientificDevelopmentTreasuryResponse,
     SignedTransactionRequest,
+    SnapshotImportRequest,
+    SnapshotImportResponse,
     StatsResponse,
     TaskCommitRequest,
     TaskCommitResponse,
@@ -97,6 +101,20 @@ from app.services.treasury import (
     TreasuryError,
     claim_scientific_development_treasury,
     get_scientific_development_treasury,
+)
+from app.services.state import (
+    StateError,
+    activate_imported_snapshot,
+    apply_imported_snapshot_state,
+    create_canonical_checkpoint,
+    export_canonical_snapshot,
+    get_checkpoint,
+    import_canonical_snapshot,
+    latest_checkpoint,
+    list_imported_snapshots,
+    list_checkpoints,
+    validate_snapshot_document,
+    verify_checkpoint,
 )
 from app.services.wallet import create_wallet
 from app.services.science import (
@@ -177,6 +195,10 @@ def _consensus_error(exc: ConsensusError) -> HTTPException:
     return HTTPException(status_code=exc.status_code, detail=exc.detail)
 
 
+def _state_error(exc: StateError) -> HTTPException:
+    return HTTPException(status_code=exc.status_code, detail=exc.detail)
+
+
 def _gossip_block_from_response(response: dict) -> None:
     block = response.get("block") if isinstance(response, dict) else None
     if not block:
@@ -249,6 +271,86 @@ def node_sync_blocks(
         raise _network_error(exc) from exc
 
 
+@router.get("/node/checkpoints", response_model=list[CanonicalCheckpointResponse])
+def node_checkpoints(limit: int = Query(50, ge=1, le=500)) -> list[dict]:
+    return list_checkpoints(limit)
+
+
+@router.get("/node/checkpoints/latest", response_model=CanonicalCheckpointResponse | None)
+def node_latest_checkpoint() -> dict | None:
+    return latest_checkpoint()
+
+
+@router.post("/node/checkpoints", response_model=CanonicalCheckpointResponse, status_code=201)
+def node_create_checkpoint(
+    height: int | None = Query(None, ge=1),
+    trusted: bool = Query(True),
+    source: str = Query("manual", min_length=1, max_length=80),
+) -> dict:
+    try:
+        return create_canonical_checkpoint(height=height, trusted=trusted, source=source)
+    except StateError as exc:
+        raise _state_error(exc) from exc
+
+
+@router.get("/node/checkpoints/{height}", response_model=CanonicalCheckpointResponse)
+def node_checkpoint(height: int) -> dict:
+    checkpoint = get_checkpoint(height)
+    if checkpoint is None:
+        raise HTTPException(status_code=404, detail="checkpoint not found")
+    return checkpoint
+
+
+@router.post("/node/checkpoints/{height}/verify", response_model=CheckpointVerificationResponse)
+def node_verify_checkpoint(height: int) -> dict:
+    try:
+        return verify_checkpoint(height)
+    except StateError as exc:
+        raise _state_error(exc) from exc
+
+
+@router.get("/node/snapshots/export")
+def node_export_snapshot(height: int | None = Query(None, ge=1)) -> dict:
+    try:
+        return export_canonical_snapshot(height)
+    except StateError as exc:
+        raise _state_error(exc) from exc
+
+
+@router.post("/node/snapshots/validate")
+def node_validate_snapshot(payload: SnapshotImportRequest) -> dict:
+    return validate_snapshot_document(payload.snapshot)
+
+
+@router.post("/node/snapshots/import", response_model=SnapshotImportResponse)
+def node_import_snapshot(payload: SnapshotImportRequest) -> dict:
+    try:
+        return import_canonical_snapshot(payload.snapshot, source=payload.source)
+    except StateError as exc:
+        raise _state_error(exc) from exc
+
+
+@router.get("/node/snapshots/imports")
+def node_imported_snapshots(limit: int = Query(50, ge=1, le=500)) -> list[dict]:
+    return list_imported_snapshots(limit)
+
+
+@router.post("/node/snapshots/{snapshot_hash}/activate")
+def node_activate_snapshot(snapshot_hash: str) -> dict:
+    try:
+        return activate_imported_snapshot(snapshot_hash)
+    except StateError as exc:
+        raise _state_error(exc) from exc
+
+
+@router.post("/node/snapshots/{snapshot_hash}/apply")
+def node_apply_snapshot(snapshot_hash: str) -> dict:
+    try:
+        return apply_imported_snapshot_state(snapshot_hash)
+    except StateError as exc:
+        raise _state_error(exc) from exc
+
+
 @router.post("/node/blocks/receive", response_model=BlockReceiveResponse)
 def node_receive_block(payload: BlockReceiveRequest) -> dict:
     try:
@@ -268,6 +370,7 @@ def node_reconcile(
             "attempted": 1,
             "transactions_imported": result["transactions_imported"],
             "proposals_imported": result["proposals_imported"],
+            "blocks_imported": result["blocks_imported"],
             "peers_seen": result["peers_seen"],
             "errors": len(result["errors"]),
             "results": [result],

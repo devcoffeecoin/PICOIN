@@ -82,6 +82,18 @@ def determine_science_tier(stake_amount: float) -> dict[str, Any] | None:
 
 
 def stake_science_access(address: str, amount: float) -> dict[str, Any]:
+    with get_connection() as connection:
+        return stake_science_access_in_connection(connection, address, amount)
+
+
+def stake_science_access_in_connection(
+    connection: Any,
+    address: str,
+    amount: float,
+    *,
+    account_id: str | None = None,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
     address = _clean_address(address)
     stake_amount = round(float(amount), 8)
     if stake_amount <= 0:
@@ -90,60 +102,59 @@ def stake_science_access(address: str, amount: float) -> dict[str, Any]:
     if tier is None:
         raise ScienceError(400, "stake amount is below researcher minimum")
 
-    now = utc_now()
-    with get_connection() as connection:
-        existing = row_to_dict(
-            connection.execute(
-                "SELECT * FROM science_stake_accounts WHERE address = ?",
-                (address,),
-            ).fetchone()
-        )
-        account_id = existing["account_id"] if existing else f"science_{uuid.uuid4().hex[:16]}"
-        epoch = existing["monthly_quota_epoch"] if existing else current_epoch()
-        quota_used = float(existing["monthly_quota_used"]) if existing else 0.0
-        if epoch != current_epoch():
-            epoch = current_epoch()
-            quota_used = 0.0
+    now = timestamp or utc_now()
+    existing = row_to_dict(
         connection.execute(
-            """
-            INSERT INTO science_stake_accounts (
-                account_id, address, stake_amount, tier, compute_multiplier,
-                monthly_quota_used, monthly_quota_epoch, status, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
-            ON CONFLICT(address) DO UPDATE SET
-                stake_amount = excluded.stake_amount,
-                tier = excluded.tier,
-                compute_multiplier = excluded.compute_multiplier,
-                monthly_quota_used = excluded.monthly_quota_used,
-                monthly_quota_epoch = excluded.monthly_quota_epoch,
-                status = 'active',
-                updated_at = excluded.updated_at
-            """,
-            (
-                account_id,
-                address,
-                stake_amount,
-                tier["tier"],
-                tier["compute_multiplier"],
-                quota_used,
-                epoch,
-                now,
-                now,
-            ),
+            "SELECT * FROM science_stake_accounts WHERE address = ?",
+            (address,),
+        ).fetchone()
+    )
+    account_id = existing["account_id"] if existing else (account_id or f"science_{uuid.uuid4().hex[:16]}")
+    epoch = existing["monthly_quota_epoch"] if existing else current_epoch()
+    quota_used = float(existing["monthly_quota_used"]) if existing else 0.0
+    if epoch != current_epoch():
+        epoch = current_epoch()
+        quota_used = 0.0
+    connection.execute(
+        """
+        INSERT INTO science_stake_accounts (
+            account_id, address, stake_amount, tier, compute_multiplier,
+            monthly_quota_used, monthly_quota_epoch, status, created_at, updated_at
         )
-        _record_science_event(
-            connection,
-            "ScienceStakeUpdated",
-            address=address,
-            payload={
-                "stake_amount": stake_amount,
-                "tier": tier["tier"],
-                "compute_multiplier": tier["compute_multiplier"],
-                "priority": tier["priority"],
-            },
-        )
-        account = _science_account_by_address(connection, address)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'active', ?, ?)
+        ON CONFLICT(address) DO UPDATE SET
+            stake_amount = excluded.stake_amount,
+            tier = excluded.tier,
+            compute_multiplier = excluded.compute_multiplier,
+            monthly_quota_used = excluded.monthly_quota_used,
+            monthly_quota_epoch = excluded.monthly_quota_epoch,
+            status = 'active',
+            updated_at = excluded.updated_at
+        """,
+        (
+            account_id,
+            address,
+            stake_amount,
+            tier["tier"],
+            tier["compute_multiplier"],
+            quota_used,
+            epoch,
+            now,
+            now,
+        ),
+    )
+    _record_science_event(
+        connection,
+        "ScienceStakeUpdated",
+        address=address,
+        payload={
+            "stake_amount": stake_amount,
+            "tier": tier["tier"],
+            "compute_multiplier": tier["compute_multiplier"],
+            "priority": tier["priority"],
+        },
+    )
+    account = _science_account_by_address(connection, address)
     return _enrich_science_account(account)
 
 
@@ -168,42 +179,52 @@ def list_science_accounts(limit: int = 100) -> list[dict[str, Any]]:
 
 
 def unstake_science_access(address: str) -> dict[str, Any]:
-    address = _clean_address(address)
     with get_connection() as connection:
-        account = _science_account_by_address(connection, address)
-        if account is None:
-            raise ScienceError(404, "science stake account not found")
-        active_jobs = connection.execute(
-            """
-            SELECT COUNT(*) AS count
-            FROM science_jobs
-            WHERE requester_address = ?
-            AND status IN ('created', 'queued', 'assigned', 'committed', 'submitted', 'verified', 'accepted')
-            AND paid = 0
-            """,
-            (address,),
-        ).fetchone()["count"]
-        if int(active_jobs) > 0:
-            raise ScienceError(409, "cannot unstake while science jobs are active")
-        connection.execute(
-            """
-            UPDATE science_stake_accounts
-            SET stake_amount = 0,
-                tier = NULL,
-                compute_multiplier = 0,
-                status = 'unstaking',
-                updated_at = ?
-            WHERE address = ?
-            """,
-            (utc_now(), address),
-        )
-        _record_science_event(
-            connection,
-            "ScienceStakeUpdated",
-            address=address,
-            payload={"stake_amount": 0.0, "tier": None, "status": "unstaking"},
-        )
-        updated = _science_account_by_address(connection, address)
+        return unstake_science_access_in_connection(connection, address)
+
+
+def unstake_science_access_in_connection(
+    connection: Any,
+    address: str,
+    *,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    address = _clean_address(address)
+    account = _science_account_by_address(connection, address)
+    if account is None:
+        raise ScienceError(404, "science stake account not found")
+    active_jobs = connection.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM science_jobs
+        WHERE requester_address = ?
+        AND status IN ('created', 'queued', 'assigned', 'committed', 'submitted', 'verified', 'accepted')
+        AND paid = 0
+        """,
+        (address,),
+    ).fetchone()["count"]
+    if int(active_jobs) > 0:
+        raise ScienceError(409, "cannot unstake while science jobs are active")
+    now = timestamp or utc_now()
+    connection.execute(
+        """
+        UPDATE science_stake_accounts
+        SET stake_amount = 0,
+            tier = NULL,
+            compute_multiplier = 0,
+            status = 'unstaking',
+            updated_at = ?
+        WHERE address = ?
+        """,
+        (now, address),
+    )
+    _record_science_event(
+        connection,
+        "ScienceStakeUpdated",
+        address=address,
+        payload={"stake_amount": 0.0, "tier": None, "status": "unstaking"},
+    )
+    updated = _science_account_by_address(connection, address)
     return _enrich_science_account(updated)
 
 
@@ -217,6 +238,34 @@ def create_science_job(
     reward_per_compute_unit: float | None = None,
     max_reward: float | None = None,
 ) -> dict[str, Any]:
+    with get_connection() as connection:
+        return create_science_job_in_connection(
+            connection,
+            requester_address,
+            job_type,
+            metadata_hash,
+            storage_pointer,
+            reward_budget=reward_budget,
+            max_compute_units=max_compute_units,
+            reward_per_compute_unit=reward_per_compute_unit,
+            max_reward=max_reward,
+        )
+
+
+def create_science_job_in_connection(
+    connection: Any,
+    requester_address: str,
+    job_type: str,
+    metadata_hash: str,
+    storage_pointer: str,
+    reward_budget: float | None = None,
+    max_compute_units: float | None = None,
+    reward_per_compute_unit: float | None = None,
+    max_reward: float | None = None,
+    *,
+    job_id: str | None = None,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
     requester_address = _clean_address(requester_address)
     job_type = _clean_text(job_type, "job_type")
     metadata_hash = _clean_text(metadata_hash, "metadata_hash")
@@ -228,67 +277,66 @@ def create_science_job(
         max_reward=max_reward,
     )
 
-    with get_connection() as connection:
-        account = _require_active_science_account(connection, requester_address)
-        account = _reset_quota_if_needed(connection, account)
-        quota_limit = _monthly_quota_limit(account)
-        if float(account["monthly_quota_used"]) + 1 > quota_limit:
-            raise ScienceError(429, "monthly science quota exceeded")
-        if reward_cap > 0:
-            _validate_requester_pending_limit(connection, requester_address, reward_cap)
-            _reserve_science_job_budget(connection, reward_cap)
+    account = _require_active_science_account(connection, requester_address)
+    account = _reset_quota_if_needed(connection, account)
+    quota_limit = _monthly_quota_limit(account)
+    if float(account["monthly_quota_used"]) + 1 > quota_limit:
+        raise ScienceError(429, "monthly science quota exceeded")
+    if reward_cap > 0:
+        _validate_requester_pending_limit(connection, requester_address, reward_cap)
+        _reserve_science_job_budget(connection, reward_cap)
 
-        job_id = f"science_job_{uuid.uuid4().hex[:16]}"
-        now = utc_now()
-        connection.execute(
-            """
-            INSERT INTO science_jobs (
-                job_id, requester_address, tier_at_creation, job_type, metadata_hash,
-                storage_pointer, reward_budget, max_compute_units,
-                reward_per_compute_unit, max_reward, status, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'created', ?, ?)
-            """,
-            (
-                job_id,
-                requester_address,
-                account["tier"],
-                job_type,
-                metadata_hash,
-                storage_pointer,
-                reward_cap,
-                compute_units,
-                reward_per_unit,
-                reward_cap,
-                now,
-                now,
-            ),
+    job_id = job_id or f"science_job_{uuid.uuid4().hex[:16]}"
+    now = timestamp or utc_now()
+    connection.execute(
+        """
+        INSERT INTO science_jobs (
+            job_id, requester_address, tier_at_creation, job_type, metadata_hash,
+            storage_pointer, reward_budget, max_compute_units,
+            reward_per_compute_unit, max_reward, status, created_at, updated_at
         )
-        connection.execute(
-            """
-            UPDATE science_stake_accounts
-            SET monthly_quota_used = monthly_quota_used + 1,
-                updated_at = ?
-            WHERE address = ?
-            """,
-            (now, requester_address),
-        )
-        _record_science_event(
-            connection,
-            "ScienceJobCreated",
-            address=requester_address,
-            job_id=job_id,
-            payload={
-                "tier": account["tier"],
-                "job_type": job_type,
-                "metadata_hash": metadata_hash,
-                "storage_pointer": storage_pointer,
-                "max_compute_units": compute_units,
-                "reward_per_compute_unit": reward_per_unit,
-                "max_reward": reward_cap,
-            },
-        )
-        job = _science_job_by_id(connection, job_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'created', ?, ?)
+        """,
+        (
+            job_id,
+            requester_address,
+            account["tier"],
+            job_type,
+            metadata_hash,
+            storage_pointer,
+            reward_cap,
+            compute_units,
+            reward_per_unit,
+            reward_cap,
+            now,
+            now,
+        ),
+    )
+    connection.execute(
+        """
+        UPDATE science_stake_accounts
+        SET monthly_quota_used = monthly_quota_used + 1,
+            updated_at = ?
+        WHERE address = ?
+        """,
+        (now, requester_address),
+    )
+    _record_science_event(
+        connection,
+        "ScienceJobCreated",
+        address=requester_address,
+        job_id=job_id,
+        payload={
+            "tier": account["tier"],
+            "job_type": job_type,
+            "metadata_hash": metadata_hash,
+            "storage_pointer": storage_pointer,
+            "max_compute_units": compute_units,
+            "reward_per_compute_unit": reward_per_unit,
+            "max_reward": reward_cap,
+        },
+    )
+    job = _science_job_by_id(connection, job_id)
     return _decode_science_job(job)
 
 
@@ -454,182 +502,227 @@ def get_science_reserve(epoch: str | None = None) -> dict[str, Any]:
 
 
 def propose_science_reserve_activation(signer: str) -> dict[str, Any]:
-    signer = _clean_address(signer)
     with get_connection() as connection:
-        governance = _science_reserve_governance(connection)
-        if governance["status"] == SCIENCE_RESERVE_ACTIVE_STATUS:
-            raise ScienceError(409, "science reserve is already active")
-        _require_authorized_signer(governance, signer)
-        approvals = _governance_approvals(governance)
-        if signer not in approvals:
-            approvals.append(signer)
-        now = utc_now_dt()
-        available_at = now + timedelta(seconds=SCIENCE_RESERVE_GOVERNANCE_TIMELOCK_SECONDS)
-        connection.execute(
-            """
-            UPDATE science_reserve_governance
-            SET status = ?,
-                activation_requested_at = ?,
-                activation_available_at = ?,
-                approvals = ?,
-                payouts_enabled = 0,
-                updated_at = ?
-            WHERE id = 1
-            """,
-            (
-                SCIENCE_RESERVE_PENDING_STATUS,
-                now.isoformat(),
-                available_at.isoformat(),
-                json.dumps(approvals),
-                now.isoformat(),
-            ),
-        )
-        _record_science_event(
-            connection,
-            "ScienceReserveActivationProposed",
-            address=signer,
-            payload={
-                "status": SCIENCE_RESERVE_PENDING_STATUS,
-                "activation_available_at": available_at.isoformat(),
-                "approvals": approvals,
-                "threshold": SCIENCE_RESERVE_GOVERNANCE_MULTISIG_THRESHOLD,
-            },
-        )
-        governance = _science_reserve_governance(connection)
+        return propose_science_reserve_activation_in_connection(connection, signer)
+
+
+def propose_science_reserve_activation_in_connection(
+    connection: Any,
+    signer: str,
+    *,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    signer = _clean_address(signer)
+    governance = _science_reserve_governance(connection)
+    if governance["status"] == SCIENCE_RESERVE_ACTIVE_STATUS:
+        raise ScienceError(409, "science reserve is already active")
+    _require_authorized_signer(governance, signer)
+    approvals = _governance_approvals(governance)
+    if signer not in approvals:
+        approvals.append(signer)
+    now = _parse_iso(timestamp) if timestamp else utc_now_dt()
+    available_at = now + timedelta(seconds=SCIENCE_RESERVE_GOVERNANCE_TIMELOCK_SECONDS)
+    connection.execute(
+        """
+        UPDATE science_reserve_governance
+        SET status = ?,
+            activation_requested_at = ?,
+            activation_available_at = ?,
+            approvals = ?,
+            payouts_enabled = 0,
+            updated_at = ?
+        WHERE id = 1
+        """,
+        (
+            SCIENCE_RESERVE_PENDING_STATUS,
+            now.isoformat(),
+            available_at.isoformat(),
+            json.dumps(approvals),
+            now.isoformat(),
+        ),
+    )
+    _record_science_event(
+        connection,
+        "ScienceReserveActivationProposed",
+        address=signer,
+        payload={
+            "status": SCIENCE_RESERVE_PENDING_STATUS,
+            "activation_available_at": available_at.isoformat(),
+            "approvals": approvals,
+            "threshold": SCIENCE_RESERVE_GOVERNANCE_MULTISIG_THRESHOLD,
+        },
+    )
+    governance = _science_reserve_governance(connection)
     return _decode_governance(governance)
 
 
 def approve_science_reserve_activation(signer: str) -> dict[str, Any]:
-    signer = _clean_address(signer)
     with get_connection() as connection:
-        governance = _science_reserve_governance(connection)
-        if governance["status"] == SCIENCE_RESERVE_ACTIVE_STATUS:
-            raise ScienceError(409, "science reserve is already active")
-        if not governance["activation_requested_at"]:
-            raise ScienceError(409, "science reserve activation has not been proposed")
-        _require_authorized_signer(governance, signer)
-        approvals = _governance_approvals(governance)
-        if signer not in approvals:
-            approvals.append(signer)
-        connection.execute(
-            """
-            UPDATE science_reserve_governance
-            SET approvals = ?,
-                updated_at = ?
-            WHERE id = 1
-            """,
-            (json.dumps(approvals), utc_now()),
-        )
-        _record_science_event(
-            connection,
-            "ScienceReserveActivationApproved",
-            address=signer,
-            payload={
-                "approvals": approvals,
-                "threshold": SCIENCE_RESERVE_GOVERNANCE_MULTISIG_THRESHOLD,
-            },
-        )
-        governance = _science_reserve_governance(connection)
+        return approve_science_reserve_activation_in_connection(connection, signer)
+
+
+def approve_science_reserve_activation_in_connection(
+    connection: Any,
+    signer: str,
+    *,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    signer = _clean_address(signer)
+    governance = _science_reserve_governance(connection)
+    if governance["status"] == SCIENCE_RESERVE_ACTIVE_STATUS:
+        raise ScienceError(409, "science reserve is already active")
+    if not governance["activation_requested_at"]:
+        raise ScienceError(409, "science reserve activation has not been proposed")
+    _require_authorized_signer(governance, signer)
+    approvals = _governance_approvals(governance)
+    if signer not in approvals:
+        approvals.append(signer)
+    connection.execute(
+        """
+        UPDATE science_reserve_governance
+        SET approvals = ?,
+            updated_at = ?
+        WHERE id = 1
+        """,
+        (json.dumps(approvals), timestamp or utc_now()),
+    )
+    _record_science_event(
+        connection,
+        "ScienceReserveActivationApproved",
+        address=signer,
+        payload={
+            "approvals": approvals,
+            "threshold": SCIENCE_RESERVE_GOVERNANCE_MULTISIG_THRESHOLD,
+        },
+    )
+    governance = _science_reserve_governance(connection)
     return _decode_governance(governance)
 
 
 def execute_science_reserve_activation() -> dict[str, Any]:
     with get_connection() as connection:
-        governance = _science_reserve_governance(connection)
-        if governance["status"] == SCIENCE_RESERVE_ACTIVE_STATUS:
-            return _decode_governance(governance)
-        if not governance["activation_available_at"]:
-            raise ScienceError(409, "science reserve activation has not been proposed")
-        approvals = _governance_approvals(governance)
-        if len(approvals) < SCIENCE_RESERVE_GOVERNANCE_MULTISIG_THRESHOLD:
-            raise ScienceError(409, "science reserve activation lacks multisig approvals")
-        available_at = _parse_iso(governance["activation_available_at"])
-        if utc_now_dt() < available_at:
-            raise ScienceError(423, f"science reserve activation timelock active until {governance['activation_available_at']}")
-        now = utc_now()
-        connection.execute(
-            """
-            UPDATE science_reserve_governance
-            SET status = ?,
-                activated_at = ?,
-                payouts_enabled = 1,
-                emergency_paused = 0,
-                updated_at = ?
-            WHERE id = 1
-            """,
-            (SCIENCE_RESERVE_ACTIVE_STATUS, now, now),
-        )
-        _record_science_event(
-            connection,
-            "ScienceReserveActivated",
-            payload={"status": SCIENCE_RESERVE_ACTIVE_STATUS, "approvals": approvals},
-        )
-        _record_science_event(
-            connection,
-            "ScienceReserveUnlocked",
-            payload={"status": SCIENCE_RESERVE_ACTIVE_STATUS, "payouts_enabled": True},
-        )
-        governance = _science_reserve_governance(connection)
+        return execute_science_reserve_activation_in_connection(connection)
+
+
+def execute_science_reserve_activation_in_connection(
+    connection: Any,
+    *,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    governance = _science_reserve_governance(connection)
+    if governance["status"] == SCIENCE_RESERVE_ACTIVE_STATUS:
+        return _decode_governance(governance)
+    if not governance["activation_available_at"]:
+        raise ScienceError(409, "science reserve activation has not been proposed")
+    approvals = _governance_approvals(governance)
+    if len(approvals) < SCIENCE_RESERVE_GOVERNANCE_MULTISIG_THRESHOLD:
+        raise ScienceError(409, "science reserve activation lacks multisig approvals")
+    available_at = _parse_iso(governance["activation_available_at"])
+    now_dt = _parse_iso(timestamp) if timestamp else utc_now_dt()
+    if now_dt < available_at:
+        raise ScienceError(423, f"science reserve activation timelock active until {governance['activation_available_at']}")
+    now = now_dt.isoformat()
+    connection.execute(
+        """
+        UPDATE science_reserve_governance
+        SET status = ?,
+            activated_at = ?,
+            payouts_enabled = 1,
+            emergency_paused = 0,
+            updated_at = ?
+        WHERE id = 1
+        """,
+        (SCIENCE_RESERVE_ACTIVE_STATUS, now, now),
+    )
+    _record_science_event(
+        connection,
+        "ScienceReserveActivated",
+        payload={"status": SCIENCE_RESERVE_ACTIVE_STATUS, "approvals": approvals},
+    )
+    _record_science_event(
+        connection,
+        "ScienceReserveUnlocked",
+        payload={"status": SCIENCE_RESERVE_ACTIVE_STATUS, "payouts_enabled": True},
+    )
+    governance = _science_reserve_governance(connection)
     return _decode_governance(governance)
 
 
 def pause_science_reserve(signer: str) -> dict[str, Any]:
-    signer = _clean_address(signer)
     with get_connection() as connection:
-        governance = _science_reserve_governance(connection)
-        _require_authorized_signer(governance, signer)
-        now = utc_now()
-        connection.execute(
-            """
-            UPDATE science_reserve_governance
-            SET status = ?,
-                emergency_paused = 1,
-                payouts_enabled = 0,
-                updated_at = ?
-            WHERE id = 1
-            """,
-            (SCIENCE_RESERVE_PAUSED_STATUS, now),
-        )
-        _record_science_event(
-            connection,
-            "ScienceReservePaused",
-            address=signer,
-            payload={"status": SCIENCE_RESERVE_PAUSED_STATUS},
-        )
-        governance = _science_reserve_governance(connection)
+        return pause_science_reserve_in_connection(connection, signer)
+
+
+def pause_science_reserve_in_connection(
+    connection: Any,
+    signer: str,
+    *,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    signer = _clean_address(signer)
+    governance = _science_reserve_governance(connection)
+    _require_authorized_signer(governance, signer)
+    now = timestamp or utc_now()
+    connection.execute(
+        """
+        UPDATE science_reserve_governance
+        SET status = ?,
+            emergency_paused = 1,
+            payouts_enabled = 0,
+            updated_at = ?
+        WHERE id = 1
+        """,
+        (SCIENCE_RESERVE_PAUSED_STATUS, now),
+    )
+    _record_science_event(
+        connection,
+        "ScienceReservePaused",
+        address=signer,
+        payload={"status": SCIENCE_RESERVE_PAUSED_STATUS},
+    )
+    governance = _science_reserve_governance(connection)
     return _decode_governance(governance)
 
 
 def unpause_science_reserve(signer: str) -> dict[str, Any]:
-    signer = _clean_address(signer)
     with get_connection() as connection:
-        governance = _science_reserve_governance(connection)
-        _require_authorized_signer(governance, signer)
-        if not governance["activated_at"]:
-            next_status = SCIENCE_RESERVE_LOCKED_STATUS
-            payouts_enabled = 0
-        else:
-            next_status = SCIENCE_RESERVE_ACTIVE_STATUS
-            payouts_enabled = 1
-        now = utc_now()
-        connection.execute(
-            """
-            UPDATE science_reserve_governance
-            SET status = ?,
-                emergency_paused = 0,
-                payouts_enabled = ?,
-                updated_at = ?
-            WHERE id = 1
-            """,
-            (next_status, payouts_enabled, now),
-        )
-        _record_science_event(
-            connection,
-            "ScienceReserveUnpaused",
-            address=signer,
-            payload={"status": next_status, "payouts_enabled": bool(payouts_enabled)},
-        )
-        governance = _science_reserve_governance(connection)
+        return unpause_science_reserve_in_connection(connection, signer)
+
+
+def unpause_science_reserve_in_connection(
+    connection: Any,
+    signer: str,
+    *,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    signer = _clean_address(signer)
+    governance = _science_reserve_governance(connection)
+    _require_authorized_signer(governance, signer)
+    if not governance["activated_at"]:
+        next_status = SCIENCE_RESERVE_LOCKED_STATUS
+        payouts_enabled = 0
+    else:
+        next_status = SCIENCE_RESERVE_ACTIVE_STATUS
+        payouts_enabled = 1
+    now = timestamp or utc_now()
+    connection.execute(
+        """
+        UPDATE science_reserve_governance
+        SET status = ?,
+            emergency_paused = 0,
+            payouts_enabled = ?,
+            updated_at = ?
+        WHERE id = 1
+        """,
+        (next_status, payouts_enabled, now),
+    )
+    _record_science_event(
+        connection,
+        "ScienceReserveUnpaused",
+        address=signer,
+        payload={"status": next_status, "payouts_enabled": bool(payouts_enabled)},
+    )
+    governance = _science_reserve_governance(connection)
     return _decode_governance(governance)
 
 

@@ -78,6 +78,12 @@ from app.core.settings import (
 from app.db.database import get_connection, row_to_dict
 from app.services.consensus import record_local_block_proposal
 from app.services.science import record_science_reserve_for_block, science_events_for_node
+from app.services.state import (
+    active_snapshot_base,
+    calculate_state_root,
+    maybe_create_checkpoint_in_connection,
+    update_block_state_root,
+)
 from app.services.treasury import record_scientific_development_treasury_for_block
 from app.services.transactions import apply_block_transactions, select_block_transactions, transaction_commitment
 from validator.proof import validate_submission
@@ -575,6 +581,8 @@ def submit_task(
         _refresh_trust_score(connection, miner_id)
         _maybe_retarget_after_block(connection, next_height)
         _maybe_run_scheduled_retroactive_audit(connection, next_height)
+        state_root = update_block_state_root(connection, next_height, timestamp)
+        checkpoint = maybe_create_checkpoint_in_connection(connection, next_height)
 
         block = {
             "height": next_height,
@@ -592,6 +600,8 @@ def submit_task(
             "tx_count": tx_commitment["tx_count"],
             "tx_hashes": tx_commitment["tx_hashes"],
             "fee_reward": tx_commitment["fee_reward"],
+            "state_root": state_root,
+            "checkpoint": checkpoint,
             "transactions": block_transactions,
             "transaction_execution": tx_execution,
             "difficulty": difficulty,
@@ -1959,11 +1969,18 @@ def _protocol_params_payload(params: dict[str, Any]) -> dict[str, Any]:
 def verify_chain() -> dict[str, Any]:
     issues: list[dict[str, Any]] = []
     blocks = get_blocks()
+    snapshot_base = active_snapshot_base()
     previous_hash = GENESIS_HASH
+    expected_start = 1
+    if snapshot_base is not None and snapshot_base.get("state_applied") and blocks:
+        first_height = int(blocks[0]["height"])
+        if first_height == int(snapshot_base["height"]) + 1:
+            previous_hash = snapshot_base["block_hash"]
+            expected_start = first_height
     seen_ranges: list[tuple[int, int, str]] = []
     seen_result_hashes: set[str] = set()
 
-    for expected_height, block in enumerate(blocks, start=1):
+    for expected_height, block in enumerate(blocks, start=expected_start):
         height = block["height"]
         if height != expected_height:
             issues.append({"height": height, "reason": f"expected height {expected_height}"})
@@ -1984,15 +2001,34 @@ def verify_chain() -> dict[str, Any]:
 
         current_payload = _block_payload(block, include_protocol=True)
         legacy_payload = _block_payload(block, include_protocol=False)
-        if hash_block(current_payload) != block["block_hash"] and hash_block(legacy_payload) != block["block_hash"]:
+        fraud_payload = dict(current_payload)
+        fraud_payload["fraudulent"] = bool(block.get("fraudulent", False))
+        fraud_payload["fraud_reason"] = block.get("fraud_reason")
+        fraud_payload["fraud_detected_at"] = block.get("fraud_detected_at")
+        legacy_fraud_payload = dict(legacy_payload)
+        legacy_fraud_payload["fraudulent"] = bool(block.get("fraudulent", False))
+        legacy_fraud_payload["fraud_reason"] = block.get("fraud_reason")
+        legacy_fraud_payload["fraud_detected_at"] = block.get("fraud_detected_at")
+        valid_hashes = {
+            hash_block(current_payload),
+            hash_block(legacy_payload),
+            hash_block(fraud_payload),
+            hash_block(legacy_fraud_payload),
+        }
+        if block["block_hash"] not in valid_hashes:
             issues.append({"height": height, "reason": "block_hash does not match block payload"})
+        if block.get("state_root"):
+            with get_connection() as connection:
+                expected_state_root = calculate_state_root(connection, height, block.get("timestamp"))
+            if block["state_root"] != expected_state_root:
+                issues.append({"height": height, "reason": "state_root does not match ledger replay"})
 
         previous_hash = block["block_hash"]
 
     return {
         "valid": not issues,
         "checked_blocks": len(blocks),
-        "latest_block_hash": previous_hash,
+        "latest_block_hash": previous_hash if blocks else (snapshot_base["block_hash"] if snapshot_base else previous_hash),
         "issues": issues,
     }
 
@@ -2657,6 +2693,7 @@ def _supply_snapshot(connection: Any) -> dict[str, float]:
         """
         SELECT
             COALESCE(SUM(CASE WHEN account_id = ? THEN balance ELSE 0 END), 0) AS genesis_balance,
+            COALESCE(SUM(CASE WHEN account_type = 'wallet' THEN balance ELSE 0 END), 0) AS wallet_balances,
             COALESCE(SUM(CASE WHEN account_type = 'miner' THEN balance ELSE 0 END), 0) AS miner_balances,
             COALESCE(SUM(CASE WHEN account_type = 'validator' THEN balance ELSE 0 END), 0) AS validator_balances,
             COALESCE(SUM(CASE WHEN account_type = 'audit' THEN balance ELSE 0 END), 0) AS audit_balances,
@@ -2667,6 +2704,7 @@ def _supply_snapshot(connection: Any) -> dict[str, float]:
         (GENESIS_ACCOUNT_ID,),
     ).fetchone()
     genesis_balance = round(float(row["genesis_balance"]), 8)
+    wallet_balances = round(float(row["wallet_balances"]), 8)
     miner_balances = round(float(row["miner_balances"]), 8)
     validator_balances = round(float(row["validator_balances"]), 8)
     audit_balances = round(float(row["audit_balances"]), 8)
@@ -2674,13 +2712,19 @@ def _supply_snapshot(connection: Any) -> dict[str, float]:
     scientific_development_balances = round(float(row["scientific_development_balances"]), 8)
     return {
         "genesis_balance": genesis_balance,
+        "wallet_balances": wallet_balances,
         "miner_balances": miner_balances,
         "validator_balances": validator_balances,
         "audit_balances": audit_balances,
         "science_balances": science_balances,
         "scientific_development_balances": scientific_development_balances,
         "circulating_supply": round(
-            miner_balances + validator_balances + audit_balances + science_balances + scientific_development_balances,
+            wallet_balances
+            + miner_balances
+            + validator_balances
+            + audit_balances
+            + science_balances
+            + scientific_development_balances,
             8,
         ),
     }
@@ -3039,6 +3083,9 @@ def _decode_block(block: dict[str, Any] | None) -> dict[str, Any] | None:
     if block is None:
         return None
     block["samples"] = json.loads(block["samples"])
+    block["tx_hashes"] = json.loads(block.get("tx_hashes") or "[]")
+    block["tx_count"] = int(block.get("tx_count") or 0)
+    block["fee_reward"] = round(float(block.get("fee_reward") or 0), 8)
     block["fraudulent"] = bool(block.get("fraudulent", 0))
     return block
 
@@ -3072,6 +3119,11 @@ def _block_payload(block: dict[str, Any], include_protocol: bool) -> dict[str, A
         payload["protocol_params_id"] = block["protocol_params_id"]
     if block.get("merkle_root"):
         payload["merkle_root"] = block["merkle_root"]
+    if int(block.get("tx_count") or 0) > 0:
+        payload["tx_merkle_root"] = block.get("tx_merkle_root")
+        payload["tx_count"] = int(block.get("tx_count") or 0)
+        payload["tx_hashes"] = block.get("tx_hashes") or []
+        payload["fee_reward"] = round(float(block.get("fee_reward") or 0), 8)
     if include_protocol:
         payload["protocol_version"] = block.get("protocol_version", PROTOCOL_VERSION)
         payload["validation_mode"] = block.get("validation_mode", VALIDATION_MODE)
@@ -3427,6 +3479,8 @@ def _accept_block_in_connection(
     total_task_ms = None
     if created_at is not None:
         total_task_ms = max(0, round((utc_now_dt() - created_at).total_seconds() * 1000))
+    block_transactions = select_block_transactions(connection)
+    tx_commitment = transaction_commitment(block_transactions)
 
     block_payload = {
         "algorithm": task["algorithm"],
@@ -3446,16 +3500,22 @@ def _accept_block_in_connection(
     }
     if merkle_root:
         block_payload["merkle_root"] = merkle_root
+    if tx_commitment["tx_count"]:
+        block_payload["tx_merkle_root"] = tx_commitment["tx_merkle_root"]
+        block_payload["tx_count"] = tx_commitment["tx_count"]
+        block_payload["tx_hashes"] = tx_commitment["tx_hashes"]
+        block_payload["fee_reward"] = tx_commitment["fee_reward"]
     block_hash = hash_block(block_payload)
 
     connection.execute(
         """
         INSERT INTO blocks (
             height, previous_hash, miner_id, range_start, range_end, algorithm,
-            result_hash, merkle_root, samples, timestamp, block_hash, reward, difficulty,
-            task_id, protocol_params_id, protocol_version, validation_mode, total_task_ms, validation_ms
+            result_hash, merkle_root, samples, timestamp, block_hash, reward, tx_merkle_root,
+            tx_count, tx_hashes, fee_reward, difficulty, task_id, protocol_params_id,
+            protocol_version, validation_mode, total_task_ms, validation_ms
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             next_height,
@@ -3470,6 +3530,10 @@ def _accept_block_in_connection(
             timestamp,
             block_hash,
             reward,
+            tx_commitment["tx_merkle_root"],
+            tx_commitment["tx_count"],
+            json.dumps(tx_commitment["tx_hashes"], sort_keys=True),
+            tx_commitment["fee_reward"],
             difficulty,
             task["task_id"],
             params["id"],
@@ -3501,6 +3565,13 @@ def _accept_block_in_connection(
         related_id=task["task_id"],
         description="miner block reward",
     )
+    tx_execution = apply_block_transactions(
+        connection,
+        miner_id=miner_id,
+        block_height=next_height,
+        transactions=block_transactions,
+        timestamp=timestamp,
+    )
     record_science_reserve_for_block(connection, next_height, total_block_reward)
     record_scientific_development_treasury_for_block(connection, next_height, total_block_reward)
     validator_reward = {"pool": 0.0, "per_validator": 0.0, "validator_ids": []}
@@ -3514,6 +3585,8 @@ def _accept_block_in_connection(
     _refresh_trust_score(connection, miner_id)
     _maybe_retarget_after_block(connection, next_height)
     _maybe_run_scheduled_retroactive_audit(connection, next_height)
+    state_root = update_block_state_root(connection, next_height, timestamp)
+    checkpoint = maybe_create_checkpoint_in_connection(connection, next_height)
 
     block = {
         "height": next_height,
@@ -3528,6 +3601,14 @@ def _accept_block_in_connection(
         "timestamp": timestamp,
         "block_hash": block_hash,
         "reward": reward,
+        "tx_merkle_root": tx_commitment["tx_merkle_root"],
+        "tx_count": tx_commitment["tx_count"],
+        "tx_hashes": tx_commitment["tx_hashes"],
+        "fee_reward": tx_commitment["fee_reward"],
+        "state_root": state_root,
+        "checkpoint": checkpoint,
+        "transactions": block_transactions,
+        "transaction_execution": tx_execution,
         "validator_reward": validator_reward,
         "difficulty": difficulty,
         "protocol_params_id": params["id"],

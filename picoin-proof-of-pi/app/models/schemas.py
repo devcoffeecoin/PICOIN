@@ -150,6 +150,11 @@ class BlockResponse(BaseModel):
     timestamp: datetime
     block_hash: str
     reward: float
+    tx_merkle_root: str | None = None
+    tx_count: int = 0
+    tx_hashes: list[str] = Field(default_factory=list)
+    fee_reward: float = 0.0
+    state_root: str | None = None
     difficulty: float | None = None
     protocol_params_id: int | None = None
     protocol_version: str | None = None
@@ -465,6 +470,8 @@ class NodeIdentityResponse(BaseModel):
 class NodeSyncStatusResponse(NodeIdentityResponse):
     latest_block_height: int
     latest_block_hash: str
+    latest_checkpoint: dict[str, Any] | None = None
+    active_snapshot_base: dict[str, Any] | None = None
     peer_counts: dict[str, Any]
     mempool: dict[str, int]
     pending_replay_blocks: int
@@ -530,10 +537,48 @@ class BlockSyncResponse(BaseModel):
     blocks: list[dict[str, Any]]
 
 
+class CanonicalCheckpointResponse(BaseModel):
+    checkpoint_id: str
+    height: int
+    block_hash: str
+    previous_hash: str
+    state_root: str
+    balances_hash: str
+    snapshot_hash: str
+    balances_count: int
+    ledger_entries_count: int
+    total_balance: float
+    trusted: bool
+    source: str
+    created_at: datetime
+    verified_at: datetime | None = None
+    payload: dict[str, Any]
+
+
+class CheckpointVerificationResponse(BaseModel):
+    valid: bool
+    height: int
+    checkpoint: CanonicalCheckpointResponse
+    issues: list[str]
+    computed: dict[str, Any]
+
+
+class SnapshotImportRequest(BaseModel):
+    snapshot: dict[str, Any]
+    source: str = Field("api", min_length=1, max_length=80)
+
+
+class SnapshotImportResponse(BaseModel):
+    imported: bool
+    snapshot: dict[str, Any]
+    validation: dict[str, Any]
+
+
 class PeerReconcileResponse(BaseModel):
     attempted: int = 0
     transactions_imported: int = 0
     proposals_imported: int = 0
+    blocks_imported: int = 0
     peers_seen: int = 0
     errors: int = 0
     results: list[dict[str, Any]] = []

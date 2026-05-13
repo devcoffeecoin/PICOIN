@@ -2,7 +2,7 @@
 
 MVP funcional de **Proof of Pi** con una extension L1 llamada **Science Compute Access Layer**. Un coordinador asigna rangos pequenos de digitos hexadecimales de pi, un minero calcula el segmento con BBP, el validador recalcula de forma independiente y el servidor registra bloques aceptados con recompensa simulada. La capa Science deja preparada la red para un futuro marketplace L2 de computo cientifico e IA.
 
-Este proyecto no ejecuta IA/computo cientifico pesado. Desde v0.17 incluye una base de testnet distribuida con peers, mempool, wallets y sync inicial; el consenso distribuido completo todavia esta en evolucion. En L1 coordina stake, acceso, jobs, hashes, reserva y pagos verificados para preparar una evolucion futura.
+Este proyecto no ejecuta IA/computo cientifico pesado. Desde v0.17 incluye una base de testnet distribuida con peers, mempool, wallets, sync inicial, propuestas de bloque, votos de validadores, finalizacion y replay. En L1 coordina stake, acceso, jobs, hashes, reserva y pagos verificados para preparar una evolucion futura.
 
 ## Protocolo v0.17
 
@@ -58,6 +58,7 @@ task_rate_limit = 12 assignments / 60 seconds
 faucet_enabled_networks = local
 faucet_rate_limit = 3 credits / account / hour
 validator_selection_mode = weighted_reputation_stake_rotation
+max_transactions_per_block = 100
 ```
 
 El endpoint `GET /protocol` devuelve estos valores para que mineros y validadores sepan que reglas estan activas. Desde v0.16 estos parametros viven en SQLite, en `protocol_params`, y pueden cambiar automaticamente por epocas. `network_id` viene de `PICOIN_NETWORK`; por defecto es `local`.
@@ -88,6 +89,29 @@ El 20% cientifico no se paga automaticamente a workers. Por defecto se acumula c
 Cada bloque guarda la dificultad y recompensa usadas al momento de aceptarse.
 Las tareas y bloques tambien guardan `protocol_params_id`, asi un retarget no cambia las reglas de una tarea que ya estaba asignada.
 
+### Transacciones en bloques
+
+La ruta hacia mainnet ya incluye contabilidad basica de transacciones firmadas:
+
+- Las wallets usan Ed25519 y direcciones `PI...`.
+- La mempool valida `tx_hash`, firma, `chain_id`, `network_id`, nonce y fee maximo.
+- Al minar un bloque, el nodo selecciona transacciones ejecutables, rechaza las que no tengan firma/saldo/nonce valido y calcula `tx_merkle_root`.
+- El bloque guarda `tx_count`, `tx_hashes`, `tx_merkle_root`, `fee_reward` y `state_root`.
+- Al aceptar/importar el bloque, la L1 aplica debito al sender, credito al recipient, fee al minero y marca la transaccion como `confirmed`.
+- `state_root` es una huella SHA-256 del estado contable despues del replay del bloque. Si un nodo cambia el ledger local, `verify_chain()` detecta que el estado ya no coincide.
+- `verify_chain()` recalcula el hash canonico incluyendo el compromiso de transacciones y compara `state_root` cuando existe, por lo que el bloque es auditable.
+- Los checkpoints canonicos guardan `height`, `block_hash`, `state_root`, `balances_hash`, `snapshot_hash` y contadores de ledger para acelerar sync futura y verificar snapshots sin confiar en archivos pesados.
+- Un snapshot canonico exportado incluye metadata del checkpoint y balances agregados por cuenta. El import valida `chain_id`, `network_id`, `genesis_hash`, `balances_hash`, `state_root` y `snapshot_hash` antes de guardarlo como referencia externa.
+- Un snapshot importado puede activarse como `active_snapshot_base`; desde ahi el nodo pide a peers solo bloques con `height` posterior al snapshot y acepta el siguiente bloque si su `previous_hash` apunta al `block_hash` del checkpoint.
+- `stake` bloquea PI desde la wallet hacia `science_stake:<address>` y actualiza el tier cientifico de forma deterministica.
+- `unstake` libera el stake cientifico completo si la direccion no tiene jobs activos.
+- `science_job_create` crea jobs L1 desde payload firmado, con `job_id` deterministico si no se provee uno.
+- `governance_action` ejecuta acciones canonicas de `science_reserve`: `propose_activation`, `approve_activation`, `execute_activation`, `pause` y `unpause`.
+
+Por ahora se ejecutan dentro del bloque `transfer`, `stake`, `unstake`, `science_job_create`, `governance_action` y `treasury_claim`.
+
+`treasury_claim` mueve fondos del Scientific Development Treasury solo si la wallet firmante es la governance/owner wallet configurada, el destino es la treasury wallet configurada, el timelock ya desbloqueo fondos y el `claim_id` no fue usado antes.
+
 Retarget automatico:
 
 ```text
@@ -108,7 +132,7 @@ picoin-proof-of-pi/
     core/         Configuracion, hashing SHA-256 y calculo BBP de pi
     db/           SQLite y migraciones simples
     models/       Schemas Pydantic
-    services/     Tareas, bloques, recompensas, penalizaciones
+    services/     Tareas, bloques, recompensas, penalizaciones, transacciones
     web/          Dashboard local estatico servido por FastAPI
   validator/      Verificacion independiente del Proof of Pi
   miner/          Cliente minero ejecutable por usuarios
@@ -1020,9 +1044,9 @@ Implementado:
 
 Limites intencionales:
 
-- El consenso distribuido completo sigue en desarrollo; v0.17 agrega peers, mempool, wallet y sync inicial.
+- El consenso distribuido sigue en evolucion; v0.17 agrega peers, mempool, wallets, propuestas, votos, finalizacion y replay inicial.
 - La red P2P actual es basica: REST/WebSocket, heartbeat y cola de replay, no gossip optimizado.
-- Las wallets firman transacciones para mempool; la liquidacion final de transfers en ledger queda para la siguiente fase.
+- Las wallets firman transacciones para mempool; `transfer`, `stake` y `science_job_create` ya se liquidan en ledger al entrar en bloque.
 - No hay ejecucion real de IA ni computo cientifico pesado en L1.
 - No hay marketplace L2 todavia; la L1 solo deja acceso, reserva, jobs, estados y pagos verificados.
 - La validacion actual es probabilistica por muestras, no una prueba criptografica completa del calculo entero.
@@ -1457,9 +1481,23 @@ python -m picoin node peers
 python -m picoin node sync-status
 python -m picoin node reconcile
 python -m picoin node reconcile --peer http://peer-node:8000
+python -m picoin node checkpoint create --height 10
+python -m picoin node checkpoint latest
+python -m picoin node checkpoint verify --height 10
+python -m picoin node checkpoint export --height 10 --output data/checkpoint-10.json
+python -m picoin node checkpoint import --file data/checkpoint-10.json --source bootstrap-node
+python -m picoin node checkpoint activate --snapshot-hash <snapshot_hash>
+python -m picoin node checkpoint imports
 python -m picoin wallet create --name alice --output data/alice-wallet.json
 python -m picoin wallet balance --address PI...
 python -m picoin tx send --wallet data/alice-wallet.json --to PI... --amount 1.5 --nonce 1 --fee 0.01
+python -m picoin tx send --wallet data/alice-wallet.json --type stake --amount 3141.6 --nonce 2 --fee 0.01
+python -m picoin tx send --wallet data/alice-wallet.json --type unstake --nonce 3 --fee 0.01
+python -m picoin tx send --wallet data/alice-wallet.json --type science_job_create --nonce 4 --fee 0.01 --payload "{\"job_type\":\"ai_inference\",\"metadata_hash\":\"meta\",\"storage_pointer\":\"ipfs://job\",\"max_compute_units\":0,\"reward_per_compute_unit\":0,\"max_reward\":0}"
+python -m picoin tx send --wallet data/signer-one.json --type governance_action --nonce 1 --fee 0.01 --payload "{\"scope\":\"science_reserve\",\"action\":\"propose_activation\"}"
+python -m picoin tx send --wallet data/signer-two.json --type governance_action --nonce 1 --fee 0.01 --payload "{\"scope\":\"science_reserve\",\"action\":\"approve_activation\"}"
+python -m picoin tx send --wallet data/signer-one.json --type governance_action --nonce 2 --fee 0.01 --payload "{\"scope\":\"science_reserve\",\"action\":\"execute_activation\"}"
+python -m picoin tx send --wallet data/owner.json --type treasury_claim --nonce 1 --fee 0.01 --payload "{\"claim_to\":\"PI_TREASURY_WALLET\"}"
 python -m picoin consensus status
 python -m picoin consensus proposals
 python -m picoin consensus votes --proposal-id ...
