@@ -29,6 +29,8 @@ def load_or_register_miner(server_url: str, identity_dir: Path, index: int, fauc
         return load_miner_identity(path)
 
     identity = register_miner_identity(server_url, f"demo-miner-{index}", path, overwrite=False)
+    if faucet_amount <= 0:
+        return identity
     response = requests.post(
         f"{server_url}/faucet",
         json={"account_id": identity["miner_id"], "account_type": "miner", "amount": faucet_amount},

@@ -167,6 +167,7 @@ def test_picoin_cli_parses_testnet_continuous_defaults() -> None:
     assert args.testnet_command == "continuous"
     assert args.miners == 3
     assert args.loops == 3
+    assert args.faucet == 0.0
     assert args.identity_dir == Path("data/testnet/identities")
     assert args.retro_audit is True
 

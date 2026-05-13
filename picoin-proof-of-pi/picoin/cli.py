@@ -790,7 +790,7 @@ def add_testnet_parser(subparsers: argparse._SubParsersAction) -> None:
     continuous_parser.add_argument("--loops", type=int, default=3)
     continuous_parser.add_argument("--workers", type=int, default=1)
     continuous_parser.add_argument("--sleep", type=float, default=0.5)
-    continuous_parser.add_argument("--faucet", type=float, default=31.416)
+    continuous_parser.add_argument("--faucet", type=float, default=0.0)
     continuous_parser.add_argument("--retro-audit", action="store_true", default=True)
     continuous_parser.add_argument("--no-retro-audit", action="store_false", dest="retro_audit")
     continuous_parser.set_defaults(func=command_testnet_continuous)
