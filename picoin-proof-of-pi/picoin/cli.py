@@ -180,21 +180,29 @@ def command_node_reconcile(args: argparse.Namespace) -> int:
 
 def command_node_catch_up(args: argparse.Namespace) -> int:
     server_url = normalize_server_url(args.server)
+    peer_url = normalize_server_url(args.peer) if args.peer else None
     rounds: list[dict[str, Any]] = []
     initial_sync = get_json(server_url, "/node/sync-status")
     final_sync = initial_sync
     final_audit: dict[str, Any] = {}
+    peer_sync: dict[str, Any] | None = None
 
     for round_number in range(1, args.max_rounds + 1):
         path = f"/node/reconcile?limit={args.reconcile_limit}"
-        if args.peer:
-            path = f"{path}&peer_address={args.peer}"
+        if peer_url:
+            path = f"{path}&peer_address={peer_url}"
         reconcile = post_json(server_url, path)
         replay = post_json(server_url, f"/consensus/replay?limit={args.replay_limit}")
         final_sync = get_json(server_url, "/node/sync-status")
         final_audit = get_json(server_url, "/audit/full")
+        if peer_url:
+            peer_sync = get_json(peer_url, "/node/sync-status")
         reconcile_results = reconcile.get("results") or []
         blocks_seen = sum(int(item.get("blocks_seen", 0)) for item in reconcile_results)
+        peer_height = int(peer_sync.get("latest_block_height", 0)) if peer_sync else None
+        peer_hash = peer_sync.get("latest_block_hash") if peer_sync else None
+        local_height = int(final_sync.get("latest_block_height", 0))
+        local_hash = final_sync.get("latest_block_hash")
         round_summary = {
             "round": round_number,
             "reconcile": {
@@ -211,8 +219,11 @@ def command_node_catch_up(args: argparse.Namespace) -> int:
                 "normalized": replay.get("normalized", 0),
                 "errors": replay.get("errors", []),
             },
-            "height": final_sync.get("latest_block_height", 0),
-            "latest_block_hash": final_sync.get("latest_block_hash"),
+            "height": local_height,
+            "latest_block_hash": local_hash,
+            "peer_height": peer_height,
+            "peer_block_hash": peer_hash,
+            "matches_peer": peer_sync is None or (local_height == peer_height and local_hash == peer_hash),
             "pending_replay_blocks": final_sync.get("pending_replay_blocks", 0),
             "audit_valid": bool(final_audit.get("valid")),
         }
@@ -223,18 +234,33 @@ def command_node_catch_up(args: argparse.Namespace) -> int:
             and not round_summary["replay"]["errors"]
             and blocks_seen < args.reconcile_limit
             and int(round_summary["replay"]["headers_imported"]) < args.replay_limit
+            and round_summary["matches_peer"]
         ):
             break
 
+    peer_matches = True
+    if peer_sync is not None:
+        peer_matches = (
+            final_sync.get("network_id") == peer_sync.get("network_id")
+            and final_sync.get("chain_id") == peer_sync.get("chain_id")
+            and final_sync.get("genesis_hash") == peer_sync.get("genesis_hash")
+            and int(final_sync.get("latest_block_height", 0)) == int(peer_sync.get("latest_block_height", 0))
+            and final_sync.get("latest_block_hash") == peer_sync.get("latest_block_hash")
+        )
+    healthy = final_sync.get("pending_replay_blocks", 0) == 0 and bool(final_audit.get("valid")) and peer_matches
     output = {
         "server": server_url,
-        "peer": args.peer,
-        "status": "ok"
-        if final_sync.get("pending_replay_blocks", 0) == 0 and bool(final_audit.get("valid"))
-        else "needs_attention",
+        "peer": peer_url,
+        "status": "ok" if healthy else "needs_attention",
         "initial_height": initial_sync.get("latest_block_height", 0),
         "final_height": final_sync.get("latest_block_height", 0),
         "final_block_hash": final_sync.get("latest_block_hash"),
+        "peer_height": peer_sync.get("latest_block_height") if peer_sync else None,
+        "peer_block_hash": peer_sync.get("latest_block_hash") if peer_sync else None,
+        "peer_matches": peer_matches,
+        "network_matches_peer": None if peer_sync is None else final_sync.get("network_id") == peer_sync.get("network_id"),
+        "chain_matches_peer": None if peer_sync is None else final_sync.get("chain_id") == peer_sync.get("chain_id"),
+        "genesis_matches_peer": None if peer_sync is None else final_sync.get("genesis_hash") == peer_sync.get("genesis_hash"),
         "pending_replay_blocks": final_sync.get("pending_replay_blocks", 0),
         "audit_valid": bool(final_audit.get("valid")),
         "audit_issues": final_audit.get("issues", []),
