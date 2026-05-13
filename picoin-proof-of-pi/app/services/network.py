@@ -203,10 +203,17 @@ def get_sync_status() -> dict[str, Any]:
         active_base = active_snapshot_base_in_connection(connection)
     latest_height = int(latest_block["height"]) if latest_block else 0
     latest_hash = latest_block["block_hash"] if latest_block else GENESIS_HASH
+    effective_height = latest_height
+    effective_hash = latest_hash
+    if active_base is not None and int(active_base.get("height") or 0) > effective_height:
+        effective_height = int(active_base["height"])
+        effective_hash = active_base["block_hash"]
     return {
         **node_identity(),
         "latest_block_height": latest_height,
         "latest_block_hash": latest_hash,
+        "effective_latest_block_height": effective_height,
+        "effective_latest_block_hash": effective_hash,
         "latest_checkpoint": checkpoint,
         "active_snapshot_base": active_base,
         "peer_counts": dict(peer_counts) if peer_counts else {"total": 0, "connected": 0, "stale": 0},
