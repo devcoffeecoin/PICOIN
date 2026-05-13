@@ -509,6 +509,34 @@ def test_replay_enriches_pending_header_from_matching_proposal_payload(tmp_path,
     assert audit["valid"] is True
 
 
+def test_header_replay_marks_matching_proposal_imported(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "snapshot-header-import-status-source.sqlite3")
+
+    miner_key = generate_keypair()
+    miner = register_miner("snapshot-header-import-status-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    snapshot = export_canonical_snapshot(height=1)
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    full_block = get_blocks_since(1)["blocks"][0]
+
+    _init_network_db(tmp_path, monkeypatch, "snapshot-header-import-status-target.sqlite3")
+    imported = import_canonical_snapshot(snapshot, source="peer-a")
+    apply_imported_snapshot_state(imported["snapshot"]["snapshot_hash"])
+    receive_block_header(full_block, source_peer_id="peer-a")
+    proposal = propose_block(full_block, "peer-a", gossip=False)
+    replay = replay_finalized_blocks()
+    status = get_sync_status()
+
+    assert replay["headers_imported"] == 1
+    assert status["consensus"].get("pending", 0) == 0
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT status FROM consensus_block_proposals WHERE proposal_id = ?",
+            (proposal["proposal_id"],),
+        ).fetchone()
+    assert row["status"] == "imported"
+
+
 def test_canonical_snapshot_import_rejects_tampered_balances(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "snapshot-import-tamper.sqlite3")
 

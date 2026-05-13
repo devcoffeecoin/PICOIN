@@ -501,6 +501,16 @@ def _replay_pending_block_headers(connection: Any, limit: int) -> dict[str, Any]
                 """,
                 (block_hash,),
             )
+            connection.execute(
+                """
+                UPDATE consensus_block_proposals
+                SET status = 'imported',
+                    rejection_reason = COALESCE(rejection_reason, 'imported via canonical header replay'),
+                    updated_at = ?
+                WHERE block_hash = ? AND status NOT IN ('imported', 'rejected')
+                """,
+                (utc_now(), block_hash),
+            )
         else:
             skipped += 1
             connection.execute(
