@@ -796,6 +796,20 @@ def _ensure_network_genesis(connection: sqlite3.Connection) -> None:
 
 
 def _ensure_genesis_balance(connection: sqlite3.Connection) -> None:
+    active_snapshot = connection.execute(
+        """
+        SELECT 1
+        FROM canonical_snapshot_imports
+        WHERE active = 1 AND state_applied = 1
+        LIMIT 1
+        """
+    ).fetchone()
+    if active_snapshot is not None:
+        connection.execute(
+            "DELETE FROM ledger_entries WHERE entry_type = 'genesis' AND account_id = ?",
+            (GENESIS_ACCOUNT_ID,),
+        )
+        return
     existing = connection.execute(
         "SELECT 1 FROM ledger_entries WHERE entry_type = 'genesis' AND account_id = ? LIMIT 1",
         (GENESIS_ACCOUNT_ID,),
