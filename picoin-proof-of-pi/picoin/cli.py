@@ -178,6 +178,72 @@ def command_node_reconcile(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_node_catch_up(args: argparse.Namespace) -> int:
+    server_url = normalize_server_url(args.server)
+    rounds: list[dict[str, Any]] = []
+    initial_sync = get_json(server_url, "/node/sync-status")
+    final_sync = initial_sync
+    final_audit: dict[str, Any] = {}
+
+    for round_number in range(1, args.max_rounds + 1):
+        path = f"/node/reconcile?limit={args.reconcile_limit}"
+        if args.peer:
+            path = f"{path}&peer_address={args.peer}"
+        reconcile = post_json(server_url, path)
+        replay = post_json(server_url, f"/consensus/replay?limit={args.replay_limit}")
+        final_sync = get_json(server_url, "/node/sync-status")
+        final_audit = get_json(server_url, "/audit/full")
+        reconcile_results = reconcile.get("results") or []
+        blocks_seen = sum(int(item.get("blocks_seen", 0)) for item in reconcile_results)
+        round_summary = {
+            "round": round_number,
+            "reconcile": {
+                "blocks_seen": blocks_seen,
+                "blocks_imported": reconcile.get("blocks_imported", 0),
+                "proposals_imported": reconcile.get("proposals_imported", 0),
+                "transactions_imported": reconcile.get("transactions_imported", 0),
+                "errors": reconcile.get("errors", 0),
+            },
+            "replay": {
+                "imported": replay.get("imported", 0),
+                "headers_imported": replay.get("headers_imported", 0),
+                "headers_skipped": replay.get("headers_skipped", 0),
+                "normalized": replay.get("normalized", 0),
+                "errors": replay.get("errors", []),
+            },
+            "height": final_sync.get("latest_block_height", 0),
+            "latest_block_hash": final_sync.get("latest_block_hash"),
+            "pending_replay_blocks": final_sync.get("pending_replay_blocks", 0),
+            "audit_valid": bool(final_audit.get("valid")),
+        }
+        rounds.append(round_summary)
+        if (
+            round_summary["pending_replay_blocks"] == 0
+            and round_summary["audit_valid"]
+            and not round_summary["replay"]["errors"]
+            and blocks_seen < args.reconcile_limit
+            and int(round_summary["replay"]["headers_imported"]) < args.replay_limit
+        ):
+            break
+
+    output = {
+        "server": server_url,
+        "peer": args.peer,
+        "status": "ok"
+        if final_sync.get("pending_replay_blocks", 0) == 0 and bool(final_audit.get("valid"))
+        else "needs_attention",
+        "initial_height": initial_sync.get("latest_block_height", 0),
+        "final_height": final_sync.get("latest_block_height", 0),
+        "final_block_hash": final_sync.get("latest_block_hash"),
+        "pending_replay_blocks": final_sync.get("pending_replay_blocks", 0),
+        "audit_valid": bool(final_audit.get("valid")),
+        "audit_issues": final_audit.get("issues", []),
+        "rounds": rounds,
+    }
+    print_json(output)
+    return 0 if output["status"] == "ok" else 1
+
+
 def command_node_checkpoint_list(args: argparse.Namespace) -> int:
     print_json(get_json(args.server, f"/node/checkpoints?limit={args.limit}"))
     return 0
@@ -586,6 +652,14 @@ def add_node_parser(subparsers: argparse._SubParsersAction) -> None:
     reconcile_parser.add_argument("--peer", help="Optional peer base URL")
     reconcile_parser.add_argument("--limit", type=int, default=16)
     reconcile_parser.set_defaults(func=command_node_reconcile)
+
+    catch_up_parser = node_subparsers.add_parser("catch-up", help="Reconcile, replay and audit until the node is caught up")
+    catch_up_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    catch_up_parser.add_argument("--peer", help="Optional peer base URL")
+    catch_up_parser.add_argument("--max-rounds", type=int, default=5)
+    catch_up_parser.add_argument("--reconcile-limit", type=int, default=16)
+    catch_up_parser.add_argument("--replay-limit", type=int, default=100)
+    catch_up_parser.set_defaults(func=command_node_catch_up)
 
     checkpoint_parser = node_subparsers.add_parser("checkpoint", help="Create and verify canonical state checkpoints")
     checkpoint_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
