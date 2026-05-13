@@ -216,6 +216,9 @@ def mine_once(server_url: str, identity: dict[str, Any], workers: int) -> bool:
         f"{task['task_id']} positions {task['range_start']}..{task['range_end']} "
         f"using {task['algorithm']}"
     )
+    if task.get("status") != "assigned":
+        print(f"Task is waiting for protocol progress: status={task.get('status')}")
+        return False
 
     compute_started = now_perf()
     segment = calculate_segment_with_workers(task["range_start"], task["range_end"], task["algorithm"], workers)

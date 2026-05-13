@@ -40,6 +40,26 @@ def load_or_register_miner(server_url: str, identity_dir: Path, index: int, fauc
     return identity
 
 
+def accepted_blocks(server_url: str) -> int:
+    response = requests.get(f"{server_url}/stats", timeout=20)
+    response.raise_for_status()
+    return int(response.json()["accepted_blocks"])
+
+
+def validate_until_block_progress(server_url: str, validators: list[dict[str, Any]], previous_blocks: int) -> bool:
+    for _ in range(max(1, len(validators) * 2)):
+        progressed = False
+        for validator in validators:
+            result = validate_once(server_url, validator)
+            if result is not None:
+                progressed = True
+            if accepted_blocks(server_url) > previous_blocks:
+                return True
+        if not progressed:
+            return False
+    return accepted_blocks(server_url) > previous_blocks
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run continuous local testnet mining with multiple miners.")
     parser.add_argument("--server", default=DEFAULT_SERVER_URL)
@@ -73,9 +93,11 @@ def main() -> None:
             if not mined:
                 continue
 
-            for validator in validators:
-                validate_once(server_url, validator)
-
+            before_blocks = accepted_blocks(server_url)
+            block_accepted = validate_until_block_progress(server_url, validators, before_blocks)
+            if not block_accepted:
+                print("Mining attempt is pending validator quorum; skipping audit until a block is accepted.")
+                continue
             completed += 1
             if args.retro_audit:
                 response = requests.post(
