@@ -7,7 +7,7 @@ services:
       - bootstrap-data:/app/data
     environment:
       PICOIN_NETWORK: distributed-testnet
-      PICOIN_CHAIN_ID: picoin-distributed-testnet-v017
+      PICOIN_CHAIN_ID: picoin-distributed-testnet-v018
       PICOIN_NODE_ID: bootstrap-1
       PICOIN_NODE_TYPE: bootstrap
       PICOIN_NODE_ADDRESS: http://bootstrap:8000
@@ -24,7 +24,7 @@ services:
       - miner-one-data:/app/data
     environment:
       PICOIN_NETWORK: distributed-testnet
-      PICOIN_CHAIN_ID: picoin-distributed-testnet-v017
+      PICOIN_CHAIN_ID: picoin-distributed-testnet-v018
       PICOIN_NODE_ID: miner-1
       PICOIN_NODE_TYPE: miner
       PICOIN_NODE_ADDRESS: http://miner-one:8000
@@ -41,7 +41,7 @@ services:
       - miner-two-data:/app/data
     environment:
       PICOIN_NETWORK: distributed-testnet
-      PICOIN_CHAIN_ID: picoin-distributed-testnet-v017
+      PICOIN_CHAIN_ID: picoin-distributed-testnet-v018
       PICOIN_NODE_ID: miner-2
       PICOIN_NODE_TYPE: miner
       PICOIN_NODE_ADDRESS: http://miner-two:8000
@@ -58,7 +58,7 @@ services:
       - miner-three-data:/app/data
     environment:
       PICOIN_NETWORK: distributed-testnet
-      PICOIN_CHAIN_ID: picoin-distributed-testnet-v017
+      PICOIN_CHAIN_ID: picoin-distributed-testnet-v018
       PICOIN_NODE_ID: miner-3
       PICOIN_NODE_TYPE: miner
       PICOIN_NODE_ADDRESS: http://miner-three:8000
@@ -75,7 +75,7 @@ services:
       - validator-one-data:/app/data
     environment:
       PICOIN_NETWORK: distributed-testnet
-      PICOIN_CHAIN_ID: picoin-distributed-testnet-v017
+      PICOIN_CHAIN_ID: picoin-distributed-testnet-v018
       PICOIN_NODE_ID: validator-1
       PICOIN_NODE_TYPE: validator
       PICOIN_NODE_ADDRESS: http://validator-one:8000
@@ -92,7 +92,7 @@ services:
       - validator-two-data:/app/data
     environment:
       PICOIN_NETWORK: distributed-testnet
-      PICOIN_CHAIN_ID: picoin-distributed-testnet-v017
+      PICOIN_CHAIN_ID: picoin-distributed-testnet-v018
       PICOIN_NODE_ID: validator-2
       PICOIN_NODE_TYPE: validator
       PICOIN_NODE_ADDRESS: http://validator-two:8000
@@ -109,7 +109,7 @@ services:
       - validator-three-data:/app/data
     environment:
       PICOIN_NETWORK: distributed-testnet
-      PICOIN_CHAIN_ID: picoin-distributed-testnet-v017
+      PICOIN_CHAIN_ID: picoin-distributed-testnet-v018
       PICOIN_NODE_ID: validator-3
       PICOIN_NODE_TYPE: validator
       PICOIN_NODE_ADDRESS: http://validator-three:8000
@@ -126,7 +126,7 @@ services:
       - auditor-data:/app/data
     environment:
       PICOIN_NETWORK: distributed-testnet
-      PICOIN_CHAIN_ID: picoin-distributed-testnet-v017
+      PICOIN_CHAIN_ID: picoin-distributed-testnet-v018
       PICOIN_NODE_ID: auditor-1
       PICOIN_NODE_TYPE: auditor
       PICOIN_NODE_ADDRESS: http://auditor:8000

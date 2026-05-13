@@ -7,7 +7,7 @@ DATA_DIR = BASE_DIR / "data"
 DATABASE_PATH = DATA_DIR / "picoin.sqlite3"
 
 PROJECT_NAME = "picoin-proof-of-pi"
-PROTOCOL_VERSION = "0.17"
+PROTOCOL_VERSION = "0.18"
 NETWORK_ID = os.getenv("PICOIN_NETWORK", "local").strip().lower() or "local"
 CHAIN_ID = os.getenv("PICOIN_CHAIN_ID", f"picoin-{NETWORK_ID}-testnet").strip() or f"picoin-{NETWORK_ID}-testnet"
 GENESIS_HASH = os.getenv("PICOIN_GENESIS_HASH", "0" * 64).strip() or ("0" * 64)
