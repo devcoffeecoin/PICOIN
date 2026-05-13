@@ -483,7 +483,7 @@ def _replay_pending_block_headers(connection: Any, limit: int) -> dict[str, Any]
         """
         SELECT block_hash, height, payload
         FROM network_block_headers
-        WHERE status = 'pending_replay'
+        WHERE status IN ('pending_replay', 'pending_missing_ancestors')
         ORDER BY height ASC, received_at ASC
         LIMIT ?
         """,

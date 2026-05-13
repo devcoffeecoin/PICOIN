@@ -524,6 +524,36 @@ def test_replay_imports_pending_headers_after_active_snapshot_base(tmp_path, mon
     assert audit["valid"] is True
 
 
+def test_replay_imports_multiple_headers_after_snapshot_base(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "snapshot-multi-header-source.sqlite3")
+
+    miner_key = generate_keypair()
+    miner = register_miner("snapshot-multi-header-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    snapshot = export_canonical_snapshot(height=1)
+    for _ in range(4):
+        _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    blocks = get_blocks_since(1)["blocks"]
+
+    _init_network_db(tmp_path, monkeypatch, "snapshot-multi-header-target.sqlite3")
+    imported = import_canonical_snapshot(snapshot, source="peer-a")
+    apply_imported_snapshot_state(imported["snapshot"]["snapshot_hash"])
+    statuses = [receive_block_header(block, source_peer_id="peer-a")["status"] for block in blocks]
+    pre_replay_status = get_sync_status()
+    replay = replay_finalized_blocks()
+    status = get_sync_status()
+    audit = get_full_economic_audit()
+
+    assert statuses[0] == "pending_replay"
+    assert "pending_missing_ancestors" in statuses[1:]
+    assert pre_replay_status["pending_replay_blocks"] == 4
+    assert replay["headers_imported"] == 4
+    assert replay["errors"] == []
+    assert status["latest_block_height"] == 5
+    assert status["pending_replay_blocks"] == 0
+    assert audit["valid"] is True
+
+
 def test_replay_enriches_pending_header_from_matching_proposal_payload(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "snapshot-header-enrich-source.sqlite3")
 

@@ -190,7 +190,11 @@ def get_sync_status() -> dict[str, Any]:
             """
         ).fetchall()
         pending_headers = connection.execute(
-            "SELECT COUNT(*) AS count FROM network_block_headers WHERE status = 'pending_replay'"
+            """
+            SELECT COUNT(*) AS count
+            FROM network_block_headers
+            WHERE status IN ('pending_replay', 'pending_missing_ancestors')
+            """
         ).fetchone()
         consensus_counts = connection.execute(
             """
