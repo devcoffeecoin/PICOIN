@@ -1,0 +1,186 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Picoin | Proof of Pi for Scientific Compute</title>
+    <meta
+      name="description"
+      content="Picoin is a Proof of Pi testnet preparing scientific compute infrastructure with auditable rewards, checkpoints, validators, and a future L2 compute marketplace."
+    />
+    <link rel="icon" href="./assets/picoin-logo.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <header class="site-header">
+      <a class="brand" href="#top" aria-label="Picoin home">
+        <img src="./assets/picoin-logo.png" alt="Picoin logo" />
+        <span>Picoin</span>
+      </a>
+      <nav aria-label="Primary navigation">
+        <a href="#testnet">Testnet</a>
+        <a href="#economy">Economy</a>
+        <a href="#science">Science</a>
+        <a href="#run">Run</a>
+      </nav>
+    </header>
+
+    <main id="top">
+      <section class="hero" aria-labelledby="hero-title">
+        <div class="hero-copy">
+          <p class="eyebrow">Proof of Pi · Scientific Compute Infrastructure</p>
+          <h1 id="hero-title">Picoin turns mathematical verification into a foundation for useful science.</h1>
+          <p class="hero-lede">
+            A testnet protocol where miners compute verifiable hexadecimal ranges of pi, validators secure accepted
+            blocks, and scientific compute rewards accumulate for a future L2 marketplace.
+          </p>
+          <div class="hero-actions">
+            <a class="button primary" href="#testnet">View Testnet</a>
+            <a class="button secondary" href="#run">Run a Node</a>
+          </div>
+        </div>
+      </section>
+
+      <section id="testnet" class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Live Testnet Alpha</p>
+          <h2>Network status</h2>
+          <span id="apiStatus" class="status-pill warn">Connecting</span>
+        </div>
+        <div class="metric-grid">
+          <article class="metric">
+            <span>Height</span>
+            <strong id="metricHeight">-</strong>
+          </article>
+          <article class="metric">
+            <span>Chain</span>
+            <strong id="metricChain">-</strong>
+          </article>
+          <article class="metric">
+            <span>Supply</span>
+            <strong id="metricSupply">-</strong>
+          </article>
+          <article class="metric">
+            <span>Validators</span>
+            <strong id="metricValidators">-</strong>
+          </article>
+          <article class="metric">
+            <span>Science Reserve</span>
+            <strong id="metricReserve">-</strong>
+          </article>
+          <article class="metric">
+            <span>Treasury</span>
+            <strong id="metricTreasury">-</strong>
+          </article>
+        </div>
+        <div id="apiErrors" class="api-errors" aria-live="polite"></div>
+      </section>
+
+      <section class="section split">
+        <div>
+          <div class="section-heading compact-heading">
+            <p class="eyebrow">Explorer</p>
+            <h2>Latest blocks</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Height</th>
+                  <th>Hash</th>
+                  <th>Miner</th>
+                  <th>Reward</th>
+                  <th>Range</th>
+                </tr>
+              </thead>
+              <tbody id="blocksTable">
+                <tr><td colspan="5" class="empty">Waiting for blocks</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+        <div>
+          <div class="section-heading compact-heading">
+            <p class="eyebrow">Events</p>
+            <h2>Recent activity</h2>
+          </div>
+          <div id="eventsList" class="event-list">
+            <div class="empty">Waiting for events</div>
+          </div>
+        </div>
+      </section>
+
+      <section id="economy" class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Protocol Economy</p>
+          <h2>Continuous emission, no large premine</h2>
+        </div>
+        <div class="allocation-grid">
+          <article>
+            <strong>67%</strong>
+            <span>Proof-of-Pi miners</span>
+          </article>
+          <article>
+            <strong>20%</strong>
+            <span>Science Compute Reserve</span>
+          </article>
+          <article>
+            <strong>10%</strong>
+            <span>Validators and auditors</span>
+          </article>
+          <article>
+            <strong>3%</strong>
+            <span>Scientific Development Treasury</span>
+          </article>
+        </div>
+      </section>
+
+      <section id="science" class="section science-band">
+        <div class="section-heading">
+          <p class="eyebrow">Science Compute Access Layer</p>
+          <h2>L1 accounting for future scientific and AI compute</h2>
+        </div>
+        <div class="feature-grid">
+          <article>
+            <h3>Locked reserve</h3>
+            <p>The 20% science allocation accumulates by block and remains locked until the future L2 marketplace is activated.</p>
+          </article>
+          <article>
+            <h3>Verified jobs only</h3>
+            <p>L1 stores hashes, stake, job states, compute units, and payout rules without executing heavy AI workloads.</p>
+          </article>
+          <article>
+            <h3>Time-locked treasury</h3>
+            <p>The 3% development fund unlocks by 90-day epochs for protocol, audits, infrastructure, grants, and tooling.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="run" class="section run-section">
+        <div class="section-heading">
+          <p class="eyebrow">Testnet Participation</p>
+          <h2>Run Picoin locally or on a droplet</h2>
+        </div>
+        <div class="command-grid">
+          <pre><code>git clone https://github.com/devcoffeecoin/PICOIN.git
+cd PICOIN/picoin-proof-of-pi
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt</code></pre>
+          <pre><code>python -m picoin node start --host 0.0.0.0 --port 8000
+python -m picoin testnet bootstrap
+python -m picoin testnet continuous --miners 1 --loops 20 --faucet 0
+python -m picoin node audit</code></pre>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>Picoin Testnet Alpha</span>
+      <span>Proof of Pi · Compute for Science</span>
+    </footer>
+
+    <script src="./config.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>

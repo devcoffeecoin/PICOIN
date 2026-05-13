@@ -1,9 +1,10 @@
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.routes import router
-from app.core.settings import BASE_DIR, PROJECT_NAME, PROTOCOL_VERSION
+from app.core.settings import BASE_DIR, CORS_ORIGINS, PROJECT_NAME, PROTOCOL_VERSION
 from app.db.database import init_db
 
 WEB_DIR = BASE_DIR / "app" / "web"
@@ -14,6 +15,15 @@ app = FastAPI(
     description="MVP coordinator for Proof of Pi mining tasks.",
     version=PROTOCOL_VERSION,
 )
+
+if CORS_ORIGINS:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=list(CORS_ORIGINS),
+        allow_credentials=False,
+        allow_methods=["GET", "OPTIONS"],
+        allow_headers=["*"],
+    )
 
 
 @app.on_event("startup")

@@ -19,6 +19,11 @@ BOOTSTRAP_PEERS = tuple(
     for peer in os.getenv("PICOIN_BOOTSTRAP_PEERS", "").split(",")
     if peer.strip()
 )
+CORS_ORIGINS = tuple(
+    origin.strip().rstrip("/")
+    for origin in os.getenv("PICOIN_CORS_ORIGINS", "").split(",")
+    if origin.strip()
+)
 PEER_TIMEOUT_SECONDS = int(os.getenv("PICOIN_PEER_TIMEOUT_SECONDS", "90"))
 MEMPOOL_TX_TTL_SECONDS = int(os.getenv("PICOIN_MEMPOOL_TX_TTL_SECONDS", "3600"))
 MEMPOOL_MAX_FEE = float(os.getenv("PICOIN_MEMPOOL_MAX_FEE", "31.416"))
