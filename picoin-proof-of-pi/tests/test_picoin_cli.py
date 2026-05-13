@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from app.core.settings import FAUCET_DEFAULT_AMOUNT
 from picoin.cli import build_parser, normalize_server_url
 
 
@@ -153,6 +154,9 @@ def test_picoin_cli_parses_testnet_cycle_defaults() -> None:
     assert args.validator_one_identity == Path("data/testnet/identities/validator-one.json")
     assert args.validator_two_identity == Path("data/testnet/identities/validator-two.json")
     assert args.validator_three_identity == Path("data/testnet/identities/validator-three.json")
+
+    bootstrap = parser.parse_args(["testnet", "bootstrap"])
+    assert bootstrap.miner_faucet == FAUCET_DEFAULT_AMOUNT
 
 
 def test_picoin_cli_parses_testnet_continuous_defaults() -> None:

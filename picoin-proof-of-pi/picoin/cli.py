@@ -28,7 +28,7 @@ def load_env_file(path: Path = Path(".env")) -> None:
 
 load_env_file()
 
-from app.core.settings import PROJECT_NAME
+from app.core.settings import FAUCET_DEFAULT_AMOUNT, PROJECT_NAME
 from app.core.signatures import sign_payload
 from app.services.consensus import consensus_vote_payload
 from app.services.wallet import create_wallet, sign_transaction
@@ -771,7 +771,7 @@ def add_testnet_parser(subparsers: argparse._SubParsersAction) -> None:
     bootstrap_parser = testnet_subparsers.add_parser("bootstrap", help="Create demo miner and validators")
     bootstrap_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
     bootstrap_parser.add_argument("--identity-dir", type=Path, default=Path("data/testnet/identities"))
-    bootstrap_parser.add_argument("--miner-faucet", type=float, default=31.416)
+    bootstrap_parser.add_argument("--miner-faucet", type=float, default=FAUCET_DEFAULT_AMOUNT)
     bootstrap_parser.set_defaults(func=command_testnet_bootstrap)
 
     cycle_parser = testnet_subparsers.add_parser("cycle", help="Mine once and validate with three demo validators")
