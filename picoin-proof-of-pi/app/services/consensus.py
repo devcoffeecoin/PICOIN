@@ -47,6 +47,12 @@ BLOCK_REQUIRED_FIELDS = {
     "reward",
 }
 
+FORK_CHOICE_RULE = (
+    "same height and previous_hash compete; highest approval_weight wins; "
+    "then lowest rejection_weight, highest approvals, lowest rejections, "
+    "oldest proposal, lexicographically lowest block_hash"
+)
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
@@ -336,7 +342,7 @@ def finalize_proposal(proposal_id: str, connection: Any | None = None) -> dict[s
             return proposal
         if proposal["approvals"] < REQUIRED_VALIDATOR_APPROVALS:
             raise ConsensusError(409, "validator quorum not reached")
-        winner = select_fork_choice(proposal["height"], connection=connection)
+        winner = select_fork_choice(proposal["height"], proposal["previous_hash"], connection=connection)
         if winner is not None and winner["proposal_id"] != proposal_id:
             raise ConsensusError(409, "proposal is not fork-choice winner")
         block = proposal["payload"]
@@ -574,7 +580,11 @@ def _replay_payload_for_block_header(connection: Any, block_hash: str, header_pa
     return {**block, **proposal_block}
 
 
-def select_fork_choice(height: int | None = None, connection: Any | None = None) -> dict[str, Any] | None:
+def select_fork_choice(
+    height: int | None = None,
+    previous_hash: str | None = None,
+    connection: Any | None = None,
+) -> dict[str, Any] | None:
     owns_connection = connection is None
     if owns_connection:
         connection = get_connection()
@@ -586,33 +596,78 @@ def select_fork_choice(height: int | None = None, connection: Any | None = None)
             if latest is None or latest["height"] is None:
                 return None
             height = int(latest["height"])
-        rows = connection.execute(
-            """
-            SELECT *
-            FROM consensus_block_proposals
-            WHERE height = ? AND status NOT IN ('rejected')
-            """,
-            (height,),
-        ).fetchall()
+        if previous_hash is None:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM consensus_block_proposals
+                WHERE height = ? AND status NOT IN ('rejected')
+                """,
+                (height,),
+            ).fetchall()
+        else:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM consensus_block_proposals
+                WHERE height = ? AND previous_hash = ? AND status NOT IN ('rejected')
+                """,
+                (height, previous_hash),
+            ).fetchall()
         choices = []
         for row in rows:
-            proposal = _decode_proposal(row_to_dict(row))
-            proposal["approval_weight"] = _proposal_approval_weight(connection, proposal["proposal_id"])
-            proposal["rejection_weight"] = _proposal_rejection_weight(connection, proposal["proposal_id"])
-            choices.append(proposal)
+            choices.append(_proposal_with_fork_score(connection, row_to_dict(row)))
         if not choices:
             return None
-        choices.sort(
-            key=lambda item: (
-                -float(item["approval_weight"]),
-                float(item["rejection_weight"]),
-                -int(item["approvals"]),
-                int(item["rejections"]),
-                item["created_at"],
-                item["block_hash"],
-            )
-        )
+        choices.sort(key=_fork_choice_sort_key)
         return choices[0]
+    finally:
+        if owns_connection:
+            connection.close()
+
+
+def list_fork_choice_groups(limit: int = 10, connection: Any | None = None) -> list[dict[str, Any]]:
+    owns_connection = connection is None
+    if owns_connection:
+        connection = get_connection()
+    try:
+        groups = connection.execute(
+            """
+            SELECT height, previous_hash, COUNT(*) AS proposal_count
+            FROM consensus_block_proposals
+            WHERE status NOT IN ('rejected')
+            GROUP BY height, previous_hash
+            HAVING COUNT(*) > 1
+            ORDER BY height DESC, previous_hash ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        result: list[dict[str, Any]] = []
+        for group in groups:
+            candidates = [
+                _proposal_with_fork_score(connection, row_to_dict(row))
+                for row in connection.execute(
+                    """
+                    SELECT *
+                    FROM consensus_block_proposals
+                    WHERE height = ? AND previous_hash = ? AND status NOT IN ('rejected')
+                    """,
+                    (group["height"], group["previous_hash"]),
+                ).fetchall()
+            ]
+            candidates.sort(key=_fork_choice_sort_key)
+            winner = candidates[0] if candidates else None
+            result.append(
+                {
+                    "height": int(group["height"]),
+                    "previous_hash": group["previous_hash"],
+                    "proposal_count": int(group["proposal_count"]),
+                    "winner": _fork_choice_summary(winner) if winner is not None else None,
+                    "candidates": [_fork_choice_summary(candidate) for candidate in candidates],
+                }
+            )
+        return result
     finally:
         if owns_connection:
             connection.close()
@@ -671,37 +726,19 @@ def consensus_status() -> dict[str, Any]:
             "SELECT height, block_hash FROM blocks ORDER BY height DESC LIMIT 1"
         ).fetchone()
         finalizations = connection.execute("SELECT COUNT(*) AS count FROM consensus_finalizations").fetchone()
-        fork_rows = connection.execute(
-            """
-            SELECT height
-            FROM consensus_block_proposals
-            WHERE status NOT IN ('rejected')
-            GROUP BY height
-            HAVING COUNT(*) > 1
-            ORDER BY height DESC
-            LIMIT 10
-            """
-        ).fetchall()
-        fork_choices = [select_fork_choice(int(row["height"]), connection=connection) for row in fork_rows]
+        fork_groups = list_fork_choice_groups(limit=10, connection=connection)
+        competing_proposals = sum(int(group["proposal_count"]) for group in fork_groups)
     return {
         "required_validator_approvals": REQUIRED_VALIDATOR_APPROVALS,
+        "fork_choice_rule": FORK_CHOICE_RULE,
         "latest_block_height": latest["height"] if latest else 0,
         "latest_block_hash": latest["block_hash"] if latest else GENESIS_HASH,
         "proposals": {row["status"]: row["count"] for row in counts},
         "finalizations": finalizations["count"] if finalizations else 0,
-        "fork_choices": [
-            {
-                "height": choice["height"],
-                "proposal_id": choice["proposal_id"],
-                "block_hash": choice["block_hash"],
-                "approvals": choice["approvals"],
-                "rejections": choice["rejections"],
-                "approval_weight": choice.get("approval_weight", 0.0),
-                "rejection_weight": choice.get("rejection_weight", 0.0),
-            }
-            for choice in fork_choices
-            if choice is not None
-        ],
+        "fork_group_count": len(fork_groups),
+        "competing_proposal_count": competing_proposals,
+        "fork_groups": fork_groups,
+        "fork_choices": [group["winner"] for group in fork_groups if group.get("winner") is not None],
         "checked_at": utc_now(),
     }
 
@@ -1112,6 +1149,39 @@ def _proposal_approval_weight(connection: Any, proposal_id: str) -> float:
 
 def _proposal_rejection_weight(connection: Any, proposal_id: str) -> float:
     return _proposal_vote_weight(connection, proposal_id, approved=False)
+
+
+def _proposal_with_fork_score(connection: Any, row: dict[str, Any] | None) -> dict[str, Any]:
+    proposal = _decode_proposal(row)
+    proposal["approval_weight"] = _proposal_approval_weight(connection, proposal["proposal_id"])
+    proposal["rejection_weight"] = _proposal_rejection_weight(connection, proposal["proposal_id"])
+    return proposal
+
+
+def _fork_choice_sort_key(proposal: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        -float(proposal["approval_weight"]),
+        float(proposal["rejection_weight"]),
+        -int(proposal["approvals"]),
+        int(proposal["rejections"]),
+        proposal["created_at"],
+        proposal["block_hash"],
+    )
+
+
+def _fork_choice_summary(proposal: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "height": proposal["height"],
+        "previous_hash": proposal["previous_hash"],
+        "proposal_id": proposal["proposal_id"],
+        "block_hash": proposal["block_hash"],
+        "status": proposal["status"],
+        "approvals": proposal["approvals"],
+        "rejections": proposal["rejections"],
+        "approval_weight": proposal.get("approval_weight", 0.0),
+        "rejection_weight": proposal.get("rejection_weight", 0.0),
+        "created_at": proposal["created_at"],
+    }
 
 
 def _proposal_vote_weight(connection: Any, proposal_id: str, approved: bool) -> float:

@@ -639,11 +639,15 @@ class ConsensusReplayResponse(BaseModel):
 
 class ConsensusStatusResponse(BaseModel):
     required_validator_approvals: int
+    fork_choice_rule: str | None = None
     latest_block_height: int
     latest_block_hash: str
     proposals: dict[str, int]
     finalizations: int
-    fork_choices: list[dict[str, Any]] = []
+    fork_group_count: int = 0
+    competing_proposal_count: int = 0
+    fork_groups: list[dict[str, Any]] = Field(default_factory=list)
+    fork_choices: list[dict[str, Any]] = Field(default_factory=list)
     checked_at: datetime
 
 

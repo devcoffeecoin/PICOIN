@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from app.core.crypto import hash_block
@@ -9,6 +11,7 @@ from app.services.consensus import (
     consensus_status,
     consensus_vote_payload,
     finalize_proposal,
+    list_fork_choice_groups,
     propose_block,
     select_fork_choice,
     vote_on_proposal,
@@ -109,6 +112,43 @@ def _vote(proposal: dict, identity: dict, approved: bool = True, reason: str = "
     )
     signature = sign_payload(identity["private_key"], payload)
     return vote_on_proposal(proposal["proposal_id"], identity["validator_id"], approved, reason, signature, signed_at)
+
+
+def _insert_competing_proposal(block: dict, previous_hash: str, approvals: int = 0, created_at: str = "2026-05-12T00:00:02+00:00") -> dict:
+    from app.core.crypto import sha256_text
+    from app.db.database import get_connection
+
+    candidate = {**block, "previous_hash": previous_hash}
+    candidate["block_hash"] = sha256_text(f"external-fork:{previous_hash}:{approvals}:{candidate['height']}:{created_at}")
+    proposal_id = sha256_text(f"proposal:{candidate['block_hash']}")
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO consensus_block_proposals (
+                proposal_id, block_hash, height, previous_hash, proposer_node_id,
+                status, payload, approvals, rejections, rejection_reason,
+                finalized_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 'external-node', 'pending', ?, ?, 0, NULL, NULL, ?, ?)
+            """,
+            (
+                proposal_id,
+                candidate["block_hash"],
+                candidate["height"],
+                candidate["previous_hash"],
+                json.dumps(candidate, sort_keys=True),
+                approvals,
+                created_at,
+                created_at,
+            ),
+        )
+    return {
+        "proposal_id": proposal_id,
+        "block_hash": candidate["block_hash"],
+        "height": candidate["height"],
+        "previous_hash": candidate["previous_hash"],
+        "approvals": approvals,
+    }
 
 
 def test_block_proposal_reaches_quorum_and_imports_canonical_block(tmp_path, monkeypatch) -> None:
@@ -215,6 +255,63 @@ def test_fork_choice_uses_validator_reputation_and_stake_weight(tmp_path, monkey
     assert winner["approval_weight"] > 10
 
 
+def test_fork_choice_competes_only_with_same_parent(tmp_path, monkeypatch) -> None:
+    _init_consensus_db(tmp_path, monkeypatch, "consensus-parent-scoped-fork.sqlite3")
+    first = propose_block(_block(), "miner-node-1")
+    fork_block = _block()
+    fork_block["range_start"] = 65
+    fork_block["range_end"] = 128
+    fork_block["result_hash"] = "e" * 64
+    fork_block["task_id"] = "distributed-task-parent-scope"
+    second = propose_block(_rehash(fork_block), "miner-node-2")
+    unrelated = _insert_competing_proposal(_block(), previous_hash="f" * 64, approvals=99)
+
+    winner = select_fork_choice(1, GENESIS_HASH)
+    groups = list_fork_choice_groups()
+
+    assert winner["previous_hash"] == GENESIS_HASH
+    assert winner["proposal_id"] in {first["proposal_id"], second["proposal_id"]}
+    assert winner["proposal_id"] != unrelated["proposal_id"]
+    assert len(groups) == 1
+    assert groups[0]["previous_hash"] == GENESIS_HASH
+    assert {candidate["proposal_id"] for candidate in groups[0]["candidates"]} == {
+        first["proposal_id"],
+        second["proposal_id"],
+    }
+
+
+def test_parent_scoped_fork_choice_does_not_block_finalization(tmp_path, monkeypatch) -> None:
+    _init_consensus_db(tmp_path, monkeypatch, "consensus-parent-finalization.sqlite3")
+    identities = _register_validators()
+    proposal = propose_block(_block(), "miner-node-1")
+    _insert_competing_proposal(_block(), previous_hash="f" * 64, approvals=99)
+
+    for identity in identities:
+        proposal = _vote(proposal, identity)
+
+    assert proposal["status"] == "imported"
+    assert get_block(1)["block_hash"] == proposal["block_hash"]
+
+
+def test_fork_choice_tie_breaks_by_oldest_then_lowest_hash(tmp_path, monkeypatch) -> None:
+    _init_consensus_db(tmp_path, monkeypatch, "consensus-deterministic-tie.sqlite3")
+    first = _insert_competing_proposal(
+        _block(),
+        previous_hash=GENESIS_HASH,
+        created_at="2026-05-12T00:00:03+00:00",
+    )
+    second = _insert_competing_proposal(
+        _block(),
+        previous_hash=GENESIS_HASH,
+        created_at="2026-05-12T00:00:02+00:00",
+    )
+
+    winner = select_fork_choice(1, GENESIS_HASH)
+
+    assert winner["proposal_id"] == second["proposal_id"]
+    assert winner["proposal_id"] != first["proposal_id"]
+
+
 def test_consensus_status_reports_proposals_and_finalizations(tmp_path, monkeypatch) -> None:
     _init_consensus_db(tmp_path, monkeypatch, "consensus-status.sqlite3")
     propose_block(_block(), "miner-node-1")
@@ -222,5 +319,7 @@ def test_consensus_status_reports_proposals_and_finalizations(tmp_path, monkeypa
     status = consensus_status()
 
     assert status["required_validator_approvals"] == 3
+    assert "same height and previous_hash compete" in status["fork_choice_rule"]
     assert status["proposals"]["pending"] == 1
+    assert status["fork_group_count"] == 0
     assert status["latest_block_height"] == 0

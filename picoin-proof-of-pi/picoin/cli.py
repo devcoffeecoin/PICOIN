@@ -317,6 +317,15 @@ def command_node_report(args: argparse.Namespace) -> int:
         int(consensus_counts.get("pending_missing_ancestors", 0)) == 0,
         f"pending_missing_ancestors={consensus_counts.get('pending_missing_ancestors', 0)}",
     )
+    add_check(
+        "fork_choice",
+        int(consensus.get("fork_group_count", 0) or 0) == 0,
+        (
+            f"fork_groups={consensus.get('fork_group_count', 0)}, "
+            f"competing_proposals={consensus.get('competing_proposal_count', 0)}"
+        ),
+        "warning",
+    )
     reserve_status = str(reserve.get("status") or "")
     add_check(
         "science_reserve_locked",
