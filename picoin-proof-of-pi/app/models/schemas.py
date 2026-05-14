@@ -489,7 +489,7 @@ class SignedTransactionRequest(BaseModel):
     nonce: int = Field(..., ge=1)
     fee: float = Field(default=0, ge=0)
     payload: dict[str, Any] = Field(default_factory=dict)
-    timestamp: datetime
+    timestamp: str
     network_id: str
     chain_id: str
     public_key: str = Field(..., min_length=1, max_length=256)
