@@ -1583,11 +1583,22 @@ Consenso distribuido v0.18:
 1. Un nodo minero propone automaticamente el bloque cuando el flujo de mining alcanza quorum local, y tambien puede proponer manualmente con `POST /consensus/proposals`.
 2. Cada validador firma un voto Ed25519 sobre `proposal_id`, `block_hash`, `height`, decision y razon.
 3. Los votos se propagan por gossip HTTP best-effort a peers conectados.
-4. Si hay dos propuestas para la misma altura/padre, el fork-choice elige por peso de aprobaciones ponderado por reputacion/stake, luego peso de rechazos, votos planos, creacion mas antigua y `block_hash` lexicografico.
-5. Un validador no puede votar dos propuestas competidoras del mismo fork.
-6. Cuando hay `required_validator_approvals = 3`, solo la propuesta ganadora del fork-choice se finaliza.
-7. El replay canonico valida `previous_hash`, recalcula `block_hash`, rechaza rangos/resultados duplicados y crea el contexto minimo faltante (`miner`, `task`) antes de insertar el bloque.
-8. Al importar, aplica contabilidad deterministica: reward del minero, pool de validadores, Science Compute Reserve 20% y Scientific Development Treasury 3%.
+4. Si hay dos propuestas para la misma altura y el mismo `previous_hash`, el fork-choice las trata como competidoras reales.
+5. La regla canonica es deterministica: mayor `approval_weight`, menor `rejection_weight`, mas aprobaciones planas, menos rechazos, propuesta mas antigua y menor `block_hash` lexicografico.
+6. Propuestas con la misma altura pero distinto `previous_hash` no se mezclan en el mismo fork-choice group; dependen de sus ancestros y del replay canonico.
+7. Un validador no puede votar dos propuestas competidoras del mismo fork.
+8. Cuando hay `required_validator_approvals = 3`, solo la propuesta ganadora del fork-choice para ese `(height, previous_hash)` se finaliza.
+9. El replay canonico valida `previous_hash`, recalcula `block_hash`, rechaza rangos/resultados duplicados y crea el contexto minimo faltante (`miner`, `task`) antes de insertar el bloque.
+10. Al importar, aplica contabilidad deterministica: reward del minero, pool de validadores, Science Compute Reserve 20% y Scientific Development Treasury 3%.
+
+Diagnostico de forks:
+
+```bash
+python -m picoin consensus status
+python -m picoin node report --peer http://BOOTSTRAP_PUBLIC_IP:8000
+```
+
+`/consensus/status` expone `fork_choice_rule`, `fork_group_count`, `competing_proposal_count`, `fork_groups` y `fork_choices`. `node report` marca `fork_choice` como warning si hay propuestas competidoras abiertas.
 
 Gossip automatico:
 
