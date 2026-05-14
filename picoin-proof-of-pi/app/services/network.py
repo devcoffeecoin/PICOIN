@@ -27,7 +27,7 @@ from app.core.settings import (
 from app.core.signatures import verify_payload_signature
 from app.db.database import get_connection, row_to_dict
 from app.services.state import active_snapshot_base_in_connection, latest_checkpoint_in_connection
-from app.services.wallet import address_from_public_key, transaction_hash, unsigned_transaction_payload
+from app.services.wallet import address_from_public_key, is_valid_address, transaction_hash, unsigned_transaction_payload
 
 
 class NetworkError(Exception):
@@ -651,12 +651,14 @@ def _validate_signed_transaction(tx: dict[str, Any]) -> None:
         raise NetworkError(422, f"missing transaction fields: {', '.join(missing)}")
     if tx["tx_type"] not in ALLOWED_TX_TYPES:
         raise NetworkError(422, "unsupported transaction type")
-    if int(tx["nonce"]) < 0:
-        raise NetworkError(422, "nonce must be >= 0")
+    if int(tx["nonce"]) < 1:
+        raise NetworkError(422, "nonce must be >= 1")
     if float(tx.get("fee", 0)) < 0 or float(tx.get("fee", 0)) > MEMPOOL_MAX_FEE:
         raise NetworkError(422, "invalid fee")
     if float(tx.get("amount", 0)) < 0:
         raise NetworkError(422, "amount must be >= 0")
+    if tx["tx_type"] == "transfer" and not is_valid_address(tx.get("recipient")):
+        raise NetworkError(422, "transfer transaction requires a valid PI recipient")
     if address_from_public_key(tx["public_key"]) != tx["sender"]:
         raise NetworkError(401, "sender address does not match public key")
     unsigned_payload = _unsigned_from_tx(tx)

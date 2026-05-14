@@ -62,12 +62,13 @@ def test_picoin_cli_parses_wallet_and_tx_commands() -> None:
             "PIB",
             "--amount",
             "1.5",
-            "--nonce",
-            "1",
             "--fee",
             "0.01",
         ]
     )
+    nonce = parser.parse_args(["wallet", "nonce", "--address", "PIB"])
+    status = parser.parse_args(["tx", "status", "--hash", "a" * 64])
+    mempool = parser.parse_args(["tx", "mempool", "--status", "pending", "--limit", "25"])
 
     assert wallet.command == "wallet"
     assert wallet.wallet_command == "create"
@@ -76,6 +77,12 @@ def test_picoin_cli_parses_wallet_and_tx_commands() -> None:
     assert tx.tx_command == "send"
     assert tx.wallet == Path("alice.json")
     assert tx.amount == 1.5
+    assert tx.nonce is None
+    assert nonce.wallet_command == "nonce"
+    assert status.tx_command == "status"
+    assert status.hash == "a" * 64
+    assert mempool.tx_command == "mempool"
+    assert mempool.limit == 25
 
     stake = parser.parse_args(
         ["tx", "send", "--wallet", "alice.json", "--type", "stake", "--amount", "3141.6", "--nonce", "2"]

@@ -450,21 +450,43 @@ def command_wallet_balance(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_wallet_nonce(args: argparse.Namespace) -> int:
+    print_json(get_json(args.server, f"/wallet/{args.address}/nonce"))
+    return 0
+
+
 def command_tx_send(args: argparse.Namespace) -> int:
     wallet = json.loads(args.wallet.read_text(encoding="utf-8"))
     payload = json.loads(args.payload) if args.payload else {}
+    sender = args.sender or wallet["address"]
+    nonce = args.nonce
+    if nonce is None:
+        nonce = int(get_json(args.server, f"/wallet/{sender}/nonce")["next_nonce"])
     tx = sign_transaction(
         private_key=wallet["private_key"],
         public_key=wallet["public_key"],
         tx_type=args.type,
-        sender=args.sender or wallet["address"],
+        sender=sender,
         recipient=args.to,
         amount=args.amount,
-        nonce=args.nonce,
+        nonce=nonce,
         fee=args.fee,
         payload=payload,
     )
     print_json(post_json(args.server, "/tx/submit", tx))
+    return 0
+
+
+def command_tx_status(args: argparse.Namespace) -> int:
+    print_json(get_json(args.server, f"/tx/{args.hash}"))
+    return 0
+
+
+def command_tx_mempool(args: argparse.Namespace) -> int:
+    path = f"/mempool?limit={args.limit}"
+    if args.status:
+        path = f"{path}&status={args.status}"
+    print_json(get_json(args.server, path))
     return 0
 
 
@@ -863,6 +885,10 @@ def add_wallet_parser(subparsers: argparse._SubParsersAction) -> None:
     balance_parser.add_argument("--address", required=True)
     balance_parser.set_defaults(func=command_wallet_balance)
 
+    nonce_parser = wallet_subparsers.add_parser("nonce", help="Show confirmed, pending and next nonce for an address")
+    nonce_parser.add_argument("--address", required=True)
+    nonce_parser.set_defaults(func=command_wallet_nonce)
+
 
 def add_tx_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("tx", help="Create and submit signed transactions")
@@ -874,7 +900,7 @@ def add_tx_parser(subparsers: argparse._SubParsersAction) -> None:
     send_parser.add_argument("--to")
     send_parser.add_argument("--amount", type=float, default=0.0)
     send_parser.add_argument("--fee", type=float, default=0.0)
-    send_parser.add_argument("--nonce", type=int, required=True)
+    send_parser.add_argument("--nonce", type=int)
     send_parser.add_argument(
         "--type",
         default="transfer",
@@ -883,6 +909,15 @@ def add_tx_parser(subparsers: argparse._SubParsersAction) -> None:
     send_parser.add_argument("--sender")
     send_parser.add_argument("--payload", help="Optional JSON payload")
     send_parser.set_defaults(func=command_tx_send)
+
+    status_parser = tx_subparsers.add_parser("status", help="Show transaction status by hash")
+    status_parser.add_argument("--hash", required=True)
+    status_parser.set_defaults(func=command_tx_status)
+
+    mempool_parser = tx_subparsers.add_parser("mempool", help="List mempool transactions")
+    mempool_parser.add_argument("--status", choices=["pending", "propagated", "confirmed", "rejected", "expired"])
+    mempool_parser.add_argument("--limit", type=int, default=100)
+    mempool_parser.set_defaults(func=command_tx_mempool)
 
 
 def add_consensus_parser(subparsers: argparse._SubParsersAction) -> None:

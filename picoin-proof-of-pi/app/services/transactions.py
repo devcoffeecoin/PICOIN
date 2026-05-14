@@ -25,7 +25,7 @@ from app.services.science import (
 )
 from app.services import treasury as treasury_service
 from app.services.treasury import TreasuryError, claim_scientific_development_treasury_in_connection
-from app.services.wallet import address_from_public_key, transaction_hash, unsigned_transaction_payload
+from app.services.wallet import address_from_public_key, is_valid_address, transaction_hash, unsigned_transaction_payload
 
 
 SUPPORTED_BLOCK_TX_TYPES = {"transfer", "stake", "unstake", "science_job_create", "governance_action", "treasury_claim"}
@@ -52,13 +52,12 @@ def select_block_transactions(connection: Any, limit: int = MAX_TRANSACTIONS_PER
         SELECT *
         FROM mempool_transactions
         WHERE status IN ('pending', 'propagated')
-        ORDER BY created_at ASC, tx_hash ASC
-        LIMIT ?
+        ORDER BY sender ASC, nonce ASC, created_at ASC, tx_hash ASC
         """,
-        (limit,),
     ).fetchall()
-    selected: list[dict[str, Any]] = []
+    executable_by_sender: dict[str, list[dict[str, Any]]] = {}
     expected_nonce_by_sender: dict[str, int] = {}
+    reserved_debit_by_sender: dict[str, float] = {}
     for row in rows:
         tx = decode_mempool_transaction(row_to_dict(row))
         if tx["tx_type"] not in SUPPORTED_BLOCK_TX_TYPES:
@@ -67,8 +66,24 @@ def select_block_transactions(connection: Any, limit: int = MAX_TRANSACTIONS_PER
         if reason:
             _reject_transaction(connection, tx["tx_hash"], reason)
             continue
-        selected.append(tx)
+        sender = tx["sender"]
+        reserved_debit = reserved_debit_by_sender.get(sender, 0.0)
+        total_debit = _total_debit(tx)
+        if _balance(connection, sender) < round(reserved_debit + total_debit, 8):
+            _reject_transaction(connection, tx["tx_hash"], "insufficient balance")
+            continue
+        executable_by_sender.setdefault(tx["sender"], []).append(tx)
         expected_nonce_by_sender[tx["sender"]] = int(tx["nonce"]) + 1
+        reserved_debit_by_sender[sender] = round(reserved_debit + total_debit, 8)
+
+    selected: list[dict[str, Any]] = []
+    while len(selected) < limit:
+        heads = [transactions[0] for transactions in executable_by_sender.values() if transactions]
+        if not heads:
+            break
+        next_tx = min(heads, key=_transaction_priority)
+        selected.append(next_tx)
+        executable_by_sender[next_tx["sender"]].pop(0)
     return selected
 
 
@@ -184,6 +199,30 @@ def decode_mempool_transaction(row: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def get_wallet_nonce_status(connection: Any, address: str) -> dict[str, Any]:
+    row = connection.execute(
+        """
+        SELECT
+            COALESCE(MAX(CASE WHEN status = 'confirmed' THEN nonce ELSE 0 END), 0) AS confirmed_nonce,
+            COALESCE(MAX(CASE WHEN status IN ('pending', 'propagated') THEN nonce ELSE 0 END), 0) AS pending_nonce,
+            COALESCE(SUM(CASE WHEN status IN ('pending', 'propagated') THEN 1 ELSE 0 END), 0) AS pending_count
+        FROM mempool_transactions
+        WHERE sender = ?
+        """,
+        (address,),
+    ).fetchone()
+    confirmed_nonce = int(row["confirmed_nonce"] if row else 0)
+    pending_nonce = int(row["pending_nonce"] if row else 0)
+    return {
+        "address": address,
+        "confirmed_nonce": confirmed_nonce,
+        "pending_nonce": pending_nonce,
+        "next_nonce": max(confirmed_nonce, pending_nonce) + 1,
+        "pending_count": int(row["pending_count"] if row else 0),
+        "checked_at": utc_now(),
+    }
+
+
 def merkle_root(tx_hashes: list[str]) -> str:
     if not tx_hashes:
         return ""
@@ -245,9 +284,13 @@ def _transaction_rejection_reason(
 def _transfer_rejection_reason(tx: dict[str, Any]) -> str | None:
     if float(tx.get("amount", 0)) <= 0:
         return "transfer amount must be positive"
-    if not tx.get("recipient"):
-        return "transfer transaction requires recipient"
+    if not is_valid_address(tx.get("recipient")):
+        return "transfer transaction requires a valid PI recipient"
     return None
+
+
+def _transaction_priority(tx: dict[str, Any]) -> tuple[float, str, str]:
+    return (-float(tx.get("fee", 0)), str(tx.get("created_at") or ""), str(tx.get("tx_hash") or ""))
 
 
 def _stake_rejection_reason(connection: Any, tx: dict[str, Any]) -> str | None:

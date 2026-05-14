@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from typing import Any
 
@@ -10,10 +11,15 @@ from app.core.signatures import generate_keypair, sign_payload
 
 ADDRESS_PREFIX = "PI"
 ADDRESS_HASH_LENGTH = 38
+ADDRESS_PATTERN = re.compile(rf"^{ADDRESS_PREFIX}[0-9A-F]{{{ADDRESS_HASH_LENGTH}}}$")
 
 
 def address_from_public_key(public_key: str) -> str:
     return f"{ADDRESS_PREFIX}{sha256_text(public_key).upper()[:ADDRESS_HASH_LENGTH]}"
+
+
+def is_valid_address(address: str | None) -> bool:
+    return isinstance(address, str) and bool(ADDRESS_PATTERN.fullmatch(address))
 
 
 def create_wallet(name: str = "picoin-wallet") -> dict[str, Any]:
