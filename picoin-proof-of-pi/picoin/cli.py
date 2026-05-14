@@ -31,6 +31,7 @@ load_env_file()
 from app.core.settings import FAUCET_DEFAULT_AMOUNT, PROJECT_NAME, PROTOCOL_VERSION
 from app.core.signatures import sign_payload
 from app.services.consensus import consensus_vote_payload
+from app.services.genesis import genesis_allocations_hash, load_genesis_allocations
 from app.services.wallet import create_wallet, sign_transaction
 
 
@@ -433,6 +434,12 @@ def command_node_checkpoint_activate(args: argparse.Namespace) -> int:
 
 def command_node_checkpoint_apply(args: argparse.Namespace) -> int:
     print_json(post_json(args.server, f"/node/snapshots/{args.snapshot_hash}/apply"))
+    return 0
+
+
+def command_node_genesis_hash(args: argparse.Namespace) -> int:
+    document = load_genesis_allocations(args.file)
+    print_json({"genesis_hash": genesis_allocations_hash(document), "allocations": len(document["allocations"])})
     return 0
 
 
@@ -869,6 +876,10 @@ def add_node_parser(subparsers: argparse._SubParsersAction) -> None:
     checkpoint_apply = checkpoint_subparsers.add_parser("apply", help="Apply an imported snapshot as local fast-sync state")
     checkpoint_apply.add_argument("--snapshot-hash", required=True)
     checkpoint_apply.set_defaults(func=command_node_checkpoint_apply)
+
+    genesis_hash_parser = node_subparsers.add_parser("genesis-hash", help="Compute deterministic hash for a genesis allocation file")
+    genesis_hash_parser.add_argument("--file", type=Path, required=True)
+    genesis_hash_parser.set_defaults(func=command_node_genesis_hash)
 
 
 def add_wallet_parser(subparsers: argparse._SubParsersAction) -> None:

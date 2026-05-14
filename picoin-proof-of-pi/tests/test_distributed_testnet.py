@@ -35,6 +35,7 @@ from app.services.science import get_science_account, get_science_job, get_scien
 from app.services.state import (
     activate_imported_snapshot,
     apply_imported_snapshot_state,
+    calculate_state_root,
     create_canonical_checkpoint,
     export_canonical_snapshot,
     import_canonical_snapshot,
@@ -43,6 +44,7 @@ from app.services.state import (
     validate_snapshot_document,
     verify_checkpoint,
 )
+from app.services.genesis import genesis_allocations_hash
 from app.services.treasury import (
     SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID,
     get_scientific_development_treasury,
@@ -575,6 +577,55 @@ def test_init_db_does_not_reinsert_genesis_ledger_after_snapshot_apply(tmp_path,
     assert audit["ledger"]["by_entry_type"]["snapshot_state_import"] == pytest.approx(
         snapshot["checkpoint"]["total_balance"]
     )
+
+
+def test_genesis_allocations_are_applied_deterministically(tmp_path, monkeypatch) -> None:
+    allocation = {
+        "version": 1,
+        "network_id": NETWORK_ID,
+        "chain_id": CHAIN_ID,
+        "created_at": "2026-05-14T12:48:51.500763Z",
+        "allocations": [
+            {
+                "account_id": "PI340F7EEA37754C5F9C9ADE84D98F9B4AE10F0E",
+                "account_type": "wallet",
+                "amount": 1.0,
+                "description": "public testnet wallet funding",
+            }
+        ],
+    }
+    allocation_file = tmp_path / "genesis.allocations.json"
+    allocation_file.write_text(json.dumps(allocation), encoding="utf-8")
+    monkeypatch.setattr("app.core.settings.GENESIS_ALLOCATIONS_FILE", str(allocation_file))
+    monkeypatch.setattr("app.db.database.GENESIS_ALLOCATIONS_FILE", str(allocation_file))
+
+    first_db = tmp_path / "first.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", first_db)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", first_db)
+    init_db(first_db)
+    with get_connection() as connection:
+        first_root = calculate_state_root(connection, 0, "2026-05-14T12:58:53.705008Z")
+        first_wallet = connection.execute(
+            "SELECT balance FROM balances WHERE account_id = ?",
+            ("PI340F7EEA37754C5F9C9ADE84D98F9B4AE10F0E",),
+        ).fetchone()
+        first_genesis = connection.execute("SELECT balance FROM balances WHERE account_id = 'genesis'").fetchone()
+
+    second_db = tmp_path / "second.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", second_db)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", second_db)
+    init_db(second_db)
+    with get_connection() as connection:
+        second_root = calculate_state_root(connection, 0, "2026-05-14T12:58:53.705008Z")
+        allocation_total = connection.execute(
+            "SELECT COALESCE(SUM(amount), 0) AS total FROM ledger_entries WHERE entry_type = 'genesis_allocation'"
+        ).fetchone()
+
+    assert first_wallet["balance"] == pytest.approx(1.0)
+    assert first_genesis["balance"] == pytest.approx(2.1416)
+    assert first_root == second_root
+    assert allocation_total["total"] == pytest.approx(1.0)
+    assert len(genesis_allocations_hash(allocation)) == 64
 
 
 def test_reconcile_peer_fetches_blocks_after_active_snapshot_base(tmp_path, monkeypatch) -> None:
