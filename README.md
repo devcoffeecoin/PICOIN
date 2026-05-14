@@ -1,6 +1,5 @@
 # PICOIN
-
-Experimental useful-compute blockchain protocol.
+Useful-compute blockchain protocol.
 
 Picoin is an early distributed public testnet implementing:
 
