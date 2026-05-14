@@ -486,9 +486,9 @@ class SignedTransactionRequest(BaseModel):
     sender: str = Field(..., min_length=3, max_length=80)
     recipient: str | None = Field(default=None, max_length=80)
     amount: float = Field(default=0, ge=0)
-    nonce: int = Field(..., ge=0)
+    nonce: int = Field(..., ge=1)
     fee: float = Field(default=0, ge=0)
-    payload: dict[str, Any] = {}
+    payload: dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime
     network_id: str
     chain_id: str
@@ -504,7 +504,7 @@ class MempoolTransactionResponse(BaseModel):
     amount: float
     nonce: int
     fee: float
-    payload: dict[str, Any] = {}
+    payload: dict[str, Any] = Field(default_factory=dict)
     network_id: str
     chain_id: str
     timestamp: datetime
@@ -517,6 +517,15 @@ class MempoolTransactionResponse(BaseModel):
     expires_at: datetime
     created_at: datetime
     updated_at: datetime
+
+
+class WalletNonceResponse(BaseModel):
+    address: str
+    confirmed_nonce: int
+    pending_nonce: int
+    next_nonce: int
+    pending_count: int
+    checked_at: datetime
 
 
 class BlockReceiveRequest(BaseModel):

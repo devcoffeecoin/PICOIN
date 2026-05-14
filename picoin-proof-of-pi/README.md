@@ -94,8 +94,9 @@ Las tareas y bloques tambien guardan `protocol_params_id`, asi un retarget no ca
 La ruta hacia mainnet ya incluye contabilidad basica de transacciones firmadas:
 
 - Las wallets usan Ed25519 y direcciones `PI...`.
-- La mempool valida `tx_hash`, firma, `chain_id`, `network_id`, nonce y fee maximo.
-- Al minar un bloque, el nodo selecciona transacciones ejecutables, rechaza las que no tengan firma/saldo/nonce valido y calcula `tx_merkle_root`.
+- La mempool valida `tx_hash`, firma, `chain_id`, `network_id`, direcciones `PI...`, nonce positivo y fee maximo.
+- El CLI puede consultar el siguiente nonce con `wallet nonce` y `tx send` lo obtiene automaticamente si no se pasa `--nonce`.
+- Al minar un bloque, el nodo selecciona transacciones ejecutables por fee y timestamp sin reordenar nonces del mismo sender, rechaza las que no tengan firma/saldo/nonce valido y calcula `tx_merkle_root`.
 - El bloque guarda `tx_count`, `tx_hashes`, `tx_merkle_root`, `fee_reward` y `state_root`.
 - Al aceptar/importar el bloque, la L1 aplica debito al sender, credito al recipient, fee al minero y marca la transaccion como `confirmed`.
 - `state_root` es una huella SHA-256 del estado contable despues del replay del bloque. Si un nodo cambia el ledger local, `verify_chain()` detecta que el estado ya no coincide.
@@ -1561,14 +1562,17 @@ python -m picoin node checkpoint apply --snapshot-hash <snapshot_hash>
 python -m picoin node checkpoint imports
 python -m picoin wallet create --name alice --output data/alice-wallet.json
 python -m picoin wallet balance --address PI...
-python -m picoin tx send --wallet data/alice-wallet.json --to PI... --amount 1.5 --nonce 1 --fee 0.01
-python -m picoin tx send --wallet data/alice-wallet.json --type stake --amount 3141.6 --nonce 2 --fee 0.01
-python -m picoin tx send --wallet data/alice-wallet.json --type unstake --nonce 3 --fee 0.01
-python -m picoin tx send --wallet data/alice-wallet.json --type science_job_create --nonce 4 --fee 0.01 --payload "{\"job_type\":\"ai_inference\",\"metadata_hash\":\"meta\",\"storage_pointer\":\"ipfs://job\",\"max_compute_units\":0,\"reward_per_compute_unit\":0,\"max_reward\":0}"
-python -m picoin tx send --wallet data/signer-one.json --type governance_action --nonce 1 --fee 0.01 --payload "{\"scope\":\"science_reserve\",\"action\":\"propose_activation\"}"
-python -m picoin tx send --wallet data/signer-two.json --type governance_action --nonce 1 --fee 0.01 --payload "{\"scope\":\"science_reserve\",\"action\":\"approve_activation\"}"
-python -m picoin tx send --wallet data/signer-one.json --type governance_action --nonce 2 --fee 0.01 --payload "{\"scope\":\"science_reserve\",\"action\":\"execute_activation\"}"
-python -m picoin tx send --wallet data/owner.json --type treasury_claim --nonce 1 --fee 0.01 --payload "{\"claim_to\":\"PI_TREASURY_WALLET\"}"
+python -m picoin wallet nonce --address PI...
+python -m picoin tx send --wallet data/alice-wallet.json --to PI... --amount 1.5 --fee 0.01
+python -m picoin tx send --wallet data/alice-wallet.json --type stake --amount 3141.6 --fee 0.01
+python -m picoin tx send --wallet data/alice-wallet.json --type unstake --fee 0.01
+python -m picoin tx send --wallet data/alice-wallet.json --type science_job_create --fee 0.01 --payload "{\"job_type\":\"ai_inference\",\"metadata_hash\":\"meta\",\"storage_pointer\":\"ipfs://job\",\"max_compute_units\":0,\"reward_per_compute_unit\":0,\"max_reward\":0}"
+python -m picoin tx send --wallet data/signer-one.json --type governance_action --fee 0.01 --payload "{\"scope\":\"science_reserve\",\"action\":\"propose_activation\"}"
+python -m picoin tx send --wallet data/signer-two.json --type governance_action --fee 0.01 --payload "{\"scope\":\"science_reserve\",\"action\":\"approve_activation\"}"
+python -m picoin tx send --wallet data/signer-one.json --type governance_action --fee 0.01 --payload "{\"scope\":\"science_reserve\",\"action\":\"execute_activation\"}"
+python -m picoin tx send --wallet data/owner.json --type treasury_claim --fee 0.01 --payload "{\"claim_to\":\"PI_TREASURY_WALLET\"}"
+python -m picoin tx status --hash <tx_hash>
+python -m picoin tx mempool --status pending
 python -m picoin consensus status
 python -m picoin consensus proposals
 python -m picoin consensus votes --proposal-id ...

@@ -46,6 +46,7 @@ from app.services.treasury import (
     SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID,
     get_scientific_development_treasury,
 )
+from app.services.transactions import get_wallet_nonce_status, select_block_transactions
 from app.services.wallet import create_wallet, sign_transaction
 
 
@@ -95,12 +96,13 @@ def test_signed_transaction_enters_mempool_once(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "mempool.sqlite3")
 
     wallet = create_wallet("alice")
+    recipient = create_wallet("bob")
     tx = sign_transaction(
         private_key=wallet["private_key"],
         public_key=wallet["public_key"],
         tx_type="transfer",
         sender=wallet["address"],
-        recipient="PIRECIPIENT",
+        recipient=recipient["address"],
         amount=1.5,
         nonce=1,
         fee=0.01,
@@ -120,12 +122,14 @@ def test_duplicate_nonce_is_rejected(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "duplicate-nonce.sqlite3")
 
     wallet = create_wallet("alice")
+    first_recipient = create_wallet("bob")
+    second_recipient = create_wallet("carol")
     first = sign_transaction(
         private_key=wallet["private_key"],
         public_key=wallet["public_key"],
         tx_type="transfer",
         sender=wallet["address"],
-        recipient="PIA",
+        recipient=first_recipient["address"],
         amount=1,
         nonce=7,
     )
@@ -134,7 +138,7 @@ def test_duplicate_nonce_is_rejected(tmp_path, monkeypatch) -> None:
         public_key=wallet["public_key"],
         tx_type="transfer",
         sender=wallet["address"],
-        recipient="PIB",
+        recipient=second_recipient["address"],
         amount=2,
         nonce=7,
     )
@@ -148,18 +152,56 @@ def test_invalid_signature_is_rejected(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "invalid-signature.sqlite3")
 
     wallet = create_wallet("alice")
+    recipient = create_wallet("bob")
     tx = sign_transaction(
         private_key=wallet["private_key"],
         public_key=wallet["public_key"],
         tx_type="transfer",
         sender=wallet["address"],
-        recipient="PIB",
+        recipient=recipient["address"],
         amount=2,
         nonce=1,
     )
     tx["signature"] = "invalid"
 
     with pytest.raises(NetworkError, match="invalid transaction signature"):
+        submit_transaction(tx)
+
+
+def test_nonce_zero_is_rejected_at_submission(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "nonce-zero.sqlite3")
+
+    wallet = create_wallet("alice")
+    recipient = create_wallet("bob")
+    tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="transfer",
+        sender=wallet["address"],
+        recipient=recipient["address"],
+        amount=1,
+        nonce=0,
+    )
+
+    with pytest.raises(NetworkError, match="nonce must be >= 1"):
+        submit_transaction(tx)
+
+
+def test_invalid_transfer_recipient_is_rejected_at_submission(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "invalid-recipient.sqlite3")
+
+    wallet = create_wallet("alice")
+    tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="transfer",
+        sender=wallet["address"],
+        recipient="PIB",
+        amount=1,
+        nonce=1,
+    )
+
+    with pytest.raises(NetworkError, match="valid PI recipient"):
         submit_transaction(tx)
 
 
@@ -227,6 +269,103 @@ def test_mined_block_confirms_signed_transfer_with_transaction_merkle_root(tmp_p
     assert get_balance_amount(recipient["address"]) == pytest.approx(1.0)
     assert get_balance_amount(miner["miner_id"]) == pytest.approx(2.104872 + 0.01)
     assert chain["valid"] is True
+
+
+def test_wallet_nonce_status_tracks_pending_and_confirmed_transactions(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "wallet-nonce.sqlite3")
+
+    miner_key = generate_keypair()
+    miner = register_miner("nonce-miner", miner_key["public_key"])
+    sender = create_wallet("alice")
+    recipient = create_wallet("bob")
+    _fund_wallet_from_genesis(sender["address"], 2.0)
+
+    with get_connection() as connection:
+        initial = get_wallet_nonce_status(connection, sender["address"])
+    assert initial["confirmed_nonce"] == 0
+    assert initial["pending_nonce"] == 0
+    assert initial["next_nonce"] == 1
+
+    tx = sign_transaction(
+        private_key=sender["private_key"],
+        public_key=sender["public_key"],
+        tx_type="transfer",
+        sender=sender["address"],
+        recipient=recipient["address"],
+        amount=1.0,
+        nonce=1,
+        fee=0.01,
+    )
+    submit_transaction(tx)
+
+    with get_connection() as connection:
+        pending = get_wallet_nonce_status(connection, sender["address"])
+    assert pending["confirmed_nonce"] == 0
+    assert pending["pending_nonce"] == 1
+    assert pending["next_nonce"] == 2
+    assert pending["pending_count"] == 1
+
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+
+    with get_connection() as connection:
+        confirmed = get_wallet_nonce_status(connection, sender["address"])
+    assert confirmed["confirmed_nonce"] == 1
+    assert confirmed["pending_nonce"] == 0
+    assert confirmed["next_nonce"] == 2
+    assert confirmed["pending_count"] == 0
+
+
+def test_block_transaction_selection_prioritizes_fee_without_reordering_sender_nonce(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "fee-priority.sqlite3")
+
+    alice = create_wallet("alice")
+    bob = create_wallet("bob")
+    recipient = create_wallet("recipient")
+    _fund_wallet_from_genesis(alice["address"], 5.0)
+    _fund_wallet_from_genesis(bob["address"], 5.0)
+
+    alice_first = sign_transaction(
+        private_key=alice["private_key"],
+        public_key=alice["public_key"],
+        tx_type="transfer",
+        sender=alice["address"],
+        recipient=recipient["address"],
+        amount=1.0,
+        nonce=1,
+        fee=0.01,
+    )
+    alice_second = sign_transaction(
+        private_key=alice["private_key"],
+        public_key=alice["public_key"],
+        tx_type="transfer",
+        sender=alice["address"],
+        recipient=recipient["address"],
+        amount=1.0,
+        nonce=2,
+        fee=0.50,
+    )
+    bob_first = sign_transaction(
+        private_key=bob["private_key"],
+        public_key=bob["public_key"],
+        tx_type="transfer",
+        sender=bob["address"],
+        recipient=recipient["address"],
+        amount=1.0,
+        nonce=1,
+        fee=0.10,
+    )
+    submit_transaction(alice_first)
+    submit_transaction(alice_second)
+    submit_transaction(bob_first)
+
+    with get_connection() as connection:
+        selected = select_block_transactions(connection, limit=3)
+
+    assert [tx["tx_hash"] for tx in selected] == [
+        bob_first["tx_hash"],
+        alice_first["tx_hash"],
+        alice_second["tx_hash"],
+    ]
 
 
 def test_state_root_detects_ledger_tampering(tmp_path, monkeypatch) -> None:

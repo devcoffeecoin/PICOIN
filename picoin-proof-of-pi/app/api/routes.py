@@ -70,6 +70,7 @@ from app.models.schemas import (
     ValidatorResponse,
     WalletCreateRequest,
     WalletCreateResponse,
+    WalletNonceResponse,
 )
 from app.services.consensus import (
     ConsensusError,
@@ -85,6 +86,7 @@ from app.services.consensus import (
 from app.services.network import (
     NetworkError,
     get_blocks_since,
+    get_transaction,
     get_sync_status,
     heartbeat_peer,
     list_mempool,
@@ -97,6 +99,8 @@ from app.services.network import (
     gossip_json,
     submit_transaction,
 )
+from app.db.database import get_connection
+from app.services.transactions import get_wallet_nonce_status
 from app.services.treasury import (
     TreasuryError,
     claim_scientific_development_treasury,
@@ -458,6 +462,14 @@ def mempool(status: str | None = Query(None), limit: int = Query(100, ge=1, le=5
     return list_mempool(status, limit)
 
 
+@router.get("/tx/{tx_hash}", response_model=MempoolTransactionResponse)
+def tx_status(tx_hash: str) -> dict:
+    tx = get_transaction(tx_hash)
+    if tx is None:
+        raise HTTPException(status_code=404, detail="transaction not found")
+    return tx
+
+
 @router.post("/tx/submit", response_model=MempoolTransactionResponse, status_code=201)
 def tx_submit(payload: SignedTransactionRequest) -> dict:
     try:
@@ -477,6 +489,12 @@ def tx_receive(payload: SignedTransactionRequest) -> dict:
 @router.post("/wallet/create", response_model=WalletCreateResponse, status_code=201)
 def wallet_create(payload: WalletCreateRequest) -> dict:
     return create_wallet(payload.name)
+
+
+@router.get("/wallet/{address}/nonce", response_model=WalletNonceResponse)
+def wallet_nonce(address: str) -> dict:
+    with get_connection() as connection:
+        return get_wallet_nonce_status(connection, address)
 
 
 @router.websocket("/p2p/ws")
