@@ -7,6 +7,7 @@ from app.core.pi import calculate_pi_segment
 from app.core.settings import CHAIN_ID, GENESIS_HASH, NETWORK_ID, PROTOCOL_VERSION
 from app.core.signatures import build_submission_signature_payload, generate_keypair, sign_payload
 from app.db.database import get_connection, init_db
+from app.models.schemas import SignedTransactionRequest
 from app.services.consensus import propose_block, replay_finalized_blocks
 from app.services.mining import (
     create_next_task,
@@ -166,6 +167,28 @@ def test_invalid_signature_is_rejected(tmp_path, monkeypatch) -> None:
 
     with pytest.raises(NetworkError, match="invalid transaction signature"):
         submit_transaction(tx)
+
+
+def test_signed_transaction_request_preserves_signed_timestamp(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "signed-timestamp.sqlite3")
+
+    wallet = create_wallet("alice")
+    recipient = create_wallet("bob")
+    tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="transfer",
+        sender=wallet["address"],
+        recipient=recipient["address"],
+        amount=1,
+        nonce=1,
+        timestamp="2026-05-14T12:00:00+00:00",
+    )
+
+    payload = SignedTransactionRequest(**tx).model_dump(mode="json")
+
+    assert payload["timestamp"] == tx["timestamp"]
+    submit_transaction(payload)
 
 
 def test_nonce_zero_is_rejected_at_submission(tmp_path, monkeypatch) -> None:
