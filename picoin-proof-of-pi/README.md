@@ -1293,7 +1293,7 @@ The project supports:
 ### Clone the Repository
 
 git clone [https://github.com/devcoffeecoin/PICOIN.git](https://github.com/devcoffeecoin/PICOIN.git)
-cd PICOIN/PICOIN
+
 
 ## Experimental Useful-Compute Blockchain Protocol
 
