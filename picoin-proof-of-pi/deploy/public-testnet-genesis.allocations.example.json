@@ -1,0 +1,14 @@
+{
+  "version": 1,
+  "network_id": "public-testnet",
+  "chain_id": "picoin-public-testnet-v018",
+  "created_at": "2026-05-14T12:48:51.500763Z",
+  "allocations": [
+    {
+      "account_id": "PI340F7EEA37754C5F9C9ADE84D98F9B4AE10F0E",
+      "account_type": "wallet",
+      "amount": 1.0,
+      "description": "public testnet wallet transfer smoke funding"
+    }
+  ]
+}

@@ -10,6 +10,7 @@ from app.core.settings import (
     DATABASE_PATH,
     DEFAULT_REWARD,
     GENESIS_ACCOUNT_ID,
+    GENESIS_ALLOCATIONS_FILE,
     GENESIS_HASH,
     GENESIS_SUPPLY,
     MAX_ACTIVE_TASKS_PER_MINER,
@@ -31,6 +32,7 @@ from app.core.settings import (
     TASK_SEGMENT_SIZE,
     VALIDATION_MODE,
 )
+from app.services.genesis import load_genesis_allocations
 
 
 def get_connection() -> sqlite3.Connection:
@@ -815,6 +817,7 @@ def _ensure_genesis_balance(connection: sqlite3.Connection) -> None:
         (GENESIS_ACCOUNT_ID,),
     ).fetchone()
     if existing is not None:
+        _ensure_genesis_allocations(connection)
         return
     timestamp = "1970-01-01T00:00:00+00:00"
     connection.execute(
@@ -838,6 +841,102 @@ def _ensure_genesis_balance(connection: sqlite3.Connection) -> None:
         """,
         (GENESIS_ACCOUNT_ID, GENESIS_SUPPLY, GENESIS_SUPPLY, timestamp),
     )
+    _ensure_genesis_allocations(connection)
+
+
+def _ensure_genesis_allocations(connection: sqlite3.Connection) -> None:
+    if not GENESIS_ALLOCATIONS_FILE:
+        return
+    allocation_path = Path(GENESIS_ALLOCATIONS_FILE)
+    if not allocation_path.is_absolute():
+        allocation_path = DATA_DIR.parent / allocation_path
+    document = load_genesis_allocations(allocation_path)
+    if document is None:
+        return
+    if document.get("network_id") and document["network_id"] != NETWORK_ID:
+        raise RuntimeError("genesis allocations network_id mismatch")
+    if document.get("chain_id") and document["chain_id"] != CHAIN_ID:
+        raise RuntimeError("genesis allocations chain_id mismatch")
+    timestamp = document["created_at"]
+    for allocation in document["allocations"]:
+        account_id = allocation["account_id"]
+        existing = connection.execute(
+            """
+            SELECT 1
+            FROM ledger_entries
+            WHERE account_id = ? AND entry_type = 'genesis_allocation'
+            LIMIT 1
+            """,
+            (account_id,),
+        ).fetchone()
+        if existing is not None:
+            continue
+        amount = round(float(allocation["amount"]), 8)
+        genesis = connection.execute(
+            "SELECT balance FROM balances WHERE account_id = ?",
+            (GENESIS_ACCOUNT_ID,),
+        ).fetchone()
+        genesis_balance = 0.0 if genesis is None else float(genesis["balance"] if isinstance(genesis, sqlite3.Row) else genesis[0])
+        if genesis_balance < amount:
+            raise RuntimeError(f"genesis balance insufficient for allocation to {account_id}")
+        genesis_after = round(genesis_balance - amount, 8)
+        connection.execute(
+            "UPDATE balances SET balance = ?, updated_at = ? WHERE account_id = ?",
+            (genesis_after, timestamp, GENESIS_ACCOUNT_ID),
+        )
+        connection.execute(
+            """
+            INSERT INTO ledger_entries (
+                account_id, account_type, amount, balance_after, entry_type,
+                block_height, related_id, description, created_at
+            )
+            VALUES (?, 'genesis', ?, ?, 'genesis_allocation_debit', NULL, ?, ?, ?)
+            """,
+            (
+                GENESIS_ACCOUNT_ID,
+                -amount,
+                genesis_after,
+                account_id,
+                f"genesis allocation debit for {account_id}",
+                timestamp,
+            ),
+        )
+        balance_row = connection.execute(
+            "SELECT balance FROM balances WHERE account_id = ?",
+            (account_id,),
+        ).fetchone()
+        current_balance = 0.0 if balance_row is None else float(
+            balance_row["balance"] if isinstance(balance_row, sqlite3.Row) else balance_row[0]
+        )
+        next_balance = round(current_balance + amount, 8)
+        connection.execute(
+            """
+            INSERT INTO balances (account_id, account_type, balance, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(account_id) DO UPDATE SET
+                account_type = excluded.account_type,
+                balance = excluded.balance,
+                updated_at = excluded.updated_at
+            """,
+            (account_id, allocation["account_type"], next_balance, timestamp),
+        )
+        connection.execute(
+            """
+            INSERT INTO ledger_entries (
+                account_id, account_type, amount, balance_after, entry_type,
+                block_height, related_id, description, created_at
+            )
+            VALUES (?, ?, ?, ?, 'genesis_allocation', NULL, 'genesis', ?, ?)
+            """,
+            (
+                account_id,
+                allocation["account_type"],
+                amount,
+                next_balance,
+                allocation["description"],
+                timestamp,
+            ),
+        )
 
 
 def _ensure_existing_validator_stake_balances(connection: sqlite3.Connection) -> None:

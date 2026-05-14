@@ -10,7 +10,23 @@ PROJECT_NAME = "picoin-proof-of-pi"
 PROTOCOL_VERSION = "0.18"
 NETWORK_ID = os.getenv("PICOIN_NETWORK", "local").strip().lower() or "local"
 CHAIN_ID = os.getenv("PICOIN_CHAIN_ID", f"picoin-{NETWORK_ID}-testnet").strip() or f"picoin-{NETWORK_ID}-testnet"
-GENESIS_HASH = os.getenv("PICOIN_GENESIS_HASH", "0" * 64).strip() or ("0" * 64)
+GENESIS_ALLOCATIONS_FILE = os.getenv("PICOIN_GENESIS_ALLOCATIONS_FILE", "").strip()
+
+
+def _resolve_path(value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else BASE_DIR / path
+
+
+def _computed_genesis_hash() -> str:
+    if not GENESIS_ALLOCATIONS_FILE:
+        return "0" * 64
+    from app.services.genesis import genesis_allocations_hash, load_genesis_allocations
+
+    return genesis_allocations_hash(load_genesis_allocations(_resolve_path(GENESIS_ALLOCATIONS_FILE)))
+
+
+GENESIS_HASH = os.getenv("PICOIN_GENESIS_HASH", "").strip() or _computed_genesis_hash()
 NODE_ID = os.getenv("PICOIN_NODE_ID", "local-node").strip() or "local-node"
 NODE_TYPE = os.getenv("PICOIN_NODE_TYPE", "full").strip().lower() or "full"
 NODE_PUBLIC_ADDRESS = os.getenv("PICOIN_NODE_ADDRESS", "http://127.0.0.1:8000").strip()

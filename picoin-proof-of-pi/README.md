@@ -105,6 +105,7 @@ La ruta hacia mainnet ya incluye contabilidad basica de transacciones firmadas:
 - Un snapshot canonico exportado incluye metadata del checkpoint y balances agregados por cuenta. El import valida `chain_id`, `network_id`, `genesis_hash`, `balances_hash`, `state_root` y `snapshot_hash` antes de guardarlo como referencia externa.
 - Un snapshot importado puede activarse como `active_snapshot_base`; desde ahi el nodo pide a peers solo bloques con `height` posterior al snapshot y acepta el siguiente bloque si su `previous_hash` apunta al `block_hash` del checkpoint.
 - Para fast-sync real, un snapshot importado puede aplicarse como estado inicial local si el nodo aun no tiene bloques locales. Esto restaura balances agregados desde el snapshot y luego permite replay canonico de bloques posteriores.
+- El fondeo inicial de wallets debe venir de un archivo canonico `PICOIN_GENESIS_ALLOCATIONS_FILE`, no de ediciones manuales de SQLite. Todos los nodos calculan el mismo genesis hash con `python -m picoin node genesis-hash --file <allocations.json>` y aplican las mismas entradas `genesis_allocation` al inicializar.
 - `stake` bloquea PI desde la wallet hacia `science_stake:<address>` y actualiza el tier cientifico de forma deterministica.
 - `unstake` libera el stake cientifico completo si la direccion no tiene jobs activos.
 - `science_job_create` crea jobs L1 desde payload firmado, con `job_id` deterministico si no se provee uno.
