@@ -1657,7 +1657,7 @@ python -m app.tools.reset_db
 
 ## Roadmap to Mainnet
 
-Estado actual: Picoin already has an experimental L1 with Proof of Pi, validators, audits, economics 67/20/10/3, timelocked treasury, Science Reserve locked, mempool, wallets, peers, gossip, proposals, votes, finalization, and initial canonical replay. It is not yet ready for mainnet with real value.
+Picoin already has an experimental L1 with Proof of Pi, validators, audits, economics 67/20/10/3, timelocked treasury, Science Reserve locked, mempool, wallets, peers, gossip, proposals, votes, finalization, and initial canonical replay. It is not yet ready for mainnet with real value.
 
 Fase 1 - Stable distributed testnet:
 
