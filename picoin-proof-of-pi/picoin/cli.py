@@ -381,6 +381,44 @@ def command_node_report(args: argparse.Namespace) -> int:
     return 1 if failures else 0
 
 
+def command_node_compare(args: argparse.Namespace) -> int:
+    server_url = normalize_server_url(args.server)
+    peer_url = normalize_server_url(args.peer)
+    local = get_json(server_url, "/node/sync-status")
+    peer = get_json(peer_url, "/node/sync-status")
+    comparisons = {
+        "network_id": local.get("network_id") == peer.get("network_id"),
+        "chain_id": local.get("chain_id") == peer.get("chain_id"),
+        "genesis_hash": local.get("genesis_hash") == peer.get("genesis_hash"),
+        "height": int(local.get("latest_block_height", 0)) == int(peer.get("latest_block_height", 0)),
+        "block_hash": local.get("latest_block_hash") == peer.get("latest_block_hash"),
+    }
+    output = {
+        "server": server_url,
+        "peer": peer_url,
+        "status": "ok" if all(comparisons.values()) else "mismatch",
+        "comparisons": comparisons,
+        "local": {
+            "height": local.get("latest_block_height", 0),
+            "block_hash": local.get("latest_block_hash"),
+            "network_id": local.get("network_id"),
+            "chain_id": local.get("chain_id"),
+            "genesis_hash": local.get("genesis_hash"),
+            "pending_replay_blocks": local.get("pending_replay_blocks", 0),
+        },
+        "peer_state": {
+            "height": peer.get("latest_block_height", 0),
+            "block_hash": peer.get("latest_block_hash"),
+            "network_id": peer.get("network_id"),
+            "chain_id": peer.get("chain_id"),
+            "genesis_hash": peer.get("genesis_hash"),
+            "pending_replay_blocks": peer.get("pending_replay_blocks", 0),
+        },
+    }
+    print_json(output)
+    return 0 if output["status"] == "ok" else 1
+
+
 def command_node_checkpoint_list(args: argparse.Namespace) -> int:
     print_json(get_json(args.server, f"/node/checkpoints?limit={args.limit}"))
     return 0
@@ -832,6 +870,11 @@ def add_node_parser(subparsers: argparse._SubParsersAction) -> None:
     report_parser.add_argument("--require-peers", action="store_true")
     report_parser.add_argument("--verbose", action="store_true")
     report_parser.set_defaults(func=command_node_report)
+
+    compare_parser = node_subparsers.add_parser("compare", help="Compare local chain identity and tip with one peer")
+    compare_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    compare_parser.add_argument("--peer", required=True)
+    compare_parser.set_defaults(func=command_node_compare)
 
     checkpoint_parser = node_subparsers.add_parser("checkpoint", help="Create and verify canonical state checkpoints")
     checkpoint_parser.add_argument("--server", default=DEFAULT_SERVER_URL)

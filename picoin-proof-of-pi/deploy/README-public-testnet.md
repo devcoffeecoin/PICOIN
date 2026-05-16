@@ -1,4 +1,4 @@
-# Picoin Public Testnet Deployment Kit v0.18
+# Picoin Public Testnet Deployment Kit v0.19
 
 This kit turns the current Picoin node into a repeatable public testnet deployment for Ubuntu/DigitalOcean.
 
@@ -41,6 +41,7 @@ PICOIN_NODE_ID=bootstrap-nyc1-1
 PICOIN_NODE_TYPE=bootstrap
 PICOIN_NODE_ADDRESS=http://YOUR_PUBLIC_IP:8000
 PICOIN_BOOTSTRAP_PEERS=
+PICOIN_BOOTSTRAP_PEER=
 ```
 
 For a second node set:
@@ -50,6 +51,23 @@ PICOIN_NODE_ID=validator-nyc1-1
 PICOIN_NODE_TYPE=validator
 PICOIN_NODE_ADDRESS=http://SECOND_PUBLIC_IP:8000
 PICOIN_BOOTSTRAP_PEERS=http://BOOTSTRAP_PUBLIC_IP:8000
+PICOIN_BOOTSTRAP_PEER=http://BOOTSTRAP_PUBLIC_IP:8000
+```
+
+If the testnet needs initial wallet funding, use the same canonical allocation file on every node:
+
+```bash
+sudo cp /opt/picoin/picoin-proof-of-pi/deploy/public-testnet-genesis.allocations.example.json /etc/picoin/genesis.allocations.json
+sudo chown root:picoin /etc/picoin/genesis.allocations.json
+sudo chmod 640 /etc/picoin/genesis.allocations.json
+/opt/picoin/picoin-proof-of-pi/.venv/bin/python -m picoin node genesis-hash --file /etc/picoin/genesis.allocations.json
+```
+
+Then set the same values on every node:
+
+```bash
+PICOIN_GENESIS_ALLOCATIONS_FILE=/etc/picoin/genesis.allocations.json
+PICOIN_GENESIS_HASH=THE_HASH_PRINTED_ABOVE
 ```
 
 Start:
@@ -57,6 +75,22 @@ Start:
 ```bash
 sudo systemctl start picoin-node
 sudo systemctl status picoin-node --no-pager
+```
+
+Optional worker services are installed too:
+
+```bash
+sudo systemctl start picoin-validator
+sudo systemctl start picoin-miner
+sudo systemctl start picoin-auditor
+sudo systemctl status picoin-validator picoin-miner picoin-auditor --no-pager
+```
+
+Use different identity files per droplet by editing `/etc/picoin/picoin.env`:
+
+```bash
+PICOIN_MINER_IDENTITY=/opt/picoin/picoin-proof-of-pi/data/testnet/identities/miner-alice.json
+PICOIN_VALIDATOR_IDENTITY=/opt/picoin/picoin-proof-of-pi/data/testnet/identities/validator-one.json
 ```
 
 ## Firewall
@@ -153,6 +187,7 @@ For continuous mining:
 ```bash
 .venv/bin/python -m picoin node reconcile
 .venv/bin/python -m picoin node catch-up --peer http://BOOTSTRAP_PUBLIC_IP:8000
+.venv/bin/python -m picoin node compare --peer http://BOOTSTRAP_PUBLIC_IP:8000
 .venv/bin/python -m picoin node report --peer http://BOOTSTRAP_PUBLIC_IP:8000
 .venv/bin/python -m picoin node peers
 .venv/bin/python -m picoin node sync-status
@@ -161,6 +196,8 @@ For continuous mining:
 `node catch-up` runs reconcile, consensus replay, sync-status and audit in bounded rounds. With `--peer`, it also compares `network_id`, `chain_id`, `genesis_hash`, latest height and latest block hash against the peer. It should end with `status=ok`, `peer_matches=true`, `pending_replay_blocks=0` and `audit_valid=true`.
 
 `node report` is read-only and returns a pass/fail readiness checklist for health, audit, replay backlog, consensus, Science Compute Reserve, treasury and peer state.
+
+`node compare` is the shortest read-only peer check. It compares `network_id`, `chain_id`, `genesis_hash`, latest height and latest block hash.
 
 Both nodes should eventually report compatible `network_id`, `chain_id`, `genesis_hash`, latest height and latest block hash.
 

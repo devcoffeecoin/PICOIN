@@ -27,6 +27,7 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
     snapshot_activate = parser.parse_args(["node", "checkpoint", "activate", "--snapshot-hash", "a" * 64])
     snapshot_apply = parser.parse_args(["node", "checkpoint", "apply", "--snapshot-hash", "b" * 64])
     genesis_hash = parser.parse_args(["node", "genesis-hash", "--file", "genesis.json"])
+    compare = parser.parse_args(["node", "compare", "--peer", "http://peer:8000"])
 
     assert peers.command == "node"
     assert peers.node_command == "peers"
@@ -49,6 +50,8 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
     assert snapshot_apply.snapshot_hash == "b" * 64
     assert genesis_hash.node_command == "genesis-hash"
     assert genesis_hash.file == Path("genesis.json")
+    assert compare.node_command == "compare"
+    assert compare.peer == "http://peer:8000"
 
 
 def test_picoin_cli_parses_wallet_and_tx_commands() -> None:

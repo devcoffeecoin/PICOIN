@@ -1,0 +1,28 @@
+[Unit]
+Description=Picoin public testnet miner
+After=network-online.target picoin-node.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=picoin
+Group=picoin
+WorkingDirectory=/opt/picoin/picoin-proof-of-pi
+EnvironmentFile=/etc/picoin/picoin.env
+Environment=PICOIN_MINER_IDENTITY=/opt/picoin/picoin-proof-of-pi/data/testnet/identities/miner-alice.json
+Environment=PICOIN_MINER_LOOPS=1
+Environment=PICOIN_MINER_SLEEP=5
+Environment=PICOIN_MINER_WORKERS=1
+ExecStart=/opt/picoin/picoin-proof-of-pi/.venv/bin/python -m picoin miner --server ${PICOIN_SERVER} --identity ${PICOIN_MINER_IDENTITY} mine --loops ${PICOIN_MINER_LOOPS} --sleep ${PICOIN_MINER_SLEEP} --workers ${PICOIN_MINER_WORKERS}
+Restart=always
+RestartSec=10
+TimeoutStopSec=30
+KillSignal=SIGINT
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/picoin/picoin-proof-of-pi/data /opt/picoin/picoin-proof-of-pi/test-output /opt/picoin/picoin-proof-of-pi/backups
+
+[Install]
+WantedBy=multi-user.target

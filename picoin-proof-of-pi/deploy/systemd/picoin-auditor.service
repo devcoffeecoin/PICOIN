@@ -1,6 +1,6 @@
 [Unit]
-Description=Picoin public testnet node
-After=network-online.target
+Description=Picoin public testnet smoke and audit loop
+After=network-online.target picoin-node.service
 Wants=network-online.target
 
 [Service]
@@ -9,11 +9,12 @@ User=picoin
 Group=picoin
 WorkingDirectory=/opt/picoin/picoin-proof-of-pi
 EnvironmentFile=/etc/picoin/picoin.env
-ExecStart=/opt/picoin/picoin-proof-of-pi/.venv/bin/python -m picoin node start
+Environment=PICOIN_HOME=/opt/picoin/picoin-proof-of-pi
+Environment=PICOIN_SMOKE_DIR=/opt/picoin/picoin-proof-of-pi/data/testnet/smoke
+ExecStart=/opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-smoke.sh
 Restart=always
-RestartSec=5
+RestartSec=300
 TimeoutStopSec=30
-KillSignal=SIGINT
 
 NoNewPrivileges=true
 PrivateTmp=true
