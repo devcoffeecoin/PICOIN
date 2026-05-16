@@ -12,7 +12,9 @@ EnvironmentFile=/etc/picoin/picoin.env
 Environment=PICOIN_VALIDATOR_IDENTITY=/opt/picoin/picoin-proof-of-pi/data/testnet/identities/validator-one.json
 Environment=PICOIN_VALIDATOR_LOOPS=1
 Environment=PICOIN_VALIDATOR_SLEEP=5
-ExecStart=/opt/picoin/picoin-proof-of-pi/.venv/bin/python -m picoin validator --server ${PICOIN_SERVER} --identity ${PICOIN_VALIDATOR_IDENTITY} validate --loops ${PICOIN_VALIDATOR_LOOPS} --sleep ${PICOIN_VALIDATOR_SLEEP}
+Environment=PICOIN_WORKER_ROLE=validator
+Environment=PICOIN_WORKER_SLEEP=10
+ExecStart=/opt/picoin/picoin-proof-of-pi/deploy/scripts/picoin-worker-loop.sh
 Restart=always
 RestartSec=10
 TimeoutStopSec=30
