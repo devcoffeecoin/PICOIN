@@ -13,7 +13,9 @@ Environment=PICOIN_MINER_IDENTITY=/opt/picoin/picoin-proof-of-pi/data/testnet/id
 Environment=PICOIN_MINER_LOOPS=1
 Environment=PICOIN_MINER_SLEEP=5
 Environment=PICOIN_MINER_WORKERS=1
-ExecStart=/opt/picoin/picoin-proof-of-pi/.venv/bin/python -m picoin miner --server ${PICOIN_SERVER} --identity ${PICOIN_MINER_IDENTITY} mine --loops ${PICOIN_MINER_LOOPS} --sleep ${PICOIN_MINER_SLEEP} --workers ${PICOIN_MINER_WORKERS}
+Environment=PICOIN_WORKER_ROLE=miner
+Environment=PICOIN_WORKER_SLEEP=10
+ExecStart=/opt/picoin/picoin-proof-of-pi/deploy/scripts/picoin-worker-loop.sh
 Restart=always
 RestartSec=10
 TimeoutStopSec=30

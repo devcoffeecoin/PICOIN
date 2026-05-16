@@ -86,6 +86,8 @@ sudo systemctl start picoin-auditor
 sudo systemctl status picoin-validator picoin-miner picoin-auditor --no-pager
 ```
 
+`picoin-miner` and `picoin-validator` run through `deploy/scripts/picoin-worker-loop.sh`. A single miner or validator iteration can exit non-zero when there is no block or validation job ready; the wrapper treats that as a normal polling cycle and keeps the systemd service active.
+
 Use different identity files per droplet by editing `/etc/picoin/picoin.env`:
 
 ```bash
