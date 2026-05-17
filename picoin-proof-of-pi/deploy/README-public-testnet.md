@@ -28,6 +28,12 @@ sudo -u picoin bash -lc 'ln -s /opt/picoin/PICOIN/picoin-proof-of-pi /opt/picoin
 sudo PICOIN_REPO_DIR=/opt/picoin/picoin-proof-of-pi /opt/picoin/picoin-proof-of-pi/deploy/scripts/install-systemd-service.sh
 ```
 
+Runtime state is intentionally separated from code:
+
+- chain database and identities: `/var/lib/picoin/data`
+- compressed SQLite backups: `/var/backups/picoin`
+- pre-refresh data copies: `/opt/picoin/state-backups`
+
 Edit the public testnet environment:
 
 ```bash
@@ -95,6 +101,33 @@ PICOIN_MINER_IDENTITY=/opt/picoin/picoin-proof-of-pi/data/testnet/identities/min
 PICOIN_VALIDATOR_IDENTITY=/opt/picoin/picoin-proof-of-pi/data/testnet/identities/validator-one.json
 ```
 
+If using the default persistent state directory from this kit, prefer:
+
+```bash
+PICOIN_MINER_IDENTITY=/var/lib/picoin/data/testnet/identities/miner-alice.json
+PICOIN_VALIDATOR_IDENTITY=/var/lib/picoin/data/testnet/identities/validator-one.json
+```
+
+## Safe Code Refresh
+
+Do not delete `/opt/picoin/picoin-proof-of-pi` by hand on a running public node. Use the refresh helper; it stops services, backs up existing state, migrates `data/` to `/var/lib/picoin/data`, refreshes code while excluding state, reinstalls systemd units, and leaves `/opt/picoin/picoin-proof-of-pi/data` as a symlink to the persistent state directory.
+
+```bash
+cd /opt/picoin/PICOIN/picoin-proof-of-pi
+git pull
+sudo PICOIN_SOURCE_DIR="$(pwd)" \
+  PICOIN_REPO_DIR=/opt/picoin/picoin-proof-of-pi \
+  /opt/picoin/picoin-proof-of-pi/deploy/scripts/refresh-code.sh
+sudo systemctl restart picoin-node picoin-auditor picoin-validator picoin-miner
+```
+
+Then verify:
+
+```bash
+cd /opt/picoin/picoin-proof-of-pi
+.venv/bin/python -m picoin node report --peer http://BOOTSTRAP_PUBLIC_IP:8000
+```
+
 ## Firewall
 
 ```bash
@@ -153,7 +186,7 @@ sudo crontab -u picoin -e
 ```
 
 ```cron
-*/30 * * * * PICOIN_HOME=/opt/picoin/picoin-proof-of-pi /opt/picoin/picoin-proof-of-pi/deploy/scripts/backup-sqlite.sh >/opt/picoin/picoin-proof-of-pi/backups/latest.log 2>&1
+*/30 * * * * /opt/picoin/picoin-proof-of-pi/deploy/scripts/backup-sqlite.sh >/var/backups/picoin/latest.log 2>&1
 ```
 
 ## Bootstrap Flow
@@ -212,7 +245,7 @@ PICOIN_BOOTSTRAP_PEER=http://BOOTSTRAP_PUBLIC_IP:8000 deploy/scripts/public-test
 Suggested monitoring cron:
 
 ```cron
-*/5 * * * * PICOIN_HOME=/opt/picoin/picoin-proof-of-pi PICOIN_SERVER=http://127.0.0.1:8000 PICOIN_BOOTSTRAP_PEER=http://BOOTSTRAP_PUBLIC_IP:8000 /opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-smoke.sh >>/opt/picoin/picoin-proof-of-pi/data/testnet/smoke/cron.log 2>&1
+*/5 * * * * PICOIN_BOOTSTRAP_PEER=http://BOOTSTRAP_PUBLIC_IP:8000 /opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-smoke.sh >>/var/lib/picoin/data/testnet/smoke/cron.log 2>&1
 ```
 
 ## Operational Checklist

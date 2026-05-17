@@ -3,8 +3,18 @@ from pathlib import Path
 
 
 BASE_DIR = Path(__file__).resolve().parents[2]
-DATA_DIR = BASE_DIR / "data"
-DATABASE_PATH = DATA_DIR / "picoin.sqlite3"
+
+
+def _configured_path(value: str, default: Path) -> Path:
+    cleaned = value.strip()
+    if not cleaned:
+        return default
+    path = Path(cleaned)
+    return path if path.is_absolute() else BASE_DIR / path
+
+
+DATA_DIR = _configured_path(os.getenv("PICOIN_DATA_DIR", ""), BASE_DIR / "data")
+DATABASE_PATH = _configured_path(os.getenv("PICOIN_DB_PATH", ""), DATA_DIR / "picoin.sqlite3")
 
 PROJECT_NAME = "picoin-proof-of-pi"
 PROTOCOL_VERSION = "0.18"

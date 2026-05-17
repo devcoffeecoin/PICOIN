@@ -1,6 +1,14 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PICOIN_ENV_FILE="${PICOIN_ENV_FILE:-/etc/picoin/picoin.env}"
+if [ -f "$PICOIN_ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$PICOIN_ENV_FILE"
+  set +a
+fi
+
 PICOIN_HOME="${PICOIN_HOME:-/opt/picoin/picoin-proof-of-pi}"
 DB_PATH="${PICOIN_DB_PATH:-$PICOIN_HOME/data/picoin.sqlite3}"
 BACKUP_DIR="${PICOIN_BACKUP_DIR:-$PICOIN_HOME/backups}"

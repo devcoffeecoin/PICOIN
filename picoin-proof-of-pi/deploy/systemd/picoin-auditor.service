@@ -9,8 +9,6 @@ User=picoin
 Group=picoin
 WorkingDirectory=/opt/picoin/picoin-proof-of-pi
 EnvironmentFile=/etc/picoin/picoin.env
-Environment=PICOIN_HOME=/opt/picoin/picoin-proof-of-pi
-Environment=PICOIN_SMOKE_DIR=/opt/picoin/picoin-proof-of-pi/data/testnet/smoke
 ExecStart=/opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-smoke.sh
 Restart=always
 RestartSec=300
@@ -19,7 +17,7 @@ TimeoutStopSec=30
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ReadWritePaths=/opt/picoin/picoin-proof-of-pi/data /opt/picoin/picoin-proof-of-pi/test-output /opt/picoin/picoin-proof-of-pi/backups
+ReadWritePaths=/opt/picoin/picoin-proof-of-pi/data /opt/picoin/picoin-proof-of-pi/test-output /opt/picoin/picoin-proof-of-pi/backups /var/lib/picoin /var/backups/picoin /opt/picoin/state-backups
 
 [Install]
 WantedBy=multi-user.target

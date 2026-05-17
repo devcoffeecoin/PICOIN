@@ -27,7 +27,14 @@ install -d -o picoin -g picoin -m 0755 "$REPO_DIR/data/testnet/identities"
 install -d -o picoin -g picoin -m 0755 "$REPO_DIR/data/testnet/smoke"
 install -d -o picoin -g picoin -m 0755 "$REPO_DIR/test-output"
 install -d -o picoin -g picoin -m 0755 "$REPO_DIR/backups"
+install -d -o picoin -g picoin -m 0755 /var/lib/picoin/data
+install -d -o picoin -g picoin -m 0755 /var/lib/picoin/data/testnet
+install -d -o picoin -g picoin -m 0755 /var/lib/picoin/data/testnet/identities
+install -d -o picoin -g picoin -m 0755 /var/lib/picoin/data/testnet/smoke
+install -d -o picoin -g picoin -m 0755 /var/backups/picoin
+install -d -o picoin -g picoin -m 0755 /opt/picoin/state-backups
 chmod 0755 "$REPO_DIR/deploy/scripts/picoin-worker-loop.sh"
+chmod 0755 "$REPO_DIR/deploy/scripts/refresh-code.sh"
 
 if [ ! -f /etc/picoin/picoin.env ]; then
   install -m 0640 "$ENV_SOURCE" /etc/picoin/picoin.env
