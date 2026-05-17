@@ -72,9 +72,13 @@ async function fetchJsonFrom(baseUrl, path) {
       headers: { Accept: "application/json" },
       mode: 'cors'
     });
-    const payload = await response.json().catch(() => ({}));
+    let payload = {};
+    const contentType = response.headers.get("content-type");
+    if (contentType && contentType.includes("application/json")) {
+      payload = await response.json().catch(() => ({}));
+    }
     if (!response.ok) {
-      throw new Error(payload.detail || response.statusText || `HTTP ${response.status}`);
+      throw new Error(payload.detail || response.statusText || `Error ${response.status}`);
     }
     return payload;
   } catch (error) {
