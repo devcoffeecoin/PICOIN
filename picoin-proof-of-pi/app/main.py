@@ -16,14 +16,13 @@ app = FastAPI(
     version=PROTOCOL_VERSION,
 )
 
-if CORS_ORIGINS:
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=list(CORS_ORIGINS),
-        allow_credentials=False,
-        allow_methods=["GET", "OPTIONS"],
-        allow_headers=["*"],
-    )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=list(CORS_ORIGINS) if CORS_ORIGINS else ["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.on_event("startup")

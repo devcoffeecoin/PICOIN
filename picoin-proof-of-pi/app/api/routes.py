@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect, Response
+from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from app.models.schemas import (
     AuditSummaryResponse,
@@ -215,8 +215,7 @@ def _gossip_block_from_response(response: dict) -> None:
 
 
 @router.get("/health", response_model=HealthResponse)
-def health(response: Response) -> dict:
-    response.headers["Access-Control-Allow-Origin"] = "*"
+def health() -> dict:
     return get_health_status()
 
 
@@ -261,8 +260,7 @@ def node_peer_heartbeat(peer_id: str) -> dict:
 
 
 @router.get("/node/sync-status", response_model=NodeSyncStatusResponse)
-def node_sync_status(response: Response) -> dict:
-    response.headers["Access-Control-Allow-Origin"] = "*"
+def node_sync_status() -> dict:
     return get_sync_status()
 
 
