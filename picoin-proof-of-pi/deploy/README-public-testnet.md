@@ -172,6 +172,16 @@ PICOIN_PUBLIC_API_URL=https://api.picoin.science /opt/picoin/picoin-proof-of-pi/
 
 The check should end with `PICOIN_SERVICE_CHECK_STATUS=ok`.
 
+Run a manual transaction smoke only when you want to mutate public testnet state:
+
+```bash
+PICOIN_TX_SMOKE_WALLET=/var/lib/picoin/data/wallets/alice.json \
+PICOIN_TX_SMOKE_RECIPIENT=PI_RECIPIENT_ADDRESS \
+/opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-tx-smoke.sh
+```
+
+It should end with `PICOIN_TX_SMOKE_STATUS=ok` after the transaction is confirmed.
+
 For a full public-testnet smoke check:
 
 ```bash
