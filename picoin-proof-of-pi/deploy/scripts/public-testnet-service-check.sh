@@ -18,6 +18,7 @@ PICOIN_PYTHON="${PICOIN_PYTHON:-$PICOIN_HOME/.venv/bin/python}"
 PICOIN_DATA_DIR="${PICOIN_DATA_DIR:-$PICOIN_HOME/data}"
 PICOIN_DB_PATH="${PICOIN_DB_PATH:-$PICOIN_DATA_DIR/picoin.sqlite3}"
 PICOIN_SMOKE_DIR="${PICOIN_SMOKE_DIR:-$PICOIN_DATA_DIR/testnet/smoke}"
+PICOIN_RECONCILE_DIR="${PICOIN_RECONCILE_DIR:-$PICOIN_DATA_DIR/testnet/reconcile}"
 PICOIN_BACKUP_DIR="${PICOIN_BACKUP_DIR:-$PICOIN_HOME/backups}"
 PICOIN_PUBLIC_API_URL="${PICOIN_PUBLIC_API_URL:-}"
 
@@ -99,12 +100,14 @@ echo "db=$PICOIN_DB_PATH"
 
 check "picoin-node service" service_ok picoin-node.service
 check "picoin-auditor service" service_ok picoin-auditor.service
+check "picoin-reconciler service" service_ok picoin-reconciler.service
 check "picoin-validator service" service_ok picoin-validator.service
 check "picoin-miner service" service_ok picoin-miner.service
 
 check "database file exists" test -s "$PICOIN_DB_PATH"
 check "data dir writable by current user" test -w "$PICOIN_DATA_DIR"
 warn_check "smoke dir exists" test -d "$PICOIN_SMOKE_DIR"
+warn_check "reconcile dir exists" test -d "$PICOIN_RECONCILE_DIR"
 warn_check "backup dir exists" test -d "$PICOIN_BACKUP_DIR"
 warn_check "recent smoke report exists" test -s "$PICOIN_SMOKE_DIR/report.json"
 warn_check "recent backup log exists" test -s "$PICOIN_BACKUP_DIR/latest.log"

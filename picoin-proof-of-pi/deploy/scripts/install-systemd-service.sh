@@ -7,6 +7,7 @@ SERVICES=(
   picoin-node.service
   picoin-miner.service
   picoin-validator.service
+  picoin-reconciler.service
   picoin-auditor.service
 )
 
@@ -25,15 +26,18 @@ install -d -o picoin -g picoin -m 0755 "$REPO_DIR/data"
 install -d -o picoin -g picoin -m 0755 "$REPO_DIR/data/testnet"
 install -d -o picoin -g picoin -m 0755 "$REPO_DIR/data/testnet/identities"
 install -d -o picoin -g picoin -m 0755 "$REPO_DIR/data/testnet/smoke"
+install -d -o picoin -g picoin -m 0755 "$REPO_DIR/data/testnet/reconcile"
 install -d -o picoin -g picoin -m 0755 "$REPO_DIR/test-output"
 install -d -o picoin -g picoin -m 0755 "$REPO_DIR/backups"
 install -d -o picoin -g picoin -m 0755 /var/lib/picoin/data
 install -d -o picoin -g picoin -m 0755 /var/lib/picoin/data/testnet
 install -d -o picoin -g picoin -m 0755 /var/lib/picoin/data/testnet/identities
 install -d -o picoin -g picoin -m 0755 /var/lib/picoin/data/testnet/smoke
+install -d -o picoin -g picoin -m 0755 /var/lib/picoin/data/testnet/reconcile
 install -d -o picoin -g picoin -m 0755 /var/backups/picoin
 install -d -o picoin -g picoin -m 0755 /opt/picoin/state-backups
 chmod 0755 "$REPO_DIR/deploy/scripts/picoin-worker-loop.sh"
+chmod 0755 "$REPO_DIR/deploy/scripts/picoin-reconciler-loop.sh"
 chmod 0755 "$REPO_DIR/deploy/scripts/refresh-code.sh"
 chmod 0755 "$REPO_DIR/deploy/scripts/public-testnet-service-check.sh"
 
@@ -55,5 +59,5 @@ printf '  %s\n' "${SERVICES[@]}"
 echo "next:"
 echo "  sudo nano /etc/picoin/picoin.env"
 echo "  sudo systemctl start picoin-node"
-echo "  sudo systemctl start picoin-validator picoin-miner picoin-auditor"
+echo "  sudo systemctl start picoin-validator picoin-miner picoin-reconciler picoin-auditor"
 echo "  sudo systemctl status picoin-node --no-pager"
