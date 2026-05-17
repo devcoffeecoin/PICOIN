@@ -38,7 +38,7 @@ class NetworkError(Exception):
 
 
 ALLOWED_NODE_TYPES = {"full", "miner", "validator", "auditor", "bootstrap"}
-ALLOWED_TX_TYPES = {"transfer", "stake", "unstake", "science_job_create", "governance_action", "treasury_claim"}
+ALLOWED_TX_TYPES = {"transfer", "stake", "unstake", "science_job_create", "governance_action", "treasury_claim", "faucet"}
 TERMINAL_TX_STATUSES = {"confirmed", "rejected", "expired"}
 
 

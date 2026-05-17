@@ -1226,6 +1226,8 @@ def get_balances(limit: int = 100) -> list[dict[str, Any]]:
 
 
 def request_faucet(account_id: str, account_type: str = "miner", amount: float | None = None) -> dict[str, Any]:
+    if NETWORK_ID != "local":
+        raise MiningError(403, "direct faucet credits are only allowed on local networks; submit a signed faucet transaction")
     if NETWORK_ID not in FAUCET_ALLOWED_NETWORKS:
         raise MiningError(403, f"faucet is disabled on network '{NETWORK_ID}'")
     if account_type not in {"miner", "validator", "wallet"}:
@@ -1301,7 +1303,7 @@ def request_faucet(account_id: str, account_type: str = "miner", amount: float |
         "amount": faucet_amount,
         "balance": round(float(balance["balance"]), 8),
         "genesis_balance": round(float(next_genesis_balance["balance"]), 8),
-        "message": "local testnet faucet credit applied",
+        "message": f"{NETWORK_ID} faucet credit applied",
     }
 
 

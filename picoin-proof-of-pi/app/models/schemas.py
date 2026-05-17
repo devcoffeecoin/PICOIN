@@ -482,7 +482,7 @@ class NodeSyncStatusResponse(NodeIdentityResponse):
 
 class SignedTransactionRequest(BaseModel):
     tx_hash: str = Field(..., min_length=64, max_length=64)
-    tx_type: str = Field(..., pattern="^(transfer|stake|unstake|science_job_create|governance_action|treasury_claim)$")
+    tx_type: str = Field(..., pattern="^(transfer|stake|unstake|science_job_create|governance_action|treasury_claim|faucet)$")
     sender: str = Field(..., min_length=3, max_length=80)
     recipient: str | None = Field(default=None, max_length=80)
     amount: float = Field(default=0, ge=0)
