@@ -1,6 +1,9 @@
 import argparse
 import json
 import os
+import shutil
+import sqlite3
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -28,10 +31,26 @@ def load_env_file(path: Path = Path(".env")) -> None:
 
 load_env_file()
 
-from app.core.settings import FAUCET_DEFAULT_AMOUNT, PROJECT_NAME, PROTOCOL_VERSION
+from app.core.crypto import canonical_json, sha256_text
+from app.core.settings import (
+    CHAIN_ID,
+    DATABASE_PATH,
+    FAUCET_DEFAULT_AMOUNT,
+    GENESIS_HASH,
+    NETWORK_ID,
+    PROJECT_NAME,
+    PROTOCOL_VERSION,
+)
 from app.core.signatures import sign_payload
 from app.services.consensus import consensus_vote_payload
 from app.services.genesis import genesis_allocations_hash, load_genesis_allocations
+from app.services.state import (
+    balance_snapshot,
+    calculate_state_root,
+    import_canonical_snapshot,
+    restore_imported_snapshot_state,
+    validate_snapshot_document,
+)
 from app.services.wallet import create_wallet, sign_transaction
 
 
@@ -508,6 +527,118 @@ def command_node_checkpoint_restore_peer(args: argparse.Namespace) -> int:
     }
     print_json(output)
     return 0 if output["status"] == "ok" else 1
+
+
+def command_node_checkpoint_restore_sqlite(args: argparse.Namespace) -> int:
+    snapshot = _snapshot_from_sqlite(args.file, args.height)
+    validation = validate_snapshot_document(snapshot)
+    if not validation["valid"]:
+        raise SystemExit(f"invalid backup snapshot: {', '.join(validation['issues'])}")
+    backup_path = None
+    if args.backup_current:
+        backup_path = args.backup_current
+        if backup_path.is_dir():
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+            backup_path = backup_path / f"pre-snapshot-restore-{stamp}.sqlite3"
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        if DATABASE_PATH.exists():
+            shutil.copy2(DATABASE_PATH, backup_path)
+    imported = import_canonical_snapshot(snapshot, source=args.source)
+    restored = restore_imported_snapshot_state(imported["snapshot"]["snapshot_hash"])
+    print_json(
+        {
+            "status": "ok" if restored.get("applied") else "fail",
+            "source_file": str(args.file),
+            "backup_current": str(backup_path) if backup_path else None,
+            "height": restored.get("height"),
+            "snapshot_hash": imported["snapshot"]["snapshot_hash"],
+            "restore": restored,
+        }
+    )
+    return 0 if restored.get("applied") else 1
+
+
+def _snapshot_from_sqlite(path: Path, height: int | None) -> dict[str, Any]:
+    if not path.exists():
+        raise SystemExit(f"SQLite backup not found: {path}")
+    connection = sqlite3.connect(path)
+    connection.row_factory = sqlite3.Row
+    try:
+        if height is None:
+            latest = connection.execute("SELECT COALESCE(MAX(height), 0) AS height FROM blocks").fetchone()
+            height = int(latest["height"] if latest else 0)
+        block = connection.execute(
+            "SELECT height, previous_hash, block_hash, state_root, timestamp FROM blocks WHERE height = ?",
+            (height,),
+        ).fetchone()
+        if block is None:
+            raise SystemExit(f"block height {height} not found in {path}")
+        state_root = block["state_root"] or calculate_state_root(connection, height, block["timestamp"])
+        balances = balance_snapshot(connection, height, block["timestamp"])
+        account_types = {
+            row["account_id"]: row["account_type"]
+            for row in connection.execute("SELECT account_id, account_type FROM balances").fetchall()
+        }
+        export_balances = [
+            {
+                **item,
+                "account_type": account_types.get(item["account_id"], _infer_account_type_for_cli_snapshot(item["account_id"])),
+            }
+            for item in balances
+        ]
+        balances_hash = sha256_text(canonical_json({"height": height, "balances": balances}))
+        ledger_entries_count = int(
+            connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM ledger_entries
+                WHERE (block_height IS NOT NULL AND block_height <= ?)
+                   OR (block_height IS NULL AND created_at <= ?)
+                """,
+                (height, block["timestamp"]),
+            ).fetchone()["count"]
+        )
+        total_balance = round(sum(float(item["balance"]) for item in balances), 8)
+        checkpoint = {
+            "chain_id": CHAIN_ID,
+            "network_id": NETWORK_ID,
+            "genesis_hash": GENESIS_HASH,
+            "protocol_version": PROTOCOL_VERSION,
+            "height": height,
+            "block_hash": block["block_hash"],
+            "previous_hash": block["previous_hash"],
+            "state_root": state_root,
+            "balances_hash": balances_hash,
+            "balances_count": len(balances),
+            "ledger_entries_count": ledger_entries_count,
+            "total_balance": total_balance,
+        }
+        checkpoint["snapshot_hash"] = sha256_text(canonical_json(checkpoint))
+        return {
+            "snapshot_version": 1,
+            "type": "picoin_canonical_snapshot",
+            "exported_at": datetime.now(timezone.utc).isoformat(),
+            "checkpoint": checkpoint,
+            "balances": export_balances,
+        }
+    finally:
+        connection.close()
+
+
+def _infer_account_type_for_cli_snapshot(account_id: str) -> str:
+    if account_id == "genesis":
+        return "genesis"
+    if account_id.startswith("miner_"):
+        return "miner"
+    if account_id.startswith("validator_"):
+        return "validator"
+    if account_id.startswith("science_"):
+        return "science_stake"
+    if account_id == "science_compute_reserve":
+        return "science_reserve"
+    if account_id == "scientific_development_treasury":
+        return "scientific_development_treasury"
+    return "wallet"
 
 
 def command_node_genesis_hash(args: argparse.Namespace) -> int:
@@ -997,6 +1128,20 @@ def add_node_parser(subparsers: argparse._SubParsersAction) -> None:
     checkpoint_restore_peer.add_argument("--height", type=int)
     checkpoint_restore_peer.add_argument("--source", default="peer-restore")
     checkpoint_restore_peer.set_defaults(func=command_node_checkpoint_restore_peer)
+
+    checkpoint_restore_sqlite = checkpoint_subparsers.add_parser(
+        "restore-sqlite",
+        help="Replace local chain state with a verified canonical snapshot extracted from a SQLite backup",
+    )
+    checkpoint_restore_sqlite.add_argument("--file", type=Path, required=True)
+    checkpoint_restore_sqlite.add_argument("--height", type=int)
+    checkpoint_restore_sqlite.add_argument("--source", default="sqlite-restore")
+    checkpoint_restore_sqlite.add_argument(
+        "--backup-current",
+        type=Path,
+        help="Optional file or directory where the current database is copied before restore",
+    )
+    checkpoint_restore_sqlite.set_defaults(func=command_node_checkpoint_restore_sqlite)
 
     genesis_hash_parser = node_subparsers.add_parser("genesis-hash", help="Compute deterministic hash for a genesis allocation file")
     genesis_hash_parser.add_argument("--file", type=Path, required=True)
