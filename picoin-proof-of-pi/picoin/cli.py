@@ -799,6 +799,21 @@ def command_testnet_continuous(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_testnet_fund_wallet(args: argparse.Namespace) -> int:
+    print_json(
+        post_json(
+            args.server,
+            "/faucet",
+            {
+                "account_id": args.address,
+                "account_type": "wallet",
+                "amount": args.amount,
+            },
+        )
+    )
+    return 0
+
+
 def _run_tool_main(main_func: Any, argv: list[str]) -> None:
     import sys
 
@@ -1173,6 +1188,12 @@ def add_testnet_parser(subparsers: argparse._SubParsersAction) -> None:
     continuous_parser.add_argument("--retro-audit", action="store_true", default=True)
     continuous_parser.add_argument("--no-retro-audit", action="store_false", dest="retro_audit")
     continuous_parser.set_defaults(func=command_testnet_continuous)
+
+    fund_wallet_parser = testnet_subparsers.add_parser("fund-wallet", help="Fund a wallet from the configured testnet faucet")
+    fund_wallet_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    fund_wallet_parser.add_argument("--address", required=True)
+    fund_wallet_parser.add_argument("--amount", type=float, default=0.1)
+    fund_wallet_parser.set_defaults(func=command_testnet_fund_wallet)
 
 
 def build_parser() -> argparse.ArgumentParser:
