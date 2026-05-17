@@ -25,24 +25,39 @@ while true; do
         --sleep "${PICOIN_MINER_SLEEP:-5}" \
         --workers "${PICOIN_MINER_WORKERS:-1}"
       rc=$?
+      if [ "$rc" -ne 0 ]; then
+        echo "picoin $PICOIN_WORKER_ROLE iteration exited with rc=$rc; continuing after sleep" >&2
+      fi
       ;;
+      
     validator)
-      "$PICOIN_PYTHON" -m picoin validator \
-        --server "$PICOIN_SERVER" \
-        --identity "${PICOIN_VALIDATOR_IDENTITY:-$PICOIN_HOME/data/testnet/identities/validator-one.json}" \
-        validate \
-        --loops "${PICOIN_VALIDATOR_LOOPS:-1}" \
-        --sleep "${PICOIN_VALIDATOR_SLEEP:-5}"
-      rc=$?
+      # Iteración secuencial sobre las tres identidades para forzar quórum de consenso (2/3)
+      for val in one two three; do
+        CURRENT_IDENTITY="$PICOIN_HOME/data/testnet/identities/validator-${val}.json"
+        
+        echo "[$(date +%T)] Intentando validación secuencial con: validator-${val}" >&2
+        
+        "$PICOIN_PYTHON" -m picoin validator \
+          --server "$PICOIN_SERVER" \
+          --identity "$CURRENT_IDENTITY" \
+          validate \
+          --loops "${PICOIN_VALIDATOR_LOOPS:-1}" \
+          --sleep "${PICOIN_VALIDATOR_SLEEP:-5}"
+        rc=$?
+        
+        if [ "$rc" -ne 0 ]; then
+          echo "picoin validator (${val}) iteration exited with rc=$rc; saltando al siguiente validador" >&2
+        fi
+      done
+      # Forzamos un código de salida limpio general para la ronda completa
+      rc=0
       ;;
+      
     *)
       echo "invalid PICOIN_WORKER_ROLE=$PICOIN_WORKER_ROLE" >&2
       exit 2
       ;;
   esac
 
-  if [ "$rc" -ne 0 ]; then
-    echo "picoin $PICOIN_WORKER_ROLE iteration exited with rc=$rc; continuing after sleep" >&2
-  fi
   sleep "$PICOIN_WORKER_SLEEP"
 done
