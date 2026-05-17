@@ -19,9 +19,18 @@ Edit `explorer-config.js` before deployment:
 
 ```js
 window.PICOIN_EXPLORER_CONFIG = {
-  apiBaseUrl: "https://your-public-picoin-api.example.com"
+  apiBaseUrl: "https://your-public-picoin-api.example.com",
+  refreshMs: 30000,
+  nodes: [
+    { label: "bootstrap", url: "https://bootstrap-api.example.com" },
+    { label: "validator", url: "https://validator-api.example.com" }
+  ]
 };
 ```
+
+`apiBaseUrl` is the primary read API for blocks, validators, events, mempool and lookup. `nodes` powers the public network comparison table and should list the public API URL for every testnet node you want visitors to see.
+
+If the website is served over HTTPS, the Picoin APIs must also be exposed over HTTPS; browsers block HTTP API calls from HTTPS pages.
 
 ## Local Preview
 

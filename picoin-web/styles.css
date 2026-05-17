@@ -8,6 +8,9 @@
   --line: rgba(139, 211, 255, 0.18);
   --cyan: #20b8ff;
   --cyan-2: #6bdcff;
+  --green: #4ade80;
+  --amber: #fbbf24;
+  --red: #fb7185;
   --shadow: 0 24px 80px rgba(0, 0, 0, 0.36);
 }
 
@@ -369,7 +372,7 @@ h3 {
 
 .status-pill.bad {
   background: rgba(251, 113, 133, 0.14);
-  color: #fb7185;
+  color: var(--red);
 }
 
 .explorer-page .section-heading {
@@ -387,6 +390,64 @@ h3 {
   margin-bottom: 0;
 }
 
+.explorer-search {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  margin-bottom: 18px;
+  max-width: 760px;
+}
+
+.explorer-search input,
+.explorer-search button {
+  min-height: 46px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  font: inherit;
+}
+
+.explorer-search input {
+  width: 100%;
+  background: var(--panel);
+  color: var(--ink);
+  padding: 0 14px;
+}
+
+.explorer-search button {
+  cursor: pointer;
+  background: var(--cyan);
+  color: #03111a;
+  font-weight: 800;
+  padding: 0 18px;
+}
+
+.lookup-result {
+  margin-bottom: 16px;
+}
+
+.lookup-result:empty {
+  display: none;
+}
+
+.lookup-card {
+  border: 1px solid var(--line);
+  border-left: 4px solid var(--cyan);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 14px;
+}
+
+.lookup-card span,
+.muted {
+  color: var(--muted);
+}
+
+.lookup-card strong {
+  display: block;
+  margin: 8px 0;
+  overflow-wrap: anywhere;
+}
+
 .explorer-metrics {
   display: grid;
   grid-template-columns: repeat(6, minmax(0, 1fr));
@@ -394,6 +455,7 @@ h3 {
 }
 
 .explorer-metrics article,
+.network-summary article,
 .table-wrap,
 .event-list,
 .validator-card {
@@ -408,17 +470,47 @@ h3 {
   padding: 18px;
 }
 
-.explorer-metrics span {
+.explorer-metrics span,
+.network-summary span {
   display: block;
   color: var(--muted);
   font-size: 13px;
 }
 
-.explorer-metrics strong {
+.explorer-metrics strong,
+.network-summary strong {
   display: block;
   margin-top: 12px;
   font-size: 22px;
   overflow-wrap: anywhere;
+}
+
+.network-layout {
+  display: grid;
+  gap: 14px;
+}
+
+.network-summary {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.network-summary article {
+  min-height: 104px;
+  padding: 18px;
+}
+
+.good-text {
+  color: var(--green);
+}
+
+.warn-text {
+  color: var(--amber);
+}
+
+.bad-text {
+  color: var(--red);
 }
 
 .api-errors {
@@ -446,7 +538,7 @@ h3 {
 
 table {
   width: 100%;
-  min-width: 1040px;
+  min-width: 1120px;
   border-collapse: collapse;
 }
 
@@ -467,6 +559,11 @@ td.hash,
 .mono {
   font-family: "Cascadia Mono", Consolas, monospace;
   font-size: 12px;
+}
+
+td strong {
+  display: block;
+  margin-bottom: 4px;
 }
 
 .validator-grid {
@@ -547,6 +644,7 @@ td.hash,
   .compute-layout,
   .characteristics-grid,
   .explorer-metrics,
+  .network-summary,
   .validator-grid {
     grid-template-columns: 1fr 1fr;
   }
@@ -586,7 +684,12 @@ td.hash,
   .compute-layout,
   .characteristics-grid,
   .explorer-metrics,
+  .network-summary,
   .validator-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .explorer-search {
     grid-template-columns: 1fr;
   }
 
