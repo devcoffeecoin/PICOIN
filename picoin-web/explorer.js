@@ -158,16 +158,30 @@ function render() {
 function renderStatus() {
   const ready = explorerReady();
   const partial = state.health || state.sync || state.nodeStates.some((node) => node.sync);
+  
   const apiStatus = $("apiStatus");
-  apiStatus.textContent = ready ? "Network Ready" : partial ? "Degraded" : "Offline";
-  apiStatus.className = `status-pill ${ready ? "ok" : partial ? "warn" : "bad"}`;
+  if (apiStatus) {
+    apiStatus.textContent = ready ? "Network Ready" : partial ? "Degraded" : "Offline";
+    apiStatus.className = `status-pill ${ready ? "ok" : partial ? "warn" : "bad"}`;
+  }
 
-  $("metricHeight").textContent = fmt(state.sync?.latest_block_height ?? state.health?.latest_block_height, 0);
-  $("metricChain").textContent = state.sync?.network_id || state.health?.network_id || "-";
-  $("metricSupply").textContent = fmt(state.audit?.supply?.actual_total_balances ?? state.stats?.circulating_supply, 5);
-  $("metricValidators").textContent = fmt(state.health?.database?.eligible_validators, 0);
-  $("metricReserve").textContent = state.reserve?.status || fmt(state.stats?.total_science_reserve_rewards, 5);
-  $("metricReplay").textContent = fmt(state.sync?.pending_replay_blocks, 0);
+  const setMetric = (id, val, digits = 0) => {
+    const el = $(id);
+    if (el) el.textContent = fmt(val, digits);
+  };
+
+  setMetric("metricHeight", state.sync?.latest_block_height ?? state.health?.latest_block_height, 0);
+  
+  const chainEl = $("metricChain");
+  if (chainEl) chainEl.textContent = state.sync?.network_id || state.health?.network_id || "-";
+  
+  setMetric("metricSupply", state.audit?.supply?.actual_total_balances ?? state.stats?.circulating_supply, 5);
+  setMetric("metricValidators", state.health?.database?.eligible_validators, 0);
+  
+  const resEl = $("metricReserve");
+  if (resEl) resEl.textContent = state.reserve?.status || fmt(state.stats?.total_science_reserve_rewards, 5);
+  
+  setMetric("metricReplay", state.sync?.pending_replay_blocks, 0);
 }
 
 function renderNetwork() {
@@ -175,7 +189,8 @@ function renderNetwork() {
   const sync = state.sync || {};
   const auditOk = state.audit?.valid === true;
   const nodeOkCount = state.nodeStates.filter((node) => node.ok && node.sync).length;
-  $("networkSummary").innerHTML = `
+  const summary = $("networkSummary");
+  if (summary) summary.innerHTML = `
     <article>
       <span>Consensus View</span>
       <strong class="${ready ? "good-text" : "warn-text"}">${ready ? "Aligned" : "Needs attention"}</strong>
@@ -202,12 +217,13 @@ function renderNetwork() {
     </article>
   `;
 
+  const table = $("nodesTable");
+  if (!table) return;
   if (!state.nodeStates.length) {
-    $("nodesTable").innerHTML = `<tr><td colspan="7" class="empty">Waiting for peers</td></tr>`;
+    table.innerHTML = `<tr><td colspan="7" class="empty">Waiting for peers</td></tr>`;
     return;
   }
-
-  $("nodesTable").innerHTML = state.nodeStates
+  table.innerHTML = state.nodeStates
     .map((node) => {
       const syncState = node.sync || {};
       const ok = node.ok && Number(syncState.pending_replay_blocks || 0) === 0;
@@ -233,11 +249,13 @@ function renderBlocks() {
   const blocks = [...state.blocks]
     .sort((a, b) => Number(b.height || 0) - Number(a.height || 0))
     .slice(0, 25);
+  const table = $("blocksTable");
+  if (!table) return;
   if (!blocks.length) {
-    $("blocksTable").innerHTML = `<tr><td colspan="7" class="empty">Waiting for blocks</td></tr>`;
+    table.innerHTML = `<tr><td colspan="7" class="empty">Waiting for blocks</td></tr>`;
     return;
   }
-  $("blocksTable").innerHTML = blocks
+  table.innerHTML = blocks
     .map(
       (block) => `
         <tr>
@@ -256,11 +274,13 @@ function renderBlocks() {
 
 function renderTransactions() {
   const txs = [...(state.transactions || [])].slice(0, 40);
+  const table = $("transactionsTable");
+  if (!table) return;
   if (!txs.length) {
-    $("transactionsTable").innerHTML = `<tr><td colspan="8" class="empty">No recent transactions</td></tr>`;
+    table.innerHTML = `<tr><td colspan="8" class="empty">No recent transactions</td></tr>`;
     return;
   }
-  $("transactionsTable").innerHTML = txs
+  table.innerHTML = txs
     .map(
       (tx) => `
         <tr>
@@ -279,12 +299,14 @@ function renderTransactions() {
 }
 
 function renderValidators() {
+  const grid = $("validatorsGrid");
+  if (!grid) return;
   if (!state.validators.length) {
-    $("validatorsGrid").innerHTML = `<div class="empty">Waiting for validators</div>`;
+    grid.innerHTML = `<div class="empty">Waiting for validators</div>`;
     return;
   }
   const validators = [...state.validators].sort((a, b) => Number(b.selection_score || 0) - Number(a.selection_score || 0));
-  $("validatorsGrid").innerHTML = validators
+  grid.innerHTML = validators
     .slice(0, 100)
     .map((validator) => {
       const status = validator.is_banned ? "Banned" : Number(validator.stake_locked || 0) > 0 ? "Eligible" : "Inactive";
@@ -307,11 +329,13 @@ function renderValidators() {
 }
 
 function renderEvents() {
+  const list = $("eventsList");
+  if (!list) return;
   if (!state.events.length) {
-    $("eventsList").innerHTML = `<div class="empty">Waiting for events</div>`;
+    list.innerHTML = `<div class="empty">Waiting for events</div>`;
     return;
   }
-  $("eventsList").innerHTML = state.events
+  list.innerHTML = state.events
     .map(
       (event) => `
         <article class="event-row">
@@ -327,14 +351,16 @@ function renderEvents() {
 }
 
 function renderErrors() {
+  const errEl = $("apiErrors");
+  if (!errEl) return;
   if (!state.errors.length && state.nodeStates.every((node) => !node.error)) {
-    $("apiErrors").innerHTML = "";
+    errEl.innerHTML = "";
     return;
   }
   const nodeErrors = state.nodeStates
     .filter((node) => node.error)
     .map((node) => ({ path: node.url, message: node.error }));
-  $("apiErrors").innerHTML = [...state.errors, ...nodeErrors]
+  errEl.innerHTML = [...state.errors, ...nodeErrors]
     .map(
       (error) => `
         <div class="api-error">
