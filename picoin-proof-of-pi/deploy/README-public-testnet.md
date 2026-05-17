@@ -184,6 +184,22 @@ PICOIN_TX_SMOKE_RECIPIENT=PI_RECIPIENT_ADDRESS \
 
 It should end with `PICOIN_TX_SMOKE_STATUS=ok` after the transaction is confirmed.
 
+Use snapshot restore when a node has local state that cannot replay a peer block
+cleanly. Stop writers first, then restore from the healthy peer:
+
+```bash
+sudo systemctl stop picoin-auditor picoin-reconciler picoin-validator picoin-miner
+python3 -m picoin node checkpoint restore-peer \
+  --server http://127.0.0.1:8000 \
+  --peer http://BOOTSTRAP_PUBLIC_IP:8000 \
+  --height 10
+sudo systemctl restart picoin-node
+```
+
+The restore imports a verified canonical snapshot, replaces local chain/mempool
+state, and leaves the snapshot active as the sync base. The next mined or
+replayed block must extend the snapshot block hash.
+
 For a full public-testnet smoke check:
 
 ```bash

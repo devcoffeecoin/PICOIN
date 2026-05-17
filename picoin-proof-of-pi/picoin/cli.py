@@ -344,6 +344,10 @@ def command_node_report(args: argparse.Namespace) -> int:
     if peer_url:
         peer_sync = get_json(peer_url, "/node/sync-status")
         payloads["peer_sync"] = peer_sync
+        local_height = int(sync.get("effective_latest_block_height", sync.get("latest_block_height", 0)) or 0)
+        local_hash = sync.get("effective_latest_block_hash") or sync.get("latest_block_hash")
+        peer_height = int(peer_sync.get("effective_latest_block_height", peer_sync.get("latest_block_height", 0)) or 0)
+        peer_hash = peer_sync.get("effective_latest_block_hash") or peer_sync.get("latest_block_hash")
         add_check("network_match", sync.get("network_id") == peer_sync.get("network_id"), f"peer={peer_sync.get('network_id')}")
         add_check("chain_match", sync.get("chain_id") == peer_sync.get("chain_id"), f"peer={peer_sync.get('chain_id')}")
         add_check(
@@ -353,13 +357,13 @@ def command_node_report(args: argparse.Namespace) -> int:
         )
         add_check(
             "height_match",
-            int(sync.get("latest_block_height", 0)) == int(peer_sync.get("latest_block_height", 0)),
-            f"local={sync.get('latest_block_height')}, peer={peer_sync.get('latest_block_height')}",
+            local_height == peer_height,
+            f"local={local_height}, peer={peer_height}",
         )
         add_check(
             "block_hash_match",
-            sync.get("latest_block_hash") == peer_sync.get("latest_block_hash"),
-            f"local={sync.get('latest_block_hash')}, peer={peer_sync.get('latest_block_hash')}",
+            local_hash == peer_hash,
+            f"local={local_hash}, peer={peer_hash}",
         )
 
     failures = [check for check in checks if not check["ok"] and check["severity"] == "error"]
@@ -368,8 +372,8 @@ def command_node_report(args: argparse.Namespace) -> int:
         "server": server_url,
         "peer": peer_url,
         "status": "fail" if failures else "warn" if warnings else "ok",
-        "height": sync.get("latest_block_height", 0),
-        "block_hash": sync.get("latest_block_hash"),
+        "height": sync.get("effective_latest_block_height", sync.get("latest_block_height", 0)),
+        "block_hash": sync.get("effective_latest_block_hash") or sync.get("latest_block_hash"),
         "network_id": sync.get("network_id"),
         "chain_id": sync.get("chain_id"),
         "checks": checks,
@@ -386,12 +390,16 @@ def command_node_compare(args: argparse.Namespace) -> int:
     peer_url = normalize_server_url(args.peer)
     local = get_json(server_url, "/node/sync-status")
     peer = get_json(peer_url, "/node/sync-status")
+    local_height = int(local.get("effective_latest_block_height", local.get("latest_block_height", 0)) or 0)
+    local_hash = local.get("effective_latest_block_hash") or local.get("latest_block_hash")
+    peer_height = int(peer.get("effective_latest_block_height", peer.get("latest_block_height", 0)) or 0)
+    peer_hash = peer.get("effective_latest_block_hash") or peer.get("latest_block_hash")
     comparisons = {
         "network_id": local.get("network_id") == peer.get("network_id"),
         "chain_id": local.get("chain_id") == peer.get("chain_id"),
         "genesis_hash": local.get("genesis_hash") == peer.get("genesis_hash"),
-        "height": int(local.get("latest_block_height", 0)) == int(peer.get("latest_block_height", 0)),
-        "block_hash": local.get("latest_block_hash") == peer.get("latest_block_hash"),
+        "height": local_height == peer_height,
+        "block_hash": local_hash == peer_hash,
     }
     output = {
         "server": server_url,
@@ -399,16 +407,20 @@ def command_node_compare(args: argparse.Namespace) -> int:
         "status": "ok" if all(comparisons.values()) else "mismatch",
         "comparisons": comparisons,
         "local": {
-            "height": local.get("latest_block_height", 0),
-            "block_hash": local.get("latest_block_hash"),
+            "height": local_height,
+            "block_hash": local_hash,
+            "local_block_height": local.get("latest_block_height", 0),
+            "local_block_hash": local.get("latest_block_hash"),
             "network_id": local.get("network_id"),
             "chain_id": local.get("chain_id"),
             "genesis_hash": local.get("genesis_hash"),
             "pending_replay_blocks": local.get("pending_replay_blocks", 0),
         },
         "peer_state": {
-            "height": peer.get("latest_block_height", 0),
-            "block_hash": peer.get("latest_block_hash"),
+            "height": peer_height,
+            "block_hash": peer_hash,
+            "local_block_height": peer.get("latest_block_height", 0),
+            "local_block_hash": peer.get("latest_block_hash"),
             "network_id": peer.get("network_id"),
             "chain_id": peer.get("chain_id"),
             "genesis_hash": peer.get("genesis_hash"),
@@ -473,6 +485,29 @@ def command_node_checkpoint_activate(args: argparse.Namespace) -> int:
 def command_node_checkpoint_apply(args: argparse.Namespace) -> int:
     print_json(post_json(args.server, f"/node/snapshots/{args.snapshot_hash}/apply"))
     return 0
+
+
+def command_node_checkpoint_restore_peer(args: argparse.Namespace) -> int:
+    server_url = normalize_server_url(args.server)
+    peer_url = normalize_server_url(args.peer)
+    path = "/node/snapshots/export"
+    if args.height is not None:
+        path = f"{path}?height={args.height}"
+    snapshot = get_json(peer_url, path)
+    imported = post_json(server_url, "/node/snapshots/import", {"snapshot": snapshot, "source": args.source})
+    snapshot_hash = imported.get("snapshot", {}).get("snapshot_hash") or snapshot.get("checkpoint", {}).get("snapshot_hash")
+    restored = post_json(server_url, f"/node/snapshots/{snapshot_hash}/restore")
+    output = {
+        "status": "ok" if restored.get("applied") else "fail",
+        "server": server_url,
+        "peer": peer_url,
+        "height": restored.get("height"),
+        "snapshot_hash": snapshot_hash,
+        "import": imported,
+        "restore": restored,
+    }
+    print_json(output)
+    return 0 if output["status"] == "ok" else 1
 
 
 def command_node_genesis_hash(args: argparse.Namespace) -> int:
@@ -953,6 +988,15 @@ def add_node_parser(subparsers: argparse._SubParsersAction) -> None:
     checkpoint_apply = checkpoint_subparsers.add_parser("apply", help="Apply an imported snapshot as local fast-sync state")
     checkpoint_apply.add_argument("--snapshot-hash", required=True)
     checkpoint_apply.set_defaults(func=command_node_checkpoint_apply)
+
+    checkpoint_restore_peer = checkpoint_subparsers.add_parser(
+        "restore-peer",
+        help="Replace local chain state with a verified canonical snapshot fetched from a peer",
+    )
+    checkpoint_restore_peer.add_argument("--peer", required=True)
+    checkpoint_restore_peer.add_argument("--height", type=int)
+    checkpoint_restore_peer.add_argument("--source", default="peer-restore")
+    checkpoint_restore_peer.set_defaults(func=command_node_checkpoint_restore_peer)
 
     genesis_hash_parser = node_subparsers.add_parser("genesis-hash", help="Compute deterministic hash for a genesis allocation file")
     genesis_hash_parser.add_argument("--file", type=Path, required=True)

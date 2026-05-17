@@ -26,6 +26,7 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
     snapshot_import = parser.parse_args(["node", "checkpoint", "import", "--file", "snap.json", "--source", "peer"])
     snapshot_activate = parser.parse_args(["node", "checkpoint", "activate", "--snapshot-hash", "a" * 64])
     snapshot_apply = parser.parse_args(["node", "checkpoint", "apply", "--snapshot-hash", "b" * 64])
+    snapshot_restore = parser.parse_args(["node", "checkpoint", "restore-peer", "--peer", "http://peer:8000", "--height", "10"])
     genesis_hash = parser.parse_args(["node", "genesis-hash", "--file", "genesis.json"])
     compare = parser.parse_args(["node", "compare", "--peer", "http://peer:8000"])
 
@@ -48,6 +49,9 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
     assert snapshot_activate.snapshot_hash == "a" * 64
     assert snapshot_apply.checkpoint_command == "apply"
     assert snapshot_apply.snapshot_hash == "b" * 64
+    assert snapshot_restore.checkpoint_command == "restore-peer"
+    assert snapshot_restore.peer == "http://peer:8000"
+    assert snapshot_restore.height == 10
     assert genesis_hash.node_command == "genesis-hash"
     assert genesis_hash.file == Path("genesis.json")
     assert compare.node_command == "compare"

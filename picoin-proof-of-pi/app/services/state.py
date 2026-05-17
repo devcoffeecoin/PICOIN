@@ -499,7 +499,7 @@ def activate_imported_snapshot(snapshot_hash: str) -> dict[str, Any]:
     return active or {}
 
 
-def apply_imported_snapshot_state(snapshot_hash: str) -> dict[str, Any]:
+def apply_imported_snapshot_state(snapshot_hash: str, *, replace_existing: bool = False) -> dict[str, Any]:
     timestamp = _now()
     with get_connection() as connection:
         imported = get_imported_snapshot_in_connection(connection, snapshot_hash)
@@ -508,7 +508,7 @@ def apply_imported_snapshot_state(snapshot_hash: str) -> dict[str, Any]:
         local_blocks = int(
             connection.execute("SELECT COUNT(*) AS count FROM blocks").fetchone()["count"]
         )
-        if local_blocks > 0:
+        if local_blocks > 0 and not replace_existing:
             raise StateError(409, "cannot apply snapshot state after local blocks exist")
         document = imported["payload"]
         validation = validate_snapshot_document(document)
@@ -517,6 +517,7 @@ def apply_imported_snapshot_state(snapshot_hash: str) -> dict[str, Any]:
         balances = _normalize_snapshot_balances_with_type(document.get("balances") or [])
         checkpoint = validation["checkpoint"]
 
+        cleared = _clear_local_chain_state_for_snapshot_restore(connection) if replace_existing else {}
         connection.execute("DELETE FROM ledger_entries")
         connection.execute("DELETE FROM balances")
         for item in balances:
@@ -560,11 +561,17 @@ def apply_imported_snapshot_state(snapshot_hash: str) -> dict[str, Any]:
         applied = get_imported_snapshot_in_connection(connection, snapshot_hash)
     return {
         "applied": True,
+        "replace_existing": replace_existing,
         "height": checkpoint["height"],
         "snapshot_hash": snapshot_hash,
         "balances_applied": len(balances),
+        "cleared": cleared,
         "snapshot": applied,
     }
+
+
+def restore_imported_snapshot_state(snapshot_hash: str) -> dict[str, Any]:
+    return apply_imported_snapshot_state(snapshot_hash, replace_existing=True)
 
 
 def active_snapshot_base() -> dict[str, Any] | None:
@@ -609,6 +616,42 @@ def get_imported_snapshot_in_connection(connection: Any, snapshot_hash: str) -> 
         ).fetchone()
     )
     return _decode_snapshot_import(row)
+
+
+def _clear_local_chain_state_for_snapshot_restore(connection: Any) -> dict[str, int]:
+    tables = [
+        "consensus_finalizations",
+        "consensus_votes",
+        "consensus_block_proposals",
+        "network_block_headers",
+        "mempool_transactions",
+        "retroactive_audits",
+        "validation_votes",
+        "validation_jobs",
+        "commitments",
+        "submissions",
+        "rejected_submissions",
+        "penalties",
+        "rewards",
+        "blocks",
+        "tasks",
+        "canonical_checkpoints",
+        "science_jobs",
+        "science_stake_accounts",
+        "science_reward_reserve",
+        "scientific_development_treasury_claims",
+        "scientific_development_treasury_epochs",
+        "scientific_development_treasury",
+        "science_events",
+    ]
+    cleared: dict[str, int] = {}
+    for table in tables:
+        try:
+            cursor = connection.execute(f"DELETE FROM {table}")
+            cleared[table] = int(cursor.rowcount if cursor.rowcount is not None else 0)
+        except Exception:
+            cleared[table] = -1
+    return cleared
 
 
 def _checkpoint_public_payload(checkpoint: dict[str, Any]) -> dict[str, Any]:

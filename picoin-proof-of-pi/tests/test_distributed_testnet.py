@@ -41,6 +41,7 @@ from app.services.state import (
     import_canonical_snapshot,
     latest_checkpoint,
     list_imported_snapshots,
+    restore_imported_snapshot_state,
     validate_snapshot_document,
     verify_checkpoint,
 )
@@ -537,6 +538,42 @@ def test_apply_snapshot_state_bootstraps_balances_for_fast_sync(tmp_path, monkey
     assert chain["latest_block_hash"] == snapshot["checkpoint"]["block_hash"]
     assert audit["valid"] is True
     assert audit["supply"]["economic_base_total"] == pytest.approx(snapshot["checkpoint"]["total_balance"])
+
+
+def test_restore_snapshot_state_replaces_existing_local_chain(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "snapshot-restore-source.sqlite3")
+    source_key = generate_keypair()
+    source_miner = register_miner("snapshot-restore-source-miner", source_key["public_key"])
+    _mine_legacy_block(source_miner["miner_id"], source_key["private_key"])
+    snapshot = export_canonical_snapshot(height=1)
+
+    _init_network_db(tmp_path, monkeypatch, "snapshot-restore-target.sqlite3")
+    local_key = generate_keypair()
+    local_miner = register_miner("snapshot-restore-local-miner", local_key["public_key"])
+    _mine_legacy_block(local_miner["miner_id"], local_key["private_key"])
+    imported = import_canonical_snapshot(snapshot, source="peer-restore")
+
+    restored = restore_imported_snapshot_state(imported["snapshot"]["snapshot_hash"])
+    status = get_sync_status()
+    chain = verify_chain()
+    audit = get_full_economic_audit()
+
+    assert restored["applied"] is True
+    assert restored["replace_existing"] is True
+    assert status["latest_block_height"] == 0
+    assert status["effective_latest_block_height"] == 1
+    assert status["effective_latest_block_hash"] == snapshot["checkpoint"]["block_hash"]
+    assert chain["valid"] is True
+    assert chain["latest_block_hash"] == snapshot["checkpoint"]["block_hash"]
+    assert audit["valid"] is True
+
+    post_restore_key = generate_keypair()
+    post_restore_miner = register_miner("snapshot-restore-next-miner", post_restore_key["public_key"])
+    _mine_legacy_block(post_restore_miner["miner_id"], post_restore_key["private_key"])
+    next_block = get_block(2)
+
+    assert next_block is not None
+    assert next_block["previous_hash"] == snapshot["checkpoint"]["block_hash"]
 
 
 def test_init_db_does_not_reinsert_genesis_ledger_after_snapshot_apply(tmp_path, monkeypatch) -> None:

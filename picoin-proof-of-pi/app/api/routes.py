@@ -117,6 +117,7 @@ from app.services.state import (
     latest_checkpoint,
     list_imported_snapshots,
     list_checkpoints,
+    restore_imported_snapshot_state,
     validate_snapshot_document,
     verify_checkpoint,
 )
@@ -351,6 +352,14 @@ def node_activate_snapshot(snapshot_hash: str) -> dict:
 def node_apply_snapshot(snapshot_hash: str) -> dict:
     try:
         return apply_imported_snapshot_state(snapshot_hash)
+    except StateError as exc:
+        raise _state_error(exc) from exc
+
+
+@router.post("/node/snapshots/{snapshot_hash}/restore")
+def node_restore_snapshot(snapshot_hash: str) -> dict:
+    try:
+        return restore_imported_snapshot_state(snapshot_hash)
     except StateError as exc:
         raise _state_error(exc) from exc
 
