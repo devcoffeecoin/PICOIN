@@ -16,7 +16,9 @@
       </a>
       <nav aria-label="Explorer navigation">
         <a href="./index.html">Home</a>
+        <a href="#network">Network</a>
         <a href="#blocks">Blocks</a>
+        <a href="#transactions">Txs</a>
         <a href="#validators">Validators</a>
         <a href="#events">Events</a>
         <a href="https://solvency.gitbook.io/picoin" target="_blank" rel="noreferrer">Docs</a>
@@ -30,6 +32,11 @@
           <h1>Picoin Explorer</h1>
           <span id="apiStatus" class="status-pill warn">Connecting</span>
         </div>
+        <div class="explorer-search" role="search">
+          <input id="lookupInput" type="search" placeholder="Search block height or transaction hash" autocomplete="off" />
+          <button id="lookupButton" type="button">Search</button>
+        </div>
+        <div id="lookupResult" class="lookup-result" aria-live="polite"></div>
         <div class="explorer-metrics">
           <article>
             <span>Height</span>
@@ -52,11 +59,41 @@
             <strong id="metricReserve">-</strong>
           </article>
           <article>
-            <span>Treasury</span>
-            <strong id="metricTreasury">-</strong>
+            <span>Replay Queue</span>
+            <strong id="metricReplay">-</strong>
           </article>
         </div>
         <div id="apiErrors" class="api-errors" aria-live="polite"></div>
+      </section>
+
+      <section id="network" class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Network</p>
+          <h2>Public testnet status</h2>
+        </div>
+        <div class="network-layout">
+          <div id="networkSummary" class="network-summary">
+            <div class="empty">Waiting for node status</div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Node</th>
+                  <th>Status</th>
+                  <th>Height</th>
+                  <th>Hash</th>
+                  <th>Replay</th>
+                  <th>Peers</th>
+                  <th>Updated</th>
+                </tr>
+              </thead>
+              <tbody id="nodesTable">
+                <tr><td colspan="7" class="empty">Waiting for peers</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </section>
 
       <section id="blocks" class="section">
@@ -79,6 +116,32 @@
             </thead>
             <tbody id="blocksTable">
               <tr><td colspan="7" class="empty">Waiting for blocks</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="transactions" class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Transactions</p>
+          <h2>Recent mempool activity</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Hash</th>
+                <th>Type</th>
+                <th>Amount</th>
+                <th>Fee</th>
+                <th>Sender</th>
+                <th>Recipient</th>
+                <th>Block</th>
+              </tr>
+            </thead>
+            <tbody id="transactionsTable">
+              <tr><td colspan="8" class="empty">Waiting for transactions</td></tr>
             </tbody>
           </table>
         </div>
