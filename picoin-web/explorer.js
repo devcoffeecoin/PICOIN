@@ -57,6 +57,15 @@ function formatDate(value) {
   return date.toLocaleString();
 }
 
+function asArray(value, keys = []) {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== "object") return [];
+  for (const key of keys) {
+    if (Array.isArray(value[key])) return value[key];
+  }
+  return [];
+}
+
 function statusClass(ok) {
   return ok ? "ok" : "bad";
 }
@@ -224,7 +233,7 @@ function renderNetwork() {
     </article>
     <article>
       <span>Pending Txs</span>
-      <strong>${fmt((state.transactions || []).filter((tx) => tx.status === "pending").length, 0)}</strong>
+      <strong>${fmt(asArray(state.transactions, ["transactions", "items", "results"]).filter((tx) => tx.status === "pending").length, 0)}</strong>
     </article>
     <article>
       <span>Fork Groups</span>
@@ -261,7 +270,7 @@ function renderNetwork() {
 }
 
 function renderBlocks() {
-  const blocks = [...state.blocks]
+  const blocks = asArray(state.blocks, ["blocks", "items", "results"])
     .sort((a, b) => Number(b.height || 0) - Number(a.height || 0))
     .slice(0, 25);
   const table = $("blocksTable");
@@ -288,7 +297,7 @@ function renderBlocks() {
 }
 
 function renderTransactions() {
-  const txs = [...(state.transactions || [])].slice(0, 40);
+  const txs = asArray(state.transactions, ["transactions", "items", "results", "mempool"]).slice(0, 40);
   const table = $("transactionsTable");
   if (!table) return;
   if (!txs.length) {
@@ -316,11 +325,12 @@ function renderTransactions() {
 function renderValidators() {
   const grid = $("validatorsGrid");
   if (!grid) return;
-  if (!state.validators.length) {
+  const validatorRows = asArray(state.validators, ["validators", "items", "results"]);
+  if (!validatorRows.length) {
     grid.innerHTML = `<div class="empty">Waiting for validators</div>`;
     return;
   }
-  const validators = [...state.validators].sort((a, b) => Number(b.selection_score || 0) - Number(a.selection_score || 0));
+  const validators = validatorRows.sort((a, b) => Number(b.selection_score || 0) - Number(a.selection_score || 0));
   grid.innerHTML = validators
     .slice(0, 100)
     .map((validator) => {
@@ -346,11 +356,12 @@ function renderValidators() {
 function renderEvents() {
   const list = $("eventsList");
   if (!list) return;
-  if (!state.events.length) {
+  const events = asArray(state.events, ["events", "items", "results"]);
+  if (!events.length) {
     list.innerHTML = `<div class="empty">Waiting for events</div>`;
     return;
   }
-  list.innerHTML = state.events
+  list.innerHTML = events
     .map(
       (event) => `
         <article class="event-row">
