@@ -68,7 +68,8 @@ function peerCount(sync) {
 
 async function fetchJsonFrom(baseUrl, path) {
   try {
-    const response = await fetch(`${cleanUrl(baseUrl)}${path}`, { 
+    const url = `${cleanUrl(baseUrl)}${path}`;
+    const response = await fetch(url, { 
       headers: { Accept: "application/json" },
       mode: 'cors'
     });
@@ -78,12 +79,12 @@ async function fetchJsonFrom(baseUrl, path) {
       payload = await response.json().catch(() => ({}));
     }
     if (!response.ok) {
-      throw new Error(payload.detail || response.statusText || `Error ${response.status}`);
+      throw new Error(payload.detail || response.statusText || `Error ${response.status} en ${url}`);
     }
     return payload;
   } catch (error) {
     if (error.name === 'TypeError') {
-      throw new Error(`CORS Blocked or Network Down`);
+      throw new Error(`CORS Blocked or Network Down at ${baseUrl}${path}`);
     }
     throw error;
   }
