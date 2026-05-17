@@ -161,6 +161,14 @@ The deployment script also installs a standalone health checker:
 PICOIN_SERVER=http://127.0.0.1:8000 /opt/picoin/picoin-proof-of-pi/deploy/scripts/health-check.sh
 ```
 
+Use the service check when promoting a node or after code refreshes. It verifies systemd units, persistent data paths, smoke/backups, sync, audit and peer report in one pass:
+
+```bash
+PICOIN_PUBLIC_API_URL=https://api.picoin.science /opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-service-check.sh
+```
+
+The check should end with `PICOIN_SERVICE_CHECK_STATUS=ok`.
+
 For a full public-testnet smoke check:
 
 ```bash

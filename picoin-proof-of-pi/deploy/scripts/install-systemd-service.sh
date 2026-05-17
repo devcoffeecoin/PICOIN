@@ -35,6 +35,7 @@ install -d -o picoin -g picoin -m 0755 /var/backups/picoin
 install -d -o picoin -g picoin -m 0755 /opt/picoin/state-backups
 chmod 0755 "$REPO_DIR/deploy/scripts/picoin-worker-loop.sh"
 chmod 0755 "$REPO_DIR/deploy/scripts/refresh-code.sh"
+chmod 0755 "$REPO_DIR/deploy/scripts/public-testnet-service-check.sh"
 
 if [ ! -f /etc/picoin/picoin.env ]; then
   install -m 0640 "$ENV_SOURCE" /etc/picoin/picoin.env
