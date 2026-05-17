@@ -6,7 +6,7 @@ TARGET_DIR="${PICOIN_REPO_DIR:-/opt/picoin/picoin-proof-of-pi}"
 STATE_DIR="${PICOIN_DATA_DIR:-/var/lib/picoin/data}"
 BACKUP_ROOT="${PICOIN_STATE_BACKUP_ROOT:-/opt/picoin/state-backups}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
-SERVICES=(picoin-miner picoin-validator picoin-auditor picoin-node)
+SERVICES=(picoin-miner picoin-validator picoin-reconciler picoin-auditor picoin-node)
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "run as root: sudo PICOIN_SOURCE_DIR=$SOURCE_DIR PICOIN_REPO_DIR=$TARGET_DIR $0" >&2
@@ -79,5 +79,5 @@ echo "Refresh complete."
 echo "Persistent data: $STATE_DIR"
 echo "State backups: $BACKUP_ROOT"
 echo "Next:"
-echo "  sudo systemctl restart picoin-node picoin-auditor picoin-validator picoin-miner"
+echo "  sudo systemctl restart picoin-node picoin-auditor picoin-reconciler picoin-validator picoin-miner"
 echo "  cd $TARGET_DIR && .venv/bin/python -m picoin node report --peer http://BOOTSTRAP_PUBLIC_IP:8000"

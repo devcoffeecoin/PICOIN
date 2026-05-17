@@ -1,0 +1,24 @@
+[Unit]
+Description=Picoin public testnet background reconciler
+After=network-online.target picoin-node.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=picoin
+Group=picoin
+WorkingDirectory=/opt/picoin/picoin-proof-of-pi
+EnvironmentFile=/etc/picoin/picoin.env
+ExecStart=/opt/picoin/picoin-proof-of-pi/deploy/scripts/picoin-reconciler-loop.sh
+Restart=always
+RestartSec=15
+TimeoutStopSec=30
+KillSignal=SIGINT
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ReadWritePaths=/opt/picoin/picoin-proof-of-pi/data /opt/picoin/picoin-proof-of-pi/test-output /opt/picoin/picoin-proof-of-pi/backups /var/lib/picoin /var/backups/picoin /opt/picoin/state-backups
+
+[Install]
+WantedBy=multi-user.target

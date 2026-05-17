@@ -88,11 +88,14 @@ Optional worker services are installed too:
 ```bash
 sudo systemctl start picoin-validator
 sudo systemctl start picoin-miner
+sudo systemctl start picoin-reconciler
 sudo systemctl start picoin-auditor
-sudo systemctl status picoin-validator picoin-miner picoin-auditor --no-pager
+sudo systemctl status picoin-validator picoin-miner picoin-reconciler picoin-auditor --no-pager
 ```
 
 `picoin-miner` and `picoin-validator` run through `deploy/scripts/picoin-worker-loop.sh`. A single miner or validator iteration can exit non-zero when there is no block or validation job ready; the wrapper treats that as a normal polling cycle and keeps the systemd service active.
+
+`picoin-reconciler` runs `node catch-up` in the background every `PICOIN_RECONCILER_SLEEP_SECONDS` seconds, writing JSON output to `PICOIN_RECONCILE_DIR`. It is the normal way for public nodes to converge after short peer outages or delayed gossip.
 
 Use different identity files per droplet by editing `/etc/picoin/picoin.env`:
 
@@ -118,7 +121,7 @@ git pull
 sudo PICOIN_SOURCE_DIR="$(pwd)" \
   PICOIN_REPO_DIR=/opt/picoin/picoin-proof-of-pi \
   /opt/picoin/picoin-proof-of-pi/deploy/scripts/refresh-code.sh
-sudo systemctl restart picoin-node picoin-auditor picoin-validator picoin-miner
+sudo systemctl restart picoin-node picoin-auditor picoin-reconciler picoin-validator picoin-miner
 ```
 
 Then verify:
