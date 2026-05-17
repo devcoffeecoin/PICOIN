@@ -200,6 +200,22 @@ The restore imports a verified canonical snapshot, replaces local chain/mempool
 state, and leaves the snapshot active as the sync base. The next mined or
 replayed block must extend the snapshot block hash.
 
+If the healthy state is only available as a local SQLite backup, convert that
+backup into a canonical snapshot and restore it without copying databases by
+hand:
+
+```bash
+sudo systemctl stop picoin-auditor picoin-reconciler picoin-validator picoin-miner
+python3 -m picoin node checkpoint restore-sqlite \
+  --file /opt/picoin/state-backups/data-persistent-before-code-refresh-YYYYMMDDTHHMMSSZ/picoin.sqlite3 \
+  --height 10 \
+  --backup-current /opt/picoin/state-backups
+sudo systemctl restart picoin-node
+```
+
+After one node is restored from SQLite, other nodes should use `restore-peer`
+against that node so every node imports the exact same snapshot.
+
 For a full public-testnet smoke check:
 
 ```bash

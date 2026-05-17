@@ -52,6 +52,7 @@ from app.services.treasury import (
 )
 from app.services.transactions import get_wallet_nonce_status, select_block_transactions
 from app.services.wallet import create_wallet, sign_transaction
+from picoin.cli import _snapshot_from_sqlite
 
 
 def _init_network_db(tmp_path, monkeypatch, name: str) -> None:
@@ -574,6 +575,24 @@ def test_restore_snapshot_state_replaces_existing_local_chain(tmp_path, monkeypa
 
     assert next_block is not None
     assert next_block["previous_hash"] == snapshot["checkpoint"]["block_hash"]
+
+
+def test_cli_builds_valid_snapshot_from_sqlite_backup(tmp_path, monkeypatch) -> None:
+    source_db_path = tmp_path / "sqlite-snapshot-source.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", source_db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", source_db_path)
+    init_db(source_db_path)
+
+    source_key = generate_keypair()
+    source_miner = register_miner("sqlite-snapshot-miner", source_key["public_key"])
+    _mine_legacy_block(source_miner["miner_id"], source_key["private_key"])
+
+    snapshot = _snapshot_from_sqlite(source_db_path, 1)
+    validation = validate_snapshot_document(snapshot)
+
+    assert validation["valid"] is True
+    assert snapshot["checkpoint"]["height"] == 1
+    assert snapshot["checkpoint"]["block_hash"] == get_block(1)["block_hash"]
 
 
 def test_init_db_does_not_reinsert_genesis_ledger_after_snapshot_apply(tmp_path, monkeypatch) -> None:

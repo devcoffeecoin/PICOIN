@@ -27,6 +27,19 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
     snapshot_activate = parser.parse_args(["node", "checkpoint", "activate", "--snapshot-hash", "a" * 64])
     snapshot_apply = parser.parse_args(["node", "checkpoint", "apply", "--snapshot-hash", "b" * 64])
     snapshot_restore = parser.parse_args(["node", "checkpoint", "restore-peer", "--peer", "http://peer:8000", "--height", "10"])
+    snapshot_restore_sqlite = parser.parse_args(
+        [
+            "node",
+            "checkpoint",
+            "restore-sqlite",
+            "--file",
+            "backup.sqlite3",
+            "--height",
+            "10",
+            "--backup-current",
+            "backups",
+        ]
+    )
     genesis_hash = parser.parse_args(["node", "genesis-hash", "--file", "genesis.json"])
     compare = parser.parse_args(["node", "compare", "--peer", "http://peer:8000"])
 
@@ -52,6 +65,10 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
     assert snapshot_restore.checkpoint_command == "restore-peer"
     assert snapshot_restore.peer == "http://peer:8000"
     assert snapshot_restore.height == 10
+    assert snapshot_restore_sqlite.checkpoint_command == "restore-sqlite"
+    assert snapshot_restore_sqlite.file == Path("backup.sqlite3")
+    assert snapshot_restore_sqlite.height == 10
+    assert snapshot_restore_sqlite.backup_current == Path("backups")
     assert genesis_hash.node_command == "genesis-hash"
     assert genesis_hash.file == Path("genesis.json")
     assert compare.node_command == "compare"
