@@ -1,8 +1,8 @@
 window.PICOIN_EXPLORER_CONFIG = {
-  apiBaseUrl: "https://api.picoin.science",
+  apiBaseUrl: "/api/bootstrap",
   refreshMs: 30000,
   nodes: [
-    { label: "bootstrap", url: "https://api.picoin.science" },
-    { label: "validator", url: "https://validator.picoin.science" }
+    { label: "bootstrap", url: "/api/bootstrap" },
+    { label: "validator", url: "/api/validator" }
   ]
 };
