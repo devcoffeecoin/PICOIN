@@ -67,12 +67,22 @@ function peerCount(sync) {
 }
 
 async function fetchJsonFrom(baseUrl, path) {
-  const response = await fetch(`${cleanUrl(baseUrl)}${path}`, { headers: { Accept: "application/json" } });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(payload.detail || response.statusText || `HTTP ${response.status}`);
+  try {
+    const response = await fetch(`${cleanUrl(baseUrl)}${path}`, { 
+      headers: { Accept: "application/json" },
+      mode: 'cors'
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload.detail || response.statusText || `HTTP ${response.status}`);
+    }
+    return payload;
+  } catch (error) {
+    if (error.name === 'TypeError') {
+      throw new Error(`CORS Blocked or Network Down`);
+    }
+    throw error;
   }
-  return payload;
 }
 
 async function fetchJson(path) {
