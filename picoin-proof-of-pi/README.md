@@ -268,6 +268,7 @@ Picoin includes a folder `deploy/` to launch a public node on Ubuntu/DigitalOcea
 - `deploy/scripts/install-systemd-service.sh`: installer for the service and `/etc/picoin/picoin.env`.
 - `deploy/scripts/health-check.sh`: external check of `/health`, sync, audit and checkpoint.
 - `deploy/scripts/backup-sqlite.sh`: compressed backup of `data/picoin.sqlite3`.
+- `deploy/scripts/refresh-code.sh`: safe code refresh helper that backs up and preserves node state outside the repo.
 - `deploy/README-public-testnet.md`: step-by-step deployment guide.
 
 Base commands on the droplet:

@@ -9,11 +9,7 @@ User=picoin
 Group=picoin
 WorkingDirectory=/opt/picoin/picoin-proof-of-pi
 EnvironmentFile=/etc/picoin/picoin.env
-Environment=PICOIN_VALIDATOR_IDENTITY=/opt/picoin/picoin-proof-of-pi/data/testnet/identities/validator-one.json
-Environment=PICOIN_VALIDATOR_LOOPS=1
-Environment=PICOIN_VALIDATOR_SLEEP=5
 Environment=PICOIN_WORKER_ROLE=validator
-Environment=PICOIN_WORKER_SLEEP=10
 ExecStart=/opt/picoin/picoin-proof-of-pi/deploy/scripts/picoin-worker-loop.sh
 Restart=always
 RestartSec=10
@@ -23,7 +19,7 @@ KillSignal=SIGINT
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ReadWritePaths=/opt/picoin/picoin-proof-of-pi/data /opt/picoin/picoin-proof-of-pi/test-output /opt/picoin/picoin-proof-of-pi/backups
+ReadWritePaths=/opt/picoin/picoin-proof-of-pi/data /opt/picoin/picoin-proof-of-pi/test-output /opt/picoin/picoin-proof-of-pi/backups /var/lib/picoin /var/backups/picoin /opt/picoin/state-backups
 
 [Install]
 WantedBy=multi-user.target

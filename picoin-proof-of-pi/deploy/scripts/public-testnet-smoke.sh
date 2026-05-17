@@ -4,6 +4,14 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
+PICOIN_ENV_FILE="${PICOIN_ENV_FILE:-/etc/picoin/picoin.env}"
+if [ -f "$PICOIN_ENV_FILE" ]; then
+  set -a
+  # shellcheck disable=SC1090
+  . "$PICOIN_ENV_FILE"
+  set +a
+fi
+
 PICOIN_HOME="${PICOIN_HOME:-$REPO_ROOT}"
 PICOIN_SERVER="${PICOIN_SERVER:-http://127.0.0.1:8000}"
 PICOIN_PYTHON="${PICOIN_PYTHON:-$PICOIN_HOME/.venv/bin/python}"

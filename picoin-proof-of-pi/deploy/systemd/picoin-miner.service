@@ -9,12 +9,7 @@ User=picoin
 Group=picoin
 WorkingDirectory=/opt/picoin/picoin-proof-of-pi
 EnvironmentFile=/etc/picoin/picoin.env
-Environment=PICOIN_MINER_IDENTITY=/opt/picoin/picoin-proof-of-pi/data/testnet/identities/miner-alice.json
-Environment=PICOIN_MINER_LOOPS=1
-Environment=PICOIN_MINER_SLEEP=5
-Environment=PICOIN_MINER_WORKERS=1
 Environment=PICOIN_WORKER_ROLE=miner
-Environment=PICOIN_WORKER_SLEEP=10
 ExecStart=/opt/picoin/picoin-proof-of-pi/deploy/scripts/picoin-worker-loop.sh
 Restart=always
 RestartSec=10
@@ -24,7 +19,7 @@ KillSignal=SIGINT
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=full
-ReadWritePaths=/opt/picoin/picoin-proof-of-pi/data /opt/picoin/picoin-proof-of-pi/test-output /opt/picoin/picoin-proof-of-pi/backups
+ReadWritePaths=/opt/picoin/picoin-proof-of-pi/data /opt/picoin/picoin-proof-of-pi/test-output /opt/picoin/picoin-proof-of-pi/backups /var/lib/picoin /var/backups/picoin /opt/picoin/state-backups
 
 [Install]
 WantedBy=multi-user.target
