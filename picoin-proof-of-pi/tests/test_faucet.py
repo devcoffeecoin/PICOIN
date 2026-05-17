@@ -40,3 +40,21 @@ def test_local_faucet_rejects_unknown_account_and_large_amount(tmp_path, monkeyp
     miner = register_miner("faucet-limit", keypair["public_key"])
     with pytest.raises(MiningError):
         request_faucet(miner["miner_id"], "miner", FAUCET_MAX_AMOUNT + 0.1)
+
+
+def test_local_faucet_can_fund_wallet_account(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "wallet-faucet.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    wallet_address = "PI_TEST_WALLET"
+    result = request_faucet(wallet_address, "wallet", 0.25)
+    wallet_balance = get_balance(wallet_address)
+    wallet_ledger = get_ledger_entries(wallet_address)
+
+    assert result["amount"] == 0.25
+    assert result["account_type"] == "wallet"
+    assert wallet_balance["account_type"] == "wallet"
+    assert wallet_balance["balance"] == 0.25
+    assert wallet_ledger[0]["entry_type"] == "faucet_credit"

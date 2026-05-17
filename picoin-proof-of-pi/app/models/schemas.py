@@ -30,7 +30,7 @@ class ValidatorRegisterRequest(BaseModel):
 
 class FaucetRequest(BaseModel):
     account_id: str = Field(..., min_length=1, max_length=128)
-    account_type: str = Field("miner", pattern="^(miner|validator)$")
+    account_type: str = Field("miner", pattern="^(miner|validator|wallet)$")
     amount: float | None = Field(default=None, gt=0)
 
 

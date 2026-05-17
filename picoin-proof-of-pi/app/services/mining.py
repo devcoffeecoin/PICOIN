@@ -1228,8 +1228,8 @@ def get_balances(limit: int = 100) -> list[dict[str, Any]]:
 def request_faucet(account_id: str, account_type: str = "miner", amount: float | None = None) -> dict[str, Any]:
     if NETWORK_ID not in FAUCET_ALLOWED_NETWORKS:
         raise MiningError(403, f"faucet is disabled on network '{NETWORK_ID}'")
-    if account_type not in {"miner", "validator"}:
-        raise MiningError(400, "account_type must be miner or validator")
+    if account_type not in {"miner", "validator", "wallet"}:
+        raise MiningError(400, "account_type must be miner, validator or wallet")
 
     faucet_amount = FAUCET_DEFAULT_AMOUNT if amount is None else round(float(amount), 8)
     if faucet_amount <= 0:
@@ -1237,16 +1237,16 @@ def request_faucet(account_id: str, account_type: str = "miner", amount: float |
     if faucet_amount > FAUCET_MAX_AMOUNT:
         raise MiningError(400, f"faucet amount exceeds max {FAUCET_MAX_AMOUNT}")
 
-    table_name = "miners" if account_type == "miner" else "validators"
-    id_column = "miner_id" if account_type == "miner" else "validator_id"
-
     with get_connection() as connection:
-        account = connection.execute(
-            f"SELECT 1 FROM {table_name} WHERE {id_column} = ?",
-            (account_id,),
-        ).fetchone()
-        if account is None:
-            raise MiningError(404, f"{account_type} account not found")
+        if account_type in {"miner", "validator"}:
+            table_name = "miners" if account_type == "miner" else "validators"
+            id_column = "miner_id" if account_type == "miner" else "validator_id"
+            account = connection.execute(
+                f"SELECT 1 FROM {table_name} WHERE {id_column} = ?",
+                (account_id,),
+            ).fetchone()
+            if account is None:
+                raise MiningError(404, f"{account_type} account not found")
 
         recent_requests = connection.execute(
             """
@@ -1275,7 +1275,7 @@ def request_faucet(account_id: str, account_type: str = "miner", amount: float |
             amount=-faucet_amount,
             entry_type="faucet_debit",
             related_id=account_id,
-            description=f"local testnet faucet debit for {account_type}",
+            description=f"{NETWORK_ID} faucet debit for {account_type}",
         )
         _apply_ledger_entry(
             connection,
@@ -1284,7 +1284,7 @@ def request_faucet(account_id: str, account_type: str = "miner", amount: float |
             amount=faucet_amount,
             entry_type="faucet_credit",
             related_id=GENESIS_ACCOUNT_ID,
-            description="local testnet faucet credit",
+            description=f"{NETWORK_ID} faucet credit",
         )
         balance = connection.execute(
             "SELECT balance FROM balances WHERE account_id = ?",
