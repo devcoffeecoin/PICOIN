@@ -480,11 +480,9 @@ def submit_task(
         total_block_reward = calculate_reward(params)
         reward = calculate_miner_reward(params)
         difficulty = calculate_difficulty(params)
-        latest_block = connection.execute(
-            "SELECT height, block_hash FROM blocks ORDER BY height DESC LIMIT 1"
-        ).fetchone()
-        next_height = 1 if latest_block is None else latest_block["height"] + 1
-        previous_hash = GENESIS_HASH if latest_block is None else latest_block["block_hash"]
+        tip = _latest_chain_tip_in_connection(connection)
+        next_height = tip["height"] + 1
+        previous_hash = tip["block_hash"]
         timestamp = utc_now()
         block_transactions = select_block_transactions(connection)
         tx_commitment = transaction_commitment(block_transactions)
@@ -619,6 +617,18 @@ def submit_task(
         "block": block,
         "validation": validation_payload,
     }
+
+
+def _latest_chain_tip_in_connection(connection: Any) -> dict[str, Any]:
+    latest_block = connection.execute(
+        "SELECT height, block_hash FROM blocks ORDER BY height DESC LIMIT 1"
+    ).fetchone()
+    if latest_block is not None:
+        return {"height": int(latest_block["height"]), "block_hash": latest_block["block_hash"]}
+    snapshot_base = active_snapshot_base_in_connection(connection)
+    if snapshot_base is not None and snapshot_base.get("state_applied"):
+        return {"height": int(snapshot_base["height"]), "block_hash": snapshot_base["block_hash"]}
+    return {"height": 0, "block_hash": GENESIS_HASH}
 
 
 def commit_task(
@@ -3481,11 +3491,9 @@ def _accept_block_in_connection(
     total_block_reward = calculate_reward(params)
     reward = calculate_miner_reward(params)
     difficulty = calculate_difficulty(params)
-    latest_block = connection.execute(
-        "SELECT height, block_hash FROM blocks ORDER BY height DESC LIMIT 1"
-    ).fetchone()
-    next_height = 1 if latest_block is None else latest_block["height"] + 1
-    previous_hash = GENESIS_HASH if latest_block is None else latest_block["block_hash"]
+    tip = _latest_chain_tip_in_connection(connection)
+    next_height = tip["height"] + 1
+    previous_hash = tip["block_hash"]
     timestamp = utc_now()
     created_at = parse_iso(task.get("created_at"))
     total_task_ms = None
