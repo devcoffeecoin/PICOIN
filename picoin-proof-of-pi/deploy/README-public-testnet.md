@@ -175,12 +175,7 @@ The check should end with `PICOIN_SERVICE_CHECK_STATUS=ok`.
 Run a manual transaction smoke only when you want to mutate public testnet state:
 
 ```bash
-ALICE=$(python3 - <<'PY'
-import json
-print(json.load(open("/var/lib/picoin/data/wallets/alice.json"))["address"])
-PY
-)
-python3 -m picoin testnet fund-wallet --address "$ALICE" --amount 0.1
+python3 -m picoin testnet fund-wallet --wallet /var/lib/picoin/data/wallets/alice.json --amount 0.1
 
 PICOIN_TX_SMOKE_WALLET=/var/lib/picoin/data/wallets/alice.json \
 PICOIN_TX_SMOKE_RECIPIENT=PI_RECIPIENT_ADDRESS \

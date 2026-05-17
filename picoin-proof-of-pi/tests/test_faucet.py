@@ -2,8 +2,11 @@ import pytest
 
 from app.core.settings import FAUCET_MAX_AMOUNT, GENESIS_SUPPLY
 from app.core.signatures import generate_keypair
-from app.db.database import init_db
+from app.db.database import get_connection, init_db
 from app.services.mining import MiningError, get_balance, get_ledger_entries, register_miner, request_faucet
+from app.services.network import submit_transaction
+from app.services.transactions import apply_block_transactions
+from app.services.wallet import create_wallet, sign_transaction
 
 
 def test_local_faucet_credits_registered_miner_from_genesis_reward_supply(tmp_path, monkeypatch) -> None:
@@ -58,3 +61,39 @@ def test_local_faucet_can_fund_wallet_account(tmp_path, monkeypatch) -> None:
     assert wallet_balance["account_type"] == "wallet"
     assert wallet_balance["balance"] == 0.25
     assert wallet_ledger[0]["entry_type"] == "faucet_credit"
+
+
+def test_signed_faucet_transaction_replays_as_canonical_block_state(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "signed-wallet-faucet.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    wallet = create_wallet("signed-faucet-wallet")
+    tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="faucet",
+        sender=wallet["address"],
+        amount=0.25,
+        nonce=1,
+        fee=0.0,
+    )
+
+    submitted = submit_transaction(tx)
+    with get_connection() as connection:
+        execution = apply_block_transactions(
+            connection,
+            miner_id="miner_test",
+            block_height=1,
+            transactions=[submitted],
+            timestamp="2026-05-17T18:30:00+00:00",
+        )
+
+    wallet_balance = get_balance(wallet["address"])
+    genesis_balance = get_balance("genesis")
+
+    assert execution["applied"] == [tx["tx_hash"]]
+    assert wallet_balance["account_type"] == "wallet"
+    assert wallet_balance["balance"] == 0.25
+    assert genesis_balance["balance"] == pytest.approx(GENESIS_SUPPLY - 0.25)

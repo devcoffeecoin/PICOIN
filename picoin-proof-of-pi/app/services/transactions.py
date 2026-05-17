@@ -1,11 +1,21 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.core.crypto import canonical_json, sha256_text
-from app.core.settings import CHAIN_ID, MAX_TRANSACTIONS_PER_BLOCK, NETWORK_ID, SCIENCE_MAX_PENDING_PER_REQUESTER
+from app.core.settings import (
+    CHAIN_ID,
+    FAUCET_ALLOWED_NETWORKS,
+    FAUCET_MAX_AMOUNT,
+    FAUCET_RATE_LIMIT_MAX_REQUESTS,
+    FAUCET_RATE_LIMIT_WINDOW_SECONDS,
+    GENESIS_ACCOUNT_ID,
+    MAX_TRANSACTIONS_PER_BLOCK,
+    NETWORK_ID,
+    SCIENCE_MAX_PENDING_PER_REQUESTER,
+)
 from app.core.signatures import verify_payload_signature
 from app.db.database import row_to_dict
 from app.services.science import (
@@ -28,7 +38,7 @@ from app.services.treasury import TreasuryError, claim_scientific_development_tr
 from app.services.wallet import address_from_public_key, is_valid_address, transaction_hash, unsigned_transaction_payload
 
 
-SUPPORTED_BLOCK_TX_TYPES = {"transfer", "stake", "unstake", "science_job_create", "governance_action", "treasury_claim"}
+SUPPORTED_BLOCK_TX_TYPES = {"transfer", "stake", "unstake", "science_job_create", "governance_action", "treasury_claim", "faucet"}
 SCIENCE_RESERVE_GOVERNANCE_ACTIONS = {
     "propose_activation",
     "approve_activation",
@@ -127,6 +137,8 @@ def apply_block_transactions(
             _apply_governance_action_transaction(connection, tx, block_height, timestamp)
         elif tx["tx_type"] == "treasury_claim":
             _apply_treasury_claim_transaction(connection, tx, block_height, timestamp)
+        elif tx["tx_type"] == "faucet":
+            _apply_faucet_transaction(connection, tx, block_height, timestamp)
         _apply_fee_reward(connection, miner_id, tx, block_height, timestamp)
         connection.execute(
             """
@@ -278,6 +290,8 @@ def _transaction_rejection_reason(
         return _governance_action_rejection_reason(connection, tx)
     if tx["tx_type"] == "treasury_claim":
         return _treasury_claim_rejection_reason(connection, tx)
+    if tx["tx_type"] == "faucet":
+        return _faucet_rejection_reason(connection, tx)
     return None
 
 
@@ -286,6 +300,37 @@ def _transfer_rejection_reason(tx: dict[str, Any]) -> str | None:
         return "transfer amount must be positive"
     if not is_valid_address(tx.get("recipient")):
         return "transfer transaction requires a valid PI recipient"
+    return None
+
+
+def _faucet_rejection_reason(connection: Any, tx: dict[str, Any]) -> str | None:
+    if NETWORK_ID not in FAUCET_ALLOWED_NETWORKS:
+        return f"faucet is disabled on network '{NETWORK_ID}'"
+    amount = round(float(tx.get("amount", 0)), 8)
+    if amount <= 0:
+        return "faucet amount must be positive"
+    if amount > FAUCET_MAX_AMOUNT:
+        return f"faucet amount exceeds max {FAUCET_MAX_AMOUNT}"
+    if tx.get("recipient") not in {None, "", tx["sender"]}:
+        return "faucet transaction recipient must be empty or sender"
+    if round(float(tx.get("fee", 0)), 8) != 0:
+        return "faucet transaction fee must be zero"
+    genesis_balance = _balance(connection, GENESIS_ACCOUNT_ID)
+    if genesis_balance < amount:
+        return "genesis faucet balance is insufficient"
+    window_start = (datetime.fromisoformat(tx["timestamp"]) - timedelta(seconds=FAUCET_RATE_LIMIT_WINDOW_SECONDS)).isoformat()
+    recent_requests = connection.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM ledger_entries
+        WHERE account_id = ?
+          AND entry_type = 'faucet_credit'
+          AND created_at >= ?
+        """,
+        (tx["sender"], window_start),
+    ).fetchone()
+    if int(recent_requests["count"]) >= FAUCET_RATE_LIMIT_MAX_REQUESTS:
+        return "faucet rate limit exceeded for account"
     return None
 
 
@@ -481,6 +526,33 @@ def _apply_transfer_transaction(connection: Any, tx: dict[str, Any], block_heigh
         block_height,
         tx["tx_hash"],
         f"transfer credit from {sender}",
+        timestamp,
+    )
+
+
+def _apply_faucet_transaction(connection: Any, tx: dict[str, Any], block_height: int, timestamp: str) -> None:
+    amount = round(float(tx.get("amount", 0)), 8)
+    sender = tx["sender"]
+    _apply_account_delta(
+        connection,
+        GENESIS_ACCOUNT_ID,
+        "genesis",
+        -amount,
+        "faucet_debit",
+        block_height,
+        tx["tx_hash"],
+        f"{NETWORK_ID} faucet debit for wallet",
+        timestamp,
+    )
+    _apply_account_delta(
+        connection,
+        sender,
+        "wallet",
+        amount,
+        "faucet_credit",
+        block_height,
+        tx["tx_hash"],
+        f"{NETWORK_ID} faucet credit",
         timestamp,
     )
 
@@ -688,6 +760,8 @@ def _total_debit(tx: dict[str, Any]) -> float:
     fee = round(float(tx.get("fee", 0)), 8)
     if tx["tx_type"] in {"transfer", "stake"}:
         return round(amount + fee, 8)
+    if tx["tx_type"] == "faucet":
+        return 0.0
     return fee
 
 

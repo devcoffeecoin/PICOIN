@@ -800,6 +800,25 @@ def command_testnet_continuous(args: argparse.Namespace) -> int:
 
 
 def command_testnet_fund_wallet(args: argparse.Namespace) -> int:
+    if args.wallet:
+        wallet = json.loads(args.wallet.read_text(encoding="utf-8"))
+        sender = wallet["address"]
+        nonce = args.nonce
+        if nonce is None:
+            nonce = int(get_json(args.server, f"/wallet/{sender}/nonce")["next_nonce"])
+        tx = sign_transaction(
+            private_key=wallet["private_key"],
+            public_key=wallet["public_key"],
+            tx_type="faucet",
+            sender=sender,
+            amount=args.amount,
+            nonce=nonce,
+            fee=0.0,
+        )
+        print_json(post_json(args.server, "/tx/submit", tx))
+        return 0
+    if not args.address:
+        raise SystemExit("--wallet is required for canonical funding; --address is only for legacy local faucet credits")
     print_json(
         post_json(
             args.server,
@@ -973,7 +992,7 @@ def add_tx_parser(subparsers: argparse._SubParsersAction) -> None:
     send_parser.add_argument(
         "--type",
         default="transfer",
-        choices=["transfer", "stake", "unstake", "science_job_create", "governance_action", "treasury_claim"],
+        choices=["transfer", "stake", "unstake", "science_job_create", "governance_action", "treasury_claim", "faucet"],
     )
     send_parser.add_argument("--sender")
     send_parser.add_argument("--payload", help="Optional JSON payload")
@@ -1191,8 +1210,10 @@ def add_testnet_parser(subparsers: argparse._SubParsersAction) -> None:
 
     fund_wallet_parser = testnet_subparsers.add_parser("fund-wallet", help="Fund a wallet from the configured testnet faucet")
     fund_wallet_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
-    fund_wallet_parser.add_argument("--address", required=True)
+    fund_wallet_parser.add_argument("--wallet", type=Path, help="Wallet file to sign a canonical faucet transaction")
+    fund_wallet_parser.add_argument("--address", help="Legacy direct local faucet address")
     fund_wallet_parser.add_argument("--amount", type=float, default=0.1)
+    fund_wallet_parser.add_argument("--nonce", type=int)
     fund_wallet_parser.set_defaults(func=command_testnet_fund_wallet)
 
 
