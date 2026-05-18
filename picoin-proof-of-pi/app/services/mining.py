@@ -3409,7 +3409,7 @@ def _range_overlaps_protected_task(connection: Any, range_start: int, range_end:
         SELECT 1
         FROM tasks
         WHERE algorithm = ?
-        AND status IN ('assigned', 'committed', 'revealed', 'accepted')
+        AND status IN ('assigned', 'committed', 'revealed')
         AND range_start <= ?
         AND range_end >= ?
         LIMIT 1

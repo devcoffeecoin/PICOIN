@@ -1,7 +1,11 @@
+import sqlite3
+
+import pytest
+
 from app.core.signatures import generate_keypair
 from app.db.database import get_connection
 from app.db.database import init_db
-from app.services.mining import create_next_task, get_validation_job, register_miner
+from app.services.mining import MiningError, create_next_task, get_validation_job, register_miner
 
 
 def test_pseudo_random_assignment_returns_non_sequential_ranges(tmp_path, monkeypatch) -> None:
@@ -49,6 +53,116 @@ def test_task_assignment_restores_known_miner_identity_after_db_restore(tmp_path
         ).fetchone()
     assert miner["name"] == "restored-miner"
     assert miner["public_key"] == keypair["public_key"]
+
+
+def test_accepted_ranges_do_not_exhaust_future_assignments(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-accepted-reuse.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    first_keys = generate_keypair()
+    second_keys = generate_keypair()
+    first_miner = register_miner("accepted-history-miner", first_keys["public_key"])
+    second_miner = register_miner("active-range-miner", second_keys["public_key"])
+
+    with get_connection() as connection:
+        protocol_id = connection.execute(
+            "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        connection.execute(
+            """
+            UPDATE protocol_params
+            SET max_pi_position = 64, segment_size = 64, range_assignment_max_attempts = 1
+            WHERE id = ?
+            """,
+            (protocol_id,),
+        )
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at, submitted_at
+            )
+            VALUES ('accepted_full_span', ?, 1, 64, 'bbp_hex_v1', 'accepted', ?, ?, ?)
+            """,
+            (first_miner["miner_id"], protocol_id, "2026-05-18T00:00:00Z", "2026-05-18T00:00:01Z"),
+        )
+
+    task = create_next_task(second_miner["miner_id"])
+    assert task["range_start"] == 1
+    assert task["range_end"] == 64
+
+    third_keys = generate_keypair()
+    third_miner = register_miner("active-overlap-miner", third_keys["public_key"])
+    with pytest.raises(MiningError, match="could not assign a non-overlapping range"):
+        create_next_task(third_miner["miner_id"])
+
+
+def test_init_db_migrates_global_range_unique_to_active_partial_index(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-range-constraint-migration.sqlite3"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(db_path) as connection:
+        connection.execute(
+            """
+            CREATE TABLE tasks (
+                task_id TEXT PRIMARY KEY,
+                miner_id TEXT NOT NULL,
+                range_start INTEGER NOT NULL,
+                range_end INTEGER NOT NULL,
+                algorithm TEXT NOT NULL,
+                status TEXT NOT NULL,
+                assignment_seed TEXT,
+                assignment_mode TEXT,
+                assignment_ms INTEGER,
+                compute_ms INTEGER,
+                protocol_params_id INTEGER,
+                created_at TEXT NOT NULL,
+                expires_at TEXT,
+                submitted_at TEXT,
+                UNIQUE(range_start, range_end, algorithm)
+            )
+            """
+        )
+
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    keypair = generate_keypair()
+    miner = register_miner("range-migration-miner", keypair["public_key"])
+    with get_connection() as connection:
+        protocol_id = connection.execute(
+            "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        indexes = connection.execute("PRAGMA index_list(tasks)").fetchall()
+        auto_unique_indexes = [
+            index
+            for index in indexes
+            if index["unique"] and index["origin"] == "u"
+        ]
+        assert auto_unique_indexes == []
+        assert any(index["name"] == "idx_tasks_active_range_unique" for index in indexes)
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at, submitted_at
+            )
+            VALUES ('accepted_reuse_a', ?, 10, 20, 'bbp_hex_v1', 'accepted', ?, ?, ?)
+            """,
+            (miner["miner_id"], protocol_id, "2026-05-18T00:00:00Z", "2026-05-18T00:00:01Z"),
+        )
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at, submitted_at
+            )
+            VALUES ('accepted_reuse_b', ?, 10, 20, 'bbp_hex_v1', 'accepted', ?, ?, ?)
+            """,
+            (miner["miner_id"], protocol_id, "2026-05-18T00:00:02Z", "2026-05-18T00:00:03Z"),
+        )
 
 
 def test_validation_job_restores_known_validator_identity_after_db_restore(tmp_path, monkeypatch) -> None:

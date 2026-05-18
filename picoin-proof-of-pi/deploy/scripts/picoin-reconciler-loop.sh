@@ -46,14 +46,14 @@ run_once() {
     "$PICOIN_PYTHON" -m picoin node catch-up \
       --server "$PICOIN_SERVER" \
       --peer "$PICOIN_BOOTSTRAP_PEER" \
-      --rounds "$PICOIN_RECONCILER_ROUNDS" \
+      --max-rounds "$PICOIN_RECONCILER_ROUNDS" \
       --reconcile-limit "$PICOIN_RECONCILER_LIMIT" >"$out"
     rc=$?
   else
     echo "peer=(none)"
     "$PICOIN_PYTHON" -m picoin node catch-up \
       --server "$PICOIN_SERVER" \
-      --rounds "$PICOIN_RECONCILER_ROUNDS" \
+      --max-rounds "$PICOIN_RECONCILER_ROUNDS" \
       --reconcile-limit "$PICOIN_RECONCILER_LIMIT" >"$out"
     rc=$?
   fi

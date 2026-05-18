@@ -50,6 +50,46 @@ def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
     return dict(row)
 
 
+TASK_COLUMNS = (
+    "task_id",
+    "miner_id",
+    "range_start",
+    "range_end",
+    "algorithm",
+    "status",
+    "assignment_seed",
+    "assignment_mode",
+    "assignment_ms",
+    "compute_ms",
+    "protocol_params_id",
+    "created_at",
+    "expires_at",
+    "submitted_at",
+)
+
+
+TASKS_TABLE_SQL = """
+CREATE TABLE tasks (
+    task_id TEXT PRIMARY KEY,
+    miner_id TEXT NOT NULL,
+    range_start INTEGER NOT NULL,
+    range_end INTEGER NOT NULL,
+    algorithm TEXT NOT NULL,
+    status TEXT NOT NULL,
+    assignment_seed TEXT,
+    assignment_mode TEXT,
+    assignment_ms INTEGER,
+    compute_ms INTEGER,
+    protocol_params_id INTEGER,
+    created_at TEXT NOT NULL,
+    expires_at TEXT,
+    submitted_at TEXT,
+    FOREIGN KEY(miner_id) REFERENCES miners(miner_id),
+    FOREIGN KEY(protocol_params_id) REFERENCES protocol_params(id)
+)
+"""
+
+
 def init_db(db_path: Path = DATABASE_PATH) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
     with sqlite3.connect(db_path, timeout=30, check_same_thread=False) as connection:
@@ -137,7 +177,6 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 created_at TEXT NOT NULL,
                 expires_at TEXT,
                 submitted_at TEXT,
-                UNIQUE(range_start, range_end, algorithm),
                 FOREIGN KEY(miner_id) REFERENCES miners(miner_id),
                 FOREIGN KEY(protocol_params_id) REFERENCES protocol_params(id)
             );
@@ -596,6 +635,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "tasks", "assignment_ms", "INTEGER")
         _ensure_column(connection, "tasks", "compute_ms", "INTEGER")
         _ensure_column(connection, "tasks", "protocol_params_id", "INTEGER")
+        _ensure_tasks_range_constraints(connection)
         _ensure_column(connection, "blocks", "merkle_root", "TEXT")
         _ensure_column(connection, "blocks", "tx_merkle_root", "TEXT")
         _ensure_column(connection, "blocks", "tx_count", "INTEGER NOT NULL DEFAULT 0")
@@ -659,6 +699,75 @@ def _ensure_column(connection: sqlite3.Connection, table_name: str, column_name:
     }
     if column_name not in columns:
         connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+
+def _quoted_identifier(identifier: str) -> str:
+    return '"' + identifier.replace('"', '""') + '"'
+
+
+def _tasks_have_global_range_unique(connection: sqlite3.Connection) -> bool:
+    for index in connection.execute("PRAGMA index_list(tasks)").fetchall():
+        index_name = index[1]
+        is_unique = bool(index[2])
+        if not is_unique:
+            continue
+        columns = [
+            row[2]
+            for row in connection.execute(
+                f"PRAGMA index_info({_quoted_identifier(index_name)})"
+            ).fetchall()
+        ]
+        if columns == ["range_start", "range_end", "algorithm"]:
+            return True
+    return False
+
+
+def _ensure_tasks_range_constraints(connection: sqlite3.Connection) -> None:
+    if _tasks_have_global_range_unique(connection):
+        _rebuild_tasks_without_global_range_unique(connection)
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+    connection.execute(
+        """
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_range_unique
+        ON tasks(range_start, range_end, algorithm)
+        WHERE status IN ('assigned', 'committed', 'revealed')
+        """
+    )
+
+
+def _rebuild_tasks_without_global_range_unique(connection: sqlite3.Connection) -> None:
+    connection.commit()
+    connection.execute("PRAGMA foreign_keys = OFF")
+    try:
+        connection.execute("DROP TABLE IF EXISTS tasks_without_global_range_unique")
+        connection.execute(
+            TASKS_TABLE_SQL.replace(
+                "CREATE TABLE tasks",
+                "CREATE TABLE tasks_without_global_range_unique",
+                1,
+            )
+        )
+        existing_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(tasks)").fetchall()
+        }
+        copy_columns = [column for column in TASK_COLUMNS if column in existing_columns]
+        column_list = ", ".join(_quoted_identifier(column) for column in copy_columns)
+        connection.execute(
+            f"""
+            INSERT INTO tasks_without_global_range_unique ({column_list})
+            SELECT {column_list}
+            FROM tasks
+            """
+        )
+        connection.execute("DROP TABLE tasks")
+        connection.execute("ALTER TABLE tasks_without_global_range_unique RENAME TO tasks")
+        connection.commit()
+    except Exception:
+        connection.rollback()
+        raise
+    finally:
+        connection.execute("PRAGMA foreign_keys = ON")
 
 
 def _ensure_default_protocol_params(connection: sqlite3.Connection) -> None:
