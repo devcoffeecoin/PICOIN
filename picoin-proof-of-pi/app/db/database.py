@@ -726,11 +726,12 @@ def _ensure_tasks_range_constraints(connection: sqlite3.Connection) -> None:
     if _tasks_have_global_range_unique(connection):
         _rebuild_tasks_without_global_range_unique(connection)
     connection.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+    connection.execute("DROP INDEX IF EXISTS idx_tasks_active_range_unique")
     connection.execute(
         """
-        CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_active_range_unique
-        ON tasks(range_start, range_end, algorithm)
-        WHERE status IN ('assigned', 'committed', 'revealed')
+        CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_protected_range_start_unique
+        ON tasks(range_start, algorithm)
+        WHERE status IN ('assigned', 'committed', 'revealed', 'accepted')
         """
     )
 

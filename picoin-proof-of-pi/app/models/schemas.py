@@ -761,6 +761,10 @@ class ProtocolResponse(BaseModel):
     range_assignment_mode: str
     max_pi_position: int
     range_assignment_max_attempts: int
+    range_start_window_size: int | None = None
+    range_window_retire_occupancy: float | None = None
+    range_window_max_age_blocks: int | None = None
+    range_window_lookahead_multiplier: int | None = None
     segment_size: int
     sample_count: int
     task_expiration_seconds: int
@@ -834,6 +838,13 @@ class RetargetStatusResponse(BaseModel):
     blocks_until_next_epoch: int
     active_difficulty: float
     active_reward_per_block: float
+    configured_max_pi_position: int | None = None
+    effective_max_pi_position: int | None = None
+    range_frontier: int | None = None
+    range_start_min: int | None = None
+    range_start_max: int | None = None
+    range_window_index: int | None = None
+    range_window_size: int | None = None
 
 
 class RetargetPreviewResponse(BaseModel):
