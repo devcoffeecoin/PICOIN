@@ -19,9 +19,11 @@ const state = {
   sync: null,
   audit: null,
   consensus: null,
+  protocol: null,
   reserve: null,
   treasury: null,
   blocks: [],
+  retroAudits: [],
   validators: [],
   events: [],
   transactions: [],
@@ -73,6 +75,50 @@ function statusClass(ok) {
 function peerCount(sync) {
   const counts = sync?.peer_counts || {};
   return `${fmt(counts.connected, 0)} / ${fmt(counts.total, 0)}`;
+}
+
+function effectiveHeight(sync) {
+  const latestHeight = Number(sync?.effective_latest_block_height ?? sync?.latest_block_height ?? 0);
+  const snapshotHeight = Number(sync?.active_snapshot_base?.height ?? 0);
+  return Math.max(latestHeight, snapshotHeight);
+}
+
+function effectiveHash(sync) {
+  if (sync?.effective_latest_block_hash) return sync.effective_latest_block_hash;
+  const latestHeight = Number(sync?.latest_block_height ?? 0);
+  const snapshotHeight = Number(sync?.active_snapshot_base?.height ?? 0);
+  if (snapshotHeight > latestHeight && sync?.active_snapshot_base?.block_hash) {
+    return sync.active_snapshot_base.block_hash;
+  }
+  return sync?.latest_block_hash || "";
+}
+
+function blockBaseReward(block) {
+  const protocolReward = Number(state.protocol?.reward_per_block || 0);
+  if (protocolReward > 0) return protocolReward;
+
+  const minerReward = Number(block?.reward || 0);
+  const minerPercent = Number(state.protocol?.proof_of_pi_reward_percent || 0);
+  if (minerReward > 0 && minerPercent > 0) return minerReward / minerPercent;
+
+  return minerReward;
+}
+
+function auditRewardForBlock(block) {
+  const blockHeight = Number(block?.height || 0);
+  return asArray(state.retroAudits, ["audits", "items", "results"])
+    .filter((audit) => Number(audit.block_height || 0) === blockHeight)
+    .reduce((sum, audit) => sum + Number(audit.reward || 0), 0);
+}
+
+function formatBlockReward(block) {
+  const base = blockBaseReward(block);
+  const audit = auditRewardForBlock(block);
+  const total = base + audit;
+  if (audit > 0) {
+    return `${fmt(total, 5)} (${fmt(base, 5)} + ${fmt(audit, 5)} audit)`;
+  }
+  return fmt(total, 5);
 }
 
 async function fetchJsonFrom(baseUrl, path) {
@@ -132,9 +178,11 @@ async function loadExplorer() {
     loadEndpoint("sync", "/node/sync-status", null),
     loadEndpoint("audit", "/audit/full", null),
     loadEndpoint("consensus", "/consensus/status", null),
+    loadEndpoint("protocol", "/protocol", null),
     loadEndpoint("reserve", "/reserve/status", null),
     loadEndpoint("treasury", "/treasury/status", null),
     loadEndpoint("blocks", "/blocks", []),
+    loadEndpoint("retroAudits", "/audit/retroactive?limit=100", []),
     loadEndpoint("validators", "/validators?limit=100", []),
     loadEndpoint("events", "/events?limit=16", []),
     loadEndpoint("transactions", "/mempool?limit=40", []),
@@ -153,8 +201,8 @@ function networkAgreement() {
       sync.network_id === first.sync.network_id &&
       sync.chain_id === first.sync.chain_id &&
       sync.genesis_hash === first.sync.genesis_hash &&
-      Number(sync.latest_block_height || 0) === Number(first.sync.latest_block_height || 0) &&
-      sync.latest_block_hash === first.sync.latest_block_hash &&
+      effectiveHeight(sync) === effectiveHeight(first.sync) &&
+      effectiveHash(sync) === effectiveHash(first.sync) &&
       Number(sync.pending_replay_blocks || 0) === 0
     );
   });
@@ -194,7 +242,7 @@ function renderStatus() {
     if (el) el.textContent = fmt(val, digits);
   };
 
-  setMetric("metricHeight", state.sync?.latest_block_height ?? state.health?.latest_block_height, 0);
+  setMetric("metricHeight", effectiveHeight(state.sync) || state.health?.latest_block_height, 0);
   
   const chainEl = $("metricChain");
   if (chainEl) chainEl.textContent = state.sync?.network_id || state.health?.network_id || "-";
@@ -211,6 +259,8 @@ function renderStatus() {
 function renderNetwork() {
   const ready = explorerReady();
   const sync = state.sync || {};
+  const tipHeight = effectiveHeight(sync);
+  const tipHash = effectiveHash(sync);
   const auditOk = state.audit?.valid === true;
   const nodeOkCount = state.nodeStates.filter((node) => node.ok && node.sync).length;
   const summary = $("networkSummary");
@@ -221,7 +271,7 @@ function renderNetwork() {
     </article>
     <article>
       <span>Tip</span>
-      <strong title="${escapeHtml(sync.latest_block_hash)}">${fmt(sync.latest_block_height, 0)} / ${escapeHtml(shortHash(sync.latest_block_hash))}</strong>
+      <strong title="${escapeHtml(tipHash)}">${fmt(tipHeight, 0)} / ${escapeHtml(shortHash(tipHash))}</strong>
     </article>
     <article>
       <span>Audit</span>
@@ -251,6 +301,8 @@ function renderNetwork() {
     .map((node) => {
       const syncState = node.sync || {};
       const ok = node.ok && Number(syncState.pending_replay_blocks || 0) === 0;
+      const nodeHeight = effectiveHeight(syncState);
+      const nodeHash = effectiveHash(syncState);
       return `
         <tr>
           <td>
@@ -258,8 +310,8 @@ function renderNetwork() {
             <div class="muted mono">${escapeHtml(node.url)}</div>
           </td>
           <td><span class="status-pill ${statusClass(ok)}">${ok ? "ok" : "fail"}</span></td>
-          <td>${fmt(syncState.latest_block_height, 0)}</td>
-          <td class="hash" title="${escapeHtml(syncState.latest_block_hash)}">${escapeHtml(shortHash(syncState.latest_block_hash))}</td>
+          <td>${fmt(nodeHeight, 0)}</td>
+          <td class="hash" title="${escapeHtml(nodeHash)}">${escapeHtml(shortHash(nodeHash))}</td>
           <td>${fmt(syncState.pending_replay_blocks, 0)}</td>
           <td>${peerCount(syncState)}</td>
           <td>${escapeHtml(formatDate(syncState.checked_at))}</td>
@@ -288,7 +340,7 @@ function renderBlocks() {
           <td class="hash" title="${escapeHtml(block.previous_hash)}">${escapeHtml(shortHash(block.previous_hash))}</td>
           <td class="mono">${escapeHtml(block.miner_id)}</td>
           <td>${fmt(block.range_start, 0)}..${fmt(block.range_end, 0)}</td>
-          <td>${fmt(block.reward, 5)}</td>
+          <td title="Miner share: ${escapeHtml(fmt(block.reward, 5))}">${escapeHtml(formatBlockReward(block))}</td>
           <td>${escapeHtml(formatDate(block.timestamp))}</td>
         </tr>
       `
@@ -413,7 +465,7 @@ async function runLookup() {
         <article class="lookup-card">
           <span>Block ${fmt(block.height, 0)}</span>
           <strong class="hash" title="${escapeHtml(block.block_hash)}">${escapeHtml(block.block_hash)}</strong>
-          <p>Miner ${escapeHtml(block.miner_id)} - ${fmt(block.tx_count, 0)} tx - ${escapeHtml(formatDate(block.timestamp))}</p>
+          <p>Miner ${escapeHtml(block.miner_id)} - reward ${escapeHtml(formatBlockReward(block))} - ${fmt(block.tx_count, 0)} tx - ${escapeHtml(formatDate(block.timestamp))}</p>
         </article>
       `;
       return;

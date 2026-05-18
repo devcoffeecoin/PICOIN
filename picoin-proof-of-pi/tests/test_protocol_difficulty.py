@@ -135,10 +135,14 @@ def test_retarget_waits_until_epoch_is_complete(tmp_path, monkeypatch) -> None:
 
     result = run_retarget()
     preview = preview_retarget()
+    status = get_difficulty_status()
 
     assert result["retargeted"] is False
     assert preview["ready"] is False
     assert preview["blocks_until_ready"] == 1
+    assert status["epoch_blocks_required"] == 10
+    assert status["blocks_until_ready"] == 1
+    assert status["blocks_until_next_epoch"] == 1
     assert get_protocol()["difficulty"] == 4.0
 
 

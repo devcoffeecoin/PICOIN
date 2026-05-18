@@ -249,6 +249,10 @@ class RetroactiveAuditResponse(BaseModel):
     actual_hash: str
     passed: bool
     reason: str
+    automatic: bool = False
+    reward: float = 0.0
+    reward_account_id: str | None = None
+    fraud_detected: bool = False
     created_at: datetime
 
 
@@ -818,12 +822,15 @@ class ProtocolParamsResponse(BaseModel):
 class RetargetStatusResponse(BaseModel):
     enabled: bool
     epoch_blocks: int
+    epoch_blocks_required: int | None = None
     target_block_ms: int
     tolerance: float
     current_height: int
     last_retarget_height: int
     current_epoch_block_count: int
     current_epoch_average_ms: float | None = None
+    blocks_since_retarget: int | None = None
+    blocks_until_ready: int | None = None
     blocks_until_next_epoch: int
     active_difficulty: float
     active_reward_per_block: float
