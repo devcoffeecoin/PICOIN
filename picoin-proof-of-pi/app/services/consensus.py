@@ -821,7 +821,8 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
         raise ConsensusError(409, "finalized block previous_hash does not match local chain tip")
     _reject_duplicate_block_material(connection, block)
     _ensure_miner(connection, block["miner_id"])
-    task_id = _ensure_task(connection, block)
+    local_protocol_params_id = _resolve_local_protocol_params_id(connection, block.get("protocol_params_id"))
+    task_id = _ensure_task(connection, block, local_protocol_params_id)
     timestamp = block["timestamp"]
     samples_json = json.dumps(block["samples"], sort_keys=True)
     transactions = block.get("transactions") or []
@@ -862,7 +863,7 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
             block.get("state_root"),
             block.get("difficulty"),
             task_id,
-            block.get("protocol_params_id"),
+            local_protocol_params_id,
             block.get("protocol_version", PROTOCOL_VERSION),
             block.get("validation_mode", VALIDATION_MODE),
             None,
@@ -1026,7 +1027,7 @@ def _ensure_miner(connection: Any, miner_id: str) -> None:
     )
 
 
-def _ensure_task(connection: Any, block: dict[str, Any]) -> str:
+def _ensure_task(connection: Any, block: dict[str, Any], local_protocol_params_id: int | None = None) -> str:
     task_id = block.get("task_id") or f"distributed_task_{block['height']}_{block['block_hash'][:12]}"
     existing = connection.execute("SELECT task_id FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
     if existing is not None:
@@ -1056,12 +1057,24 @@ def _ensure_task(connection: Any, block: dict[str, Any]) -> str:
             block["range_end"],
             block["algorithm"],
             block["block_hash"],
-            block.get("protocol_params_id"),
+            local_protocol_params_id,
             block["timestamp"],
             block["timestamp"],
         ),
     )
     return task_id
+
+
+def _resolve_local_protocol_params_id(connection: Any, protocol_params_id: Any) -> int | None:
+    if protocol_params_id is None:
+        return None
+    existing = connection.execute(
+        "SELECT id FROM protocol_params WHERE id = ?",
+        (int(protocol_params_id),),
+    ).fetchone()
+    if existing is not None:
+        return int(protocol_params_id)
+    return None
 
 
 def _reject_duplicate_block_material(connection: Any, block: dict[str, Any]) -> None:
