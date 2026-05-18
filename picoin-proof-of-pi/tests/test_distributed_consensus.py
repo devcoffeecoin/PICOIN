@@ -293,6 +293,25 @@ def test_parent_scoped_fork_choice_does_not_block_finalization(tmp_path, monkeyp
     assert get_block(1)["block_hash"] == proposal["block_hash"]
 
 
+def test_stale_historical_fork_does_not_report_active_competition(tmp_path, monkeypatch) -> None:
+    _init_consensus_db(tmp_path, monkeypatch, "consensus-stale-fork.sqlite3")
+    identities = _register_validators()
+    proposal = propose_block(_block(), "miner-node-1")
+    for identity in identities:
+        proposal = _vote(proposal, identity)
+    _insert_competing_proposal(_block(), previous_hash=GENESIS_HASH, approvals=0)
+
+    winner = select_fork_choice(1, GENESIS_HASH)
+    groups = list_fork_choice_groups()
+    status = consensus_status()
+
+    assert winner["proposal_id"] == proposal["proposal_id"]
+    assert winner["status"] == "imported"
+    assert groups == []
+    assert status["fork_group_count"] == 0
+    assert "pending" not in status["proposals"]
+
+
 def test_fork_choice_tie_breaks_by_oldest_then_lowest_hash(tmp_path, monkeypatch) -> None:
     _init_consensus_db(tmp_path, monkeypatch, "consensus-deterministic-tie.sqlite3")
     first = _insert_competing_proposal(

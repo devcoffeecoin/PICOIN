@@ -632,6 +632,12 @@ def select_fork_choice(
                 SELECT *
                 FROM consensus_block_proposals
                 WHERE height = ? AND status NOT IN ('rejected')
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM blocks
+                    WHERE blocks.height = consensus_block_proposals.height
+                      AND blocks.block_hash != consensus_block_proposals.block_hash
+                )
                 """,
                 (height,),
             ).fetchall()
@@ -641,6 +647,12 @@ def select_fork_choice(
                 SELECT *
                 FROM consensus_block_proposals
                 WHERE height = ? AND previous_hash = ? AND status NOT IN ('rejected')
+                AND NOT EXISTS (
+                    SELECT 1
+                    FROM blocks
+                    WHERE blocks.height = consensus_block_proposals.height
+                      AND blocks.block_hash != consensus_block_proposals.block_hash
+                )
                 """,
                 (height, previous_hash),
             ).fetchall()
@@ -666,6 +678,12 @@ def list_fork_choice_groups(limit: int = 10, connection: Any | None = None) -> l
             SELECT height, previous_hash, COUNT(*) AS proposal_count
             FROM consensus_block_proposals
             WHERE status NOT IN ('rejected')
+            AND NOT EXISTS (
+                SELECT 1
+                FROM blocks
+                WHERE blocks.height = consensus_block_proposals.height
+                  AND blocks.block_hash != consensus_block_proposals.block_hash
+            )
             GROUP BY height, previous_hash
             HAVING COUNT(*) > 1
             ORDER BY height DESC, previous_hash ASC
@@ -682,6 +700,12 @@ def list_fork_choice_groups(limit: int = 10, connection: Any | None = None) -> l
                     SELECT *
                     FROM consensus_block_proposals
                     WHERE height = ? AND previous_hash = ? AND status NOT IN ('rejected')
+                    AND NOT EXISTS (
+                        SELECT 1
+                        FROM blocks
+                        WHERE blocks.height = consensus_block_proposals.height
+                          AND blocks.block_hash != consensus_block_proposals.block_hash
+                    )
                     """,
                     (group["height"], group["previous_hash"]),
                 ).fetchall()
@@ -747,8 +771,15 @@ def consensus_status() -> dict[str, Any]:
     with get_connection() as connection:
         counts = connection.execute(
             """
-            SELECT status, COUNT(*) AS count
+            SELECT consensus_block_proposals.status, COUNT(*) AS count
             FROM consensus_block_proposals
+            WHERE consensus_block_proposals.status NOT IN ('rejected')
+            AND NOT EXISTS (
+                SELECT 1
+                FROM blocks
+                WHERE blocks.height = consensus_block_proposals.height
+                  AND blocks.block_hash != consensus_block_proposals.block_hash
+            )
             GROUP BY status
             """
         ).fetchall()
@@ -1190,6 +1221,7 @@ def _proposal_with_fork_score(connection: Any, row: dict[str, Any] | None) -> di
 
 def _fork_choice_sort_key(proposal: dict[str, Any]) -> tuple[Any, ...]:
     return (
+        _fork_choice_status_rank(proposal["status"]),
         -float(proposal["approval_weight"]),
         float(proposal["rejection_weight"]),
         -int(proposal["approvals"]),
@@ -1197,6 +1229,18 @@ def _fork_choice_sort_key(proposal: dict[str, Any]) -> tuple[Any, ...]:
         proposal["created_at"],
         proposal["block_hash"],
     )
+
+
+def _fork_choice_status_rank(status: str) -> int:
+    return {
+        "imported": 0,
+        "finalized": 1,
+        "approved": 2,
+        "validation_pending": 3,
+        "pending": 4,
+        "pending_missing_ancestors": 5,
+        "pending_replay": 6,
+    }.get(status, 7)
 
 
 def _fork_choice_summary(proposal: dict[str, Any]) -> dict[str, Any]:
