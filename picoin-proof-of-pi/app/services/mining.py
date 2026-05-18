@@ -2132,7 +2132,6 @@ def verify_chain() -> dict[str, Any]:
         if first_height == int(snapshot_base["height"]) + 1:
             previous_hash = snapshot_base["block_hash"]
             expected_start = first_height
-    seen_ranges: list[tuple[int, int, str]] = []
     seen_result_hashes: set[str] = set()
 
     for expected_height, block in enumerate(blocks, start=expected_start):
@@ -2141,14 +2140,6 @@ def verify_chain() -> dict[str, Any]:
             issues.append({"height": height, "reason": f"expected height {expected_height}"})
         if block["previous_hash"] != previous_hash:
             issues.append({"height": height, "reason": "previous_hash does not match prior block"})
-
-        for seen_start, seen_end, seen_algorithm in seen_ranges:
-            same_algorithm = seen_algorithm == block["algorithm"]
-            overlaps = seen_start <= block["range_end"] and seen_end >= block["range_start"]
-            if same_algorithm and overlaps:
-                issues.append({"height": height, "reason": "range overlaps a previous block"})
-                break
-        seen_ranges.append((block["range_start"], block["range_end"], block["algorithm"]))
 
         if block["result_hash"] in seen_result_hashes:
             issues.append({"height": height, "reason": "duplicate result_hash"})

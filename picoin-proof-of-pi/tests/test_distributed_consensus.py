@@ -293,6 +293,30 @@ def test_parent_scoped_fork_choice_does_not_block_finalization(tmp_path, monkeyp
     assert get_block(1)["block_hash"] == proposal["block_hash"]
 
 
+def test_replay_allows_overlapping_pi_ranges_with_distinct_results(tmp_path, monkeypatch) -> None:
+    _init_consensus_db(tmp_path, monkeypatch, "consensus-overlap-ranges.sqlite3")
+    identities = _register_validators()
+    first = propose_block(_block(), "miner-node-1")
+    for identity in identities:
+        first = _vote(first, identity)
+
+    second_block = _block(height=2, previous_hash=first["block_hash"])
+    second_block["range_start"] = 2
+    second_block["range_end"] = 65
+    second_block["task_id"] = "distributed-task-overlap"
+    second_block["result_hash"] = "f" * 64
+    second_block = _rehash(second_block)
+    second = propose_block(second_block, "miner-node-1")
+    for identity in identities:
+        second = _vote(second, identity)
+
+    chain = verify_chain()
+
+    assert second["status"] == "imported"
+    assert get_block(2)["block_hash"] == second["block_hash"]
+    assert chain["valid"] is True
+
+
 def test_stale_historical_fork_does_not_report_active_competition(tmp_path, monkeypatch) -> None:
     _init_consensus_db(tmp_path, monkeypatch, "consensus-stale-fork.sqlite3")
     identities = _register_validators()

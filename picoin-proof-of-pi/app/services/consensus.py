@@ -1071,19 +1071,6 @@ def _reject_duplicate_block_material(connection: Any, block: dict[str, Any]) -> 
     ).fetchone()
     if duplicate_hash is not None:
         raise ConsensusError(409, "duplicate result_hash")
-    overlap = connection.execute(
-        """
-        SELECT height
-        FROM blocks
-        WHERE algorithm = ?
-          AND range_start <= ?
-          AND range_end >= ?
-        LIMIT 1
-        """,
-        (block["algorithm"], block["range_end"], block["range_start"]),
-    ).fetchone()
-    if overlap is not None:
-        raise ConsensusError(409, "block range overlaps local chain")
 
 
 def _validate_block_hash(block: dict[str, Any]) -> None:
