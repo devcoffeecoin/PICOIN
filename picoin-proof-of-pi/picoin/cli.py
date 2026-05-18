@@ -219,10 +219,18 @@ def command_node_catch_up(args: argparse.Namespace) -> int:
             peer_sync = get_json(peer_url, "/node/sync-status")
         reconcile_results = reconcile.get("results") or []
         blocks_seen = sum(int(item.get("blocks_seen", 0)) for item in reconcile_results)
-        peer_height = int(peer_sync.get("latest_block_height", 0)) if peer_sync else None
-        peer_hash = peer_sync.get("latest_block_hash") if peer_sync else None
-        local_height = int(final_sync.get("latest_block_height", 0))
-        local_hash = final_sync.get("latest_block_hash")
+        peer_height = (
+            int(peer_sync.get("effective_latest_block_height", peer_sync.get("latest_block_height", 0)) or 0)
+            if peer_sync
+            else None
+        )
+        peer_hash = (
+            (peer_sync.get("effective_latest_block_hash") or peer_sync.get("latest_block_hash"))
+            if peer_sync
+            else None
+        )
+        local_height = int(final_sync.get("effective_latest_block_height", final_sync.get("latest_block_height", 0)) or 0)
+        local_hash = final_sync.get("effective_latest_block_hash") or final_sync.get("latest_block_hash")
         round_summary = {
             "round": round_number,
             "reconcile": {
@@ -260,23 +268,35 @@ def command_node_catch_up(args: argparse.Namespace) -> int:
 
     peer_matches = True
     if peer_sync is not None:
+        final_height = int(final_sync.get("effective_latest_block_height", final_sync.get("latest_block_height", 0)) or 0)
+        final_hash = final_sync.get("effective_latest_block_hash") or final_sync.get("latest_block_hash")
+        peer_height = int(peer_sync.get("effective_latest_block_height", peer_sync.get("latest_block_height", 0)) or 0)
+        peer_hash = peer_sync.get("effective_latest_block_hash") or peer_sync.get("latest_block_hash")
         peer_matches = (
             final_sync.get("network_id") == peer_sync.get("network_id")
             and final_sync.get("chain_id") == peer_sync.get("chain_id")
             and final_sync.get("genesis_hash") == peer_sync.get("genesis_hash")
-            and int(final_sync.get("latest_block_height", 0)) == int(peer_sync.get("latest_block_height", 0))
-            and final_sync.get("latest_block_hash") == peer_sync.get("latest_block_hash")
+            and final_height == peer_height
+            and final_hash == peer_hash
         )
     healthy = final_sync.get("pending_replay_blocks", 0) == 0 and bool(final_audit.get("valid")) and peer_matches
     output = {
         "server": server_url,
         "peer": peer_url,
         "status": "ok" if healthy else "needs_attention",
-        "initial_height": initial_sync.get("latest_block_height", 0),
-        "final_height": final_sync.get("latest_block_height", 0),
-        "final_block_hash": final_sync.get("latest_block_hash"),
-        "peer_height": peer_sync.get("latest_block_height") if peer_sync else None,
-        "peer_block_hash": peer_sync.get("latest_block_hash") if peer_sync else None,
+        "initial_height": initial_sync.get("effective_latest_block_height", initial_sync.get("latest_block_height", 0)),
+        "final_height": final_sync.get("effective_latest_block_height", final_sync.get("latest_block_height", 0)),
+        "final_block_hash": final_sync.get("effective_latest_block_hash") or final_sync.get("latest_block_hash"),
+        "peer_height": (
+            peer_sync.get("effective_latest_block_height", peer_sync.get("latest_block_height"))
+            if peer_sync
+            else None
+        ),
+        "peer_block_hash": (
+            peer_sync.get("effective_latest_block_hash") or peer_sync.get("latest_block_hash")
+            if peer_sync
+            else None
+        ),
         "peer_matches": peer_matches,
         "network_matches_peer": None if peer_sync is None else final_sync.get("network_id") == peer_sync.get("network_id"),
         "chain_matches_peer": None if peer_sync is None else final_sync.get("chain_id") == peer_sync.get("chain_id"),

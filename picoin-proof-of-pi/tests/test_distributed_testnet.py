@@ -14,6 +14,7 @@ from app.services.mining import (
     get_balance_amount,
     get_block,
     get_full_economic_audit,
+    get_health_status,
     register_miner,
     submit_task,
     verify_chain,
@@ -809,6 +810,28 @@ def test_replay_imports_pending_headers_after_active_snapshot_base(tmp_path, mon
     assert status["latest_block_hash"] == expected_hash
     assert status["effective_latest_block_height"] == expected_height
     assert audit["valid"] is True
+
+
+def test_health_reports_active_snapshot_tip_on_validator_restore(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "snapshot-health-source.sqlite3")
+
+    miner_key = generate_keypair()
+    miner = register_miner("snapshot-health-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    snapshot = export_canonical_snapshot(height=1)
+
+    _init_network_db(tmp_path, monkeypatch, "snapshot-health-target.sqlite3")
+    imported = import_canonical_snapshot(snapshot, source="peer-a")
+    apply_imported_snapshot_state(imported["snapshot"]["snapshot_hash"])
+    monkeypatch.setattr("app.services.mining.NODE_TYPE", "validator")
+
+    health = get_health_status()
+
+    assert health["status"] == "ok"
+    assert health["latest_block_height"] == snapshot["checkpoint"]["height"]
+    assert health["latest_block_hash"] == snapshot["checkpoint"]["block_hash"]
+    assert health["local_block_height"] == 0
+    assert health["local_block_hash"] == "0" * 64
 
 
 def test_replay_imports_multiple_headers_after_snapshot_base(tmp_path, monkeypatch) -> None:

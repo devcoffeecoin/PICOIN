@@ -34,12 +34,14 @@ from app.core.settings import (
     GENESIS_SUPPLY,
     MIN_VALIDATOR_STAKE,
     NETWORK_ID,
+    NODE_TYPE,
     PENALTY_DUPLICATE,
     PENALTY_INVALID_RESULT,
     PENALTY_INVALID_SIGNATURE,
     PROOF_OF_PI_REWARD_PERCENT,
     PROJECT_NAME,
     PROTOCOL_VERSION,
+    REQUIRED_VALIDATOR_APPROVALS,
     RETROACTIVE_AUDIT_INTERVAL_BLOCKS,
     RETROACTIVE_AUDIT_REWARD_ACCOUNT_ID,
     RETROACTIVE_AUDIT_REWARD_PERCENT_OF_BLOCK,
@@ -1812,6 +1814,7 @@ def get_health_status() -> dict[str, Any]:
     checked_at = utc_now_dt()
     issues: list[str] = []
     database = {"connected": False}
+    snapshot_base: dict[str, Any] | None = None
 
     try:
         with get_connection() as connection:
@@ -1819,6 +1822,7 @@ def get_health_status() -> dict[str, Any]:
             params = _active_protocol_params(connection)
             latest_height = _latest_block_height(connection)
             latest_hash = _latest_block_hash(connection)
+            snapshot_base = active_snapshot_base_in_connection(connection)
             miners = int(connection.execute("SELECT COUNT(*) AS count FROM miners").fetchone()["count"])
             validators = connection.execute(
                 """
@@ -1849,6 +1853,12 @@ def get_health_status() -> dict[str, Any]:
         eligible_validators = 0
         active_protocol = False
 
+    local_height = latest_height
+    local_hash = latest_hash
+    if snapshot_base is not None and int(snapshot_base.get("height") or 0) > latest_height:
+        latest_height = int(snapshot_base["height"])
+        latest_hash = snapshot_base["block_hash"]
+
     chain = verify_chain() if database["connected"] else {
         "valid": False,
         "checked_blocks": 0,
@@ -1861,7 +1871,8 @@ def get_health_status() -> dict[str, Any]:
         issues.append("chain verification failed")
     if not audit["valid"]:
         issues.append("economic audit has issues")
-    if active_protocol and eligible_validators < required_approvals:
+    local_quorum_roles = {"full", "bootstrap", "miner"}
+    if active_protocol and NODE_TYPE in local_quorum_roles and eligible_validators < required_approvals:
         issues.append("not enough eligible validators for quorum")
 
     can_assign_tasks = bool(database["connected"] and active_protocol)
@@ -1886,6 +1897,8 @@ def get_health_status() -> dict[str, Any]:
         "audit": audit,
         "latest_block_height": latest_height,
         "latest_block_hash": latest_hash,
+        "local_block_height": local_height,
+        "local_block_hash": local_hash,
         "can_assign_tasks": can_assign_tasks,
         "mining_ready": mining_ready,
         "issues": issues,

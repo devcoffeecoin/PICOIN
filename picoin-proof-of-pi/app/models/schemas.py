@@ -470,6 +470,8 @@ class NodeIdentityResponse(BaseModel):
 class NodeSyncStatusResponse(NodeIdentityResponse):
     latest_block_height: int
     latest_block_hash: str
+    effective_latest_block_height: int
+    effective_latest_block_hash: str
     latest_checkpoint: dict[str, Any] | None = None
     active_snapshot_base: dict[str, Any] | None = None
     peer_counts: dict[str, Any]
@@ -707,6 +709,8 @@ class HealthResponse(BaseModel):
     audit: dict[str, Any]
     latest_block_height: int
     latest_block_hash: str
+    local_block_height: int | None = None
+    local_block_hash: str | None = None
     can_assign_tasks: bool
     mining_ready: bool
     issues: list[str]
