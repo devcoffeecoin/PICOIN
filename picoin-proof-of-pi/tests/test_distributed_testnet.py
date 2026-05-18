@@ -620,6 +620,7 @@ def test_restore_snapshot_state_replaces_existing_local_chain(tmp_path, monkeypa
     local_key = generate_keypair()
     local_miner = register_miner("snapshot-restore-local-miner", local_key["public_key"])
     _mine_legacy_block(local_miner["miner_id"], local_key["private_key"])
+    create_canonical_checkpoint(height=1, source="stale-local")
     imported = import_canonical_snapshot(snapshot, source="peer-restore")
 
     restored = restore_imported_snapshot_state(imported["snapshot"]["snapshot_hash"])
@@ -629,6 +630,9 @@ def test_restore_snapshot_state_replaces_existing_local_chain(tmp_path, monkeypa
 
     assert restored["applied"] is True
     assert restored["replace_existing"] is True
+    assert restored["cleared"]["canonical_checkpoints"] == 1
+    assert restored["cleared"]["blocks"] == 1
+    assert restored["cleared"]["tasks"] == 1
     assert status["latest_block_height"] == 0
     assert status["effective_latest_block_height"] == 1
     assert status["effective_latest_block_hash"] == snapshot["checkpoint"]["block_hash"]
