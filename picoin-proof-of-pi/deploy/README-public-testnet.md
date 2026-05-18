@@ -1,22 +1,59 @@
-# Picoin Public Testnet Deployment Kit v0.19
+# Picoin Public Testnet Onboarding
 
-This kit turns the current Picoin node into a repeatable public testnet deployment for Ubuntu/DigitalOcean.
+This guide prepares a public Picoin testnet node, miner, or validator for Ubuntu servers and external participants.
 
-It does not activate Science Compute L2, AI execution, bridges, smart contracts or mainnet economics. The Science Compute Reserve remains locked by default.
+Public users should use DNS names and HTTPS. Do not publish raw bootstrap IP addresses in ANN posts, docs, or templates. Raw IPs are only an internal fallback/debug tool.
 
-## Recommended Droplet
+## Public Testnet Status
 
-For the first bootstrap node:
+- Status: live public testnet.
+- Public API: `https://api.picoin.science`
+- Validator public API name: `https://validador.picoin.science`
+- Protocol version: `0.18`
+- Network ID: `public-testnet`
+- Chain ID: `picoin-public-testnet-v018`
+- Mining: enabled.
+- External validation: enabled.
+- Consensus approvals: working with multi-validator approval logs such as `approvals=2/3` and `approvals=3/3`.
+- Current bootstrap setup: the bootstrap/API node still runs the miner together with the API/bootstrap services.
 
-- Ubuntu 24.04 LTS
-- Basic Premium Intel or AMD
-- 1 vCPU / 2 GB RAM / 70 GB disk is enough for early testnet
-- Open inbound TCP `22` and `8000`
-- Keep the public website on separate hosting
+The current setup already supports distributed validation, external validators, public HTTPS API access, public mining, consensus approvals, and public testnet participation.
 
-For longer-running public nodes, move to 2 vCPU / 4 GB RAM before inviting external miners.
+## Architecture
 
-## Install
+```text
+                  +----------------------+
+                  | bootstrap/API/miner  |
+                  | api.picoin.science   |
+                  +----------+-----------+
+                             |
+          +------------------+------------------+
+          |                  |                  |
+ +--------v-------+ +--------v-------+ +--------v-------+
+ | validator-one  | | validator-two  | | validator-three|
+ | external node  | | external node  | | external node  |
+ +----------------+ +----------------+ +----------------+
+```
+
+Current validator architecture:
+
+- One validator per machine/droplet.
+- Validators are not executed sequentially in one shared loop.
+- Validators communicate with the bootstrap/API through `https://api.picoin.science`.
+- Droplet 1 runs bootstrap/API plus miner.
+- Droplets 2, 3, and 4 run `validator-one`, `validator-two`, and `validator-three`.
+
+Future architecture goal:
+
+- Move miner outside the bootstrap node.
+- Add public peer discovery.
+- Allow community validators.
+- Increase decentralization.
+- Enable public peer nodes.
+
+## Quick Start
+
+Install the code on a fresh Ubuntu host:
 
 ```bash
 sudo apt update
@@ -24,423 +61,346 @@ sudo apt install -y git python3 python3-venv python3-pip sqlite3 curl ufw
 sudo useradd --system --create-home --home-dir /opt/picoin --shell /bin/bash picoin
 sudo -u picoin git clone https://github.com/devcoffeecoin/PICOIN.git /opt/picoin/PICOIN
 sudo -u picoin bash -lc 'cd /opt/picoin/PICOIN/picoin-proof-of-pi && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt'
-sudo -u picoin bash -lc 'ln -s /opt/picoin/PICOIN/picoin-proof-of-pi /opt/picoin/picoin-proof-of-pi'
-sudo PICOIN_REPO_DIR=/opt/picoin/picoin-proof-of-pi /opt/picoin/picoin-proof-of-pi/deploy/scripts/install-systemd-service.sh
 ```
 
-Runtime state is intentionally separated from code:
+The preferred installed path is:
 
-- chain database and identities: `/var/lib/picoin/data`
-- compressed SQLite backups: `/var/backups/picoin`
-- pre-refresh data copies: `/opt/picoin/state-backups`
-
-Use API URL variables in commands and runbooks instead of hard-coded droplet
-addresses:
-
-```bash
-LOCAL_API=http://localhost:8000
-NODE_PUBLIC_API=http://api.picoin.science
-VALIDATOR_PUBLIC_API=http://validador.picoin.science
-BOOTSTRAP_API=http://api.picoin.science
+```text
+/opt/picoin/picoin-proof-of-pi
 ```
 
-Edit the public testnet environment:
+If the clone path is `/opt/picoin/PICOIN/picoin-proof-of-pi`, create the canonical symlink:
 
 ```bash
+sudo -u picoin ln -s /opt/picoin/PICOIN/picoin-proof-of-pi /opt/picoin/picoin-proof-of-pi
+```
+
+Install systemd units:
+
+```bash
+sudo PICOIN_REPO_DIR=/opt/picoin/picoin-proof-of-pi \
+  /opt/picoin/picoin-proof-of-pi/deploy/scripts/install-systemd-service.sh
+```
+
+Copy a role template:
+
+```bash
+cd /opt/picoin/picoin-proof-of-pi
+sudo cp .env.public-testnet.example /etc/picoin/picoin.env
 sudo nano /etc/picoin/picoin.env
 ```
 
-For the first bootstrap node set:
+Role-specific templates are available:
+
+- `.env.node.example`
+- `.env.miner.example`
+- `.env.validator.example`
+- `.env.public-testnet.example`
+
+Runtime state is intentionally separated from code:
+
+- Chain database and identities: `/var/lib/picoin/data`
+- SQLite backups: `/var/backups/picoin`
+- Pre-refresh state copies: `/opt/picoin/state-backups`
+
+## Run a Node
+
+For a bootstrap/API node:
 
 ```bash
+PICOIN_HOME=/opt/picoin/picoin-proof-of-pi
+PICOIN_DATA_DIR=/var/lib/picoin/data
+PICOIN_SERVER=http://127.0.0.1:8000
 PICOIN_NODE_ID=bootstrap-nyc1-1
 PICOIN_NODE_TYPE=bootstrap
-PICOIN_NODE_ADDRESS=http://api.picoin.science
-PICOIN_BOOTSTRAP_PEERS=
+PICOIN_NODE_ADDRESS=https://api.picoin.science
 PICOIN_BOOTSTRAP_PEER=
+PICOIN_BOOTSTRAP_PEERS=
 ```
 
-For a second node set:
+For an external validator node:
 
 ```bash
-PICOIN_NODE_ID=validator-nyc1-1
+PICOIN_HOME=/opt/picoin/picoin-proof-of-pi
+PICOIN_DATA_DIR=/var/lib/picoin/data
+PICOIN_SERVER=http://127.0.0.1:8000
+PICOIN_NODE_ID=validator-yourname-1
 PICOIN_NODE_TYPE=validator
-PICOIN_NODE_ADDRESS=http://validador.picoin.science
-PICOIN_BOOTSTRAP_PEERS=http://api.picoin.science
-PICOIN_BOOTSTRAP_PEER=http://api.picoin.science
+PICOIN_NODE_ADDRESS=https://validador.picoin.science
+PICOIN_BOOTSTRAP_PEER=https://api.picoin.science
+PICOIN_BOOTSTRAP_PEERS=https://api.picoin.science
 ```
 
-If the testnet needs initial wallet funding, use the same canonical allocation file on every node:
+Manual node commands:
 
 ```bash
-sudo cp /opt/picoin/picoin-proof-of-pi/deploy/public-testnet-genesis.allocations.example.json /etc/picoin/genesis.allocations.json
-sudo chown root:picoin /etc/picoin/genesis.allocations.json
-sudo chmod 640 /etc/picoin/genesis.allocations.json
-/opt/picoin/picoin-proof-of-pi/.venv/bin/python -m picoin node genesis-hash --file /etc/picoin/genesis.allocations.json
+cd /opt/picoin/picoin-proof-of-pi
+.venv/bin/python -m picoin node doctor --server http://127.0.0.1:8000
+.venv/bin/python -m picoin node sync-status --server http://127.0.0.1:8000
+.venv/bin/python -m picoin node catch-up \
+  --server http://127.0.0.1:8000 \
+  --peer https://api.picoin.science
 ```
 
-Then set the same values on every node:
-
-```bash
-PICOIN_GENESIS_ALLOCATIONS_FILE=/etc/picoin/genesis.allocations.json
-PICOIN_GENESIS_HASH=THE_HASH_PRINTED_ABOVE
-```
-
-Start:
+Systemd:
 
 ```bash
 sudo systemctl start picoin-node
 sudo systemctl status picoin-node --no-pager
 ```
 
-Optional worker services are installed too:
+## Run a Miner
+
+Public miners should submit work to the HTTPS bootstrap API:
 
 ```bash
-sudo systemctl start picoin-validator
-sudo systemctl start picoin-miner
-sudo systemctl start picoin-reconciler
-sudo systemctl start picoin-auditor
-sudo systemctl status picoin-validator picoin-miner picoin-reconciler picoin-auditor --no-pager
+PICOIN_WORKER_ROLE=miner
+PICOIN_MINER_SERVER=https://api.picoin.science
+PICOIN_MINER_NAME=miner-yourname
+PICOIN_MINER_IDENTITY=/var/lib/picoin/data/testnet/identities/miner-yourname.json
+PICOIN_MINER_LOOPS=1
+PICOIN_MINER_SLEEP=5
+PICOIN_MINER_WORKERS=1
+PICOIN_WORKER_SLEEP=10
 ```
 
-`picoin-miner` and `picoin-validator` run through `deploy/scripts/picoin-worker-loop.sh`. A single miner or validator iteration can exit non-zero when there is no block or validation job ready; the wrapper treats that as a normal polling cycle and keeps the systemd service active.
-
-`picoin-reconciler` runs `node catch-up` in the background every `PICOIN_RECONCILER_SLEEP_SECONDS` seconds, writing JSON output to `PICOIN_RECONCILE_DIR`. It is the normal way for public nodes to converge after short peer outages or delayed gossip.
-
-Use different identity files per droplet by editing `/etc/picoin/picoin.env`:
-
-```bash
-PICOIN_MINER_IDENTITY=/opt/picoin/picoin-proof-of-pi/data/testnet/identities/miner-alice.json
-PICOIN_VALIDATOR_IDENTITY=/opt/picoin/picoin-proof-of-pi/data/testnet/identities/validator-one.json
-```
-
-When miners and validators run on different droplets, keep `PICOIN_SERVER`
-pointing at the local node API and route only the worker role that needs remote
-jobs:
-
-```bash
-# nyc1 miner host
-PICOIN_MINER_SERVER=http://localhost:8000
-
-# nyc3 validator host, validating jobs created by nyc1
-PICOIN_VALIDATOR_SERVER=http://api.picoin.science
-```
-
-If using the default persistent state directory from this kit, prefer:
-
-```bash
-PICOIN_MINER_IDENTITY=/var/lib/picoin/data/testnet/identities/miner-alice.json
-PICOIN_VALIDATOR_IDENTITY=/var/lib/picoin/data/testnet/identities/validator-one.json
-```
-
-## Safe Code Refresh
-
-Do not delete `/opt/picoin/picoin-proof-of-pi` by hand on a running public node. Use the refresh helper; it stops services, backs up existing state, migrates `data/` to `/var/lib/picoin/data`, refreshes code while excluding state, reinstalls systemd units, and leaves `/opt/picoin/picoin-proof-of-pi/data` as a symlink to the persistent state directory.
-
-```bash
-cd /opt/picoin/PICOIN/picoin-proof-of-pi
-git pull
-sudo PICOIN_SOURCE_DIR="$(pwd)" \
-  PICOIN_REPO_DIR=/opt/picoin/picoin-proof-of-pi \
-  PICOIN_DATA_DIR=/var/lib/picoin/data \
-  /opt/picoin/picoin-proof-of-pi/deploy/scripts/refresh-code.sh
-sudo systemctl restart picoin-node picoin-auditor picoin-reconciler picoin-validator picoin-miner
-```
-
-Then verify:
+Manual miner command:
 
 ```bash
 cd /opt/picoin/picoin-proof-of-pi
-LOCAL_API=http://localhost:8000
-BOOTSTRAP_API=http://api.picoin.science
-.venv/bin/python -m picoin node report --server "$LOCAL_API" --peer "$BOOTSTRAP_API"
+.venv/bin/python -m picoin miner \
+  --server https://api.picoin.science \
+  --identity /var/lib/picoin/data/testnet/identities/miner-yourname.json \
+  mine \
+  --loops 1 \
+  --sleep 5 \
+  --workers 1
 ```
 
-## Firewall
+Systemd:
 
 ```bash
-sudo ufw allow OpenSSH
-sudo ufw allow 8000/tcp
-sudo ufw enable
-sudo ufw status
+sudo systemctl restart picoin-miner
+sudo journalctl -u picoin-miner -f
 ```
 
-## Public Checks
+## Run a Validator
 
-On the node:
+Run one validator per machine. Do not reuse the same validator identity on multiple hosts.
+
+Validator one:
+
+```bash
+PICOIN_WORKER_ROLE=validator
+PICOIN_VALIDATOR_SERVER=https://api.picoin.science
+PICOIN_VALIDATOR_NAME=validator-one
+PICOIN_VALIDATOR_IDENTITY=/var/lib/picoin/data/testnet/identities/validator-one.json
+PICOIN_VALIDATOR_LOOPS=1
+PICOIN_VALIDATOR_SLEEP=5
+PICOIN_WORKER_SLEEP=10
+```
+
+Validator two:
+
+```bash
+PICOIN_WORKER_ROLE=validator
+PICOIN_VALIDATOR_SERVER=https://api.picoin.science
+PICOIN_VALIDATOR_NAME=validator-two
+PICOIN_VALIDATOR_IDENTITY=/var/lib/picoin/data/testnet/identities/validator-two.json
+```
+
+Validator three:
+
+```bash
+PICOIN_WORKER_ROLE=validator
+PICOIN_VALIDATOR_SERVER=https://api.picoin.science
+PICOIN_VALIDATOR_NAME=validator-three
+PICOIN_VALIDATOR_IDENTITY=/var/lib/picoin/data/testnet/identities/validator-three.json
+```
+
+Manual validator command:
+
+```bash
+cd /opt/picoin/picoin-proof-of-pi
+.venv/bin/python -m picoin validator \
+  --server https://api.picoin.science \
+  --identity /var/lib/picoin/data/testnet/identities/validator-three.json \
+  validate \
+  --loops 1 \
+  --sleep 5
+```
+
+Systemd:
+
+```bash
+sudo systemctl restart picoin-validator
+sudo journalctl -u picoin-validator -f
+```
+
+## Systemd Services
+
+```bash
+sudo systemctl status picoin-node --no-pager
+sudo systemctl status picoin-miner --no-pager
+sudo systemctl status picoin-validator --no-pager
+sudo systemctl status picoin-reconciler --no-pager
+sudo systemctl status picoin-auditor --no-pager
+```
+
+`picoin-miner` and `picoin-validator` both run through `deploy/scripts/picoin-worker-loop.sh`. A single polling iteration can exit non-zero when no task or validation job is ready; the wrapper keeps polling.
+
+## Health / Sync / Audit Commands
+
+Public API checks:
+
+```bash
+curl https://api.picoin.science/health
+curl https://api.picoin.science/node/sync-status
+curl https://api.picoin.science/consensus/status
+curl https://api.picoin.science/validators?limit=100
+```
+
+Local node checks:
 
 ```bash
 cd /opt/picoin/picoin-proof-of-pi
 .venv/bin/python -m picoin node doctor
 .venv/bin/python -m picoin node sync-status
 .venv/bin/python -m picoin node audit
+.venv/bin/python -m picoin node report \
+  --server http://127.0.0.1:8000 \
+  --peer https://api.picoin.science
 ```
 
-From another machine:
-
-```bash
-NODE_PUBLIC_API=http://api.picoin.science
-curl "$NODE_PUBLIC_API/health"
-curl "$NODE_PUBLIC_API/node/sync-status"
-```
-
-The deployment script also installs a standalone health checker:
-
-```bash
-LOCAL_API=http://localhost:8000
-PICOIN_SERVER="$LOCAL_API" /opt/picoin/picoin-proof-of-pi/deploy/scripts/health-check.sh
-```
-
-Use the service check when promoting a node or after code refreshes. It verifies systemd units, persistent data paths, smoke/backups, sync, audit and peer report in one pass:
-
-```bash
-PICOIN_PUBLIC_API_URL=http://api.picoin.science /opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-service-check.sh
-```
-
-The check should end with `PICOIN_SERVICE_CHECK_STATUS=ok`.
-
-Run a manual transaction smoke only when you want to mutate public testnet state:
-
-```bash
-python3 -m picoin testnet fund-wallet --wallet /var/lib/picoin/data/wallets/alice.json --amount 0.1
-
-PICOIN_TX_SMOKE_WALLET=/var/lib/picoin/data/wallets/alice.json \
-PICOIN_TX_SMOKE_RECIPIENT=PI_RECIPIENT_ADDRESS \
-/opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-tx-smoke.sh
-```
-
-It should end with `PICOIN_TX_SMOKE_STATUS=ok` after the transaction is confirmed.
-
-Use snapshot restore when a node has local state that cannot replay a peer block
-cleanly. Stop writers first, then restore from the healthy peer:
-
-```bash
-LOCAL_API=http://localhost:8000
-BOOTSTRAP_API=http://api.picoin.science
-sudo systemctl stop picoin-auditor picoin-reconciler picoin-validator picoin-miner
-python3 -m picoin node checkpoint \
-  --server "$LOCAL_API" \
-  restore-peer \
-  --peer "$BOOTSTRAP_API" \
-  --source bootstrap-restore
-sudo systemctl restart picoin-node
-```
-
-The restore imports a verified canonical snapshot, replaces local chain/mempool
-state, and leaves the snapshot active as the sync base. The next mined or
-replayed block must extend the snapshot block hash.
-
-If the healthy state is only available as a local SQLite backup, convert that
-backup into a canonical snapshot and restore it without copying databases by
-hand:
-
-```bash
-LOCAL_API=http://localhost:8000
-sudo systemctl stop picoin-auditor picoin-reconciler picoin-validator picoin-miner
-python3 -m picoin node checkpoint \
-  --server "$LOCAL_API" \
-  restore-sqlite \
-  --file /opt/picoin/state-backups/data-persistent-before-code-refresh-YYYYMMDDTHHMMSSZ/picoin.sqlite3 \
-  --height 10 \
-  --backup-current /opt/picoin/state-backups
-sudo systemctl restart picoin-node
-```
-
-After one node is restored from SQLite, other nodes should use `restore-peer`
-against that node so every node imports the exact same snapshot.
-
-If a public testnet node has historical accepted blocks with missing miner
-reward rows, repair the local economic tables explicitly. This command is
-idempotent: after a successful run, repeating it should report zero repaired
-blocks.
-
-```bash
-LOCAL_API=http://localhost:8000
-python3 -m picoin node repair-rewards --server "$LOCAL_API"
-python3 -m picoin node audit --server "$LOCAL_API"
-curl "$LOCAL_API/health"
-```
-
-For nodes restored from an old snapshot base, prefer a fresh peer snapshot from
-the healthy bootstrap before running catch-up:
-
-```bash
-LOCAL_API=http://localhost:8000
-BOOTSTRAP_API=http://api.picoin.science
-
-sudo systemctl stop picoin-auditor picoin-reconciler picoin-validator picoin-miner
-python3 -m picoin node checkpoint \
-  --server "$LOCAL_API" \
-  restore-peer \
-  --peer "$BOOTSTRAP_API" \
-  --source bootstrap-repaired
-python3 -m picoin node catch-up --server "$LOCAL_API" --peer "$BOOTSTRAP_API"
-python3 -m picoin node audit --server "$LOCAL_API"
-curl "$LOCAL_API/health"
-sudo systemctl restart picoin-auditor picoin-reconciler picoin-validator picoin-miner
-```
-
-For a full public-testnet smoke check:
-
-```bash
-LOCAL_API=http://localhost:8000
-BOOTSTRAP_API=http://api.picoin.science
-PICOIN_SERVER="$LOCAL_API" \
-PICOIN_BOOTSTRAP_PEER="$BOOTSTRAP_API" \
-/opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-smoke.sh
-```
-
-On the bootstrap node, omit `PICOIN_BOOTSTRAP_PEER`. The smoke script runs `node catch-up`, `node report` and `node audit`, stores JSON output in `data/testnet/smoke`, prints `PICOIN_SMOKE_STATUS=ok` on success and exits non-zero on failure.
-
-## Backups
-
-Run a manual SQLite backup:
-
-```bash
-sudo -u picoin PICOIN_HOME=/opt/picoin/picoin-proof-of-pi /opt/picoin/picoin-proof-of-pi/deploy/scripts/backup-sqlite.sh
-```
-
-Suggested cron:
-
-```bash
-sudo crontab -u picoin -e
-```
-
-```cron
-*/30 * * * * /opt/picoin/picoin-proof-of-pi/deploy/scripts/backup-sqlite.sh >/var/backups/picoin/latest.log 2>&1
-```
-
-## Bootstrap Flow
-
-For a fresh one-node public testnet:
+Catch up a validator node from bootstrap:
 
 ```bash
 cd /opt/picoin/picoin-proof-of-pi
-.venv/bin/python -m picoin testnet reset
-sudo systemctl restart picoin-node
-.venv/bin/python -m picoin testnet bootstrap
-.venv/bin/python -m picoin testnet cycle
-.venv/bin/python -m picoin node checkpoint create
-.venv/bin/python -m picoin node doctor --require-checkpoint
+.venv/bin/python -m picoin node catch-up \
+  --server http://127.0.0.1:8000 \
+  --peer https://api.picoin.science
 ```
 
-For continuous mining:
+Repair historical reward rows if an older node shows reward/audit mismatches:
 
 ```bash
-.venv/bin/python -m picoin testnet continuous --miners 1 --loops 10 --workers 1 --faucet 0
-.venv/bin/python -m picoin node audit
-.venv/bin/python -m picoin node checkpoint latest
+cd /opt/picoin/picoin-proof-of-pi
+.venv/bin/python -m picoin node repair-rewards --server http://127.0.0.1:8000
+.venv/bin/python -m picoin node audit --server http://127.0.0.1:8000
+curl http://127.0.0.1:8000/health
 ```
 
-## Connect A Second Droplet
-
-1. Install the same kit.
-2. Set `PICOIN_BOOTSTRAP_PEERS=http://api.picoin.science`.
-3. Set a unique `PICOIN_NODE_ID`.
-4. Start the node.
-5. On each node run:
+Restore a validator node from the healthy bootstrap snapshot:
 
 ```bash
-LOCAL_API=http://localhost:8000
-BOOTSTRAP_API=http://api.picoin.science
-.venv/bin/python -m picoin node reconcile --server "$LOCAL_API" --peer "$BOOTSTRAP_API"
-.venv/bin/python -m picoin node catch-up --server "$LOCAL_API" --peer "$BOOTSTRAP_API"
-.venv/bin/python -m picoin node compare --server "$LOCAL_API" --peer "$BOOTSTRAP_API"
-.venv/bin/python -m picoin node report --server "$LOCAL_API" --peer "$BOOTSTRAP_API"
-.venv/bin/python -m picoin node peers --server "$LOCAL_API"
-.venv/bin/python -m picoin node sync-status --server "$LOCAL_API"
+cd /opt/picoin/picoin-proof-of-pi
+sudo systemctl stop picoin-validator picoin-reconciler picoin-auditor picoin-miner
+.venv/bin/python -m picoin node checkpoint \
+  --server http://127.0.0.1:8000 \
+  restore-peer \
+  --peer https://api.picoin.science \
+  --source bootstrap-repaired
+.venv/bin/python -m picoin node catch-up \
+  --server http://127.0.0.1:8000 \
+  --peer https://api.picoin.science
+.venv/bin/python -m picoin node audit --server http://127.0.0.1:8000
+curl http://127.0.0.1:8000/health
+sudo systemctl restart picoin-validator picoin-reconciler picoin-auditor picoin-miner
 ```
 
-`node catch-up` runs reconcile, consensus replay, sync-status and audit in bounded rounds. With `--peer`, it also compares `network_id`, `chain_id`, `genesis_hash`, latest height and latest block hash against the peer. It should end with `status=ok`, `peer_matches=true`, `pending_replay_blocks=0` and `audit_valid=true`.
-
-`node report` is read-only and returns a pass/fail readiness checklist for health, audit, replay backlog, consensus, Science Compute Reserve, treasury and peer state.
-
-`node compare` is the shortest read-only peer check. It compares `network_id`, `chain_id`, `genesis_hash`, latest height and latest block hash.
-
-Both nodes should eventually report compatible `network_id`, `chain_id`, `genesis_hash`, latest height and latest block hash.
-
-## Three Independent Validators
-
-Before testing validator independence, make sure the bootstrap node is healthy:
+## Logs
 
 ```bash
-BOOTSTRAP_API=http://api.picoin.science
-curl "$BOOTSTRAP_API/health"
-curl "$BOOTSTRAP_API/validators?limit=100"
+sudo journalctl -u picoin-node -f
+sudo journalctl -u picoin-miner -f
+sudo journalctl -u picoin-validator -f
+sudo journalctl -u picoin-reconciler -f
+sudo journalctl -u picoin-auditor -f
 ```
 
-Each independent validator should use its own node API, validator identity file
-and service state. Do not reuse the same validator identity on multiple hosts.
-On each validator host:
+Recent logs without following:
 
 ```bash
-PICOIN_NODE_TYPE=validator
-PICOIN_NODE_ADDRESS=http://validador.picoin.science
-PICOIN_BOOTSTRAP_PEERS=http://api.picoin.science
-PICOIN_BOOTSTRAP_PEER=http://api.picoin.science
-PICOIN_SERVER=http://localhost:8000
-PICOIN_VALIDATOR_SERVER=http://api.picoin.science
-PICOIN_VALIDATOR_IDENTITY=/var/lib/picoin/data/testnet/identities/validator-one.json
+sudo journalctl -u picoin-node -u picoin-miner -u picoin-validator -u picoin-reconciler -u picoin-auditor -n 240 --no-pager
 ```
 
-For validator two and validator three, use each host's validator API name if it
-is publicly reachable. If they are running as separate workers behind the same
-validator API during a lab test, the node address can remain
-`http://validador.picoin.science`, but the identity path must be unique:
+## Expected Healthy Logs
 
-```bash
-PICOIN_VALIDATOR_IDENTITY=/var/lib/picoin/data/testnet/identities/validator-two.json
-PICOIN_VALIDATOR_IDENTITY=/var/lib/picoin/data/testnet/identities/validator-three.json
+Validator:
+
+```text
+Intentando validación con: validator-two
+No validation jobs available.
+Done. validation_jobs_completed=0
+Validated job_xxx: approved=True status=validation_pending approvals=2/3
+Validated job_xxx: approved=True status=approved approvals=3/3
 ```
 
-After editing `/etc/picoin/picoin.env`, restart and verify each validator:
+Miner:
+
+```text
+Mining attempt 1/1 as miner_xxx
+Task assigned: task_xxx
+Done. accepted=1 attempts=1
+```
+
+## Safe Code Refresh
+
+Do not delete `/opt/picoin/picoin-proof-of-pi` by hand on a running public node. Use the refresh helper; it stops services, backs up existing state, migrates `data/` to `/var/lib/picoin/data`, refreshes code while excluding state, reinstalls systemd units, and leaves `/opt/picoin/picoin-proof-of-pi/data` as a symlink to persistent state.
+
+Bootstrap or validator source paths may differ:
+
+- Bootstrap source example: `/opt/picoin/src/PICOIN`
+- Validator source example: `/root/PICOIN/PICOIN`
+- Installed runtime path: `/opt/picoin/picoin-proof-of-pi`
+
+Refresh:
 
 ```bash
-LOCAL_API=http://localhost:8000
-BOOTSTRAP_API=http://api.picoin.science
+cd /opt/picoin/src/PICOIN
+git pull
+SOURCE_DIR="$PWD/picoin-proof-of-pi"
+
+sudo PICOIN_SOURCE_DIR="$SOURCE_DIR" \
+  PICOIN_REPO_DIR=/opt/picoin/picoin-proof-of-pi \
+  PICOIN_DATA_DIR=/var/lib/picoin/data \
+  bash "$SOURCE_DIR/deploy/scripts/refresh-code.sh"
 
 sudo systemctl daemon-reload
-sudo systemctl restart picoin-node picoin-validator picoin-reconciler picoin-auditor
-sleep 10
-
-cd /opt/picoin/picoin-proof-of-pi
-.venv/bin/python -m picoin node catch-up --server "$LOCAL_API" --peer "$BOOTSTRAP_API"
-.venv/bin/python -m picoin node audit --server "$LOCAL_API"
-curl "$LOCAL_API/health"
-sudo journalctl -u picoin-validator -n 120 --no-pager
+sudo systemctl restart picoin-node picoin-reconciler picoin-auditor picoin-validator picoin-miner
 ```
 
-On the bootstrap API, confirm the network sees at least three eligible
-validators before relying on quorum validation:
+On a validator host cloned under `/root/PICOIN/PICOIN`, use:
 
 ```bash
-BOOTSTRAP_API=http://api.picoin.science
-curl "$BOOTSTRAP_API/health"
-curl "$BOOTSTRAP_API/validators?limit=100"
-curl "$BOOTSTRAP_API/consensus/status"
+cd /root/PICOIN/PICOIN
+git pull
+SOURCE_DIR="$PWD/picoin-proof-of-pi"
 ```
 
-After both nodes are connected, the short operational check is:
+## Troubleshooting
 
-```bash
-BOOTSTRAP_API=http://api.picoin.science
-PICOIN_BOOTSTRAP_PEER="$BOOTSTRAP_API" deploy/scripts/public-testnet-smoke.sh
-```
+- If a validator shows `405 Method Not Allowed` for `/validation/results`, check that the endpoint is `https://api.picoin.science` directly, not the HTTP version of that URL.
+- If HTTP redirects to HTTPS, use HTTPS directly in `/etc/picoin/picoin.env`.
+- If block height stalls, check `curl https://api.picoin.science/node/sync-status`, `consensus.pending`, `consensus.pending_missing_ancestors`, miner logs, validator logs, and reconciler logs.
+- If a validator auto-registers the wrong identity, check `PICOIN_VALIDATOR_IDENTITY`, `PICOIN_VALIDATOR_NAME`, and the JSON identity path.
+- If a service uses the wrong script, run `sudo systemctl cat picoin-validator`.
+- If a local node shows height `0` on a validator droplet, the bootstrap is the source of public chain state unless the local node is fully synced. Run `node catch-up` against `https://api.picoin.science`.
+- If `node catch-up` reports a state root mismatch after replay, stop writer services and restore a verified peer snapshot from `https://api.picoin.science`.
+- If audit reports missing reward rows on an older node, run `node repair-rewards` and then `node audit`.
+- Keep raw bootstrap IPs out of public docs; use `https://api.picoin.science`.
 
-Suggested monitoring cron:
+## ANN Checklist
 
-```cron
-*/5 * * * * PICOIN_BOOTSTRAP_PEER=http://api.picoin.science /opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-smoke.sh >>/var/lib/picoin/data/testnet/smoke/cron.log 2>&1
-```
-
-## Operational Checklist
-
-- `/health` returns `status=ok`.
-- `node doctor` has no errors.
-- `node audit` reports `valid=true`.
-- `deploy/scripts/public-testnet-smoke.sh` exits with `PICOIN_SMOKE_STATUS=ok`.
-- Latest block hash is stable across nodes.
-- At least one checkpoint exists after mining.
-- Backups are being created.
-- Science Compute Reserve status remains locked until a future governance activation.
-- Treasury claims remain protected by the 90-day timelock.
+- Bootstrap/API live: `https://api.picoin.science`
+- Explorer live.
+- Mining enabled.
+- External validation enabled.
+- 3 validators online.
+- Health endpoint returns `status=ok`.
+- Sync endpoint returns current height and hash.
+- Current block height visible.
+- Public docs link ready.
+- GitHub link ready.
+- Website link ready.
+- Explorer link ready.
