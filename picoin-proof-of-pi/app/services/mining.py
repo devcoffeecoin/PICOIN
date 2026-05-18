@@ -88,6 +88,7 @@ from app.services.state import (
     active_snapshot_base,
     active_snapshot_base_in_connection,
     calculate_state_root,
+    create_canonical_checkpoint_in_connection,
     maybe_create_checkpoint_in_connection,
     update_block_state_root,
 )
@@ -1767,6 +1768,117 @@ def get_full_economic_audit() -> dict[str, Any]:
     }
 
 
+def repair_missing_block_rewards() -> dict[str, Any]:
+    repaired_heights: set[int] = set()
+    rewards_inserted = 0
+    ledger_entries_inserted = 0
+    state_roots_updated = 0
+    checkpoints_updated = 0
+    timestamp = utc_now()
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT
+                blocks.height,
+                blocks.miner_id,
+                blocks.reward,
+                blocks.task_id,
+                blocks.timestamp,
+                rewards.id AS reward_id,
+                ledger_entries.id AS ledger_entry_id
+            FROM blocks
+            LEFT JOIN rewards
+                ON rewards.block_height = blocks.height
+               AND rewards.miner_id = blocks.miner_id
+               AND ABS(rewards.amount - blocks.reward) <= ?
+            LEFT JOIN ledger_entries
+                ON ledger_entries.block_height = blocks.height
+               AND ledger_entries.account_id = blocks.miner_id
+               AND ledger_entries.entry_type = 'block_reward'
+               AND ABS(ledger_entries.amount - blocks.reward) <= ?
+            WHERE rewards.id IS NULL OR ledger_entries.id IS NULL
+            ORDER BY blocks.height ASC
+            """,
+            (ECONOMIC_AUDIT_TOLERANCE, ECONOMIC_AUDIT_TOLERANCE),
+        ).fetchall()
+        for row in rows:
+            height = int(row["height"])
+            reward = round(float(row["reward"] or 0), 8)
+            if reward <= 0:
+                continue
+            if row["reward_id"] is None:
+                connection.execute(
+                    """
+                    INSERT INTO rewards (miner_id, block_height, amount, reason, created_at)
+                    VALUES (?, ?, ?, 'block reward repair', ?)
+                    """,
+                    (row["miner_id"], height, reward, row["timestamp"] or timestamp),
+                )
+                rewards_inserted += 1
+            if row["ledger_entry_id"] is None:
+                _apply_ledger_entry(
+                    connection,
+                    account_id=row["miner_id"],
+                    account_type="miner",
+                    amount=reward,
+                    entry_type="block_reward",
+                    block_height=height,
+                    related_id=row["task_id"],
+                    description="miner block reward repair",
+                    timestamp=row["timestamp"] or timestamp,
+                )
+                ledger_entries_inserted += 1
+            repaired_heights.add(height)
+
+        if repaired_heights:
+            first_height = min(repaired_heights)
+            block_rows = connection.execute(
+                """
+                SELECT height, timestamp
+                FROM blocks
+                WHERE height >= ?
+                ORDER BY height ASC
+                """,
+                (first_height,),
+            ).fetchall()
+            for block in block_rows:
+                update_block_state_root(connection, int(block["height"]), block["timestamp"])
+                state_roots_updated += 1
+            checkpoint_rows = connection.execute(
+                """
+                SELECT height
+                FROM canonical_checkpoints
+                WHERE height >= ?
+                ORDER BY height ASC
+                """,
+                (first_height,),
+            ).fetchall()
+            for checkpoint in checkpoint_rows:
+                create_canonical_checkpoint_in_connection(
+                    connection,
+                    int(checkpoint["height"]),
+                    trusted=True,
+                    source="repair",
+                )
+                checkpoints_updated += 1
+
+    audit = get_full_economic_audit()
+    chain = verify_chain()
+    return {
+        "status": "ok" if audit["valid"] and chain["valid"] else "needs_attention",
+        "repaired_blocks": len(repaired_heights),
+        "repaired_heights": sorted(repaired_heights),
+        "rewards_inserted": rewards_inserted,
+        "ledger_entries_inserted": ledger_entries_inserted,
+        "state_roots_updated": state_roots_updated,
+        "checkpoints_updated": checkpoints_updated,
+        "audit_valid": audit["valid"],
+        "audit_issues": audit["issues"],
+        "chain_valid": chain["valid"],
+        "chain_issues": chain["issues"],
+    }
+
+
 def cleanup_expired_tasks() -> dict[str, Any]:
     with get_connection() as connection:
         result = _expire_assigned_tasks(connection)
@@ -2883,6 +2995,7 @@ def _apply_ledger_entry(
     block_height: int | None = None,
     related_id: str | None = None,
     description: str | None = None,
+    timestamp: str | None = None,
 ) -> None:
     _ensure_balance_account(connection, account_id, account_type)
     current = connection.execute(
@@ -2890,7 +3003,7 @@ def _apply_ledger_entry(
         (account_id,),
     ).fetchone()
     balance_after = round(float(current["balance"]) + float(amount), 8)
-    timestamp = utc_now()
+    timestamp = timestamp or utc_now()
     connection.execute(
         "UPDATE balances SET balance = ?, updated_at = ? WHERE account_id = ?",
         (balance_after, timestamp, account_id),

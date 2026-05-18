@@ -16,6 +16,7 @@ from app.services.mining import (
     get_full_economic_audit,
     get_health_status,
     register_miner,
+    repair_missing_block_rewards,
     submit_task,
     verify_chain,
 )
@@ -43,6 +44,7 @@ from app.services.state import (
     latest_checkpoint,
     list_imported_snapshots,
     restore_imported_snapshot_state,
+    update_block_state_root,
     validate_snapshot_document,
     verify_checkpoint,
 )
@@ -444,6 +446,50 @@ def test_state_root_detects_ledger_tampering(tmp_path, monkeypatch) -> None:
 
     assert tampered["valid"] is False
     assert any(issue["reason"] == "state_root does not match ledger replay" for issue in tampered["issues"])
+
+
+def test_repair_missing_block_rewards_backfills_legacy_economics(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "repair-missing-rewards.sqlite3")
+
+    miner_key = generate_keypair()
+    miner = register_miner("repair-reward-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    block = get_block(1)
+
+    assert block is not None
+    with get_connection() as connection:
+        connection.execute("DELETE FROM rewards WHERE block_height = 1")
+        connection.execute(
+            """
+            DELETE FROM ledger_entries
+            WHERE block_height = 1 AND entry_type = 'block_reward'
+            """
+        )
+        connection.execute(
+            """
+            UPDATE balances
+            SET balance = ROUND(balance - ?, 8)
+            WHERE account_id = ?
+            """,
+            (block["reward"], block["miner_id"]),
+        )
+        update_block_state_root(connection, 1, block["timestamp"])
+
+    broken_audit = get_full_economic_audit()
+    repaired = repair_missing_block_rewards()
+    audit = get_full_economic_audit()
+    chain = verify_chain()
+    repaired_again = repair_missing_block_rewards()
+
+    assert broken_audit["valid"] is False
+    assert repaired["repaired_blocks"] == 1
+    assert repaired["rewards_inserted"] == 1
+    assert repaired["ledger_entries_inserted"] == 1
+    assert repaired["audit_valid"] is True
+    assert repaired["chain_valid"] is True
+    assert audit["valid"] is True
+    assert chain["valid"] is True
+    assert repaired_again["repaired_blocks"] == 0
 
 
 def test_canonical_checkpoint_can_be_created_and_verified(tmp_path, monkeypatch) -> None:

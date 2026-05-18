@@ -171,6 +171,7 @@ from app.services.mining import (
     register_miner,
     register_validator,
     preview_retarget,
+    repair_missing_block_rewards,
     request_faucet,
     reveal_task,
     run_retarget,
@@ -916,6 +917,11 @@ def audit_full() -> dict:
 @router.post("/maintenance/expire-tasks", response_model=MaintenanceCleanupResponse)
 def maintenance_expire_tasks() -> dict:
     return cleanup_expired_tasks()
+
+
+@router.post("/maintenance/repair-block-rewards")
+def maintenance_repair_block_rewards() -> dict:
+    return repair_missing_block_rewards()
 
 
 @router.get("/stats", response_model=StatsResponse)
