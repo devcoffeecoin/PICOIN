@@ -104,6 +104,18 @@ PICOIN_MINER_IDENTITY=/opt/picoin/picoin-proof-of-pi/data/testnet/identities/min
 PICOIN_VALIDATOR_IDENTITY=/opt/picoin/picoin-proof-of-pi/data/testnet/identities/validator-one.json
 ```
 
+When miners and validators run on different droplets, keep `PICOIN_SERVER`
+pointing at the local node API and route only the worker role that needs remote
+jobs:
+
+```bash
+# nyc1 miner host
+PICOIN_MINER_SERVER=http://127.0.0.1:8000
+
+# nyc3 validator host, validating jobs created by nyc1
+PICOIN_VALIDATOR_SERVER=http://198.211.100.89:8000
+```
+
 If using the default persistent state directory from this kit, prefer:
 
 ```bash
