@@ -812,6 +812,34 @@ def test_replay_imports_pending_headers_after_active_snapshot_base(tmp_path, mon
     assert audit["valid"] is True
 
 
+def test_replay_ignores_foreign_protocol_params_id_after_snapshot_base(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "snapshot-header-foreign-protocol-source.sqlite3")
+    with get_connection() as connection:
+        connection.execute("UPDATE protocol_params SET id = 9999 WHERE active = 1")
+
+    miner_key = generate_keypair()
+    miner = register_miner("snapshot-header-foreign-protocol-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    snapshot = export_canonical_snapshot(height=1)
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    next_block = get_blocks_since(1)["blocks"][0]
+
+    assert next_block["protocol_params_id"] == 9999
+
+    _init_network_db(tmp_path, monkeypatch, "snapshot-header-foreign-protocol-target.sqlite3")
+    imported = import_canonical_snapshot(snapshot, source="peer-a")
+    apply_imported_snapshot_state(imported["snapshot"]["snapshot_hash"])
+    received = receive_block_header(next_block, source_peer_id="peer-a")
+    replay = replay_finalized_blocks()
+    imported_block = get_block(next_block["height"])
+
+    assert received["status"] == "pending_replay"
+    assert replay["headers_imported"] == 1
+    assert replay["errors"] == []
+    assert imported_block["block_hash"] == next_block["block_hash"]
+    assert imported_block["protocol_params_id"] is None
+
+
 def test_health_reports_active_snapshot_tip_on_validator_restore(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "snapshot-health-source.sqlite3")
 
