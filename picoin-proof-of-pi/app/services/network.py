@@ -20,6 +20,7 @@ from app.core.settings import (
     NODE_ID,
     NODE_PUBLIC_ADDRESS,
     NODE_TYPE,
+    PEER_NETWORK_ID_TOLERANCE,
     PEER_TIMEOUT_SECONDS,
     PROJECT_NAME,
     PROTOCOL_VERSION,
@@ -84,8 +85,14 @@ def register_peer(
     peer_type = peer_type.lower().strip()
     if peer_type not in ALLOWED_NODE_TYPES:
         raise NetworkError(422, "invalid peer_type")
+    metadata = dict(metadata or {})
     if network_id != NETWORK_ID:
-        raise NetworkError(409, "peer network_id mismatch")
+        if not (PEER_NETWORK_ID_TOLERANCE and chain_id == CHAIN_ID and genesis_hash == GENESIS_HASH):
+            raise NetworkError(409, "peer network_id mismatch")
+        metadata["observed_network_id"] = network_id
+        metadata["accepted_network_id"] = NETWORK_ID
+        metadata["network_id_warning"] = "accepted because chain_id and genesis_hash match"
+        network_id = NETWORK_ID
     if chain_id != CHAIN_ID:
         raise NetworkError(409, "peer chain_id mismatch")
     if genesis_hash != GENESIS_HASH:
@@ -128,7 +135,7 @@ def register_peer(
                 genesis_hash,
                 timestamp,
                 timestamp,
-                json.dumps(metadata or {}, sort_keys=True),
+                json.dumps(metadata, sort_keys=True),
             ),
         )
         _record_sync_event(connection, peer_id, "peer_registered", "inbound", "accepted", {"peer_address": peer_address})

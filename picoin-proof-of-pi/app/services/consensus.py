@@ -86,6 +86,7 @@ def propose_block(block: dict[str, Any], proposer_node_id: str, gossip: bool = T
     timestamp = utc_now()
     status = "pending"
     reason = None
+    should_sync_ancestors = False
 
     with get_connection() as connection:
         tip = _latest_tip(connection)
@@ -109,10 +110,13 @@ def propose_block(block: dict[str, Any], proposer_node_id: str, gossip: bool = T
                 else:
                     raise ConsensusError(409, "proposal conflicts with local finalized chain")
         elif normalized["height"] == tip["height"] + 1 and normalized["previous_hash"] != tip["block_hash"]:
-            raise ConsensusError(409, "proposal previous_hash does not match local chain tip")
+            status = "pending_missing_ancestors"
+            reason = "proposal accepted but previous_hash is not local chain tip"
+            should_sync_ancestors = True
         elif normalized["height"] > tip["height"] + 1:
             status = "pending_missing_ancestors"
             reason = "proposal accepted but missing ancestor blocks"
+            should_sync_ancestors = True
 
         connection.execute(
             """
@@ -153,6 +157,8 @@ def propose_block(block: dict[str, Any], proposer_node_id: str, gossip: bool = T
             {"proposal_id": proposal_id, "block_hash": normalized["block_hash"], "height": normalized["height"]},
         )
         proposal = _proposal_by_id(connection, proposal_id)
+    if should_sync_ancestors:
+        _sync_missing_ancestors_for_proposer(proposer_node_id)
     if gossip:
         from app.services.network import gossip_json
 
@@ -162,6 +168,30 @@ def propose_block(block: dict[str, Any], proposer_node_id: str, gossip: bool = T
             "block_proposal_gossip",
         )
     return proposal
+
+
+def _sync_missing_ancestors_for_proposer(proposer_node_id: str) -> None:
+    with get_connection() as connection:
+        peer = connection.execute(
+            """
+            SELECT peer_address
+            FROM network_peers
+            WHERE node_id = ? AND status IN ('connected', 'stale')
+            ORDER BY
+                CASE status WHEN 'connected' THEN 0 ELSE 1 END,
+                last_seen DESC
+            LIMIT 1
+            """,
+            (proposer_node_id,),
+        ).fetchone()
+    if peer is None:
+        return
+    try:
+        from app.services.network import reconcile_peer
+
+        reconcile_peer(peer["peer_address"])
+    except Exception:
+        return
 
 
 def record_local_block_proposal(connection: Any, block: dict[str, Any], proposer_node_id: str | None = None) -> dict[str, Any]:

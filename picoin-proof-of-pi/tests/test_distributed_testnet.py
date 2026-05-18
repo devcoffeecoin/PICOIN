@@ -97,6 +97,24 @@ def test_peer_rejects_wrong_chain(tmp_path, monkeypatch) -> None:
         )
 
 
+def test_peer_accepts_network_id_drift_when_chain_and_genesis_match(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "network-drift.sqlite3")
+
+    peer = register_peer(
+        node_id="drift-peer",
+        peer_address="http://drift-peer:8000",
+        peer_type="validator",
+        protocol_version=PROTOCOL_VERSION,
+        network_id="public-testnet-restarted",
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+
+    assert peer["status"] == "connected"
+    assert peer["network_id"] == NETWORK_ID
+    assert peer["metadata"]["observed_network_id"] == "public-testnet-restarted"
+
+
 def test_signed_transaction_enters_mempool_once(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "mempool.sqlite3")
 
