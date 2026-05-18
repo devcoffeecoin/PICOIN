@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -23,6 +24,7 @@ from app.core.signatures import (
 
 
 DEFAULT_IDENTITY_PATH = Path("miner_identity.json")
+AUTO_REGISTER_IDENTITY = os.getenv("PICOIN_AUTO_REGISTER_IDENTITY", "1").strip().lower() not in {"0", "false", "no"}
 
 
 def utc_now() -> str:
@@ -33,6 +35,19 @@ def load_identity(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"identity file not found: {path}")
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_or_register_identity(server_url: str, identity_path: Path, default_name: str | None = None) -> dict[str, Any]:
+    try:
+        return load_identity(identity_path)
+    except FileNotFoundError:
+        if not AUTO_REGISTER_IDENTITY:
+            raise
+    name = default_name or identity_path.stem or "local-miner"
+    identity = register(server_url, name, identity_path, overwrite=False)
+    print(f"Auto-registered miner identity: {identity['miner_id']} ({identity['name']})")
+    print(f"Identity saved: {identity_path}")
+    return identity
 
 
 def save_identity(path: Path, identity: dict[str, Any]) -> None:
@@ -273,8 +288,9 @@ def command_register(args: argparse.Namespace) -> int:
 
 
 def command_mine(args: argparse.Namespace) -> int:
-    identity = load_identity(args.identity)
-    server_url = args.server.rstrip("/") if args.server else identity.get("server_url", "http://127.0.0.1:8000")
+    server_url = args.server.rstrip("/") if args.server else "http://127.0.0.1:8000"
+    identity = load_or_register_identity(server_url, args.identity)
+    server_url = args.server.rstrip("/") if args.server else identity.get("server_url", server_url)
 
     accepted = 0
     attempts = 0
@@ -293,8 +309,9 @@ def command_mine(args: argparse.Namespace) -> int:
 
 
 def command_stats(args: argparse.Namespace) -> int:
-    identity = load_identity(args.identity)
-    server_url = args.server.rstrip("/") if args.server else identity.get("server_url", "http://127.0.0.1:8000")
+    server_url = args.server.rstrip("/") if args.server else "http://127.0.0.1:8000"
+    identity = load_or_register_identity(server_url, args.identity)
+    server_url = args.server.rstrip("/") if args.server else identity.get("server_url", server_url)
     miner = get_miner(server_url, identity["miner_id"])
     print(json.dumps(miner, indent=2, sort_keys=True))
     return 0

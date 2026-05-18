@@ -1,5 +1,6 @@
 import argparse
 import json
+import os
 import sys
 import time
 from datetime import datetime, timezone
@@ -14,6 +15,7 @@ from app.core.signatures import build_validation_result_signature_payload, gener
 
 
 DEFAULT_IDENTITY_PATH = Path("validator_identity.json")
+AUTO_REGISTER_IDENTITY = os.getenv("PICOIN_AUTO_REGISTER_IDENTITY", "1").strip().lower() not in {"0", "false", "no"}
 
 
 def utc_now() -> str:
@@ -24,6 +26,19 @@ def load_identity(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"identity file not found: {path}")
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_or_register_identity(server_url: str, identity_path: Path, default_name: str | None = None) -> dict[str, Any]:
+    try:
+        return load_identity(identity_path)
+    except FileNotFoundError:
+        if not AUTO_REGISTER_IDENTITY:
+            raise
+    name = default_name or identity_path.stem or "local-validator"
+    identity = register(server_url, name, identity_path, overwrite=False)
+    print(f"Auto-registered validator identity: {identity['validator_id']} ({identity['name']})")
+    print(f"Identity saved: {identity_path}")
+    return identity
 
 
 def save_identity(path: Path, identity: dict[str, Any]) -> None:
@@ -110,8 +125,8 @@ def command_register(args: argparse.Namespace) -> int:
 
 
 def command_validate(args: argparse.Namespace) -> int:
-    identity = load_identity(args.identity)
     server_url = args.server.rstrip("/")
+    identity = load_or_register_identity(server_url, args.identity)
     completed = 0
 
     for index in range(args.loops):
