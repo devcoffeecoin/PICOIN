@@ -1770,6 +1770,7 @@ def get_full_economic_audit() -> dict[str, Any]:
 
 def repair_missing_block_rewards() -> dict[str, Any]:
     repaired_heights: set[int] = set()
+    miners_restored: set[str] = set()
     rewards_inserted = 0
     ledger_entries_inserted = 0
     state_roots_updated = 0
@@ -1806,6 +1807,8 @@ def repair_missing_block_rewards() -> dict[str, Any]:
             reward = round(float(row["reward"] or 0), 8)
             if reward <= 0:
                 continue
+            if _ensure_historical_miner(connection, str(row["miner_id"]), row["timestamp"] or timestamp):
+                miners_restored.add(str(row["miner_id"]))
             if row["reward_id"] is None:
                 connection.execute(
                     """
@@ -1868,6 +1871,8 @@ def repair_missing_block_rewards() -> dict[str, Any]:
         "status": "ok" if audit["valid"] and chain["valid"] else "needs_attention",
         "repaired_blocks": len(repaired_heights),
         "repaired_heights": sorted(repaired_heights),
+        "miners_restored": len(miners_restored),
+        "restored_miner_ids": sorted(miners_restored),
         "rewards_inserted": rewards_inserted,
         "ledger_entries_inserted": ledger_entries_inserted,
         "state_roots_updated": state_roots_updated,
@@ -1877,6 +1882,20 @@ def repair_missing_block_rewards() -> dict[str, Any]:
         "chain_valid": chain["valid"],
         "chain_issues": chain["issues"],
     }
+
+
+def _ensure_historical_miner(connection: Any, miner_id: str, timestamp: str) -> bool:
+    existing = connection.execute("SELECT 1 FROM miners WHERE miner_id = ?", (miner_id,)).fetchone()
+    if existing is not None:
+        return False
+    connection.execute(
+        """
+        INSERT INTO miners (miner_id, name, public_key, registered_at)
+        VALUES (?, ?, NULL, ?)
+        """,
+        (miner_id, f"historical:{miner_id}"[:80], timestamp),
+    )
+    return True
 
 
 def cleanup_expired_tasks() -> dict[str, Any]:
