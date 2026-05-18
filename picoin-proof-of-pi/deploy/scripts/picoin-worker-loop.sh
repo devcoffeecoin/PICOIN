@@ -33,28 +33,27 @@ while true; do
       ;;
       
     validator)
-      # Iteración secuencial sobre las tres identidades para forzar quórum de consenso (2/3)
-      for val in one two three; do
-        CURRENT_IDENTITY="$PICOIN_HOME/data/testnet/identities/validator-${val}.json"
-        
-        echo "[$(date +%T)] Intentando validación secuencial con: validator-${val}" >&2
-        
-        "$PICOIN_PYTHON" -m picoin validator \
-          --server "$PICOIN_VALIDATOR_SERVER" \
-          --identity "$CURRENT_IDENTITY" \
-          validate \
-          --loops "${PICOIN_VALIDATOR_LOOPS:-1}" \
-          --sleep "${PICOIN_VALIDATOR_SLEEP:-5}"
-        rc=$?
-        
-        if [ "$rc" -ne 0 ]; then
-          echo "picoin validator (${val}) iteration exited with rc=$rc; saltando al siguiente validador" >&2
-        fi
-      done
-      # Forzamos un código de salida limpio general para la ronda completa
-      rc=0
-      ;;
-      
+       # Ejecuta un solo validador por droplet.
+      # Configurar en /etc/picoin/picoin.env:
+      # PICOIN_VALIDATOR_NAME=validator-one / validator-two / validator-three
+
+      PICOIN_VALIDATOR_NAME="${PICOIN_VALIDATOR_NAME:-validator-one}"
+      CURRENT_IDENTITY="${PICOIN_VALIDATOR_IDENTITY:-$PICOIN_HOME/data/testnet/identities/${PICOIN_VALIDATOR_NAME}.json}"
+
+      echo "[$(date +%T)] Intentando validación con: ${PICOIN_VALIDATOR_NAME}" >&2
+
+      "$PICOIN_PYTHON" -m picoin validator \
+        --server "$PICOIN_VALIDATOR_SERVER" \
+        --identity "$CURRENT_IDENTITY" \
+        validate \
+        --loops "${PICOIN_VALIDATOR_LOOPS:-1}" \
+        --sleep "${PICOIN_VALIDATOR_SLEEP:-5}"
+      rc=$?
+
+      if [ "$rc" -ne 0 ]; then
+        echo "picoin validator (${PICOIN_VALIDATOR_NAME}) iteration exited with rc=$rc; continuing after sleep" >&2
+      fi
+      ;;      
     *)
       echo "invalid PICOIN_WORKER_ROLE=$PICOIN_WORKER_ROLE" >&2
       exit 2
