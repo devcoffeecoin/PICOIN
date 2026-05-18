@@ -2195,6 +2195,8 @@ def verify_chain() -> dict[str, Any]:
             hash_block(fraud_payload),
             hash_block(legacy_fraud_payload),
         }
+        if block["block_hash"] not in valid_hashes and _matches_imported_proposal_payload(block):
+            valid_hashes.add(block["block_hash"])
         if block["block_hash"] not in valid_hashes:
             issues.append({"height": height, "reason": "block_hash does not match block payload"})
         if block.get("state_root"):
@@ -2211,6 +2213,53 @@ def verify_chain() -> dict[str, Any]:
         "latest_block_hash": previous_hash if blocks else (snapshot_base["block_hash"] if snapshot_base else previous_hash),
         "issues": issues,
     }
+
+
+def _matches_imported_proposal_payload(block: dict[str, Any]) -> bool:
+    """Accept a foreign proposal payload when local FK ids were normalized during replay."""
+    with get_connection() as connection:
+        proposal_rows = connection.execute(
+            """
+            SELECT payload
+            FROM consensus_block_proposals
+            WHERE block_hash = ? AND height = ?
+            ORDER BY updated_at DESC, created_at DESC
+            """,
+            (block["block_hash"], block["height"]),
+        ).fetchall()
+        header_rows = connection.execute(
+            """
+            SELECT payload
+            FROM network_block_headers
+            WHERE block_hash = ? AND height = ?
+            ORDER BY received_at DESC
+            """,
+            (block["block_hash"], block["height"]),
+        ).fetchall()
+    for row in [*proposal_rows, *header_rows]:
+        try:
+            proposal_block = json.loads(row["payload"])
+        except (TypeError, json.JSONDecodeError):
+            continue
+        if proposal_block.get("block_hash") != block["block_hash"]:
+            continue
+        proposal_hashes = {
+            hash_block(_block_payload(proposal_block, include_protocol=True)),
+            hash_block(_block_payload(proposal_block, include_protocol=False)),
+        }
+        fraud_payload = _block_payload(proposal_block, include_protocol=True)
+        fraud_payload["fraudulent"] = bool(proposal_block.get("fraudulent", False))
+        fraud_payload["fraud_reason"] = proposal_block.get("fraud_reason")
+        fraud_payload["fraud_detected_at"] = proposal_block.get("fraud_detected_at")
+        proposal_hashes.add(hash_block(fraud_payload))
+        legacy_fraud_payload = _block_payload(proposal_block, include_protocol=False)
+        legacy_fraud_payload["fraudulent"] = bool(proposal_block.get("fraudulent", False))
+        legacy_fraud_payload["fraud_reason"] = proposal_block.get("fraud_reason")
+        legacy_fraud_payload["fraud_detected_at"] = proposal_block.get("fraud_detected_at")
+        proposal_hashes.add(hash_block(legacy_fraud_payload))
+        if block["block_hash"] in proposal_hashes:
+            return True
+    return False
 
 
 def _reject_in_connection(

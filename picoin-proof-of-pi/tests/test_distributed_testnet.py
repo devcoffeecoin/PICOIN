@@ -832,12 +832,14 @@ def test_replay_ignores_foreign_protocol_params_id_after_snapshot_base(tmp_path,
     received = receive_block_header(next_block, source_peer_id="peer-a")
     replay = replay_finalized_blocks()
     imported_block = get_block(next_block["height"])
+    chain = verify_chain()
 
     assert received["status"] == "pending_replay"
     assert replay["headers_imported"] == 1
     assert replay["errors"] == []
     assert imported_block["block_hash"] == next_block["block_hash"]
     assert imported_block["protocol_params_id"] is None
+    assert chain["valid"] is True
 
 
 def test_health_reports_active_snapshot_tip_on_validator_restore(tmp_path, monkeypatch) -> None:
