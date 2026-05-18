@@ -619,39 +619,50 @@ def get_imported_snapshot_in_connection(connection: Any, snapshot_hash: str) -> 
 
 
 def _clear_local_chain_state_for_snapshot_restore(connection: Any) -> dict[str, int]:
-    tables = [
-        "consensus_finalizations",
-        "consensus_votes",
-        "consensus_block_proposals",
-        "network_block_headers",
-        "mempool_transactions",
-        "retroactive_audits",
-        "validation_votes",
-        "validation_jobs",
-        "commitments",
-        "submissions",
-        "rejected_submissions",
-        "penalties",
-        "rewards",
-        "blocks",
-        "tasks",
-        "canonical_checkpoints",
-        "science_jobs",
-        "science_stake_accounts",
-        "science_reward_reserve",
-        "scientific_development_treasury_claims",
-        "scientific_development_treasury_epochs",
-        "scientific_development_treasury",
-        "science_events",
-    ]
-    cleared: dict[str, int] = {}
-    for table in tables:
-        try:
-            cursor = connection.execute(f"DELETE FROM {table}")
-            cleared[table] = int(cursor.rowcount if cursor.rowcount is not None else 0)
-        except Exception:
-            cleared[table] = -1
-    return cleared
+    foreign_keys_enabled = bool(connection.execute("PRAGMA foreign_keys").fetchone()[0])
+    if foreign_keys_enabled:
+        connection.execute("PRAGMA foreign_keys = OFF")
+    try:
+        tables = [
+            "consensus_finalizations",
+            "consensus_votes",
+            "consensus_block_proposals",
+            "network_block_headers",
+            "canonical_checkpoints",
+            "mempool_transactions",
+            "retroactive_audits",
+            "validation_votes",
+            "validation_jobs",
+            "commitments",
+            "submissions",
+            "rejected_submissions",
+            "penalties",
+            "rewards",
+            "blocks",
+            "tasks",
+            "science_jobs",
+            "science_stake_accounts",
+            "science_reward_reserve",
+            "scientific_development_treasury_claims",
+            "scientific_development_treasury_epochs",
+            "scientific_development_treasury",
+            "science_events",
+        ]
+        cleared: dict[str, int] = {}
+        failures: list[str] = []
+        for table in tables:
+            try:
+                cursor = connection.execute(f"DELETE FROM {table}")
+                cleared[table] = int(cursor.rowcount if cursor.rowcount is not None else 0)
+            except Exception:
+                cleared[table] = -1
+                failures.append(table)
+        if failures:
+            raise StateError(500, f"snapshot restore cleanup failed for: {', '.join(failures)}")
+        return cleared
+    finally:
+        if foreign_keys_enabled:
+            connection.execute("PRAGMA foreign_keys = ON")
 
 
 def _checkpoint_public_payload(checkpoint: dict[str, Any]) -> dict[str, Any]:
