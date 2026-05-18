@@ -42,6 +42,7 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
     )
     genesis_hash = parser.parse_args(["node", "genesis-hash", "--file", "genesis.json"])
     compare = parser.parse_args(["node", "compare", "--peer", "http://peer:8000"])
+    repair_rewards = parser.parse_args(["node", "repair-rewards"])
 
     assert peers.command == "node"
     assert peers.node_command == "peers"
@@ -73,6 +74,7 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
     assert genesis_hash.file == Path("genesis.json")
     assert compare.node_command == "compare"
     assert compare.peer == "http://peer:8000"
+    assert repair_rewards.node_command == "repair-rewards"
 
 
 def test_picoin_cli_parses_wallet_and_tx_commands() -> None:

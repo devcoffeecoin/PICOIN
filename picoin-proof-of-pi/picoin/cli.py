@@ -109,6 +109,11 @@ def command_node_audit(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_node_repair_rewards(args: argparse.Namespace) -> int:
+    print_json(post_json(args.server, "/maintenance/repair-block-rewards"))
+    return 0
+
+
 def command_node_protocol(args: argparse.Namespace) -> int:
     print_json(get_json(args.server, "/protocol"))
     return 0
@@ -1048,6 +1053,13 @@ def add_node_parser(subparsers: argparse._SubParsersAction) -> None:
     audit_parser = node_subparsers.add_parser("audit", help="Run full economic audit")
     audit_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
     audit_parser.set_defaults(func=command_node_audit)
+
+    repair_rewards_parser = node_subparsers.add_parser(
+        "repair-rewards",
+        help="Backfill missing reward and block_reward ledger rows for accepted blocks",
+    )
+    repair_rewards_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    repair_rewards_parser.set_defaults(func=command_node_repair_rewards)
 
     protocol_parser = node_subparsers.add_parser("protocol", help="Show active protocol")
     protocol_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
