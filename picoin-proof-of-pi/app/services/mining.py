@@ -41,6 +41,10 @@ from app.core.settings import (
     PROOF_OF_PI_REWARD_PERCENT,
     PROJECT_NAME,
     PROTOCOL_VERSION,
+    RANGE_START_WINDOW_SIZE,
+    RANGE_WINDOW_LOOKAHEAD_MULTIPLIER,
+    RANGE_WINDOW_MAX_AGE_BLOCKS,
+    RANGE_WINDOW_RETIRE_OCCUPANCY,
     REQUIRED_VALIDATOR_APPROVALS,
     RETROACTIVE_AUDIT_INTERVAL_BLOCKS,
     RETROACTIVE_AUDIT_REWARD_ACCOUNT_ID,
@@ -2019,6 +2023,7 @@ def get_difficulty_status() -> dict[str, Any]:
         current_height = _latest_block_height(connection)
         last_retarget_height = _last_retarget_height(connection)
         epoch_rows = _retarget_epoch_rows(connection, last_retarget_height)
+        assignment_window = _range_assignment_window(connection, params)
 
     blocks_since_retarget = max(0, current_height - last_retarget_height)
     average_ms = _average_epoch_ms(epoch_rows) if epoch_rows else None
@@ -2039,6 +2044,13 @@ def get_difficulty_status() -> dict[str, Any]:
         "blocks_until_next_epoch": blocks_until_ready,
         "active_difficulty": calculate_difficulty(params),
         "active_reward_per_block": calculate_reward(params),
+        "configured_max_pi_position": params["max_pi_position"],
+        "effective_max_pi_position": assignment_window["effective_max_pi_position"],
+        "range_frontier": assignment_window["frontier"],
+        "range_start_min": assignment_window["min_start"],
+        "range_start_max": assignment_window["max_start"],
+        "range_window_index": assignment_window["window_index"],
+        "range_window_size": assignment_window["window_size"],
     }
 
 
@@ -2086,6 +2098,10 @@ def _protocol_payload(params: dict[str, Any]) -> dict[str, Any]:
         "range_assignment_mode": params["range_assignment_mode"],
         "max_pi_position": params["max_pi_position"],
         "range_assignment_max_attempts": params["range_assignment_max_attempts"],
+        "range_start_window_size": RANGE_START_WINDOW_SIZE,
+        "range_window_retire_occupancy": RANGE_WINDOW_RETIRE_OCCUPANCY,
+        "range_window_max_age_blocks": RANGE_WINDOW_MAX_AGE_BLOCKS,
+        "range_window_lookahead_multiplier": RANGE_WINDOW_LOOKAHEAD_MULTIPLIER,
         "segment_size": params["segment_size"],
         "sample_count": params["sample_count"],
         "task_expiration_seconds": params["task_expiration_seconds"],
@@ -3369,19 +3385,23 @@ def _assign_pseudo_random_range(
     task_id: str,
     params: dict[str, Any],
 ) -> dict[str, Any]:
-    max_start = params["max_pi_position"] - params["segment_size"] + 1
-    if max_start < 1:
-        raise MiningError(500, "max_pi_position must be >= segment_size")
+    window = _range_assignment_window(connection, params)
+    min_start = window["min_start"]
+    max_start = window["max_start"]
+    if max_start < min_start:
+        raise MiningError(500, "assignment window must include at least one range start")
 
     previous_hash = _latest_block_hash(connection)
     task_counter = connection.execute("SELECT COUNT(*) AS count FROM tasks").fetchone()["count"] + 1
+    candidate_count = max_start - min_start + 1
 
     for nonce in range(params["range_assignment_max_attempts"]):
         assignment_seed = sha256_text(
             canonical_json(
                 {
                     "algorithm": params["algorithm"],
-                    "max_pi_position": params["max_pi_position"],
+                    "effective_max_pi_position": window["effective_max_pi_position"],
+                    "min_start": min_start,
                     "miner_id": miner_id,
                     "nonce": nonce,
                     "previous_hash": previous_hash,
@@ -3391,19 +3411,156 @@ def _assign_pseudo_random_range(
                 }
             )
         )
-        range_start = (int(assignment_seed, 16) % max_start) + 1
+        range_start = min_start + (int(assignment_seed, 16) % candidate_count)
         range_end = range_start + params["segment_size"] - 1
-        if not _range_overlaps_protected_task(connection, range_start, range_end, params["algorithm"]):
+        if _range_is_assignable(connection, range_start, range_end, params["algorithm"]):
             return {
                 "range_start": range_start,
                 "range_end": range_end,
                 "assignment_seed": assignment_seed,
             }
 
+    fallback_seed = sha256_text(
+        canonical_json(
+            {
+                "algorithm": params["algorithm"],
+                "effective_max_pi_position": window["effective_max_pi_position"],
+                "fallback": True,
+                "min_start": min_start,
+                "miner_id": miner_id,
+                "previous_hash": previous_hash,
+                "segment_size": params["segment_size"],
+                "task_counter": task_counter,
+                "task_id": task_id,
+            }
+        )
+    )
+    for range_start in range(min_start, max_start + 1):
+        range_end = range_start + params["segment_size"] - 1
+        if _range_is_assignable(connection, range_start, range_end, params["algorithm"]):
+            return {
+                "range_start": range_start,
+                "range_end": range_end,
+                "assignment_seed": fallback_seed,
+            }
+
     raise MiningError(503, "could not assign a non-overlapping range")
 
 
-def _range_overlaps_protected_task(connection: Any, range_start: int, range_end: int, algorithm: str) -> bool:
+def _range_assignment_window(connection: Any, params: dict[str, Any]) -> dict[str, int]:
+    segment_size = int(params["segment_size"])
+    configured_limit = max(int(params["max_pi_position"]), segment_size)
+    window_size = max(int(RANGE_START_WINDOW_SIZE), segment_size)
+    lookahead_window = max(window_size, segment_size * int(RANGE_WINDOW_LOOKAHEAD_MULTIPLIER))
+    frontier = _accepted_range_frontier(connection, params["algorithm"])
+    latest_height = _latest_block_height(connection)
+    frontier_window_index = max(0, (max(frontier, 1) - 1) // window_size)
+    first_window_index = _first_unretired_range_window(
+        connection,
+        params["algorithm"],
+        window_size,
+        latest_height,
+        frontier_window_index,
+    )
+    min_start = first_window_index * window_size + 1
+    current_window_end = (first_window_index + 1) * window_size
+    effective_max_pi_position = max(configured_limit, current_window_end, frontier + lookahead_window)
+    max_start = effective_max_pi_position - segment_size + 1
+    if max_start < min_start:
+        effective_max_pi_position = min_start + segment_size - 1
+        max_start = min_start
+    return {
+        "effective_max_pi_position": int(effective_max_pi_position),
+        "frontier": int(frontier),
+        "lookahead_window": int(lookahead_window),
+        "max_start": int(max_start),
+        "min_start": int(min_start),
+        "window_index": int(first_window_index),
+        "window_size": int(window_size),
+    }
+
+
+def _accepted_range_frontier(connection: Any, algorithm: str) -> int:
+    row = connection.execute(
+        """
+        SELECT MAX(range_end) AS frontier
+        FROM (
+            SELECT range_end FROM blocks WHERE algorithm = ?
+            UNION ALL
+            SELECT range_end FROM tasks WHERE algorithm = ? AND status = 'accepted'
+        )
+        """,
+        (algorithm, algorithm),
+    ).fetchone()
+    return int(row["frontier"] or 0)
+
+
+def _latest_block_height(connection: Any) -> int:
+    row = connection.execute("SELECT MAX(height) AS height FROM blocks").fetchone()
+    return int(row["height"] or 0)
+
+
+def _first_unretired_range_window(
+    connection: Any,
+    algorithm: str,
+    window_size: int,
+    latest_height: int,
+    frontier_window_index: int,
+) -> int:
+    threshold = max(0.0, min(1.0, float(RANGE_WINDOW_RETIRE_OCCUPANCY)))
+    max_age_blocks = max(1, int(RANGE_WINDOW_MAX_AGE_BLOCKS))
+    for window_index in range(frontier_window_index + 1):
+        window_start = window_index * window_size + 1
+        window_end = (window_index + 1) * window_size
+        used = connection.execute(
+            """
+            SELECT COUNT(DISTINCT range_start) AS count
+            FROM tasks
+            WHERE algorithm = ?
+              AND status IN ('assigned', 'committed', 'revealed', 'accepted')
+              AND range_start BETWEEN ? AND ?
+            """,
+            (algorithm, window_start, window_end),
+        ).fetchone()["count"]
+        occupancy = float(used or 0) / float(window_size)
+        opened = connection.execute(
+            """
+            SELECT MIN(height) AS height
+            FROM blocks
+            WHERE algorithm = ? AND range_start BETWEEN ? AND ?
+            """,
+            (algorithm, window_start, window_end),
+        ).fetchone()
+        first_height = opened["height"] if opened else None
+        age = 0 if first_height is None else max(0, latest_height - int(first_height) + 1)
+        if occupancy < threshold and age < max_age_blocks:
+            return window_index
+    return frontier_window_index + 1
+
+
+def _range_is_assignable(connection: Any, range_start: int, range_end: int, algorithm: str) -> bool:
+    return (
+        not _range_start_is_protected(connection, range_start, algorithm)
+        and not _range_overlaps_active_task(connection, range_start, range_end, algorithm)
+    )
+
+
+def _range_start_is_protected(connection: Any, range_start: int, algorithm: str) -> bool:
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM tasks
+        WHERE algorithm = ?
+        AND status IN ('assigned', 'committed', 'revealed', 'accepted')
+        AND range_start = ?
+        LIMIT 1
+        """,
+        (algorithm, range_start),
+    ).fetchone()
+    return row is not None
+
+
+def _range_overlaps_active_task(connection: Any, range_start: int, range_end: int, algorithm: str) -> bool:
     row = connection.execute(
         """
         SELECT 1
