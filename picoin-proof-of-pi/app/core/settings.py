@@ -57,6 +57,11 @@ MAX_TRANSACTIONS_PER_BLOCK = int(os.getenv("PICOIN_MAX_TRANSACTIONS_PER_BLOCK", 
 GOSSIP_ENABLED = os.getenv("PICOIN_GOSSIP_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
 GOSSIP_TIMEOUT_SECONDS = float(os.getenv("PICOIN_GOSSIP_TIMEOUT_SECONDS", "2.0"))
 GOSSIP_MAX_PEERS = int(os.getenv("PICOIN_GOSSIP_MAX_PEERS", "16"))
+PEER_NETWORK_ID_TOLERANCE = os.getenv("PICOIN_PEER_NETWORK_ID_TOLERANCE", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+}
 CHECKPOINT_INTERVAL_BLOCKS = int(os.getenv("PICOIN_CHECKPOINT_INTERVAL_BLOCKS", "10"))
 VALIDATION_MODE = "external_commit_reveal"
 REQUIRED_VALIDATOR_APPROVALS = 3

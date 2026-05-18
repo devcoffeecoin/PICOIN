@@ -86,6 +86,17 @@ def get_task(server_url: str, miner_id: str) -> dict[str, Any]:
     return response.json()
 
 
+def get_task_for_identity(server_url: str, identity: dict[str, Any]) -> dict[str, Any]:
+    params = {
+        "miner_id": identity["miner_id"],
+        "public_key": identity.get("public_key"),
+        "name": identity.get("name") or identity["miner_id"],
+    }
+    response = requests.get(f"{server_url}/tasks/next", params=params, timeout=20)
+    response.raise_for_status()
+    return response.json()
+
+
 def get_miner(server_url: str, miner_id: str) -> dict[str, Any]:
     response = requests.get(f"{server_url}/miners/{miner_id}", timeout=20)
     response.raise_for_status()
@@ -210,7 +221,7 @@ def reveal_samples(
 
 
 def mine_once(server_url: str, identity: dict[str, Any], workers: int) -> bool:
-    task = get_task(server_url, identity["miner_id"])
+    task = get_task_for_identity(server_url, identity)
     print(
         "Task assigned: "
         f"{task['task_id']} positions {task['range_start']}..{task['range_end']} "

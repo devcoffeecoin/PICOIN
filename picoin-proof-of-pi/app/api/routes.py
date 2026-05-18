@@ -776,13 +776,17 @@ def faucet(payload: FaucetRequest) -> dict:
 
 
 @router.get("/tasks/next", response_model=TaskResponse)
-def next_task(miner_id: str = Query(..., min_length=1)) -> dict:
+def next_task(
+    miner_id: str = Query(..., min_length=1),
+    public_key: str | None = Query(default=None, min_length=1),
+    name: str | None = Query(default=None, min_length=1, max_length=80),
+) -> dict:
     try:
-        task = create_next_task(miner_id)
+        task = create_next_task(miner_id, public_key=public_key, name=name)
     except MiningError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     if task is None:
-        raise HTTPException(status_code=404, detail="miner not found")
+        raise HTTPException(status_code=404, detail="miner not found; re-register miner or pass public_key")
     return task
 
 

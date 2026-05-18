@@ -239,11 +239,18 @@ def enrich_miner(miner: dict[str, Any] | None) -> dict[str, Any] | None:
     return miner
 
 
-def create_next_task(miner_id: str) -> dict[str, Any] | None:
+def create_next_task(
+    miner_id: str,
+    *,
+    public_key: str | None = None,
+    name: str | None = None,
+) -> dict[str, Any] | None:
     started = now_perf()
     with get_connection() as connection:
         _expire_assigned_tasks(connection)
         miner = row_to_dict(connection.execute("SELECT * FROM miners WHERE miner_id = ?", (miner_id,)).fetchone())
+        if miner is None and public_key:
+            miner = _restore_miner_identity(connection, miner_id, public_key, name)
         if miner is None:
             return None
 
@@ -286,6 +293,10 @@ def create_next_task(miner_id: str) -> dict[str, Any] | None:
         if active_count >= params["max_active_tasks_per_miner"]:
             raise MiningError(429, "miner has too many active tasks")
 
+        pooled_task = _claim_global_task_for_miner(connection, miner_id, params)
+        if pooled_task is not None:
+            return pooled_task
+
         task_id = f"task_{uuid.uuid4().hex[:16]}"
         assignment = _assign_pseudo_random_range(connection, miner_id, task_id, params)
         assignment_ms = elapsed_ms(started)
@@ -317,6 +328,85 @@ def create_next_task(miner_id: str) -> dict[str, Any] | None:
         )
         row = connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
     return row_to_dict(row)
+
+
+def _restore_miner_identity(
+    connection: Any,
+    miner_id: str,
+    public_key: str,
+    name: str | None,
+) -> dict[str, Any] | None:
+    miner_id = miner_id.strip()
+    if not miner_id.startswith("miner_"):
+        return None
+    try:
+        validate_public_key(public_key)
+    except (RuntimeError, ValueError) as exc:
+        raise MiningError(400, str(exc)) from exc
+    timestamp = utc_now()
+    connection.execute(
+        """
+        INSERT INTO miners (miner_id, name, public_key, registered_at)
+        VALUES (?, ?, ?, ?)
+        ON CONFLICT(miner_id) DO UPDATE SET
+            name = COALESCE(NULLIF(excluded.name, ''), miners.name),
+            public_key = COALESCE(miners.public_key, excluded.public_key)
+        """,
+        (miner_id, (name or miner_id)[:80], public_key, timestamp),
+    )
+    _ensure_balance_account(connection, miner_id, "miner")
+    return row_to_dict(connection.execute("SELECT * FROM miners WHERE miner_id = ?", (miner_id,)).fetchone())
+
+
+def _claim_global_task_for_miner(
+    connection: Any,
+    miner_id: str,
+    params: dict[str, Any],
+) -> dict[str, Any] | None:
+    timestamp = utc_now()
+    row = connection.execute(
+        """
+        SELECT *
+        FROM tasks
+        WHERE status IN ('pending', 'queued', 'available')
+          AND COALESCE(NULLIF(algorithm, ''), ?) = ?
+          AND (expires_at IS NULL OR expires_at > ?)
+          AND (
+              miner_id = ?
+              OR miner_id IS NULL
+              OR miner_id = ''
+              OR miner_id = 'global'
+          )
+        ORDER BY created_at ASC
+        LIMIT 1
+        """,
+        (params["algorithm"], params["algorithm"], timestamp, miner_id),
+    ).fetchone()
+    if row is None:
+        return None
+    expires_at = row["expires_at"] or iso_at(params["task_expiration_seconds"])
+    connection.execute(
+        """
+        UPDATE tasks
+        SET miner_id = ?,
+            status = 'assigned',
+            algorithm = COALESCE(NULLIF(algorithm, ''), ?),
+            protocol_params_id = COALESCE(protocol_params_id, ?),
+            assignment_mode = COALESCE(assignment_mode, ?),
+            expires_at = ?,
+            assignment_ms = COALESCE(assignment_ms, 0)
+        WHERE task_id = ?
+        """,
+        (
+            miner_id,
+            params["algorithm"],
+            params["id"],
+            params["range_assignment_mode"],
+            expires_at,
+            row["task_id"],
+        ),
+    )
+    return row_to_dict(connection.execute("SELECT * FROM tasks WHERE task_id = ?", (row["task_id"],)).fetchone())
 
 
 def submit_task(
