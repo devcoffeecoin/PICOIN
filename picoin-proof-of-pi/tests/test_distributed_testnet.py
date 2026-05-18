@@ -458,6 +458,8 @@ def test_repair_missing_block_rewards_backfills_legacy_economics(tmp_path, monke
 
     assert block is not None
     with get_connection() as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute("DELETE FROM miners WHERE miner_id = ?", (block["miner_id"],))
         connection.execute("DELETE FROM rewards WHERE block_height = 1")
         connection.execute(
             """
@@ -483,6 +485,7 @@ def test_repair_missing_block_rewards_backfills_legacy_economics(tmp_path, monke
 
     assert broken_audit["valid"] is False
     assert repaired["repaired_blocks"] == 1
+    assert repaired["miners_restored"] == 1
     assert repaired["rewards_inserted"] == 1
     assert repaired["ledger_entries_inserted"] == 1
     assert repaired["audit_valid"] is True
