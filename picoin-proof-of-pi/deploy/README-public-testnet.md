@@ -39,8 +39,9 @@ addresses:
 
 ```bash
 LOCAL_API=http://localhost:8000
-NODE_PUBLIC_API=https://node-api.example
-BOOTSTRAP_API=https://bootstrap-api.example
+NODE_PUBLIC_API=http://api.picoin.science
+VALIDATOR_PUBLIC_API=http://validador.picoin.science
+BOOTSTRAP_API=http://api.picoin.science
 ```
 
 Edit the public testnet environment:
@@ -54,7 +55,7 @@ For the first bootstrap node set:
 ```bash
 PICOIN_NODE_ID=bootstrap-nyc1-1
 PICOIN_NODE_TYPE=bootstrap
-PICOIN_NODE_ADDRESS=https://bootstrap-api.example
+PICOIN_NODE_ADDRESS=http://api.picoin.science
 PICOIN_BOOTSTRAP_PEERS=
 PICOIN_BOOTSTRAP_PEER=
 ```
@@ -64,9 +65,9 @@ For a second node set:
 ```bash
 PICOIN_NODE_ID=validator-nyc1-1
 PICOIN_NODE_TYPE=validator
-PICOIN_NODE_ADDRESS=https://validator-api.example
-PICOIN_BOOTSTRAP_PEERS=https://bootstrap-api.example
-PICOIN_BOOTSTRAP_PEER=https://bootstrap-api.example
+PICOIN_NODE_ADDRESS=http://validador.picoin.science
+PICOIN_BOOTSTRAP_PEERS=http://api.picoin.science
+PICOIN_BOOTSTRAP_PEER=http://api.picoin.science
 ```
 
 If the testnet needs initial wallet funding, use the same canonical allocation file on every node:
@@ -122,7 +123,7 @@ jobs:
 PICOIN_MINER_SERVER=http://localhost:8000
 
 # nyc3 validator host, validating jobs created by nyc1
-PICOIN_VALIDATOR_SERVER=https://bootstrap-api.example
+PICOIN_VALIDATOR_SERVER=http://api.picoin.science
 ```
 
 If using the default persistent state directory from this kit, prefer:
@@ -151,7 +152,7 @@ Then verify:
 ```bash
 cd /opt/picoin/picoin-proof-of-pi
 LOCAL_API=http://localhost:8000
-BOOTSTRAP_API=https://bootstrap-api.example
+BOOTSTRAP_API=http://api.picoin.science
 .venv/bin/python -m picoin node report --server "$LOCAL_API" --peer "$BOOTSTRAP_API"
 ```
 
@@ -178,7 +179,7 @@ cd /opt/picoin/picoin-proof-of-pi
 From another machine:
 
 ```bash
-NODE_PUBLIC_API=https://node-api.example
+NODE_PUBLIC_API=http://api.picoin.science
 curl "$NODE_PUBLIC_API/health"
 curl "$NODE_PUBLIC_API/node/sync-status"
 ```
@@ -193,7 +194,7 @@ PICOIN_SERVER="$LOCAL_API" /opt/picoin/picoin-proof-of-pi/deploy/scripts/health-
 Use the service check when promoting a node or after code refreshes. It verifies systemd units, persistent data paths, smoke/backups, sync, audit and peer report in one pass:
 
 ```bash
-PICOIN_PUBLIC_API_URL=https://api.picoin.science /opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-service-check.sh
+PICOIN_PUBLIC_API_URL=http://api.picoin.science /opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-service-check.sh
 ```
 
 The check should end with `PICOIN_SERVICE_CHECK_STATUS=ok`.
@@ -215,7 +216,7 @@ cleanly. Stop writers first, then restore from the healthy peer:
 
 ```bash
 LOCAL_API=http://localhost:8000
-BOOTSTRAP_API=https://bootstrap-api.example
+BOOTSTRAP_API=http://api.picoin.science
 sudo systemctl stop picoin-auditor picoin-reconciler picoin-validator picoin-miner
 python3 -m picoin node checkpoint \
   --server "$LOCAL_API" \
@@ -265,7 +266,7 @@ the healthy bootstrap before running catch-up:
 
 ```bash
 LOCAL_API=http://localhost:8000
-BOOTSTRAP_API=https://bootstrap-api.example
+BOOTSTRAP_API=http://api.picoin.science
 
 sudo systemctl stop picoin-auditor picoin-reconciler picoin-validator picoin-miner
 python3 -m picoin node checkpoint \
@@ -283,7 +284,7 @@ For a full public-testnet smoke check:
 
 ```bash
 LOCAL_API=http://localhost:8000
-BOOTSTRAP_API=https://bootstrap-api.example
+BOOTSTRAP_API=http://api.picoin.science
 PICOIN_SERVER="$LOCAL_API" \
 PICOIN_BOOTSTRAP_PEER="$BOOTSTRAP_API" \
 /opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-smoke.sh
@@ -334,14 +335,14 @@ For continuous mining:
 ## Connect A Second Droplet
 
 1. Install the same kit.
-2. Set `PICOIN_BOOTSTRAP_PEERS=https://bootstrap-api.example`.
+2. Set `PICOIN_BOOTSTRAP_PEERS=http://api.picoin.science`.
 3. Set a unique `PICOIN_NODE_ID`.
 4. Start the node.
 5. On each node run:
 
 ```bash
 LOCAL_API=http://localhost:8000
-BOOTSTRAP_API=https://bootstrap-api.example
+BOOTSTRAP_API=http://api.picoin.science
 .venv/bin/python -m picoin node reconcile --server "$LOCAL_API" --peer "$BOOTSTRAP_API"
 .venv/bin/python -m picoin node catch-up --server "$LOCAL_API" --peer "$BOOTSTRAP_API"
 .venv/bin/python -m picoin node compare --server "$LOCAL_API" --peer "$BOOTSTRAP_API"
@@ -358,17 +359,78 @@ BOOTSTRAP_API=https://bootstrap-api.example
 
 Both nodes should eventually report compatible `network_id`, `chain_id`, `genesis_hash`, latest height and latest block hash.
 
+## Three Independent Validators
+
+Before testing validator independence, make sure the bootstrap node is healthy:
+
+```bash
+BOOTSTRAP_API=http://api.picoin.science
+curl "$BOOTSTRAP_API/health"
+curl "$BOOTSTRAP_API/validators?limit=100"
+```
+
+Each independent validator should use its own node API, validator identity file
+and service state. Do not reuse the same validator identity on multiple hosts.
+On each validator host:
+
+```bash
+PICOIN_NODE_TYPE=validator
+PICOIN_NODE_ADDRESS=http://validador.picoin.science
+PICOIN_BOOTSTRAP_PEERS=http://api.picoin.science
+PICOIN_BOOTSTRAP_PEER=http://api.picoin.science
+PICOIN_SERVER=http://localhost:8000
+PICOIN_VALIDATOR_SERVER=http://api.picoin.science
+PICOIN_VALIDATOR_IDENTITY=/var/lib/picoin/data/testnet/identities/validator-one.json
+```
+
+For validator two and validator three, use each host's validator API name if it
+is publicly reachable. If they are running as separate workers behind the same
+validator API during a lab test, the node address can remain
+`http://validador.picoin.science`, but the identity path must be unique:
+
+```bash
+PICOIN_VALIDATOR_IDENTITY=/var/lib/picoin/data/testnet/identities/validator-two.json
+PICOIN_VALIDATOR_IDENTITY=/var/lib/picoin/data/testnet/identities/validator-three.json
+```
+
+After editing `/etc/picoin/picoin.env`, restart and verify each validator:
+
+```bash
+LOCAL_API=http://localhost:8000
+BOOTSTRAP_API=http://api.picoin.science
+
+sudo systemctl daemon-reload
+sudo systemctl restart picoin-node picoin-validator picoin-reconciler picoin-auditor
+sleep 10
+
+cd /opt/picoin/picoin-proof-of-pi
+.venv/bin/python -m picoin node catch-up --server "$LOCAL_API" --peer "$BOOTSTRAP_API"
+.venv/bin/python -m picoin node audit --server "$LOCAL_API"
+curl "$LOCAL_API/health"
+sudo journalctl -u picoin-validator -n 120 --no-pager
+```
+
+On the bootstrap API, confirm the network sees at least three eligible
+validators before relying on quorum validation:
+
+```bash
+BOOTSTRAP_API=http://api.picoin.science
+curl "$BOOTSTRAP_API/health"
+curl "$BOOTSTRAP_API/validators?limit=100"
+curl "$BOOTSTRAP_API/consensus/status"
+```
+
 After both nodes are connected, the short operational check is:
 
 ```bash
-BOOTSTRAP_API=https://bootstrap-api.example
+BOOTSTRAP_API=http://api.picoin.science
 PICOIN_BOOTSTRAP_PEER="$BOOTSTRAP_API" deploy/scripts/public-testnet-smoke.sh
 ```
 
 Suggested monitoring cron:
 
 ```cron
-*/5 * * * * PICOIN_BOOTSTRAP_PEER=https://bootstrap-api.example /opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-smoke.sh >>/var/lib/picoin/data/testnet/smoke/cron.log 2>&1
+*/5 * * * * PICOIN_BOOTSTRAP_PEER=http://api.picoin.science /opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-smoke.sh >>/var/lib/picoin/data/testnet/smoke/cron.log 2>&1
 ```
 
 ## Operational Checklist
