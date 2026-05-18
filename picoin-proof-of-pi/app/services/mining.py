@@ -2022,16 +2022,21 @@ def get_difficulty_status() -> dict[str, Any]:
 
     blocks_since_retarget = max(0, current_height - last_retarget_height)
     average_ms = _average_epoch_ms(epoch_rows) if epoch_rows else None
+    required_epoch_blocks = max(RETARGET_EPOCH_BLOCKS, DifficultyService.SMA_WINDOW)
+    blocks_until_ready = max(0, required_epoch_blocks - len(epoch_rows))
     return {
         "enabled": True,
         "epoch_blocks": RETARGET_EPOCH_BLOCKS,
+        "epoch_blocks_required": required_epoch_blocks,
         "target_block_ms": RETARGET_TARGET_BLOCK_MS,
         "tolerance": RETARGET_TOLERANCE,
         "current_height": current_height,
         "last_retarget_height": last_retarget_height,
         "current_epoch_block_count": len(epoch_rows),
         "current_epoch_average_ms": average_ms,
-        "blocks_until_next_epoch": max(0, RETARGET_EPOCH_BLOCKS - blocks_since_retarget),
+        "blocks_since_retarget": blocks_since_retarget,
+        "blocks_until_ready": blocks_until_ready,
+        "blocks_until_next_epoch": blocks_until_ready,
         "active_difficulty": calculate_difficulty(params),
         "active_reward_per_block": calculate_reward(params),
     }
