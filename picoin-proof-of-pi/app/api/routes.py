@@ -831,9 +831,13 @@ def reveal_task_endpoint(payload: TaskRevealRequest) -> dict:
 
 
 @router.get("/validation/jobs", response_model=ValidationJobResponse | None)
-def validation_job(validator_id: str = Query(..., min_length=1)) -> dict | None:
+def validation_job(
+    validator_id: str = Query(..., min_length=1),
+    public_key: str | None = Query(default=None, min_length=1),
+    name: str | None = Query(default=None, min_length=1, max_length=80),
+) -> dict | None:
     try:
-        return get_validation_job(validator_id)
+        return get_validation_job(validator_id, public_key=public_key, name=name)
     except MiningError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
