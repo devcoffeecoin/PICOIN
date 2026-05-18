@@ -1,0 +1,32 @@
+{
+  "version": 1,
+  "network_id": "mainnet",
+  "chain_id": "picoin-mainnet-v1",
+  "created_at": "2026-01-01T00:00:00+00:00",
+  "allocations": [
+    {
+      "account_id": "validator_1ac7f254cdd9416e",
+      "account_type": "validator",
+      "amount": 31.416,
+      "description": "mainnet genesis validator stake for validator-one"
+    },
+    {
+      "account_id": "validator_c1a74dd7646642e0",
+      "account_type": "validator",
+      "amount": 31.416,
+      "description": "mainnet genesis validator stake for validator-two"
+    },
+    {
+      "account_id": "validator_d5fb490f23974e10",
+      "account_type": "validator",
+      "amount": 31.416,
+      "description": "mainnet genesis validator stake for validator-three"
+    },
+    {
+      "account_id": "mainnet_validator_bootstrap_reserve",
+      "account_type": "validator_bootstrap_reserve",
+      "amount": 205.752,
+      "description": "mainnet genesis reserve for validator onboarding and launch operations"
+    }
+  ]
+}

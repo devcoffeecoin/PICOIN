@@ -252,6 +252,8 @@ Recommended order:
 7. Add mainnet `.env` templates after parameters are frozen.
 8. Prepare explorer/website ANN links.
 
+Mainnet parameter decisions are tracked in `MAINNET_PARAMETERS.md`.
+
 ## Mainnet Go / No-Go
 
 Mainnet can be considered only when:

@@ -10,7 +10,7 @@ The public testnet is live on HTTPS at `https://api.picoin.science` with `networ
 
 Use `https://api.picoin.science` directly for public miners and validators. Avoid the HTTP version of that endpoint, because redirects can break validator submissions.
 
-Mainnet readiness is tracked in `MAINNET_READINESS.md`.
+Mainnet readiness is tracked in `MAINNET_READINESS.md`; launch parameter decisions are tracked in `MAINNET_PARAMETERS.md`.
 
 ## Protocol v0.18
 
