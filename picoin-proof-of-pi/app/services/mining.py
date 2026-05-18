@@ -358,6 +358,35 @@ def _restore_miner_identity(
     return row_to_dict(connection.execute("SELECT * FROM miners WHERE miner_id = ?", (miner_id,)).fetchone())
 
 
+def _restore_validator_identity(
+    connection: Any,
+    validator_id: str,
+    public_key: str,
+    name: str | None,
+) -> dict[str, Any] | None:
+    validator_id = validator_id.strip()
+    if not validator_id.startswith("validator_"):
+        return None
+    try:
+        validate_public_key(public_key)
+    except (RuntimeError, ValueError) as exc:
+        raise MiningError(400, str(exc)) from exc
+    timestamp = utc_now()
+    connection.execute(
+        """
+        INSERT INTO validators (validator_id, name, public_key, registered_at, last_seen_at)
+        VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(validator_id) DO UPDATE SET
+            name = COALESCE(NULLIF(excluded.name, ''), validators.name),
+            public_key = COALESCE(validators.public_key, excluded.public_key),
+            last_seen_at = excluded.last_seen_at
+        """,
+        (validator_id, (name or validator_id)[:80], public_key, timestamp, timestamp),
+    )
+    _ensure_balance_account(connection, validator_id, "validator")
+    return row_to_dict(connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone())
+
+
 def _claim_global_task_for_miner(
     connection: Any,
     miner_id: str,
@@ -979,9 +1008,16 @@ def reveal_task(
     }
 
 
-def get_validation_job(validator_id: str) -> dict[str, Any] | None:
+def get_validation_job(
+    validator_id: str,
+    *,
+    public_key: str | None = None,
+    name: str | None = None,
+) -> dict[str, Any] | None:
     with get_connection() as connection:
         validator = row_to_dict(connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone())
+        if validator is None and public_key:
+            validator = _restore_validator_identity(connection, validator_id, public_key, name)
         if validator is None:
             return None
         if validator["is_banned"]:
@@ -1023,15 +1059,22 @@ def get_validation_job(validator_id: str) -> dict[str, Any] | None:
 
         job = None
         selection_meta = None
+        selection_empty = False
         for candidate_row in candidate_rows:
             candidate = row_to_dict(candidate_row)
             params = _protocol_params_for_task(connection, candidate)
             selected = _selected_validators_for_job(connection, candidate, params)
+            if not selected:
+                selection_empty = True
             match = next((item for item in selected if item["validator_id"] == validator_id), None)
             if match is not None:
                 job = candidate
                 selection_meta = match
                 break
+
+        if job is None and selection_empty and candidate_rows:
+            job = row_to_dict(candidate_rows[0])
+            selection_meta = None
 
         if job is None:
             return None

@@ -19,7 +19,7 @@ DEFAULT_SERVER_URL = "http://127.0.0.1:8000"
 
 
 def validate_once(server_url: str, identity: dict[str, Any]) -> dict[str, Any] | None:
-    job = get_job(server_url, identity["validator_id"])
+    job = get_job(server_url, identity)
     if job is None:
         print(f"No validation job available for {identity['validator_id']}.")
         return None

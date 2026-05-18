@@ -1,12 +1,15 @@
 from pathlib import Path
 
 from miner.client import load_or_register_identity as load_or_register_miner_identity
+from validator.client import get_job as get_validator_job
 from validator.client import load_or_register_identity as load_or_register_validator_identity
 
 
 class _Response:
     def __init__(self, payload: dict) -> None:
         self._payload = payload
+        self.content = b"{}"
+        self.text = "{}"
 
     def raise_for_status(self) -> None:
         return None
@@ -47,3 +50,24 @@ def test_validator_auto_registers_missing_identity(tmp_path, monkeypatch) -> Non
     assert identity["validator_id"] == "validator_auto"
     assert identity["name"] == "validator-one"
     assert identity_path.exists()
+
+
+def test_validator_job_poll_sends_identity_context(monkeypatch) -> None:
+    identity = {
+        "validator_id": "validator_restored",
+        "name": "validator-one",
+        "public_key": "ed25519:test-public-key",
+    }
+
+    def get(url: str, params: dict, timeout: int) -> _Response:
+        assert url == "http://node/validation/jobs"
+        assert params == {
+            "validator_id": "validator_restored",
+            "name": "validator-one",
+            "public_key": "ed25519:test-public-key",
+        }
+        return _Response({})
+
+    monkeypatch.setattr("validator.client.requests.get", get)
+
+    assert get_validator_job("http://node", identity) == {}

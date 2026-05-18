@@ -70,8 +70,17 @@ def register(server_url: str, name: str, identity_path: Path, overwrite: bool) -
     return identity
 
 
-def get_job(server_url: str, validator_id: str) -> dict[str, Any] | None:
-    response = requests.get(f"{server_url}/validation/jobs", params={"validator_id": validator_id}, timeout=20)
+def get_job(server_url: str, identity: dict[str, Any] | str) -> dict[str, Any] | None:
+    if isinstance(identity, str):
+        params = {"validator_id": identity}
+    else:
+        params = {
+            "validator_id": identity["validator_id"],
+            "public_key": identity.get("public_key"),
+            "name": identity.get("name") or identity["validator_id"],
+        }
+        params = {key: value for key, value in params.items() if value}
+    response = requests.get(f"{server_url}/validation/jobs", params=params, timeout=20)
     response.raise_for_status()
     if not response.content or response.text == "null":
         return None
@@ -130,7 +139,7 @@ def command_validate(args: argparse.Namespace) -> int:
     completed = 0
 
     for index in range(args.loops):
-        job = get_job(server_url, identity["validator_id"])
+        job = get_job(server_url, identity)
         if job is None:
             print("No validation jobs available.")
             if args.once:
