@@ -31,12 +31,11 @@ while true; do
         echo "picoin $PICOIN_WORKER_ROLE iteration exited with rc=$rc; continuing after sleep" >&2
       fi
       ;;
-      
+
     validator)
-       # Ejecuta un solo validador por droplet.
+      # Ejecuta un solo validador por droplet.
       # Configurar en /etc/picoin/picoin.env:
       # PICOIN_VALIDATOR_NAME=validator-one / validator-two / validator-three
-
       PICOIN_VALIDATOR_NAME="${PICOIN_VALIDATOR_NAME:-validator-one}"
       CURRENT_IDENTITY="${PICOIN_VALIDATOR_IDENTITY:-$PICOIN_HOME/data/testnet/identities/${PICOIN_VALIDATOR_NAME}.json}"
 
@@ -53,7 +52,8 @@ while true; do
       if [ "$rc" -ne 0 ]; then
         echo "picoin validator (${PICOIN_VALIDATOR_NAME}) iteration exited with rc=$rc; continuing after sleep" >&2
       fi
-      ;;      
+      ;;
+
     *)
       echo "invalid PICOIN_WORKER_ROLE=$PICOIN_WORKER_ROLE" >&2
       exit 2

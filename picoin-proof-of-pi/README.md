@@ -4,6 +4,12 @@ Functional MVP of **Proof of Pi** with an L1 extension called **Science Compute 
 
 This project does not execute heavy AI/scientific computing. Since v0.18 it includes a Public Testnet Deployment Kit to run nodes on droplets/real servers with a public env, systemd, health checks, and backups. On L1 it coordinates stake, access, jobs, hashes, reserve, and verified payments to prepare a future evolution.
 
+## Public Testnet
+
+The public testnet is live on HTTPS at `https://api.picoin.science` with `network_id=public-testnet`, `chain_id=picoin-public-testnet-v018`, and `protocol_version=0.18`. Public onboarding, systemd deployment, miner and validator templates, health checks, and troubleshooting commands live in `deploy/README-public-testnet.md`.
+
+Use `https://api.picoin.science` directly for public miners and validators. Avoid the HTTP version of that endpoint, because redirects can break validator submissions.
+
 ## Protocol v0.18
 
 Current parameters:
