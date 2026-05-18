@@ -34,6 +34,15 @@ Runtime state is intentionally separated from code:
 - compressed SQLite backups: `/var/backups/picoin`
 - pre-refresh data copies: `/opt/picoin/state-backups`
 
+Use API URL variables in commands and runbooks instead of hard-coded droplet
+addresses:
+
+```bash
+LOCAL_API=http://localhost:8000
+NODE_PUBLIC_API=https://node-api.example
+BOOTSTRAP_API=https://bootstrap-api.example
+```
+
 Edit the public testnet environment:
 
 ```bash
@@ -45,7 +54,7 @@ For the first bootstrap node set:
 ```bash
 PICOIN_NODE_ID=bootstrap-nyc1-1
 PICOIN_NODE_TYPE=bootstrap
-PICOIN_NODE_ADDRESS=http://YOUR_PUBLIC_IP:8000
+PICOIN_NODE_ADDRESS=https://bootstrap-api.example
 PICOIN_BOOTSTRAP_PEERS=
 PICOIN_BOOTSTRAP_PEER=
 ```
@@ -55,9 +64,9 @@ For a second node set:
 ```bash
 PICOIN_NODE_ID=validator-nyc1-1
 PICOIN_NODE_TYPE=validator
-PICOIN_NODE_ADDRESS=http://SECOND_PUBLIC_IP:8000
-PICOIN_BOOTSTRAP_PEERS=http://BOOTSTRAP_PUBLIC_IP:8000
-PICOIN_BOOTSTRAP_PEER=http://BOOTSTRAP_PUBLIC_IP:8000
+PICOIN_NODE_ADDRESS=https://validator-api.example
+PICOIN_BOOTSTRAP_PEERS=https://bootstrap-api.example
+PICOIN_BOOTSTRAP_PEER=https://bootstrap-api.example
 ```
 
 If the testnet needs initial wallet funding, use the same canonical allocation file on every node:
@@ -110,10 +119,10 @@ jobs:
 
 ```bash
 # nyc1 miner host
-PICOIN_MINER_SERVER=http://127.0.0.1:8000
+PICOIN_MINER_SERVER=http://localhost:8000
 
 # nyc3 validator host, validating jobs created by nyc1
-PICOIN_VALIDATOR_SERVER=http://198.211.100.89:8000
+PICOIN_VALIDATOR_SERVER=https://bootstrap-api.example
 ```
 
 If using the default persistent state directory from this kit, prefer:
@@ -132,6 +141,7 @@ cd /opt/picoin/PICOIN/picoin-proof-of-pi
 git pull
 sudo PICOIN_SOURCE_DIR="$(pwd)" \
   PICOIN_REPO_DIR=/opt/picoin/picoin-proof-of-pi \
+  PICOIN_DATA_DIR=/var/lib/picoin/data \
   /opt/picoin/picoin-proof-of-pi/deploy/scripts/refresh-code.sh
 sudo systemctl restart picoin-node picoin-auditor picoin-reconciler picoin-validator picoin-miner
 ```
@@ -140,7 +150,9 @@ Then verify:
 
 ```bash
 cd /opt/picoin/picoin-proof-of-pi
-.venv/bin/python -m picoin node report --peer http://BOOTSTRAP_PUBLIC_IP:8000
+LOCAL_API=http://localhost:8000
+BOOTSTRAP_API=https://bootstrap-api.example
+.venv/bin/python -m picoin node report --server "$LOCAL_API" --peer "$BOOTSTRAP_API"
 ```
 
 ## Firewall
@@ -166,14 +178,16 @@ cd /opt/picoin/picoin-proof-of-pi
 From another machine:
 
 ```bash
-curl http://YOUR_PUBLIC_IP:8000/health
-curl http://YOUR_PUBLIC_IP:8000/node/sync-status
+NODE_PUBLIC_API=https://node-api.example
+curl "$NODE_PUBLIC_API/health"
+curl "$NODE_PUBLIC_API/node/sync-status"
 ```
 
 The deployment script also installs a standalone health checker:
 
 ```bash
-PICOIN_SERVER=http://127.0.0.1:8000 /opt/picoin/picoin-proof-of-pi/deploy/scripts/health-check.sh
+LOCAL_API=http://localhost:8000
+PICOIN_SERVER="$LOCAL_API" /opt/picoin/picoin-proof-of-pi/deploy/scripts/health-check.sh
 ```
 
 Use the service check when promoting a node or after code refreshes. It verifies systemd units, persistent data paths, smoke/backups, sync, audit and peer report in one pass:
@@ -200,11 +214,14 @@ Use snapshot restore when a node has local state that cannot replay a peer block
 cleanly. Stop writers first, then restore from the healthy peer:
 
 ```bash
+LOCAL_API=http://localhost:8000
+BOOTSTRAP_API=https://bootstrap-api.example
 sudo systemctl stop picoin-auditor picoin-reconciler picoin-validator picoin-miner
-python3 -m picoin node checkpoint restore-peer \
-  --server http://127.0.0.1:8000 \
-  --peer http://BOOTSTRAP_PUBLIC_IP:8000 \
-  --height 10
+python3 -m picoin node checkpoint \
+  --server "$LOCAL_API" \
+  restore-peer \
+  --peer "$BOOTSTRAP_API" \
+  --source bootstrap-restore
 sudo systemctl restart picoin-node
 ```
 
@@ -217,8 +234,11 @@ backup into a canonical snapshot and restore it without copying databases by
 hand:
 
 ```bash
+LOCAL_API=http://localhost:8000
 sudo systemctl stop picoin-auditor picoin-reconciler picoin-validator picoin-miner
-python3 -m picoin node checkpoint restore-sqlite \
+python3 -m picoin node checkpoint \
+  --server "$LOCAL_API" \
+  restore-sqlite \
   --file /opt/picoin/state-backups/data-persistent-before-code-refresh-YYYYMMDDTHHMMSSZ/picoin.sqlite3 \
   --height 10 \
   --backup-current /opt/picoin/state-backups
@@ -228,11 +248,44 @@ sudo systemctl restart picoin-node
 After one node is restored from SQLite, other nodes should use `restore-peer`
 against that node so every node imports the exact same snapshot.
 
+If a public testnet node has historical accepted blocks with missing miner
+reward rows, repair the local economic tables explicitly. This command is
+idempotent: after a successful run, repeating it should report zero repaired
+blocks.
+
+```bash
+LOCAL_API=http://localhost:8000
+python3 -m picoin node repair-rewards --server "$LOCAL_API"
+python3 -m picoin node audit --server "$LOCAL_API"
+curl "$LOCAL_API/health"
+```
+
+For nodes restored from an old snapshot base, prefer a fresh peer snapshot from
+the healthy bootstrap before running catch-up:
+
+```bash
+LOCAL_API=http://localhost:8000
+BOOTSTRAP_API=https://bootstrap-api.example
+
+sudo systemctl stop picoin-auditor picoin-reconciler picoin-validator picoin-miner
+python3 -m picoin node checkpoint \
+  --server "$LOCAL_API" \
+  restore-peer \
+  --peer "$BOOTSTRAP_API" \
+  --source bootstrap-repaired
+python3 -m picoin node catch-up --server "$LOCAL_API" --peer "$BOOTSTRAP_API"
+python3 -m picoin node audit --server "$LOCAL_API"
+curl "$LOCAL_API/health"
+sudo systemctl restart picoin-auditor picoin-reconciler picoin-validator picoin-miner
+```
+
 For a full public-testnet smoke check:
 
 ```bash
-PICOIN_SERVER=http://127.0.0.1:8000 \
-PICOIN_BOOTSTRAP_PEER=http://BOOTSTRAP_PUBLIC_IP:8000 \
+LOCAL_API=http://localhost:8000
+BOOTSTRAP_API=https://bootstrap-api.example
+PICOIN_SERVER="$LOCAL_API" \
+PICOIN_BOOTSTRAP_PEER="$BOOTSTRAP_API" \
 /opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-smoke.sh
 ```
 
@@ -281,18 +334,20 @@ For continuous mining:
 ## Connect A Second Droplet
 
 1. Install the same kit.
-2. Set `PICOIN_BOOTSTRAP_PEERS=http://BOOTSTRAP_PUBLIC_IP:8000`.
+2. Set `PICOIN_BOOTSTRAP_PEERS=https://bootstrap-api.example`.
 3. Set a unique `PICOIN_NODE_ID`.
 4. Start the node.
 5. On each node run:
 
 ```bash
-.venv/bin/python -m picoin node reconcile
-.venv/bin/python -m picoin node catch-up --peer http://BOOTSTRAP_PUBLIC_IP:8000
-.venv/bin/python -m picoin node compare --peer http://BOOTSTRAP_PUBLIC_IP:8000
-.venv/bin/python -m picoin node report --peer http://BOOTSTRAP_PUBLIC_IP:8000
-.venv/bin/python -m picoin node peers
-.venv/bin/python -m picoin node sync-status
+LOCAL_API=http://localhost:8000
+BOOTSTRAP_API=https://bootstrap-api.example
+.venv/bin/python -m picoin node reconcile --server "$LOCAL_API" --peer "$BOOTSTRAP_API"
+.venv/bin/python -m picoin node catch-up --server "$LOCAL_API" --peer "$BOOTSTRAP_API"
+.venv/bin/python -m picoin node compare --server "$LOCAL_API" --peer "$BOOTSTRAP_API"
+.venv/bin/python -m picoin node report --server "$LOCAL_API" --peer "$BOOTSTRAP_API"
+.venv/bin/python -m picoin node peers --server "$LOCAL_API"
+.venv/bin/python -m picoin node sync-status --server "$LOCAL_API"
 ```
 
 `node catch-up` runs reconcile, consensus replay, sync-status and audit in bounded rounds. With `--peer`, it also compares `network_id`, `chain_id`, `genesis_hash`, latest height and latest block hash against the peer. It should end with `status=ok`, `peer_matches=true`, `pending_replay_blocks=0` and `audit_valid=true`.
@@ -306,13 +361,14 @@ Both nodes should eventually report compatible `network_id`, `chain_id`, `genesi
 After both nodes are connected, the short operational check is:
 
 ```bash
-PICOIN_BOOTSTRAP_PEER=http://BOOTSTRAP_PUBLIC_IP:8000 deploy/scripts/public-testnet-smoke.sh
+BOOTSTRAP_API=https://bootstrap-api.example
+PICOIN_BOOTSTRAP_PEER="$BOOTSTRAP_API" deploy/scripts/public-testnet-smoke.sh
 ```
 
 Suggested monitoring cron:
 
 ```cron
-*/5 * * * * PICOIN_BOOTSTRAP_PEER=http://BOOTSTRAP_PUBLIC_IP:8000 /opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-smoke.sh >>/var/lib/picoin/data/testnet/smoke/cron.log 2>&1
+*/5 * * * * PICOIN_BOOTSTRAP_PEER=https://bootstrap-api.example /opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-smoke.sh >>/var/lib/picoin/data/testnet/smoke/cron.log 2>&1
 ```
 
 ## Operational Checklist
