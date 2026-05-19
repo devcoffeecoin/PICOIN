@@ -1,4 +1,4 @@
-const TARGET = process.env.PICOIN_BOOTSTRAP_API_URL || "https://api.picoin.science";
+const TARGET = process.env.PICOIN_BOOTSTRAP_API_URL || "http://198.211.100.89:8000";
 
 function buildTargetUrl(req) {
   const parts = Array.isArray(req.query.path) ? req.query.path : [req.query.path].filter(Boolean);
