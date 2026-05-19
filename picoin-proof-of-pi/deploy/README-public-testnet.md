@@ -1,4 +1,4 @@
-# Picoin Public Testnet Onboarding
+﻿# Picoin Public Testnet Onboarding
 
 This guide prepares a public Picoin testnet node, miner, or validator for Ubuntu servers and external participants.
 
@@ -14,8 +14,8 @@ Public users should use DNS names and HTTPS. Do not publish raw bootstrap IP add
 - Chain ID: `picoin-public-testnet-v018`
 - Mining: enabled.
 - External validation: enabled.
-- Consensus approvals: working with multi-validator approval logs such as `approvals=2/3` and `approvals=3/3`.
-- Current bootstrap setup: the bootstrap/API node still runs the miner together with the API/bootstrap services.
+- Consensus approvals: public testnet quorum is configurable and currently recommended as `PICOIN_REQUIRED_VALIDATOR_APPROVALS=2`.
+- Current bootstrap setup: bootstrap runs API, reconciler, and nginx. The miner was moved out of bootstrap because bootstrap RAM was almost exhausted; free memory improved from roughly 55 MiB to about 1.3 GiB.
 
 The current setup already supports distributed validation, external validators, public HTTPS API access, public mining, consensus approvals, and public testnet participation.
 
@@ -23,7 +23,7 @@ The current setup already supports distributed validation, external validators, 
 
 ```text
                   +----------------------+
-                  | bootstrap/API/miner  |
+                  | bootstrap/API/nginx  |
                   | api.picoin.science   |
                   +----------+-----------+
                              |
@@ -31,7 +31,7 @@ The current setup already supports distributed validation, external validators, 
           |                  |                  |
  +--------v-------+ +--------v-------+ +--------v-------+
  | validator-one  | | validator-two  | | validator-three|
- | external node  | | external node  | | external node  |
+ | miner + node   | | external node  | | external node  |
  +----------------+ +----------------+ +----------------+
 ```
 
@@ -40,12 +40,27 @@ Current validator architecture:
 - One validator per machine/droplet.
 - Validators are not executed sequentially in one shared loop.
 - Validators communicate with the bootstrap/API through `https://api.picoin.science`.
-- Droplet 1 runs bootstrap/API plus miner.
-- Droplets 2, 3, and 4 run `validator-one`, `validator-two`, and `validator-three`.
+- Droplet 1 runs bootstrap/API/reconciler/nginx.
+- Droplet 2 runs `validator-one` plus the current public testnet miner.
+- Droplets 3 and 4 run `validator-two` and `validator-three`.
+
+Recommended bootstrap sizing:
+
+- Minimum: 2 vCPU / 4 GB RAM.
+- Recommended: 2-4 vCPU / 4-8 GB RAM.
+- Optional swap for smaller machines:
+
+```bash
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile
+sudo mkswap /swapfile
+sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+```
 
 Future architecture goal:
 
-- Move miner outside the bootstrap node.
+- Keep miner outside the bootstrap node.
 - Add public peer discovery.
 - Allow community validators.
 - Increase decentralization.
@@ -102,6 +117,19 @@ Runtime state is intentionally separated from code:
 - Chain database and identities: `/var/lib/picoin/data`
 - SQLite backups: `/var/backups/picoin`
 - Pre-refresh state copies: `/opt/picoin/state-backups`
+
+Public testnet env additions used by the current deployment:
+
+```bash
+PICOIN_REQUIRED_VALIDATOR_APPROVALS=2
+PICOIN_SMOKE_SKIP_CATCH_UP=1
+PICOIN_SMOKE_WARN_ONLY=1
+PICOIN_SMOKE_TIMEOUT=60
+PICOIN_AUDITOR_INTERVAL=300
+PICOIN_RECONCILER_SKIP_WITHOUT_PEER=1
+```
+
+On bootstrap, the auditor is optional and should run warning-only if enabled. Bootstrap can use local health, audit, and sync checks without a bootstrap peer; external validators should use `https://api.picoin.science` as peer.
 
 ## Run a Node
 
@@ -257,7 +285,18 @@ Public API checks:
 curl https://api.picoin.science/health
 curl https://api.picoin.science/node/sync-status
 curl https://api.picoin.science/consensus/status
+curl 'https://api.picoin.science/consensus/proposals?status=pending_missing_ancestors&limit=20'
 curl https://api.picoin.science/validators?limit=100
+```
+
+Fast operational checks:
+
+```bash
+curl https://api.picoin.science/node/sync-status | grep -o '"latest_block_height":[0-9]*'
+curl https://api.picoin.science/node/sync-status | grep -o '"pending_missing_ancestors":[0-9]*'
+curl https://api.picoin.science/consensus/status
+sudo systemctl status picoin-node picoin-miner picoin-validator picoin-reconciler picoin-auditor --no-pager
+free -h
 ```
 
 Local node checks:
@@ -329,11 +368,11 @@ sudo journalctl -u picoin-node -u picoin-miner -u picoin-validator -u picoin-rec
 Validator:
 
 ```text
-Intentando validación con: validator-two
+Intentando validacion con: validator-two
 No validation jobs available.
 Done. validation_jobs_completed=0
-Validated job_xxx: approved=True status=validation_pending approvals=2/3
-Validated job_xxx: approved=True status=approved approvals=3/3
+Validated job_xxx: approved=True status=validation_pending approvals=1/2
+Validated job_xxx: approved=True status=approved approvals=2/2
 ```
 
 Miner:
@@ -383,6 +422,9 @@ SOURCE_DIR="$PWD/picoin-proof-of-pi"
 - If a validator shows `405 Method Not Allowed` for `/validation/results`, check that the endpoint is `https://api.picoin.science` directly, not the HTTP version of that URL.
 - If HTTP redirects to HTTPS, use HTTPS directly in `/etc/picoin/picoin.env`.
 - If block height stalls, check `curl https://api.picoin.science/node/sync-status`, `consensus.pending`, `consensus.pending_missing_ancestors`, miner logs, validator logs, and reconciler logs.
+- If `pending_missing_ancestors` is non-zero, inspect `curl 'https://api.picoin.science/consensus/proposals?status=pending_missing_ancestors&limit=20'`; do not delete proposals silently.
+- If `/consensus/replay` is slow, call it with a bounded batch such as `curl -X POST 'http://127.0.0.1:8000/consensus/replay?limit=50'` and check the structured `status`, `missing_ancestors`, and `errors` fields.
+- On bootstrap, keep `PICOIN_SMOKE_SKIP_CATCH_UP=1` and `PICOIN_SMOKE_WARN_ONLY=1` if the auditor is enabled, because bootstrap has no upstream peer.
 - If a validator auto-registers the wrong identity, check `PICOIN_VALIDATOR_IDENTITY`, `PICOIN_VALIDATOR_NAME`, and the JSON identity path.
 - If a service uses the wrong script, run `sudo systemctl cat picoin-validator`.
 - If a local node shows height `0` on a validator droplet, the bootstrap is the source of public chain state unless the local node is fully synced. Run `node catch-up` against `https://api.picoin.science`.

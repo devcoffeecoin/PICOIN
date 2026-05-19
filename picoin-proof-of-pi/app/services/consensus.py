@@ -8,11 +8,13 @@ from app.core.crypto import hash_block, sha256_text
 from app.core.settings import (
     BOOTSTRAP_PEERS,
     GENESIS_HASH,
+    MIN_VALIDATOR_STAKE,
     NODE_ID,
     PROOF_OF_PI_REWARD_PERCENT,
     PROTOCOL_VERSION,
     REQUIRED_VALIDATOR_APPROVALS,
     VALIDATION_MODE,
+    VALIDATOR_MIN_TRUST_SCORE,
     VALIDATOR_REWARD_PERCENT_OF_BLOCK,
 )
 from app.core.signatures import verify_payload_signature
@@ -516,54 +518,110 @@ def finalize_proposal(proposal_id: str, connection: Any | None = None) -> dict[s
 
 
 def replay_finalized_blocks(limit: int = 100) -> dict[str, Any]:
+    limit = max(1, min(int(limit or 1), 200))
     normalized = 0
     imported = 0
     skipped = 0
     headers_imported = 0
     headers_skipped = 0
     errors: list[str] = []
-    with get_connection() as connection:
-        normalized += _mark_existing_block_proposals_imported(connection)
-        rows = connection.execute(
-            """
-            SELECT p.proposal_id, p.payload
-            FROM consensus_block_proposals p
-            LEFT JOIN consensus_finalizations f ON f.proposal_id = p.proposal_id
-            WHERE p.status = 'finalized' AND COALESCE(f.imported, 0) = 0
-            ORDER BY p.height ASC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-        for row in rows:
-            block = json.loads(row["payload"])
-            if _import_finalized_block(connection, block, row["proposal_id"]):
-                imported += 1
-                _promote_ready_missing_ancestor_proposals(connection)
-                connection.execute(
-                    "UPDATE consensus_finalizations SET imported = 1 WHERE proposal_id = ?",
-                    (row["proposal_id"],),
-                )
-                connection.execute(
-                    "UPDATE consensus_block_proposals SET status = 'imported', updated_at = ? WHERE proposal_id = ?",
-                    (utc_now(), row["proposal_id"]),
-                )
-            else:
-                skipped += 1
-        remaining = max(int(limit) - imported - skipped, 0)
-        if remaining:
-            header_result = _replay_pending_block_headers(connection, remaining)
-            headers_imported = header_result["imported"]
-            headers_skipped = header_result["skipped"]
-            errors.extend(header_result["errors"])
+    missing_ancestors = 0
+    try:
+        with get_connection() as connection:
+            normalized += _mark_existing_block_proposals_imported(connection)
+            rows = connection.execute(
+                """
+                SELECT p.proposal_id, p.payload
+                FROM consensus_block_proposals p
+                LEFT JOIN consensus_finalizations f ON f.proposal_id = p.proposal_id
+                WHERE p.status = 'finalized' AND COALESCE(f.imported, 0) = 0
+                ORDER BY p.height ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            for row in rows:
+                proposal_id = row["proposal_id"]
+                connection.execute("SAVEPOINT replay_finalized_block")
+                try:
+                    block = json.loads(row["payload"])
+                    did_import = _import_finalized_block(connection, block, proposal_id)
+                    connection.execute("RELEASE SAVEPOINT replay_finalized_block")
+                except Exception as exc:
+                    connection.execute("ROLLBACK TO SAVEPOINT replay_finalized_block")
+                    connection.execute("RELEASE SAVEPOINT replay_finalized_block")
+                    skipped += 1
+                    reason = str(exc)
+                    errors.append(f"proposal {proposal_id}: {reason}")
+                    connection.execute(
+                        """
+                        UPDATE consensus_block_proposals
+                        SET rejection_reason = ?, updated_at = ?
+                        WHERE proposal_id = ?
+                        """,
+                        (reason, utc_now(), proposal_id),
+                    )
+                    continue
+                if did_import:
+                    imported += 1
+                    _promote_ready_missing_ancestor_proposals(connection)
+                    connection.execute(
+                        "UPDATE consensus_finalizations SET imported = 1 WHERE proposal_id = ?",
+                        (proposal_id,),
+                    )
+                    connection.execute(
+                        "UPDATE consensus_block_proposals SET status = 'imported', updated_at = ? WHERE proposal_id = ?",
+                        (utc_now(), proposal_id),
+                    )
+                else:
+                    skipped += 1
+            remaining = max(limit - imported - skipped, 0)
+            if remaining:
+                header_result = _replay_pending_block_headers(connection, remaining)
+                headers_imported = header_result["imported"]
+                headers_skipped = header_result["skipped"]
+                errors.extend(header_result["errors"])
+            missing_ancestors = _missing_ancestor_count(connection)
+    except Exception as exc:
+        errors.append(str(exc))
+        return {
+            "status": "error",
+            "processed": imported + skipped + headers_imported + headers_skipped,
+            "imported": imported,
+            "skipped": skipped,
+            "headers_imported": headers_imported,
+            "headers_skipped": headers_skipped,
+            "normalized": normalized,
+            "missing_ancestors": missing_ancestors,
+            "errors": errors[:20],
+            "checked_at": utc_now(),
+        }
+    processed = imported + skipped + headers_imported + headers_skipped
+    status = "ok"
+    if errors or missing_ancestors:
+        status = "partial"
     return {
+        "status": status,
+        "processed": processed,
         "imported": imported,
         "skipped": skipped,
         "headers_imported": headers_imported,
         "headers_skipped": headers_skipped,
         "normalized": normalized,
-        "errors": errors,
+        "missing_ancestors": missing_ancestors,
+        "errors": errors[:20],
+        "checked_at": utc_now(),
     }
+
+
+def _missing_ancestor_count(connection: Any) -> int:
+    proposals = connection.execute(
+        "SELECT COUNT(*) AS count FROM consensus_block_proposals WHERE status = 'pending_missing_ancestors'"
+    ).fetchone()
+    headers = connection.execute(
+        "SELECT COUNT(*) AS count FROM network_block_headers WHERE status = 'pending_missing_ancestors'"
+    ).fetchone()
+    return int((proposals["count"] if proposals else 0) or 0) + int((headers["count"] if headers else 0) or 0)
 
 
 def _mark_existing_block_proposals_imported(connection: Any) -> int:
@@ -612,14 +670,15 @@ def _replay_pending_block_headers(connection: Any, limit: int) -> dict[str, Any]
             connection.execute("RELEASE SAVEPOINT replay_pending_header")
             skipped += 1
             reason = str(exc)
+            status = "pending_missing_ancestors" if "ancestor" in reason.lower() else "pending_replay"
             errors.append(f"header {block_hash}: {reason}")
             connection.execute(
                 """
                 UPDATE network_block_headers
-                SET reason = ?
+                SET status = ?, reason = ?
                 WHERE block_hash = ?
                 """,
-                (reason, block_hash),
+                (status, reason, block_hash),
             )
             continue
         if did_import:
@@ -860,14 +919,54 @@ def consensus_status() -> dict[str, Any]:
             "SELECT height, block_hash FROM blocks ORDER BY height DESC LIMIT 1"
         ).fetchone()
         finalizations = connection.execute("SELECT COUNT(*) AS count FROM consensus_finalizations").fetchone()
+        eligible = connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM validators
+            WHERE is_banned = 0
+              AND stake_locked >= ?
+              AND trust_score >= ?
+            """,
+            (MIN_VALIDATOR_STAKE, VALIDATOR_MIN_TRUST_SCORE),
+        ).fetchone()
+        missing_ancestor_rows = connection.execute(
+            """
+            SELECT *
+            FROM consensus_block_proposals
+            WHERE status = 'pending_missing_ancestors'
+            ORDER BY height ASC, created_at ASC
+            LIMIT 10
+            """
+        ).fetchall()
         fork_groups = list_fork_choice_groups(limit=10, connection=connection)
         competing_proposals = sum(int(group["proposal_count"]) for group in fork_groups)
+    eligible_count = int((eligible["count"] if eligible else 0) or 0)
+    quorum_warning = None
+    if eligible_count < REQUIRED_VALIDATOR_APPROVALS:
+        quorum_warning = (
+            f"eligible_validators={eligible_count} is below required_validator_approvals={REQUIRED_VALIDATOR_APPROVALS}"
+        )
     return {
         "required_validator_approvals": REQUIRED_VALIDATOR_APPROVALS,
+        "eligible_validators": eligible_count,
+        "quorum_warning": quorum_warning,
         "fork_choice_rule": FORK_CHOICE_RULE,
         "latest_block_height": latest["height"] if latest else 0,
         "latest_block_hash": latest["block_hash"] if latest else GENESIS_HASH,
         "proposals": {row["status"]: row["count"] for row in counts},
+        "missing_ancestor_proposals": [
+            {
+                "proposal_id": proposal["proposal_id"],
+                "height": proposal["height"],
+                "block_hash": proposal["block_hash"],
+                "previous_hash": proposal["previous_hash"],
+                "age_seconds": proposal.get("age_seconds"),
+                "missing_ancestor_hash": proposal.get("missing_ancestor_hash"),
+                "missing_ancestor_height": proposal.get("missing_ancestor_height"),
+            }
+            for proposal in (_decode_proposal(row_to_dict(row)) for row in missing_ancestor_rows)
+            if proposal is not None
+        ],
         "finalizations": finalizations["count"] if finalizations else 0,
         "fork_group_count": len(fork_groups),
         "competing_proposal_count": competing_proposals,
@@ -1365,7 +1464,24 @@ def _decode_proposal(row: dict[str, Any] | None) -> dict[str, Any] | None:
     row["payload"] = json.loads(row["payload"])
     row["approvals"] = int(row.get("approvals") or 0)
     row["rejections"] = int(row.get("rejections") or 0)
+    row["age_seconds"] = _age_seconds(row.get("created_at"))
+    if row.get("status") == "pending_missing_ancestors":
+        row["missing_ancestor_hash"] = row.get("previous_hash")
+        row["missing_ancestor_height"] = max(0, int(row.get("height") or 0) - 1)
     return row
+
+
+def _age_seconds(timestamp: Any) -> int | None:
+    if not timestamp:
+        return None
+    try:
+        value = str(timestamp).replace("Z", "+00:00")
+        parsed = datetime.fromisoformat(value)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return max(0, int((datetime.now(timezone.utc) - parsed).total_seconds()))
+    except Exception:
+        return None
 
 
 def _record_consensus_event(connection: Any, event_type: str, status: str, details: dict[str, Any]) -> None:

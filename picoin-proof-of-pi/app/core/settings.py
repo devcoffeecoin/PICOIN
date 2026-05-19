@@ -15,6 +15,13 @@ def _configured_path(value: str, default: Path) -> Path:
     return path if path.is_absolute() else BASE_DIR / path
 
 
+def _int_env(name: str, default: int) -> int:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return default
+    return int(value)
+
+
 DATA_DIR = _configured_path(os.getenv("PICOIN_DATA_DIR", ""), BASE_DIR / "data")
 DATABASE_PATH = _configured_path(os.getenv("PICOIN_DB_PATH", ""), DATA_DIR / "picoin.sqlite3")
 
@@ -72,7 +79,12 @@ PEER_NETWORK_ID_TOLERANCE = os.getenv("PICOIN_PEER_NETWORK_ID_TOLERANCE", "1").s
 }
 CHECKPOINT_INTERVAL_BLOCKS = int(os.getenv("PICOIN_CHECKPOINT_INTERVAL_BLOCKS", "10"))
 VALIDATION_MODE = "external_commit_reveal"
-REQUIRED_VALIDATOR_APPROVALS = NETWORK_PROFILE.required_validator_approvals
+REQUIRED_VALIDATOR_APPROVALS = _int_env(
+    "PICOIN_REQUIRED_VALIDATOR_APPROVALS",
+    NETWORK_PROFILE.required_validator_approvals,
+)
+if NETWORK_PROFILE.name == "mainnet" and REQUIRED_VALIDATOR_APPROVALS != NETWORK_PROFILE.required_validator_approvals:
+    raise RuntimeError("mainnet validator quorum is frozen at 3 approvals")
 RANGE_ASSIGNMENT_MODE = "pseudo_random"
 MAX_PI_POSITION = 10_000
 RANGE_ASSIGNMENT_MAX_ATTEMPTS = 512

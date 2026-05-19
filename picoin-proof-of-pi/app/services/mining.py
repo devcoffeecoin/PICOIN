@@ -1,4 +1,5 @@
 import json
+import os
 import random
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -1995,12 +1996,23 @@ def get_health_status() -> dict[str, Any]:
         latest_height = int(snapshot_base["height"])
         latest_hash = snapshot_base["block_hash"]
 
-    chain = verify_chain() if database["connected"] else {
-        "valid": False,
-        "checked_blocks": 0,
-        "latest_block_hash": latest_hash,
-        "issues": [{"reason": "database unavailable"}],
-    }
+    if database["connected"] and snapshot_base is not None and int(snapshot_base.get("height") or 0) > local_height:
+        chain = {
+            "valid": True,
+            "checked_blocks": 0,
+            "latest_block_hash": latest_hash,
+            "issues": [],
+        }
+    else:
+        if database["connected"]:
+            chain = _basic_chain_health(local_height, local_hash)
+        else:
+            chain = {
+                "valid": False,
+                "checked_blocks": 0,
+                "latest_block_hash": latest_hash,
+                "issues": [{"reason": "database unavailable"}],
+            }
     audit = _basic_audit_health() if database["connected"] else {"valid": False, "issues": 1}
 
     if not chain["valid"]:
@@ -2037,6 +2049,51 @@ def get_health_status() -> dict[str, Any]:
         "local_block_hash": local_hash,
         "can_assign_tasks": can_assign_tasks,
         "mining_ready": mining_ready,
+        "issues": issues,
+    }
+
+
+def _basic_chain_health(latest_height: int, latest_hash: str) -> dict[str, Any]:
+    """Lightweight recent-tip check for public monitoring; full replay stays on /chain/verify."""
+    try:
+        limit = int(os.getenv("PICOIN_HEALTH_CHAIN_CHECK_BLOCKS", "64"))
+    except ValueError:
+        limit = 64
+    limit = max(1, min(limit, 512))
+    issues: list[dict[str, Any]] = []
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT height, previous_hash, block_hash
+            FROM blocks
+            ORDER BY height DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+    blocks = [row_to_dict(row) for row in rows]
+    if latest_height > 0 and not blocks:
+        issues.append({"height": latest_height, "reason": "latest block missing"})
+    if blocks:
+        newest = blocks[0]
+        if int(newest["height"]) != latest_height:
+            issues.append({"height": newest["height"], "reason": f"expected latest height {latest_height}"})
+        if newest["block_hash"] != latest_hash:
+            issues.append({"height": newest["height"], "reason": "latest block hash mismatch"})
+    by_height = {int(block["height"]): block for block in blocks}
+    for block in blocks:
+        height = int(block["height"])
+        if height <= 1:
+            if block["previous_hash"] != GENESIS_HASH:
+                issues.append({"height": height, "reason": "genesis previous_hash mismatch"})
+            continue
+        parent = by_height.get(height - 1)
+        if parent is not None and block["previous_hash"] != parent["block_hash"]:
+            issues.append({"height": height, "reason": "previous_hash does not match recent parent"})
+    return {
+        "valid": not issues,
+        "checked_blocks": len(blocks),
+        "latest_block_hash": latest_hash,
         "issues": issues,
     }
 

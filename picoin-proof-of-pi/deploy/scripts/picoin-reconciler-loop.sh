@@ -17,6 +17,7 @@ PICOIN_RECONCILE_DIR="${PICOIN_RECONCILE_DIR:-$PICOIN_DATA_DIR/testnet/reconcile
 PICOIN_RECONCILER_SLEEP_SECONDS="${PICOIN_RECONCILER_SLEEP_SECONDS:-120}"
 PICOIN_RECONCILER_ROUNDS="${PICOIN_RECONCILER_ROUNDS:-2}"
 PICOIN_RECONCILER_LIMIT="${PICOIN_RECONCILER_LIMIT:-32}"
+PICOIN_RECONCILER_SKIP_WITHOUT_PEER="${PICOIN_RECONCILER_SKIP_WITHOUT_PEER:-1}"
 
 PICOIN_BOOTSTRAP_PEER="${PICOIN_BOOTSTRAP_PEER:-}"
 if [ -z "$PICOIN_BOOTSTRAP_PEER" ] && [ -n "${PICOIN_BOOTSTRAP_PEERS:-}" ]; then
@@ -51,10 +52,14 @@ run_once() {
     rc=$?
   else
     echo "peer=(none)"
-    "$PICOIN_PYTHON" -m picoin node catch-up \
-      --server "$PICOIN_SERVER" \
-      --max-rounds "$PICOIN_RECONCILER_ROUNDS" \
-      --reconcile-limit "$PICOIN_RECONCILER_LIMIT" >"$out"
+    if [ "$PICOIN_RECONCILER_SKIP_WITHOUT_PEER" = "1" ]; then
+      "$PICOIN_PYTHON" -m picoin node sync-status --server "$PICOIN_SERVER" >"$out"
+    else
+      "$PICOIN_PYTHON" -m picoin node catch-up \
+        --server "$PICOIN_SERVER" \
+        --max-rounds "$PICOIN_RECONCILER_ROUNDS" \
+        --reconcile-limit "$PICOIN_RECONCILER_LIMIT" >"$out"
+    fi
     rc=$?
   fi
 
