@@ -2,11 +2,11 @@
   "rewrites": [
     {
       "source": "/api/bootstrap/:path*",
-      "destination": "http://198.211.100.89:8000/:path*"
+      "destination": "https://api.picoin.science/:path*"
     },
     {
       "source": "/api/validator/:path*",
-      "destination": "http://165.227.181.138:8000/:path*"
+      "destination": "https://validador.picoin.science/:path*"
     }
   ]
 }

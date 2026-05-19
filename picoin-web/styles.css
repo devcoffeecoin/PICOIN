@@ -83,6 +83,8 @@ nav a:hover,
   position: relative;
   min-height: 760px;
   display: grid;
+  grid-template-columns: minmax(0, 0.92fr) minmax(420px, 1.08fr);
+  gap: 46px;
   align-items: center;
   padding: 110px clamp(18px, 6vw, 86px) 120px;
   overflow: hidden;
@@ -94,8 +96,10 @@ nav a:hover,
   position: absolute;
   inset: 0;
   background:
-    linear-gradient(90deg, rgba(5, 8, 13, 0.98), rgba(5, 8, 13, 0.68), rgba(5, 8, 13, 0.96)),
-    url("./assets/picoin-logo.png") right 9vw center / min(54vw, 580px) no-repeat;
+    linear-gradient(90deg, rgba(5, 8, 13, 0.98), rgba(5, 8, 13, 0.74), rgba(5, 8, 13, 0.96)),
+    linear-gradient(rgba(32, 184, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(32, 184, 255, 0.05) 1px, transparent 1px);
+  background-size: auto, 78px 78px, 78px 78px;
   opacity: 0.94;
 }
 
@@ -110,7 +114,184 @@ nav a:hover,
 .hero-copy {
   position: relative;
   z-index: 1;
-  max-width: 790px;
+  max-width: 680px;
+}
+
+.hero-mark {
+  width: 168px;
+  height: 168px;
+  object-fit: contain;
+  margin-bottom: 28px;
+  filter: drop-shadow(0 0 34px rgba(32, 184, 255, 0.34));
+}
+
+.hero-visual {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  justify-content: center;
+  min-width: 0;
+}
+
+.protocol-stack {
+  position: relative;
+  width: min(100%, 640px);
+  min-height: 610px;
+  padding: 18px 10px;
+}
+
+.stack-layer {
+  position: relative;
+  min-height: 218px;
+  border: 1px solid rgba(107, 220, 255, 0.72);
+  border-radius: 8px;
+  background:
+    linear-gradient(135deg, rgba(6, 28, 48, 0.96), rgba(9, 20, 33, 0.92)),
+    linear-gradient(90deg, rgba(32, 184, 255, 0.16), transparent);
+  box-shadow: 0 26px 90px rgba(0, 0, 0, 0.44), inset 0 0 46px rgba(32, 184, 255, 0.12);
+  overflow: hidden;
+  padding: 24px;
+}
+
+.stack-layer::before,
+.stack-layer::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+}
+
+.stack-layer::before {
+  inset: 18px;
+  border: 1px solid rgba(107, 220, 255, 0.18);
+  background:
+    linear-gradient(rgba(107, 220, 255, 0.14) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(107, 220, 255, 0.14) 1px, transparent 1px);
+  background-size: 32px 32px;
+  opacity: 0.55;
+  transform: perspective(740px) rotateX(56deg) translateY(-38px);
+  transform-origin: top;
+}
+
+.stack-layer::after {
+  right: -18px;
+  top: 28px;
+  bottom: -18px;
+  width: 18px;
+  border: 1px solid rgba(107, 220, 255, 0.34);
+  border-left: 0;
+  border-radius: 0 8px 8px 0;
+  background: rgba(8, 42, 68, 0.76);
+  transform: skewY(36deg);
+}
+
+.stack-layer h2 {
+  max-width: 300px;
+  margin: 2px 0 0;
+  font-size: 22px;
+  line-height: 1.08;
+  text-transform: uppercase;
+}
+
+.layer-number {
+  display: block;
+  color: var(--cyan-2);
+  font-size: 58px;
+  font-weight: 900;
+  line-height: 0.92;
+  text-shadow: 0 0 28px rgba(32, 184, 255, 0.5);
+}
+
+.layer-grid {
+  position: absolute;
+  inset: 72px 34px auto auto;
+  width: 180px;
+  height: 86px;
+  border: 1px solid rgba(107, 220, 255, 0.28);
+  background:
+    linear-gradient(135deg, transparent 48%, rgba(107, 220, 255, 0.3) 49%, transparent 51%),
+    linear-gradient(45deg, transparent 48%, rgba(107, 220, 255, 0.24) 49%, transparent 51%);
+  opacity: 0.7;
+}
+
+.stack-layer ul {
+  position: absolute;
+  left: 24px;
+  right: 24px;
+  bottom: 20px;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stack-layer li {
+  border: 1px solid rgba(107, 220, 255, 0.25);
+  border-radius: 6px;
+  background: rgba(1, 14, 24, 0.64);
+  color: #e8f8ff;
+  font-size: 12px;
+  font-weight: 800;
+  line-height: 1.2;
+  min-height: 44px;
+  padding: 10px 8px;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.layer-one {
+  width: 88%;
+  margin-left: auto;
+}
+
+.layer-two {
+  width: 88%;
+  margin-top: 128px;
+  border-color: rgba(171, 116, 255, 0.82);
+  background:
+    linear-gradient(135deg, rgba(42, 19, 82, 0.96), rgba(13, 18, 35, 0.94)),
+    linear-gradient(90deg, rgba(139, 92, 246, 0.2), transparent);
+  box-shadow: 0 26px 90px rgba(0, 0, 0, 0.44), inset 0 0 50px rgba(139, 92, 246, 0.2);
+}
+
+.layer-two::before {
+  border-color: rgba(171, 116, 255, 0.22);
+  background:
+    linear-gradient(rgba(171, 116, 255, 0.14) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(171, 116, 255, 0.14) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.layer-two::after {
+  border-color: rgba(171, 116, 255, 0.34);
+  background: rgba(42, 19, 82, 0.76);
+}
+
+.layer-two .layer-number {
+  color: #a984ff;
+  text-shadow: 0 0 30px rgba(139, 92, 246, 0.6);
+}
+
+.layer-two .layer-grid,
+.layer-two li {
+  border-color: rgba(171, 116, 255, 0.32);
+}
+
+.data-bridge {
+  position: absolute;
+  inset: 238px 11% auto 11%;
+  height: 152px;
+  display: flex;
+  justify-content: center;
+  gap: 32px;
+  opacity: 0.88;
+}
+
+.data-bridge span {
+  width: 1px;
+  background: linear-gradient(180deg, rgba(107, 220, 255, 0), rgba(107, 220, 255, 0.92), rgba(171, 116, 255, 0.08));
+  box-shadow: 0 0 16px rgba(32, 184, 255, 0.42);
 }
 
 .eyebrow {
@@ -191,6 +372,91 @@ h3 {
 
 .section-heading {
   margin-bottom: 30px;
+}
+
+.testnet-section {
+  background:
+    linear-gradient(180deg, rgba(7, 16, 26, 0.96), rgba(5, 8, 13, 1)),
+    linear-gradient(90deg, rgba(32, 184, 255, 0.08), transparent);
+}
+
+.testnet-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
+  gap: 16px;
+}
+
+.testnet-status,
+.testnet-links a {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(12, 20, 32, 0.92);
+  box-shadow: var(--shadow);
+}
+
+.testnet-status {
+  padding: 26px;
+}
+
+.testnet-status p {
+  color: var(--muted);
+  line-height: 1.64;
+}
+
+.live-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 18px;
+  color: var(--green);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.live-dot::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  border-radius: 999px;
+  background: var(--green);
+  box-shadow: 0 0 16px rgba(74, 222, 128, 0.7);
+}
+
+.testnet-links {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.testnet-links a {
+  min-height: 190px;
+  padding: 22px;
+  transition: border-color 160ms ease, transform 160ms ease;
+}
+
+.testnet-links a:hover {
+  border-color: rgba(32, 184, 255, 0.58);
+  transform: translateY(-2px);
+}
+
+.testnet-links span {
+  display: block;
+  margin-bottom: 26px;
+  color: var(--cyan);
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.testnet-links strong {
+  display: block;
+  color: #e8f8ff;
+  font-size: 18px;
+  line-height: 1.42;
+  overflow-wrap: anywhere;
 }
 
 .feature-grid,
@@ -637,12 +903,23 @@ td strong {
 }
 
 @media (max-width: 1100px) {
+  .hero {
+    grid-template-columns: 1fr;
+    gap: 36px;
+  }
+
+  .hero-copy {
+    max-width: 820px;
+  }
+
   .feature-grid,
   .allocation-grid,
   .principle-list,
   .resource-grid,
   .compute-layout,
   .characteristics-grid,
+  .testnet-layout,
+  .testnet-links,
   .explorer-metrics,
   .network-summary,
   .validator-grid {
@@ -659,22 +936,83 @@ td strong {
 
   nav {
     width: 100%;
-    justify-content: space-between;
+    flex-wrap: wrap;
+    justify-content: flex-start;
+    gap: 12px 18px;
   }
 
   .hero {
     min-height: 680px;
     padding-top: 88px;
+    padding-bottom: 78px;
   }
 
   .hero::before {
     background:
-      linear-gradient(180deg, rgba(5, 8, 13, 0.78), rgba(5, 8, 13, 0.98)),
-      url("./assets/picoin-logo.png") center 58px / min(80vw, 370px) no-repeat;
+      linear-gradient(180deg, rgba(5, 8, 13, 0.9), rgba(5, 8, 13, 0.98)),
+      linear-gradient(rgba(32, 184, 255, 0.05) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(32, 184, 255, 0.05) 1px, transparent 1px);
+    background-size: auto, 58px 58px, 58px 58px;
   }
 
   .hero-copy {
-    padding-top: 250px;
+    padding-top: 0;
+  }
+
+  .hero-mark {
+    width: 132px;
+    height: 132px;
+    margin-bottom: 22px;
+  }
+
+  .protocol-stack {
+    min-height: 520px;
+    padding: 0;
+  }
+
+  .stack-layer,
+  .layer-one,
+  .layer-two {
+    width: 100%;
+  }
+
+  .stack-layer {
+    min-height: 210px;
+    padding: 20px;
+  }
+
+  .stack-layer h2 {
+    font-size: 18px;
+  }
+
+  .layer-number {
+    font-size: 46px;
+  }
+
+  .layer-grid {
+    width: 132px;
+    height: 70px;
+    inset: 70px 24px auto auto;
+  }
+
+  .stack-layer ul {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    left: 20px;
+    right: 20px;
+  }
+
+  .stack-layer li {
+    min-height: 38px;
+  }
+
+  .layer-two {
+    margin-top: 92px;
+  }
+
+  .data-bridge {
+    inset: 218px 12% auto 12%;
+    height: 116px;
+    gap: 20px;
   }
 
   .feature-grid,
@@ -683,6 +1021,8 @@ td strong {
   .resource-grid,
   .compute-layout,
   .characteristics-grid,
+  .testnet-layout,
+  .testnet-links,
   .explorer-metrics,
   .network-summary,
   .validator-grid {

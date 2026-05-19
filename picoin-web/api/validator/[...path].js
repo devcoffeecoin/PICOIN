@@ -1,4 +1,4 @@
-const TARGET = process.env.PICOIN_VALIDATOR_API_URL || "http://165.227.181.138:8000";
+const TARGET = process.env.PICOIN_VALIDATOR_API_URL || "https://validador.picoin.science";
 
 function buildTargetUrl(req) {
   const parts = Array.isArray(req.query.path) ? req.query.path : [req.query.path].filter(Boolean);

@@ -43,7 +43,7 @@ window.PICOIN_EXPLORER_CONFIG = {
 };
 ```
 
-The proxies forward read-only explorer traffic to the public testnet droplets. Override the default targets with `PICOIN_BOOTSTRAP_API_URL` and `PICOIN_VALIDATOR_API_URL` in Vercel if the droplet IPs change.
+The proxies forward read-only explorer traffic to the public HTTPS testnet APIs. Defaults are `https://api.picoin.science` for bootstrap and `https://validador.picoin.science` for validator traffic. Override the targets with `PICOIN_BOOTSTRAP_API_URL` and `PICOIN_VALIDATOR_API_URL` in Vercel if the API domains change.
 
 If the website is served over HTTPS, the Picoin APIs must also be exposed over HTTPS; browsers block HTTP API calls from HTTPS pages.
 
