@@ -5,7 +5,7 @@ import pytest
 from app.core.crypto import hash_block
 from app.core.settings import GENESIS_HASH, PROTOCOL_VERSION, REQUIRED_VALIDATOR_APPROVALS, VALIDATION_MODE
 from app.core.signatures import generate_keypair, sign_payload
-from app.db.database import init_db
+from app.db.database import get_connection, init_db
 from app.services.consensus import (
     ConsensusError,
     consensus_status,
@@ -366,3 +366,32 @@ def test_consensus_status_reports_proposals_and_finalizations(tmp_path, monkeypa
     assert status["proposals"]["pending"] == 1
     assert status["fork_group_count"] == 0
     assert status["latest_block_height"] == 0
+
+
+def test_missing_ancestor_proposal_is_promoted_after_parent_import(tmp_path, monkeypatch) -> None:
+    _init_consensus_db(tmp_path, monkeypatch, "consensus-missing-parent-promote.sqlite3")
+    identities = _register_validators()
+    first_block = _block()
+    second_block = _block(height=2, previous_hash=first_block["block_hash"])
+    second_block["task_id"] = "distributed-task-2"
+    second_block["range_start"] = 65
+    second_block["range_end"] = 128
+    second_block["result_hash"] = "2" * 64
+    second_block = _rehash(second_block)
+
+    second = propose_block(second_block, "miner-node-1", gossip=False)
+
+    assert second["status"] == "pending_missing_ancestors"
+
+    first = propose_block(first_block, "miner-node-1", gossip=False)
+    for identity in identities:
+        first = _vote(first, identity)
+
+    assert first["status"] == "imported"
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT status FROM consensus_block_proposals WHERE proposal_id = ?",
+            (second["proposal_id"],),
+        ).fetchone()
+
+    assert row["status"] == "pending"
