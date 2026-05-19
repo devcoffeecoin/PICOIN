@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import asyncio
 import itertools
 import json
+import logging
+import threading
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -13,6 +17,9 @@ from app.core.settings import (
     NODE_ID,
     PROOF_OF_PI_REWARD_PERCENT,
     PROTOCOL_VERSION,
+    REPLAY_BATCH_SIZE,
+    REPLAY_WORKER_ENABLED,
+    REPLAY_WORKER_INTERVAL_SECONDS,
     REQUIRED_VALIDATOR_APPROVALS,
     VALIDATION_MODE,
     VALIDATOR_MIN_TRUST_SCORE,
@@ -28,6 +35,9 @@ from app.services.transactions import (
     ensure_block_transactions_in_mempool,
     transaction_commitment,
 )
+
+
+logger = logging.getLogger(__name__)
 
 
 class ConsensusError(Exception):
@@ -56,6 +66,24 @@ FORK_CHOICE_RULE = (
     "then lowest rejection_weight, highest approvals, lowest rejections, "
     "oldest proposal, lexicographically lowest block_hash"
 )
+
+_REPLAY_LOCK = threading.Lock()
+_REPLAY_WORKER_TASK: asyncio.Task | None = None
+_REPLAY_WORKER_STOP: asyncio.Event | None = None
+_REPLAY_METRICS: dict[str, Any] = {
+    "active": False,
+    "last_started_at": None,
+    "last_completed_at": None,
+    "last_batch_size": 0,
+    "last_processed": 0,
+    "last_processed_height": 0,
+    "last_duration_ms": 0.0,
+    "avg_ms": 0.0,
+    "blocks_per_second": 0.0,
+    "total_processed": 0,
+    "total_batches": 0,
+    "last_error": None,
+}
 
 
 def utc_now() -> str:
@@ -518,8 +546,134 @@ def finalize_proposal(proposal_id: str, connection: Any | None = None) -> dict[s
             connection.close()
 
 
+def _replay_queue_snapshot(connection: Any) -> dict[str, Any]:
+    finalized = connection.execute(
+        """
+        SELECT COUNT(*) AS count, MAX(p.height) AS target_height
+        FROM consensus_block_proposals p
+        LEFT JOIN consensus_finalizations f ON f.proposal_id = p.proposal_id
+        WHERE p.status = 'finalized' AND COALESCE(f.imported, 0) = 0
+        """
+    ).fetchone()
+    headers = connection.execute(
+        """
+        SELECT COUNT(*) AS count, MAX(height) AS target_height
+        FROM network_block_headers
+        WHERE status IN ('pending_replay', 'pending_missing_ancestors')
+        """
+    ).fetchone()
+    latest = connection.execute("SELECT COALESCE(MAX(height), 0) AS height FROM blocks").fetchone()
+    finalized_count = int((finalized["count"] if finalized else 0) or 0)
+    header_count = int((headers["count"] if headers else 0) or 0)
+    current_height = int((latest["height"] if latest else 0) or 0)
+    target_height = max(
+        current_height,
+        int((finalized["target_height"] if finalized else 0) or 0),
+        int((headers["target_height"] if headers else 0) or 0),
+    )
+    return {
+        "queue_size": finalized_count + header_count,
+        "finalized_queue_size": finalized_count,
+        "header_queue_size": header_count,
+        "current_height": current_height,
+        "target_height": target_height,
+    }
+
+
+def get_replay_status() -> dict[str, Any]:
+    with get_connection() as connection:
+        snapshot = _replay_queue_snapshot(connection)
+    avg_ms = float(_REPLAY_METRICS.get("avg_ms") or 0.0)
+    queue_size = int(snapshot["queue_size"])
+    eta = round((queue_size * avg_ms) / 1000.0, 3) if avg_ms > 0 and queue_size > 0 else None
+    return {
+        **snapshot,
+        "active": bool(_REPLAY_METRICS.get("active")) or _REPLAY_LOCK.locked(),
+        "replay_queue_size": queue_size,
+        "replay_blocks_per_second": round(float(_REPLAY_METRICS.get("blocks_per_second") or 0.0), 6),
+        "replay_avg_ms": round(avg_ms, 3),
+        "replay_last_processed_height": int(_REPLAY_METRICS.get("last_processed_height") or 0),
+        "replay_eta_seconds": eta,
+        "last_started_at": _REPLAY_METRICS.get("last_started_at"),
+        "last_completed_at": _REPLAY_METRICS.get("last_completed_at"),
+        "last_batch_size": int(_REPLAY_METRICS.get("last_batch_size") or 0),
+        "last_processed": int(_REPLAY_METRICS.get("last_processed") or 0),
+        "last_duration_ms": round(float(_REPLAY_METRICS.get("last_duration_ms") or 0.0), 3),
+        "total_processed": int(_REPLAY_METRICS.get("total_processed") or 0),
+        "total_batches": int(_REPLAY_METRICS.get("total_batches") or 0),
+        "last_error": _REPLAY_METRICS.get("last_error"),
+        "checked_at": utc_now(),
+    }
+
+
+async def start_replay_worker() -> None:
+    global _REPLAY_WORKER_TASK, _REPLAY_WORKER_STOP
+    if not REPLAY_WORKER_ENABLED or _REPLAY_WORKER_TASK is not None:
+        return
+    _REPLAY_WORKER_STOP = asyncio.Event()
+    _REPLAY_WORKER_TASK = asyncio.create_task(_replay_worker_loop())
+
+
+async def stop_replay_worker() -> None:
+    global _REPLAY_WORKER_TASK, _REPLAY_WORKER_STOP
+    if _REPLAY_WORKER_STOP is not None:
+        _REPLAY_WORKER_STOP.set()
+    if _REPLAY_WORKER_TASK is not None:
+        try:
+            await asyncio.wait_for(_REPLAY_WORKER_TASK, timeout=5)
+        except TimeoutError:
+            _REPLAY_WORKER_TASK.cancel()
+        finally:
+            _REPLAY_WORKER_TASK = None
+            _REPLAY_WORKER_STOP = None
+
+
+async def _replay_worker_loop() -> None:
+    while _REPLAY_WORKER_STOP is None or not _REPLAY_WORKER_STOP.is_set():
+        try:
+            status = await asyncio.to_thread(get_replay_status)
+            if int(status.get("queue_size") or 0) > 0 and not bool(status.get("active")):
+                await asyncio.to_thread(replay_finalized_blocks, REPLAY_BATCH_SIZE)
+        except Exception as exc:
+            _REPLAY_METRICS["last_error"] = str(exc)
+        try:
+            await asyncio.wait_for(
+                _REPLAY_WORKER_STOP.wait() if _REPLAY_WORKER_STOP is not None else asyncio.sleep(0),
+                timeout=max(0.1, float(REPLAY_WORKER_INTERVAL_SECONDS)),
+            )
+        except TimeoutError:
+            continue
+
+
 def replay_finalized_blocks(limit: int = 100) -> dict[str, Any]:
     limit = max(1, min(int(limit or 1), 200))
+    if not _REPLAY_LOCK.acquire(blocking=False):
+        status = get_replay_status()
+        return {
+            "status": "active",
+            "processed": 0,
+            "imported": 0,
+            "skipped": 0,
+            "headers_imported": 0,
+            "headers_skipped": 0,
+            "headers_skipped_pre_snapshot": 0,
+            "normalized": 0,
+            "missing_ancestors": 0,
+            "errors": [],
+            "checked_at": utc_now(),
+            **status,
+        }
+    started = time.perf_counter()
+    started_at = utc_now()
+    _REPLAY_METRICS.update(
+        {
+            "active": True,
+            "last_started_at": started_at,
+            "last_batch_size": limit,
+            "last_error": None,
+        }
+    )
+    logger.info("Picoin replay started batch_size=%s", limit)
     normalized = 0
     imported = 0
     skipped = 0
@@ -588,7 +742,8 @@ def replay_finalized_blocks(limit: int = 100) -> dict[str, Any]:
             missing_ancestors = _missing_ancestor_count(connection)
     except Exception as exc:
         errors.append(str(exc))
-        return {
+        logger.exception("Picoin replay failed")
+        response = {
             "status": "error",
             "processed": imported + skipped + headers_imported + headers_skipped,
             "imported": imported,
@@ -601,11 +756,14 @@ def replay_finalized_blocks(limit: int = 100) -> dict[str, Any]:
             "errors": errors[:20],
             "checked_at": utc_now(),
         }
+        _record_replay_metrics(response, started, started_at)
+        _REPLAY_LOCK.release()
+        return response
     processed = imported + skipped + headers_imported + headers_skipped
     status = "ok"
     if errors or missing_ancestors:
         status = "partial"
-    return {
+    response = {
         "status": status,
         "processed": processed,
         "imported": imported,
@@ -618,6 +776,61 @@ def replay_finalized_blocks(limit: int = 100) -> dict[str, Any]:
         "errors": errors[:20],
         "checked_at": utc_now(),
     }
+    _record_replay_metrics(response, started, started_at)
+    logger.info(
+        "Picoin replay completed status=%s processed=%s imported=%s headers_imported=%s queue_size=%s avg_ms=%s",
+        response["status"],
+        response["processed"],
+        response["imported"],
+        response["headers_imported"],
+        response.get("queue_size"),
+        response.get("replay_avg_ms"),
+    )
+    _REPLAY_LOCK.release()
+    return response
+
+
+def _record_replay_metrics(response: dict[str, Any], started: float, started_at: str) -> None:
+    duration_ms = max(0.001, (time.perf_counter() - started) * 1000.0)
+    processed = int(response.get("imported") or 0) + int(response.get("headers_imported") or 0)
+    with get_connection() as connection:
+        snapshot = _replay_queue_snapshot(connection)
+    if processed > 0:
+        batch_avg = duration_ms / processed
+        previous_avg = float(_REPLAY_METRICS.get("avg_ms") or 0.0)
+        avg_ms = batch_avg if previous_avg <= 0 else (previous_avg * 0.75) + (batch_avg * 0.25)
+    else:
+        avg_ms = float(_REPLAY_METRICS.get("avg_ms") or 0.0)
+    _REPLAY_METRICS.update(
+        {
+            "active": False,
+            "last_started_at": started_at,
+            "last_completed_at": utc_now(),
+            "last_processed": processed,
+            "last_processed_height": int(snapshot.get("current_height") or 0),
+            "last_duration_ms": duration_ms,
+            "avg_ms": avg_ms,
+            "blocks_per_second": (processed / (duration_ms / 1000.0)) if processed > 0 else 0.0,
+            "total_processed": int(_REPLAY_METRICS.get("total_processed") or 0) + processed,
+            "total_batches": int(_REPLAY_METRICS.get("total_batches") or 0) + 1,
+            "last_error": "; ".join(response.get("errors") or []) or None,
+        }
+    )
+    queue_size = int(snapshot.get("queue_size") or 0)
+    eta = None
+    if float(_REPLAY_METRICS.get("avg_ms") or 0.0) > 0 and queue_size > 0:
+        eta = round((queue_size * float(_REPLAY_METRICS["avg_ms"])) / 1000.0, 3)
+    response.update(
+        {
+            **snapshot,
+            "active": False,
+            "replay_queue_size": queue_size,
+            "replay_blocks_per_second": round(float(_REPLAY_METRICS.get("blocks_per_second") or 0.0), 6),
+            "replay_avg_ms": round(float(_REPLAY_METRICS.get("avg_ms") or 0.0), 3),
+            "replay_last_processed_height": int(_REPLAY_METRICS.get("last_processed_height") or 0),
+            "replay_eta_seconds": eta,
+        }
+    )
 
 
 def _missing_ancestor_count(connection: Any) -> int:

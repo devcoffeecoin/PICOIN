@@ -2,6 +2,7 @@ import asyncio
 
 from fastapi import APIRouter, Body, HTTPException, Query, WebSocket, WebSocketDisconnect
 
+from app.core.settings import REPLAY_BATCH_SIZE
 from app.models.schemas import (
     AuditSummaryResponse,
     AuditFullResponse,
@@ -81,6 +82,7 @@ from app.services.consensus import (
     debug_block_determinism,
     finalize_proposal,
     get_block_proposal,
+    get_replay_status,
     list_consensus_votes,
     list_block_proposals,
     replay_finalized_blocks,
@@ -481,7 +483,7 @@ def consensus_finalize(proposal_id: str, gossip: bool = Query(True)) -> dict:
 
 
 @router.post("/consensus/replay", response_model=ConsensusReplayResponse)
-async def consensus_replay(limit: int = Query(100, ge=1, le=200)) -> dict:
+async def consensus_replay(limit: int = Query(REPLAY_BATCH_SIZE, ge=1, le=50)) -> dict:
     try:
         return await asyncio.to_thread(replay_finalized_blocks, limit)
     except ConsensusError as exc:
@@ -510,6 +512,11 @@ async def consensus_replay(limit: int = Query(100, ge=1, le=200)) -> dict:
             "errors": [str(exc)],
             "checked_at": utc_now(),
         }
+
+
+@router.get("/replay/status")
+def replay_status() -> dict:
+    return get_replay_status()
 
 
 @router.get("/mempool", response_model=list[MempoolTransactionResponse])

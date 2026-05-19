@@ -488,6 +488,7 @@ class NodeSyncStatusResponse(NodeIdentityResponse):
     mempool: dict[str, int]
     pending_replay_blocks: int
     headers_skipped_pre_snapshot: int = 0
+    replay: dict[str, Any] = Field(default_factory=dict)
     consensus: dict[str, int] = {}
     sync_mode: str
     checked_at: datetime
@@ -665,6 +666,17 @@ class ConsensusReplayResponse(BaseModel):
     headers_skipped_pre_snapshot: int = 0
     normalized: int = 0
     errors: list[str] = Field(default_factory=list)
+    queue_size: int = 0
+    replay_queue_size: int = 0
+    finalized_queue_size: int = 0
+    header_queue_size: int = 0
+    active: bool = False
+    current_height: int = 0
+    target_height: int = 0
+    replay_blocks_per_second: float = 0.0
+    replay_avg_ms: float = 0.0
+    replay_last_processed_height: int = 0
+    replay_eta_seconds: float | None = None
 
 
 class ConsensusStatusResponse(BaseModel):

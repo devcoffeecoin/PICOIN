@@ -7,6 +7,7 @@ from app.api.routes import router
 from app.core.settings import BASE_DIR, CORS_ORIGINS, PROJECT_NAME, PROTOCOL_VERSION
 from app.db.database import init_db
 from app.services.consensus_queue import start_consensus_queue, stop_consensus_queue
+from app.services.consensus import start_replay_worker, stop_replay_worker
 
 WEB_DIR = BASE_DIR / "app" / "web"
 STATIC_DIR = WEB_DIR / "static"
@@ -30,10 +31,12 @@ app.add_middleware(
 async def on_startup() -> None:
     init_db()
     await start_consensus_queue()
+    await start_replay_worker()
 
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
+    await stop_replay_worker()
     await stop_consensus_queue()
 
 

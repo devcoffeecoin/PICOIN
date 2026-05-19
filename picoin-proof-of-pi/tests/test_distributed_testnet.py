@@ -8,7 +8,13 @@ from app.core.settings import CHAIN_ID, GENESIS_HASH, NETWORK_ID, PROTOCOL_VERSI
 from app.core.signatures import build_submission_signature_payload, generate_keypair, sign_payload
 from app.db.database import get_connection, init_db
 from app.models.schemas import SignedTransactionRequest
-from app.services.consensus import block_hash_debug, debug_block_determinism, propose_block, replay_finalized_blocks
+from app.services.consensus import (
+    block_hash_debug,
+    debug_block_determinism,
+    get_replay_status,
+    propose_block,
+    replay_finalized_blocks,
+)
 from app.services.mining import (
     create_next_task,
     get_balance_amount,
@@ -32,6 +38,7 @@ from app.services.network import (
     reconcile_peer,
     register_peer,
     submit_transaction,
+    sync_blocks_until,
 )
 from app.services.science import get_science_account, get_science_job, get_science_reserve_governance
 from app.services.state import (
@@ -125,6 +132,49 @@ def test_receive_block_header_queues_tip_mismatch_for_ancestor_sync(tmp_path, mo
 
     assert received["status"] == "pending_missing_ancestors"
     assert "previous_hash" in received["reason"]
+
+
+def test_sync_status_reports_replay_queue_metrics(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "sync-replay-metrics.sqlite3")
+    block = {
+        "height": 1,
+        "previous_hash": "f" * 64,
+        "block_hash": "a" * 64,
+        "timestamp": "2026-05-12T00:00:00+00:00",
+    }
+
+    receive_block_header(block, source_peer_id="peer-a")
+    sync_status = get_sync_status()
+    replay_status = get_replay_status()
+
+    assert sync_status["pending_replay_blocks"] == 1
+    assert sync_status["replay"]["queue_size"] == 1
+    assert sync_status["replay"]["header_queue_size"] == 1
+    assert replay_status["queue_size"] == 1
+
+
+def test_sync_blocks_skips_replay_when_backlog_is_high(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "sync-replay-throttle.sqlite3")
+    block = {
+        "height": 1,
+        "previous_hash": "f" * 64,
+        "block_hash": "a" * 64,
+        "timestamp": "2026-05-12T00:00:00+00:00",
+    }
+    receive_block_header(block, source_peer_id="peer-a")
+
+    class EmptyBlocksResponse:
+        def json(self) -> dict:
+            return {"blocks": []}
+
+    monkeypatch.setattr("app.services.network.REPLAY_BACKLOG_THRESHOLD", 0)
+    monkeypatch.setattr("app.services.network.requests.get", lambda *args, **kwargs: EmptyBlocksResponse())
+
+    result = sync_blocks_until("http://peer-a:8000", limit=10)
+
+    assert result["replay"]["status"] == "skipped"
+    assert result["replay"]["reason"] == "replay backlog above threshold"
+    assert result["replay"]["queue_size"] == 1
 
 
 def test_peer_rejects_wrong_chain(tmp_path, monkeypatch) -> None:
