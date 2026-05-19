@@ -20,6 +20,7 @@ from app.core.signatures import (
     verify_payload_signature,
 )
 from app.core.settings import (
+    CHAIN_ID,
     COOLDOWN_AFTER_REJECTIONS,
     COOLDOWN_SECONDS,
     FAUCET_ALLOWED_NETWORKS,
@@ -2223,6 +2224,7 @@ def _protocol_payload(params: dict[str, Any]) -> dict[str, Any]:
         "project": PROJECT_NAME,
         "protocol_version": params["protocol_version"],
         "network_id": NETWORK_ID,
+        "chain_id": CHAIN_ID,
         "algorithm": params["algorithm"],
         "validation_mode": params["validation_mode"],
         "required_validator_approvals": params["required_validator_approvals"],
