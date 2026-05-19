@@ -1,6 +1,6 @@
 import asyncio
 
-from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from app.models.schemas import (
     AuditSummaryResponse,
@@ -76,7 +76,9 @@ from app.models.schemas import (
 )
 from app.services.consensus import (
     ConsensusError,
+    block_hash_debug,
     consensus_status,
+    debug_block_determinism,
     finalize_proposal,
     get_block_proposal,
     list_consensus_votes,
@@ -398,6 +400,22 @@ def node_reconcile(
 @router.get("/consensus/status", response_model=ConsensusStatusResponse)
 def consensus_status_route() -> dict:
     return consensus_status()
+
+
+@router.get("/consensus/debug/block/{height}")
+def consensus_debug_block(height: int) -> dict:
+    try:
+        return debug_block_determinism(height)
+    except ConsensusError as exc:
+        raise _consensus_error(exc) from exc
+
+
+@router.post("/consensus/debug/hash")
+def consensus_debug_hash(payload: dict = Body(...)) -> dict:
+    try:
+        return block_hash_debug(payload)
+    except ConsensusError as exc:
+        raise _consensus_error(exc) from exc
 
 
 @router.get("/consensus/proposals", response_model=list[ConsensusProposalResponse])

@@ -2,13 +2,13 @@ import json
 
 import pytest
 
-from app.core.crypto import hash_result
+from app.core.crypto import canonical_json, hash_result
 from app.core.pi import calculate_pi_segment
 from app.core.settings import CHAIN_ID, GENESIS_HASH, NETWORK_ID, PROTOCOL_VERSION
 from app.core.signatures import build_submission_signature_payload, generate_keypair, sign_payload
 from app.db.database import get_connection, init_db
 from app.models.schemas import SignedTransactionRequest
-from app.services.consensus import propose_block, replay_finalized_blocks
+from app.services.consensus import block_hash_debug, debug_block_determinism, propose_block, replay_finalized_blocks
 from app.services.mining import (
     create_next_task,
     get_balance_amount,
@@ -63,6 +63,33 @@ def _init_network_db(tmp_path, monkeypatch, name: str) -> None:
     monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
     monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
     init_db(db_path)
+
+
+def test_canonical_json_serialization_is_stable() -> None:
+    payload = {"z": 1, "a": {"b": 2, "a": 1}, "list": [{"y": 2, "x": 1}]}
+
+    encoded = canonical_json(payload)
+
+    assert encoded == '{"a":{"a":1,"b":2},"list":[{"x":1,"y":2}],"z":1}'
+    assert " " not in encoded
+    assert canonical_json(json.loads(encoded)) == encoded
+
+
+def test_block_hash_debug_accepts_historical_fraud_field_schema(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "hash-schema-fraud-fields.sqlite3")
+
+    miner_key = generate_keypair()
+    miner = register_miner("hash-schema-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    block = get_blocks_since(0)["blocks"][0]
+    block.pop("fraudulent", None)
+    block.pop("fraud_reason", None)
+    block.pop("fraud_detected_at", None)
+
+    debug = block_hash_debug(block)
+
+    assert debug["matched"] is True
+    assert debug["matched_variant"] is not None
 
 
 def test_peer_registry_and_heartbeat(tmp_path, monkeypatch) -> None:
@@ -966,6 +993,20 @@ def test_replay_imports_pending_headers_after_active_snapshot_base(tmp_path, mon
     assert status["latest_block_hash"] == expected_hash
     assert status["effective_latest_block_height"] == expected_height
     assert audit["valid"] is True
+
+
+def test_consensus_debug_block_reports_matching_canonical_hash(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "debug-block-determinism.sqlite3")
+
+    miner_key = generate_keypair()
+    miner = register_miner("debug-block-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    debug = debug_block_determinism(1)
+
+    assert debug["expected_hash"] == get_block(1)["block_hash"]
+    assert debug["matched"] is True
+    assert debug["hash_input"] == canonical_json(debug["canonical_payload"])
+    assert any(candidate["matches"] for candidate in debug["candidates"])
 
 
 def test_replay_ignores_foreign_protocol_params_id_after_snapshot_base(tmp_path, monkeypatch) -> None:
