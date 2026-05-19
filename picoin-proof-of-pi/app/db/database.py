@@ -225,6 +225,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 protocol_version TEXT NOT NULL DEFAULT '0.18',
                 validation_mode TEXT NOT NULL DEFAULT 'external_commit_reveal',
                 total_task_ms INTEGER,
+                total_block_ms INTEGER,
                 validation_ms INTEGER,
                 fraudulent INTEGER NOT NULL DEFAULT 0,
                 fraud_reason TEXT,
@@ -665,6 +666,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "blocks", "difficulty", "REAL")
         _ensure_column(connection, "blocks", "protocol_params_id", "INTEGER")
         _ensure_column(connection, "blocks", "total_task_ms", "INTEGER")
+        _ensure_column(connection, "blocks", "total_block_ms", "INTEGER")
         _ensure_column(connection, "blocks", "validation_ms", "INTEGER")
         _ensure_column(connection, "blocks", "protocol_version", "TEXT NOT NULL DEFAULT '0.18'")
         _ensure_column(connection, "blocks", "validation_mode", "TEXT NOT NULL DEFAULT 'external_commit_reveal'")
