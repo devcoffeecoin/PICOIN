@@ -40,6 +40,8 @@ from app.core.settings import (
     NETWORK_ID,
     PROJECT_NAME,
     PROTOCOL_VERSION,
+    REPLAY_BACKLOG_THRESHOLD,
+    REPLAY_BATCH_SIZE,
 )
 from app.core.signatures import sign_payload
 from app.services.consensus import consensus_vote_payload
@@ -221,13 +223,41 @@ def command_node_catch_up(args: argparse.Namespace) -> int:
     peer_sync: dict[str, Any] | None = None
 
     for round_number in range(1, args.max_rounds + 1):
-        path = f"/node/reconcile?limit={args.reconcile_limit}"
-        if peer_url:
-            path = f"{path}&peer_address={peer_url}"
-        reconcile = post_json(server_url, path)
-        replay = post_json(server_url, f"/consensus/replay?limit={args.replay_limit}")
+        sync_before = get_json(server_url, "/node/sync-status")
+        replay_status = get_json(server_url, "/replay/status")
+        queue_size = int(replay_status.get("queue_size") or sync_before.get("pending_replay_blocks") or 0)
+        replay_active = bool(replay_status.get("active"))
+        skip_reconcile = replay_active or queue_size > args.replay_backlog_threshold
+        if skip_reconcile:
+            reconcile = {
+                "attempted": 0,
+                "blocks_imported": 0,
+                "proposals_imported": 0,
+                "transactions_imported": 0,
+                "errors": 0,
+                "results": [],
+                "skipped": True,
+                "reason": "replay active" if replay_active else "replay backlog above threshold",
+            }
+        else:
+            path = f"/node/reconcile?limit={args.reconcile_limit}"
+            if peer_url:
+                path = f"{path}&peer_address={peer_url}"
+            reconcile = post_json(server_url, path)
+        if replay_active:
+            replay = {"status": "active", "imported": 0, "headers_imported": 0, "headers_skipped": 0, "errors": []}
+        else:
+            replay_limit = min(args.replay_limit, args.replay_batch_size)
+            replay = post_json(server_url, f"/consensus/replay?limit={replay_limit}")
         final_sync = get_json(server_url, "/node/sync-status")
-        final_audit = get_json(server_url, "/audit/full")
+        pending_after = int(final_sync.get("pending_replay_blocks") or 0)
+        if pending_after == 0 or round_number == args.max_rounds:
+            final_audit = get_json(server_url, "/audit/full")
+        else:
+            final_audit = {
+                "valid": False,
+                "issues": [{"code": "replay_backlog_draining", "pending_replay_blocks": pending_after}],
+            }
         if peer_url:
             peer_sync = get_json(peer_url, "/node/sync-status")
         reconcile_results = reconcile.get("results") or []
@@ -247,6 +277,8 @@ def command_node_catch_up(args: argparse.Namespace) -> int:
         round_summary = {
             "round": round_number,
             "reconcile": {
+                "skipped": bool(reconcile.get("skipped", False)),
+                "reason": reconcile.get("reason"),
                 "blocks_seen": blocks_seen,
                 "blocks_imported": reconcile.get("blocks_imported", 0),
                 "proposals_imported": reconcile.get("proposals_imported", 0),
@@ -259,6 +291,10 @@ def command_node_catch_up(args: argparse.Namespace) -> int:
                 "headers_skipped": replay.get("headers_skipped", 0),
                 "headers_skipped_pre_snapshot": replay.get("headers_skipped_pre_snapshot", 0),
                 "normalized": replay.get("normalized", 0),
+                "queue_size": replay.get("queue_size", replay.get("replay_queue_size", queue_size)),
+                "active": replay.get("active", replay_active),
+                "avg_ms": replay.get("replay_avg_ms"),
+                "blocks_per_second": replay.get("replay_blocks_per_second"),
                 "errors": replay.get("errors", []),
             },
             "local_block_height": final_sync.get("local_block_height", final_sync.get("latest_block_height", 0)),
@@ -1198,7 +1234,9 @@ def add_node_parser(subparsers: argparse._SubParsersAction) -> None:
     catch_up_parser.add_argument("--peer", help="Optional peer base URL")
     catch_up_parser.add_argument("--max-rounds", type=int, default=5)
     catch_up_parser.add_argument("--reconcile-limit", type=int, default=16)
-    catch_up_parser.add_argument("--replay-limit", type=int, default=100)
+    catch_up_parser.add_argument("--replay-limit", type=int, default=REPLAY_BATCH_SIZE)
+    catch_up_parser.add_argument("--replay-batch-size", type=int, default=REPLAY_BATCH_SIZE)
+    catch_up_parser.add_argument("--replay-backlog-threshold", type=int, default=REPLAY_BACKLOG_THRESHOLD)
     catch_up_parser.set_defaults(func=command_node_catch_up)
 
     report_parser = node_subparsers.add_parser("report", help="Run public testnet pass/fail readiness report")
@@ -1378,7 +1416,7 @@ def add_consensus_parser(subparsers: argparse._SubParsersAction) -> None:
     finalize_parser.set_defaults(func=command_consensus_finalize)
 
     replay_parser = consensus_subparsers.add_parser("replay", help="Replay finalized blocks into the local canonical chain")
-    replay_parser.add_argument("--limit", type=int, default=100)
+    replay_parser.add_argument("--limit", type=int, default=REPLAY_BATCH_SIZE)
     replay_parser.set_defaults(func=command_consensus_replay)
 
 

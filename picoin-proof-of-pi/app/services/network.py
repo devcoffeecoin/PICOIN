@@ -24,6 +24,8 @@ from app.core.settings import (
     PEER_TIMEOUT_SECONDS,
     PROJECT_NAME,
     PROTOCOL_VERSION,
+    REPLAY_BACKLOG_THRESHOLD,
+    REPLAY_BATCH_SIZE,
 )
 from app.core.signatures import verify_payload_signature
 from app.db.database import get_connection, row_to_dict
@@ -233,6 +235,12 @@ def get_sync_status() -> dict[str, Any]:
     if active_base is not None and int(active_base.get("height") or 0) > effective_height:
         effective_height = int(active_base["height"])
         effective_hash = active_base["block_hash"]
+    try:
+        from app.services.consensus import get_replay_status
+
+        replay_status = get_replay_status()
+    except Exception as exc:
+        replay_status = {"active": False, "error": str(exc)}
     return {
         **node_identity(),
         "latest_block_height": latest_height,
@@ -250,6 +258,7 @@ def get_sync_status() -> dict[str, Any]:
         "mempool": {row["status"]: row["count"] for row in mempool_counts},
         "pending_replay_blocks": pending_headers["count"] if pending_headers else 0,
         "headers_skipped_pre_snapshot": pre_snapshot_headers["count"] if pre_snapshot_headers else 0,
+        "replay": replay_status,
         "consensus": {row["status"]: row["count"] for row in consensus_counts},
         "sync_mode": "proposal_vote_finalize_replay_alpha",
         "checked_at": _now(),
@@ -680,9 +689,15 @@ def sync_blocks_until(
             break
 
     try:
-        from app.services.consensus import replay_finalized_blocks
+        from app.services.consensus import get_replay_status, replay_finalized_blocks
 
-        result["replay"] = replay_finalized_blocks(max(int(limit), 100))
+        replay_status = get_replay_status()
+        if bool(replay_status.get("active")):
+            result["replay"] = {"status": "skipped", "reason": "replay already active", **replay_status}
+        elif int(replay_status.get("queue_size") or 0) > REPLAY_BACKLOG_THRESHOLD:
+            result["replay"] = {"status": "skipped", "reason": "replay backlog above threshold", **replay_status}
+        else:
+            result["replay"] = replay_finalized_blocks(min(max(int(limit), 1), REPLAY_BATCH_SIZE))
         with get_connection() as connection:
             latest = connection.execute("SELECT COALESCE(MAX(height), 0) AS height FROM blocks").fetchone()
             latest_height = int(latest["height"] if latest else 0)

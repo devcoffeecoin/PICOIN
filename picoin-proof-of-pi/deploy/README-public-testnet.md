@@ -358,6 +358,7 @@ Check the restore/catch-up diagnostics:
 
 ```bash
 curl -s http://127.0.0.1:8000/node/sync-status; echo
+curl -s http://127.0.0.1:8000/replay/status; echo
 .venv/bin/python -m picoin node catch-up \
   --server http://127.0.0.1:8000 \
   --peer https://api.picoin.science
@@ -373,10 +374,19 @@ Fields to verify:
 - `catch_up_start_height`: the base height used for the next sync request.
 - `blocks_imported`: number of post-snapshot blocks imported.
 - `headers_skipped_pre_snapshot`: stale headers ignored because the snapshot already covers them.
+- `replay.queue_size`: pending replay backlog.
+- `replay.active`: true while the background replay worker is processing a batch.
+- `replay.replay_blocks_per_second`, `replay.replay_avg_ms`, `replay.replay_eta_seconds`: replay drain metrics.
 
 Healthy behavior after restore is that `effective_latest_block_height` advances
 toward the bootstrap height without repeated `cannot import block before ancestors`
 messages for pre-snapshot history.
+
+Replay is intentionally throttled. The node drains replay in small batches
+(`PICOIN_REPLAY_BATCH_SIZE=10` by default). If the replay backlog is above
+`PICOIN_REPLAY_BACKLOG_THRESHOLD=25`, catch-up skips new peer fetches and lets
+the replay worker reduce the queue first. This prevents reconciler storms and
+keeps `/health`, `/node/sync-status`, and `/replay/status` responsive.
 
 If replay reports `block_hash does not match canonical payload`, inspect the exact
 canonical hash inputs before restarting the network:
