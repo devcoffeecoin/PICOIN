@@ -1,6 +1,8 @@
 import os
 from pathlib import Path
 
+from app.core.network_profiles import parse_network_set, profile_for_network
+
 
 BASE_DIR = Path(__file__).resolve().parents[2]
 
@@ -17,9 +19,15 @@ DATA_DIR = _configured_path(os.getenv("PICOIN_DATA_DIR", ""), BASE_DIR / "data")
 DATABASE_PATH = _configured_path(os.getenv("PICOIN_DB_PATH", ""), DATA_DIR / "picoin.sqlite3")
 
 PROJECT_NAME = "picoin-proof-of-pi"
-PROTOCOL_VERSION = "0.18"
 NETWORK_ID = os.getenv("PICOIN_NETWORK", "local").strip().lower() or "local"
-CHAIN_ID = os.getenv("PICOIN_CHAIN_ID", f"picoin-{NETWORK_ID}-testnet").strip() or f"picoin-{NETWORK_ID}-testnet"
+NETWORK_PROFILE = profile_for_network(NETWORK_ID)
+PROTOCOL_VERSION = os.getenv("PICOIN_PROTOCOL_VERSION", NETWORK_PROFILE.protocol_version).strip() or NETWORK_PROFILE.protocol_version
+CHAIN_ID = os.getenv("PICOIN_CHAIN_ID", NETWORK_PROFILE.chain_id).strip() or NETWORK_PROFILE.chain_id
+if NETWORK_PROFILE.name == "mainnet":
+    if PROTOCOL_VERSION != NETWORK_PROFILE.protocol_version:
+        raise RuntimeError("mainnet protocol_version is frozen at 1.0")
+    if CHAIN_ID != NETWORK_PROFILE.chain_id:
+        raise RuntimeError("mainnet chain_id is frozen at picoin-mainnet-v1")
 GENESIS_ALLOCATIONS_FILE = os.getenv("PICOIN_GENESIS_ALLOCATIONS_FILE", "").strip()
 
 
@@ -64,7 +72,7 @@ PEER_NETWORK_ID_TOLERANCE = os.getenv("PICOIN_PEER_NETWORK_ID_TOLERANCE", "1").s
 }
 CHECKPOINT_INTERVAL_BLOCKS = int(os.getenv("PICOIN_CHECKPOINT_INTERVAL_BLOCKS", "10"))
 VALIDATION_MODE = "external_commit_reveal"
-REQUIRED_VALIDATOR_APPROVALS = 3
+REQUIRED_VALIDATOR_APPROVALS = NETWORK_PROFILE.required_validator_approvals
 RANGE_ASSIGNMENT_MODE = "pseudo_random"
 MAX_PI_POSITION = 10_000
 RANGE_ASSIGNMENT_MAX_ATTEMPTS = 512
@@ -77,16 +85,16 @@ TASK_START_OFFSET = 1
 TASK_EXPIRATION_SECONDS = 10 * 60
 MAX_ACTIVE_TASKS_PER_MINER = 1
 SAMPLE_COUNT = 32
-DEFAULT_REWARD = 3.1416
-VALIDATOR_REWARD_PERCENT_OF_BLOCK = 0.10
-PROOF_OF_PI_REWARD_PERCENT = 0.67
-SCIENCE_COMPUTE_REWARD_PERCENT_OF_BLOCK = 0.20
+DEFAULT_REWARD = NETWORK_PROFILE.base_reward
+VALIDATOR_REWARD_PERCENT_OF_BLOCK = NETWORK_PROFILE.validator_reward_percent
+PROOF_OF_PI_REWARD_PERCENT = NETWORK_PROFILE.proof_of_pi_reward_percent
+SCIENCE_COMPUTE_REWARD_PERCENT_OF_BLOCK = NETWORK_PROFILE.science_compute_reward_percent
 VALIDATOR_AUDITOR_REWARD_PERCENT = 0.10
 SCIENCE_RESERVE_ACCOUNT_ID = "science_compute_reserve"
 SCIENCE_MAX_REWARD_PER_JOB = float(os.getenv("PICOIN_SCIENCE_MAX_REWARD_PER_JOB", "314.16"))
 SCIENCE_MAX_PAYOUT_PER_EPOCH = float(os.getenv("PICOIN_SCIENCE_MAX_PAYOUT_PER_EPOCH", "3141.6"))
 SCIENCE_MAX_PENDING_PER_REQUESTER = float(os.getenv("PICOIN_SCIENCE_MAX_PENDING_PER_REQUESTER", "314.16"))
-SCIENTIFIC_DEVELOPMENT_REWARD_PERCENT_OF_BLOCK = 0.03
+SCIENTIFIC_DEVELOPMENT_REWARD_PERCENT_OF_BLOCK = NETWORK_PROFILE.scientific_development_reward_percent
 SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID = "scientific_development_treasury"
 SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET = os.getenv(
     "PICOIN_TREASURY_WALLET",
@@ -119,18 +127,19 @@ FRAUD_VALIDATOR_INVALID_RESULTS = 3
 FRAUD_COOLDOWN_SECONDS = 60 * 60
 PI_ALGORITHM = "bbp_hex_v1"
 GENESIS_ACCOUNT_ID = "genesis"
-GENESIS_SUPPLY = 3.1416
+GENESIS_SUPPLY = NETWORK_PROFILE.genesis_supply
 FAUCET_DEFAULT_AMOUNT = 3.1416
 FAUCET_MAX_AMOUNT = 3.1416
-FAUCET_ALLOWED_NETWORKS = {
-    network.strip().lower()
-    for network in os.getenv("PICOIN_FAUCET_ALLOWED_NETWORKS", "local").split(",")
-    if network.strip()
-}
+FAUCET_ALLOWED_NETWORKS = parse_network_set(
+    os.getenv("PICOIN_FAUCET_ALLOWED_NETWORKS", ""),
+    NETWORK_PROFILE.faucet_allowed_networks,
+)
+if NETWORK_PROFILE.name == "mainnet" and FAUCET_ALLOWED_NETWORKS:
+    raise RuntimeError("mainnet faucet is frozen off")
 FAUCET_RATE_LIMIT_WINDOW_SECONDS = 60 * 60
 FAUCET_RATE_LIMIT_MAX_REQUESTS = 3
-MIN_VALIDATOR_STAKE = 31.416
-VALIDATOR_SLASH_INVALID_SIGNATURE = 3.1416
+MIN_VALIDATOR_STAKE = NETWORK_PROFILE.min_validator_stake
+VALIDATOR_SLASH_INVALID_SIGNATURE = NETWORK_PROFILE.validator_slash_invalid_signature
 VALIDATOR_MIN_TRUST_SCORE = 0.25
 VALIDATOR_SELECTION_MODE = "weighted_reputation_stake_rotation"
 VALIDATOR_SELECTION_POOL_MULTIPLIER = 2
