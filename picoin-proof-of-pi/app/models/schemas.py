@@ -160,6 +160,7 @@ class BlockResponse(BaseModel):
     protocol_version: str | None = None
     validation_mode: str | None = None
     total_task_ms: int | None = None
+    total_block_ms: int | None = None
     validation_ms: int | None = None
     fraudulent: bool = False
     fraud_reason: str | None = None

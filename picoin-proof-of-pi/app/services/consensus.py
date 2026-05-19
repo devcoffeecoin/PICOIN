@@ -1011,9 +1011,9 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
             height, previous_hash, miner_id, range_start, range_end, algorithm,
             result_hash, merkle_root, samples, timestamp, block_hash, reward, tx_merkle_root,
             tx_count, tx_hashes, fee_reward, state_root, difficulty, task_id, protocol_params_id,
-            protocol_version, validation_mode, total_task_ms, validation_ms
+            protocol_version, validation_mode, total_task_ms, total_block_ms, validation_ms
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             block["height"],
@@ -1038,7 +1038,8 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
             local_protocol_params_id,
             block.get("protocol_version", PROTOCOL_VERSION),
             block.get("validation_mode", VALIDATION_MODE),
-            None,
+            block.get("total_task_ms"),
+            block.get("total_block_ms"),
             None,
         ),
     )
@@ -1280,6 +1281,8 @@ def _normalize_block(block: dict[str, Any]) -> dict[str, Any]:
         normalized["difficulty"] = float(normalized["difficulty"])
     if normalized.get("protocol_params_id") is not None:
         normalized["protocol_params_id"] = int(normalized["protocol_params_id"])
+    if normalized.get("total_block_ms") is not None:
+        normalized["total_block_ms"] = int(normalized["total_block_ms"])
     if isinstance(normalized.get("tx_hashes"), str):
         normalized["tx_hashes"] = json.loads(normalized["tx_hashes"])
     normalized["tx_count"] = int(normalized.get("tx_count") or 0)
@@ -1310,6 +1313,8 @@ def _canonical_block_payload(block: dict[str, Any], include_protocol: bool) -> d
         payload["difficulty"] = float(block["difficulty"])
     if block.get("protocol_params_id") is not None:
         payload["protocol_params_id"] = int(block["protocol_params_id"])
+    if block.get("total_block_ms") is not None:
+        payload["total_block_ms"] = int(block["total_block_ms"])
     if block.get("merkle_root"):
         payload["merkle_root"] = block["merkle_root"]
     if int(block.get("tx_count") or 0) > 0:

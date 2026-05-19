@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.core.crypto import canonical_json, hash_block, hash_result, sha256_text
-from app.core.difficulty import calculate_difficulty, calculate_reward, propose_retarget_params
+from app.core.difficulty import calculate_difficulty, calculate_reward
 from app.services.difficulty_service import DifficultyService
 from app.core.merkle import verify_merkle_proof
 from app.core.performance import elapsed_ms, now_perf
@@ -612,6 +612,11 @@ def submit_task(
         next_height = tip["height"] + 1
         previous_hash = tip["block_hash"]
         timestamp = utc_now()
+
+        created_at = parse_iso(task.get("created_at"))
+        total_block_ms = int((utc_now_dt() - created_at).total_seconds() * 1000) if created_at else None
+        total_task_ms = total_block_ms
+
         block_transactions = select_block_transactions(connection)
         tx_commitment = transaction_commitment(block_transactions)
 
@@ -629,6 +634,7 @@ def submit_task(
             "timestamp": timestamp,
             "protocol_params_id": params["id"],
             "protocol_version": params["protocol_version"],
+            "total_block_ms": total_block_ms,
             "validation_mode": params["validation_mode"],
             "fraudulent": False,
             "fraud_reason": None,
@@ -647,9 +653,9 @@ def submit_task(
                 height, previous_hash, miner_id, range_start, range_end, algorithm,
                 result_hash, samples, timestamp, block_hash, reward, tx_merkle_root,
                 tx_count, tx_hashes, fee_reward, difficulty, task_id, protocol_params_id,
-                protocol_version, validation_mode
+                protocol_version, validation_mode, total_task_ms, total_block_ms
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 next_height,
@@ -672,6 +678,8 @@ def submit_task(
                 params["id"],
                 params["protocol_version"],
                 params["validation_mode"],
+                total_task_ms,
+                total_block_ms,
             ),
         )
         connection.execute(
@@ -734,6 +742,7 @@ def submit_task(
             "difficulty": difficulty,
             "protocol_params_id": params["id"],
             "protocol_version": params["protocol_version"],
+            "total_block_ms": total_block_ms,
             "validation_mode": params["validation_mode"],
         }
         block["consensus_proposal"] = record_local_block_proposal(connection, block, proposer_node_id=miner_id)
@@ -2216,7 +2225,7 @@ def get_difficulty_status() -> dict[str, Any]:
 
     blocks_since_retarget = max(0, current_height - last_retarget_height)
     average_ms = _average_epoch_ms(epoch_rows) if epoch_rows else None
-    required_epoch_blocks = max(RETARGET_EPOCH_BLOCKS, DifficultyService.SMA_WINDOW)
+    required_epoch_blocks = max(RETARGET_EPOCH_BLOCKS, DifficultyService.RETARGET_INTERVAL)
     blocks_until_ready = max(0, required_epoch_blocks - len(epoch_rows))
     return {
         "enabled": True,
@@ -3537,6 +3546,8 @@ def _block_payload(block: dict[str, Any], include_protocol: bool) -> dict[str, A
         payload["difficulty"] = block["difficulty"]
     if block.get("protocol_params_id") is not None:
         payload["protocol_params_id"] = block["protocol_params_id"]
+    if block.get("total_block_ms") is not None:
+        payload["total_block_ms"] = int(block["total_block_ms"])
     if block.get("merkle_root"):
         payload["merkle_root"] = block["merkle_root"]
     if int(block.get("tx_count") or 0) > 0:
@@ -3830,16 +3841,25 @@ def _build_challenge_samples(
 
 
 def _retarget_epoch_rows(connection: Any, last_height: int) -> list[Any]:
-    # Aumentamos el límite de 5 a 10 para soportar la ventana SMA del DifficultyService
     return connection.execute(
         """
-        SELECT height, range_start, COALESCE(total_task_ms, ?) AS total_task_ms
+        SELECT
+            height,
+            range_start,
+            range_end,
+            COALESCE(total_task_ms, total_block_ms, ?) AS total_task_ms,
+            COALESCE(total_block_ms, total_task_ms, ?) AS total_block_ms
         FROM blocks
         WHERE height > ?
         ORDER BY height ASC
-        LIMIT 10
+        LIMIT ?
         """,
-        (RETARGET_TARGET_BLOCK_MS, last_height),
+        (
+            RETARGET_TARGET_BLOCK_MS,
+            RETARGET_TARGET_BLOCK_MS,
+            last_height,
+            DifficultyService.RETARGET_WINDOW,
+        ),
     ).fetchall()
 
 
@@ -3854,19 +3874,20 @@ def _retarget_preview(connection: Any, force: bool = False) -> dict[str, Any]:
     epoch_rows = _retarget_epoch_rows(connection, last_height)
     epoch_count = len(epoch_rows)
     average_block_ms = _average_epoch_ms(epoch_rows) if epoch_rows else None
-    required_epoch_blocks = max(RETARGET_EPOCH_BLOCKS, DifficultyService.SMA_WINDOW)
-    # El trigger de preparación ahora depende de la ventana SMA del servicio (10 bloques)
+    required_epoch_blocks = max(RETARGET_EPOCH_BLOCKS, DifficultyService.RETARGET_INTERVAL)
     ready = bool(epoch_rows) and (force or epoch_count >= required_epoch_blocks)
     next_params = dict(params)
     meta = {
         "action": "wait",
         "reason": "not enough accepted blocks for retarget",
+        "adjustment_ratio": 1.0,
         "adjustment_factor": 1.0,
     }
     if ready:
-        # Convertimos las filas de SQLite a diccionarios para el servicio
-        history = [dict(row) for row in epoch_rows]
-        next_params, meta = DifficultyService.calculate_next_difficulty(history, params)
+        history = [row_to_dict(row) for row in epoch_rows]
+        assignment_window = _range_assignment_window(connection, params)
+        next_range_start_for_preview = int(assignment_window["frontier"]) + 1
+        next_params, meta = DifficultyService.calculate_next_difficulty(history, params, next_range_start_for_preview)
 
     status = "ready" if ready else "waiting"
     if not epoch_rows:
@@ -4038,6 +4059,7 @@ def _accept_block_in_connection(
     total_task_ms = None
     if created_at is not None:
         total_task_ms = max(0, round((utc_now_dt() - created_at).total_seconds() * 1000))
+    total_block_ms = total_task_ms
     block_transactions = select_block_transactions(connection)
     tx_commitment = transaction_commitment(block_transactions)
 
@@ -4055,6 +4077,7 @@ def _accept_block_in_connection(
         "timestamp": timestamp,
         "protocol_params_id": params["id"],
         "protocol_version": params["protocol_version"],
+        "total_block_ms": total_block_ms,
         "validation_mode": params["validation_mode"],
     }
     if merkle_root:
@@ -4072,9 +4095,9 @@ def _accept_block_in_connection(
             height, previous_hash, miner_id, range_start, range_end, algorithm,
             result_hash, merkle_root, samples, timestamp, block_hash, reward, tx_merkle_root,
             tx_count, tx_hashes, fee_reward, difficulty, task_id, protocol_params_id,
-            protocol_version, validation_mode, total_task_ms, validation_ms
+            protocol_version, validation_mode, total_task_ms, total_block_ms, validation_ms
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             next_height,
@@ -4099,6 +4122,7 @@ def _accept_block_in_connection(
             params["protocol_version"],
             params["validation_mode"],
             total_task_ms,
+            total_block_ms,
             validation_ms,
         ),
     )
@@ -4174,6 +4198,7 @@ def _accept_block_in_connection(
         "protocol_version": params["protocol_version"],
         "validation_mode": params["validation_mode"],
         "total_task_ms": total_task_ms,
+        "total_block_ms": total_block_ms,
         "validation_ms": validation_ms,
         "fraudulent": False,
         "fraud_reason": None,
