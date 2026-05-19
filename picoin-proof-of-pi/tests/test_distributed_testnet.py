@@ -85,6 +85,21 @@ def test_peer_registry_and_heartbeat(tmp_path, monkeypatch) -> None:
     assert peers[0]["peer_type"] == "validator"
 
 
+def test_receive_block_header_queues_tip_mismatch_for_ancestor_sync(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "header-tip-mismatch.sqlite3")
+    block = {
+        "height": 1,
+        "previous_hash": "f" * 64,
+        "block_hash": "a" * 64,
+        "timestamp": "2026-05-12T00:00:00+00:00",
+    }
+
+    received = receive_block_header(block, source_peer_id="peer-a")
+
+    assert received["status"] == "pending_missing_ancestors"
+    assert "previous_hash" in received["reason"]
+
+
 def test_peer_rejects_wrong_chain(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "wrong-chain.sqlite3")
 
@@ -253,18 +268,20 @@ def test_invalid_transfer_recipient_is_rejected_at_submission(tmp_path, monkeypa
         submit_transaction(tx)
 
 
-def test_invalid_next_block_previous_hash_is_rejected(tmp_path, monkeypatch) -> None:
+def test_next_block_previous_hash_mismatch_waits_for_ancestor_sync(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "invalid-block.sqlite3")
 
-    with pytest.raises(NetworkError, match="previous_hash"):
-        receive_block_header(
-            {
-                "height": 1,
-                "previous_hash": "1" * 64,
-                "block_hash": "2" * 64,
-                "timestamp": "2026-05-12T00:00:00+00:00",
-            }
-        )
+    received = receive_block_header(
+        {
+            "height": 1,
+            "previous_hash": "1" * 64,
+            "block_hash": "2" * 64,
+            "timestamp": "2026-05-12T00:00:00+00:00",
+        }
+    )
+
+    assert received["status"] == "pending_missing_ancestors"
+    assert "previous_hash" in received["reason"]
 
 
 def test_sync_status_reports_distributed_context(tmp_path, monkeypatch) -> None:

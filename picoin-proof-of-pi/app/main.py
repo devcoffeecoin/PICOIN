@@ -6,6 +6,7 @@ from fastapi.staticfiles import StaticFiles
 from app.api.routes import router
 from app.core.settings import BASE_DIR, CORS_ORIGINS, PROJECT_NAME, PROTOCOL_VERSION
 from app.db.database import init_db
+from app.services.consensus_queue import start_consensus_queue, stop_consensus_queue
 
 WEB_DIR = BASE_DIR / "app" / "web"
 STATIC_DIR = WEB_DIR / "static"
@@ -26,8 +27,14 @@ app.add_middleware(
 
 
 @app.on_event("startup")
-def on_startup() -> None:
+async def on_startup() -> None:
     init_db()
+    await start_consensus_queue()
+
+
+@app.on_event("shutdown")
+async def on_shutdown() -> None:
+    await stop_consensus_queue()
 
 
 @app.get("/")

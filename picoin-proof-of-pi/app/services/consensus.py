@@ -6,6 +6,7 @@ from typing import Any
 
 from app.core.crypto import hash_block, sha256_text
 from app.core.settings import (
+    BOOTSTRAP_PEERS,
     GENESIS_HASH,
     NODE_ID,
     PROOF_OF_PI_REWARD_PERCENT,
@@ -158,7 +159,10 @@ def propose_block(block: dict[str, Any], proposer_node_id: str, gossip: bool = T
         )
         proposal = _proposal_by_id(connection, proposal_id)
     if should_sync_ancestors:
-        _sync_missing_ancestors_for_proposer(proposer_node_id)
+        _sync_missing_ancestors_for_proposer(proposer_node_id, int(normalized["height"]))
+        with get_connection() as connection:
+            _promote_ready_missing_ancestor_proposals(connection)
+            proposal = _proposal_by_id(connection, proposal_id) or proposal
     if gossip:
         from app.services.network import gossip_json
 
@@ -170,28 +174,93 @@ def propose_block(block: dict[str, Any], proposer_node_id: str, gossip: bool = T
     return proposal
 
 
-def _sync_missing_ancestors_for_proposer(proposer_node_id: str) -> None:
+def _sync_missing_ancestors_for_proposer(proposer_node_id: str, target_height: int | None = None) -> None:
+    peer_addresses: list[str] = []
     with get_connection() as connection:
-        peer = connection.execute(
+        rows = connection.execute(
             """
             SELECT peer_address
             FROM network_peers
-            WHERE node_id = ? AND status IN ('connected', 'stale')
+            WHERE (node_id = ? OR status IN ('connected', 'stale'))
+              AND peer_address <> ''
             ORDER BY
-                CASE status WHEN 'connected' THEN 0 ELSE 1 END,
+                CASE
+                    WHEN node_id = ? THEN 0
+                    WHEN status = 'connected' THEN 1
+                    ELSE 2
+                END,
                 last_seen DESC
-            LIMIT 1
             """,
-            (proposer_node_id,),
-        ).fetchone()
-    if peer is None:
+            (proposer_node_id, proposer_node_id),
+        ).fetchall()
+        peer_addresses.extend(row["peer_address"] for row in rows)
+    peer_addresses.extend(BOOTSTRAP_PEERS)
+    peer_addresses = list(dict.fromkeys(address.rstrip("/") for address in peer_addresses if address))
+    if not peer_addresses:
         return
-    try:
-        from app.services.network import reconcile_peer
 
-        reconcile_peer(peer["peer_address"])
-    except Exception:
-        return
+    from app.services.network import sync_blocks_until
+
+    for peer_address in peer_addresses:
+        try:
+            sync_blocks_until(peer_address, target_height=target_height, limit=100)
+            if target_height is None or _local_tip_height() >= target_height - 1:
+                return
+        except Exception:
+            continue
+
+
+def _local_tip_height() -> int:
+    with get_connection() as connection:
+        tip = _latest_tip(connection)
+        return int(tip["height"])
+
+
+def _promote_ready_missing_ancestor_proposals(connection: Any) -> int:
+    timestamp = utc_now()
+    promoted = 0
+    rows = connection.execute(
+        """
+        SELECT proposal_id, height, previous_hash
+        FROM consensus_block_proposals
+        WHERE status = 'pending_missing_ancestors'
+        ORDER BY height ASC, created_at ASC
+        """
+    ).fetchall()
+    active_base = active_snapshot_base_in_connection(connection)
+    for row in rows:
+        height = int(row["height"])
+        previous_hash = row["previous_hash"]
+        parent_exists = False
+        if height == 1 and previous_hash == GENESIS_HASH:
+            parent_exists = True
+        else:
+            parent = connection.execute(
+                "SELECT block_hash FROM blocks WHERE height = ?",
+                (height - 1,),
+            ).fetchone()
+            parent_exists = parent is not None and parent["block_hash"] == previous_hash
+        if (
+            not parent_exists
+            and active_base is not None
+            and int(active_base["height"]) == height - 1
+            and active_base["block_hash"] == previous_hash
+        ):
+            parent_exists = True
+        if not parent_exists:
+            continue
+        connection.execute(
+            """
+            UPDATE consensus_block_proposals
+            SET status = 'pending',
+                rejection_reason = NULL,
+                updated_at = ?
+            WHERE proposal_id = ? AND status = 'pending_missing_ancestors'
+            """,
+            (timestamp, row["proposal_id"]),
+        )
+        promoted += 1
+    return promoted
 
 
 def record_local_block_proposal(connection: Any, block: dict[str, Any], proposer_node_id: str | None = None) -> dict[str, Any]:
@@ -377,6 +446,8 @@ def finalize_proposal(proposal_id: str, connection: Any | None = None) -> dict[s
             raise ConsensusError(409, "proposal is not fork-choice winner")
         block = proposal["payload"]
         imported = _import_finalized_block(connection, block, proposal_id)
+        if imported:
+            _promote_ready_missing_ancestor_proposals(connection)
         timestamp = utc_now()
         validators = [
             row["validator_id"]
@@ -468,6 +539,7 @@ def replay_finalized_blocks(limit: int = 100) -> dict[str, Any]:
             block = json.loads(row["payload"])
             if _import_finalized_block(connection, block, row["proposal_id"]):
                 imported += 1
+                _promote_ready_missing_ancestor_proposals(connection)
                 connection.execute(
                     "UPDATE consensus_finalizations SET imported = 1 WHERE proposal_id = ?",
                     (row["proposal_id"],),
@@ -552,6 +624,7 @@ def _replay_pending_block_headers(connection: Any, limit: int) -> dict[str, Any]
             continue
         if did_import:
             imported += 1
+            _promote_ready_missing_ancestor_proposals(connection)
             connection.execute(
                 """
                 UPDATE network_block_headers

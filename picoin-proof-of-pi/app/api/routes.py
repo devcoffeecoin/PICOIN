@@ -79,10 +79,10 @@ from app.services.consensus import (
     get_block_proposal,
     list_consensus_votes,
     list_block_proposals,
-    propose_block,
     replay_finalized_blocks,
     vote_on_proposal,
 )
+from app.services.consensus_queue import submit_block_proposal
 from app.services.network import (
     NetworkError,
     get_blocks_since,
@@ -421,9 +421,9 @@ def consensus_votes(proposal_id: str) -> list[dict]:
 
 
 @router.post("/consensus/proposals", response_model=ConsensusProposalResponse, status_code=201)
-def consensus_propose(payload: ConsensusBlockProposalRequest, gossip: bool = Query(True)) -> dict:
+async def consensus_propose(payload: ConsensusBlockProposalRequest, gossip: bool = Query(True)) -> dict:
     try:
-        return propose_block(payload.block, payload.proposer_node_id, gossip=gossip)
+        return await submit_block_proposal(payload.block, payload.proposer_node_id, gossip=gossip)
     except ConsensusError as exc:
         raise _consensus_error(exc) from exc
 
@@ -526,7 +526,7 @@ async def p2p_websocket(websocket: WebSocket) -> None:
                 block = receive_block_header(message.get("payload") or {}, message.get("source_peer_id"))
                 await websocket.send_json({"type": "block_ack", "payload": block})
             elif message_type == "block_proposal":
-                proposal = propose_block(
+                proposal = await submit_block_proposal(
                     message.get("payload") or {},
                     message.get("proposer_node_id") or "p2p-peer",
                     gossip=False,

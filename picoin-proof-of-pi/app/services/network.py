@@ -330,7 +330,8 @@ def receive_block_header(block: dict[str, Any], source_peer_id: str | None = Non
                 status = "pending_replay"
                 reason = "accepted after active snapshot base"
             else:
-                raise NetworkError(409, "previous_hash does not match local chain tip")
+                status = "pending_missing_ancestors"
+                reason = "accepted but local chain tip does not match previous_hash"
         elif int(block["height"]) > latest_height + 1:
             active_base = active_snapshot_base_in_connection(connection)
             if (
@@ -545,24 +546,11 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
         result["errors"].append(f"mempool: {exc}")
 
     try:
-        with get_connection() as connection:
-            latest = connection.execute("SELECT COALESCE(MAX(height), 0) AS height FROM blocks").fetchone()
-            latest_height = int(latest["height"] if latest else 0)
-            active_base = active_snapshot_base_in_connection(connection)
-            base_height = int(active_base["height"]) if active_base is not None else 0
-            sync_from_height = max(latest_height, base_height)
-        result["sync_from_height"] = sync_from_height
-        block_rows = requests.get(
-            f"{peer_address}/node/sync/blocks?from_height={sync_from_height}&limit=100",
-            timeout=GOSSIP_TIMEOUT_SECONDS,
-        ).json()
-        for block in block_rows.get("blocks", []):
-            result["blocks_seen"] += 1
-            try:
-                receive_block_header(block, source_peer_id=None)
-                result["blocks_imported"] += 1
-            except Exception as exc:
-                result["errors"].append(f"block {block.get('height')}: {exc}")
+        block_sync = sync_blocks_until(peer_address, limit=100)
+        result["sync_from_height"] = block_sync["sync_from_height"]
+        result["blocks_seen"] += block_sync["blocks_seen"]
+        result["blocks_imported"] += block_sync["blocks_imported"]
+        result["errors"].extend(block_sync["errors"])
     except Exception as exc:
         result["errors"].append(f"blocks: {exc}")
 
@@ -585,6 +573,71 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
 
     with get_connection() as connection:
         _record_sync_event(connection, None, "peer_reconcile", "outbound", "completed", result)
+    return result
+
+
+def sync_blocks_until(
+    peer_address: str,
+    *,
+    target_height: int | None = None,
+    from_height: int | None = None,
+    limit: int = 100,
+) -> dict[str, Any]:
+    peer_address = peer_address.rstrip("/")
+    result = {
+        "peer_address": peer_address,
+        "sync_from_height": 0,
+        "target_height": target_height,
+        "blocks_seen": 0,
+        "blocks_imported": 0,
+        "replay": {},
+        "errors": [],
+    }
+    with get_connection() as connection:
+        latest = connection.execute("SELECT COALESCE(MAX(height), 0) AS height FROM blocks").fetchone()
+        latest_height = int(latest["height"] if latest else 0)
+        active_base = active_snapshot_base_in_connection(connection)
+        base_height = int(active_base["height"]) if active_base is not None else 0
+        sync_from_height = max(latest_height, base_height) if from_height is None else int(from_height)
+    result["sync_from_height"] = sync_from_height
+
+    rounds = 0
+    max_rounds = 20
+    while rounds < max_rounds:
+        rounds += 1
+        request_limit = max(1, min(int(limit), 100))
+        if target_height is not None:
+            if sync_from_height >= int(target_height):
+                break
+            request_limit = max(1, min(request_limit, int(target_height) - sync_from_height))
+        block_rows = requests.get(
+            f"{peer_address}/node/sync/blocks?from_height={sync_from_height}&limit={request_limit}",
+            timeout=GOSSIP_TIMEOUT_SECONDS,
+        ).json()
+        blocks = sorted(block_rows.get("blocks", []), key=lambda item: int(item.get("height") or 0))
+        if not blocks:
+            break
+        max_seen_height = sync_from_height
+        for block in blocks:
+            result["blocks_seen"] += 1
+            max_seen_height = max(max_seen_height, int(block.get("height") or 0))
+            try:
+                receive_block_header(block, source_peer_id=None)
+                result["blocks_imported"] += 1
+            except Exception as exc:
+                result["errors"].append(f"block {block.get('height')}: {exc}")
+        if max_seen_height <= sync_from_height:
+            break
+        sync_from_height = max_seen_height
+        if len(blocks) < request_limit:
+            break
+
+    try:
+        from app.services.consensus import replay_finalized_blocks
+
+        result["replay"] = replay_finalized_blocks(max(int(limit), 100))
+    except Exception as exc:
+        result["errors"].append(f"replay: {exc}")
     return result
 
 

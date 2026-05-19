@@ -35,13 +35,32 @@ from app.core.settings import (
 from app.services.genesis import load_genesis_allocations
 
 
-def get_connection() -> sqlite3.Connection:
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
-    connection = sqlite3.connect(DATABASE_PATH, timeout=30, check_same_thread=False)
+class PicoinConnection(sqlite3.Connection):
+    """SQLite connection that closes when used as a context manager."""
+
+    def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool | None:
+        try:
+            return super().__exit__(exc_type, exc, tb)
+        finally:
+            self.close()
+
+
+def _open_connection(db_path: Path = DATABASE_PATH) -> PicoinConnection:
+    connection = sqlite3.connect(
+        db_path,
+        timeout=30,
+        check_same_thread=False,
+        factory=PicoinConnection,
+    )
     connection.row_factory = sqlite3.Row
     connection.execute("PRAGMA foreign_keys = ON")
     connection.execute("PRAGMA busy_timeout = 30000")
     return connection
+
+
+def get_connection() -> sqlite3.Connection:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    return _open_connection(DATABASE_PATH)
 
 
 def row_to_dict(row: sqlite3.Row | None) -> dict[str, Any] | None:
@@ -92,10 +111,11 @@ CREATE TABLE tasks (
 
 def init_db(db_path: Path = DATABASE_PATH) -> None:
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    with sqlite3.connect(db_path, timeout=30, check_same_thread=False) as connection:
+    with _open_connection(db_path) as connection:
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute("PRAGMA busy_timeout = 30000")
         connection.execute("PRAGMA journal_mode = WAL")
+        connection.execute("PRAGMA synchronous = NORMAL")
         connection.executescript(
             """
             CREATE TABLE IF NOT EXISTS miners (
