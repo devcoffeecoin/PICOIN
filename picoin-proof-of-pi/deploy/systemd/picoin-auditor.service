@@ -9,6 +9,8 @@ User=picoin
 Group=picoin
 WorkingDirectory=/opt/picoin/picoin-proof-of-pi
 EnvironmentFile=/etc/picoin/picoin.env
+Environment=PICOIN_SMOKE_TIMEOUT=60
+Environment=PICOIN_AUDITOR_INTERVAL=300
 ExecStart=/opt/picoin/picoin-proof-of-pi/deploy/scripts/public-testnet-smoke.sh
 Restart=always
 RestartSec=300

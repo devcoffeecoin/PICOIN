@@ -1,3 +1,5 @@
+import asyncio
+
 from fastapi import APIRouter, HTTPException, Query, WebSocket, WebSocketDisconnect
 
 from app.models.schemas import (
@@ -178,6 +180,7 @@ from app.services.mining import (
     run_retroactive_audit,
     submit_validation_result,
     submit_task,
+    utc_now,
     verify_chain,
 )
 
@@ -460,11 +463,35 @@ def consensus_finalize(proposal_id: str, gossip: bool = Query(True)) -> dict:
 
 
 @router.post("/consensus/replay", response_model=ConsensusReplayResponse)
-def consensus_replay(limit: int = Query(100, ge=1, le=500)) -> dict:
+async def consensus_replay(limit: int = Query(100, ge=1, le=200)) -> dict:
     try:
-        return replay_finalized_blocks(limit)
+        return await asyncio.to_thread(replay_finalized_blocks, limit)
     except ConsensusError as exc:
-        raise _consensus_error(exc) from exc
+        return {
+            "status": "error",
+            "processed": 0,
+            "imported": 0,
+            "skipped": 0,
+            "missing_ancestors": 0,
+            "headers_imported": 0,
+            "headers_skipped": 0,
+            "normalized": 0,
+            "errors": [exc.detail],
+            "checked_at": utc_now(),
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "processed": 0,
+            "imported": 0,
+            "skipped": 0,
+            "missing_ancestors": 0,
+            "headers_imported": 0,
+            "headers_skipped": 0,
+            "normalized": 0,
+            "errors": [str(exc)],
+            "checked_at": utc_now(),
+        }
 
 
 @router.get("/mempool", response_model=list[MempoolTransactionResponse])

@@ -623,6 +623,9 @@ class ConsensusProposalResponse(BaseModel):
     approvals: int
     rejections: int
     rejection_reason: str | None = None
+    age_seconds: int | None = None
+    missing_ancestor_hash: str | None = None
+    missing_ancestor_height: int | None = None
     finalized_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
@@ -644,8 +647,12 @@ class ConsensusVoteResponse(BaseModel):
 
 
 class ConsensusReplayResponse(BaseModel):
-    imported: int
-    skipped: int
+    status: str = "ok"
+    processed: int = 0
+    imported: int = 0
+    skipped: int = 0
+    missing_ancestors: int = 0
+    checked_at: datetime
     headers_imported: int = 0
     headers_skipped: int = 0
     normalized: int = 0
@@ -654,10 +661,13 @@ class ConsensusReplayResponse(BaseModel):
 
 class ConsensusStatusResponse(BaseModel):
     required_validator_approvals: int
+    eligible_validators: int = 0
+    quorum_warning: str | None = None
     fork_choice_rule: str | None = None
     latest_block_height: int
     latest_block_hash: str
     proposals: dict[str, int]
+    missing_ancestor_proposals: list[dict[str, Any]] = Field(default_factory=list)
     finalizations: int
     fork_group_count: int = 0
     competing_proposal_count: int = 0

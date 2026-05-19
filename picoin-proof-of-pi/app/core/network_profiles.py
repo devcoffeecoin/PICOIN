@@ -35,6 +35,7 @@ PUBLIC_TESTNET_PROFILE = NetworkProfile(
     protocol_version="0.18",
     genesis_supply=3.1416,
     faucet_allowed_networks=frozenset({"local", "public-testnet"}),
+    required_validator_approvals=2,
 )
 
 MAINNET_PROFILE = NetworkProfile(

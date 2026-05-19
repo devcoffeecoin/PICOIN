@@ -60,6 +60,14 @@ DEFAULT_PORT = int(os.getenv("PICOIN_PORT", "8000"))
 DEFAULT_SCIENCE_ADDRESS = os.getenv("PICOIN_SCIENCE_ADDRESS", "local-science-user")
 
 
+def http_timeout_seconds() -> float:
+    value = os.getenv("PICOIN_HTTP_TIMEOUT_SECONDS") or os.getenv("PICOIN_SMOKE_TIMEOUT") or "20"
+    try:
+        return max(1.0, float(value))
+    except ValueError:
+        return 20.0
+
+
 def normalize_server_url(server: str) -> str:
     return server.rstrip("/")
 
@@ -69,13 +77,13 @@ def print_json(payload: Any) -> None:
 
 
 def get_json(server_url: str, path: str) -> Any:
-    response = requests.get(f"{normalize_server_url(server_url)}{path}", timeout=20)
+    response = requests.get(f"{normalize_server_url(server_url)}{path}", timeout=http_timeout_seconds())
     response.raise_for_status()
     return response.json()
 
 
 def post_json(server_url: str, path: str, payload: dict[str, Any] | None = None) -> Any:
-    response = requests.post(f"{normalize_server_url(server_url)}{path}", json=payload, timeout=20)
+    response = requests.post(f"{normalize_server_url(server_url)}{path}", json=payload, timeout=http_timeout_seconds())
     response.raise_for_status()
     return response.json()
 

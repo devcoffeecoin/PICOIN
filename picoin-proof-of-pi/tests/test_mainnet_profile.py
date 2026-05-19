@@ -107,3 +107,75 @@ def test_mainnet_rejects_faucet_enablement() -> None:
 
     assert result.returncode != 0
     assert "mainnet faucet is frozen off" in result.stderr
+
+
+def test_mainnet_rejects_validator_quorum_override() -> None:
+    result = _run_isolated(
+        "import app.core.settings",
+        {
+            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_REQUIRED_VALIDATOR_APPROVALS": "2",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "mainnet validator quorum is frozen" in result.stderr
+
+
+def test_public_testnet_defaults_to_two_validator_approvals(tmp_path) -> None:
+    db_path = tmp_path / "public-profile.sqlite3"
+    code = """
+import json
+from app.core import settings
+from app.db.database import init_db
+from app.services.mining import get_protocol
+
+init_db()
+print(json.dumps({
+    "required_validator_approvals": settings.REQUIRED_VALIDATOR_APPROVALS,
+    "protocol_required_validator_approvals": get_protocol()["required_validator_approvals"],
+}))
+"""
+    result = _run_isolated(
+        code,
+        {
+            "PICOIN_NETWORK": "public-testnet",
+            "PICOIN_DB_PATH": str(db_path),
+            "PICOIN_DATA_DIR": str(tmp_path),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["required_validator_approvals"] == 2
+    assert payload["protocol_required_validator_approvals"] == 2
+
+
+def test_public_testnet_allows_validator_quorum_override(tmp_path) -> None:
+    db_path = tmp_path / "public-profile-override.sqlite3"
+    code = """
+import json
+from app.core import settings
+from app.db.database import init_db
+from app.services.mining import get_protocol
+
+init_db()
+print(json.dumps({
+    "required_validator_approvals": settings.REQUIRED_VALIDATOR_APPROVALS,
+    "protocol_required_validator_approvals": get_protocol()["required_validator_approvals"],
+}))
+"""
+    result = _run_isolated(
+        code,
+        {
+            "PICOIN_NETWORK": "public-testnet",
+            "PICOIN_REQUIRED_VALIDATOR_APPROVALS": "3",
+            "PICOIN_DB_PATH": str(db_path),
+            "PICOIN_DATA_DIR": str(tmp_path),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["required_validator_approvals"] == 3
+    assert payload["protocol_required_validator_approvals"] == 3
