@@ -498,6 +498,88 @@ def command_node_compare(args: argparse.Namespace) -> int:
     return 0 if output["status"] == "ok" else 1
 
 
+def _first_peer_block(peer_url: str, height: int) -> dict[str, Any] | None:
+    payload = get_json(peer_url, f"/node/sync/blocks?from_height={height - 1}&limit=1")
+    blocks = payload.get("blocks") or []
+    for block in blocks:
+        if int(block.get("height") or 0) == height:
+            return block
+    return None
+
+
+def _diff_json_values(left: Any, right: Any, path: str = "$") -> list[dict[str, Any]]:
+    diffs: list[dict[str, Any]] = []
+    if isinstance(left, dict) and isinstance(right, dict):
+        for key in sorted(set(left) | set(right)):
+            child_path = f"{path}.{key}"
+            if key not in left:
+                diffs.append({"path": child_path, "local": None, "remote": right[key], "reason": "missing_local"})
+            elif key not in right:
+                diffs.append({"path": child_path, "local": left[key], "remote": None, "reason": "missing_remote"})
+            else:
+                diffs.extend(_diff_json_values(left[key], right[key], child_path))
+        return diffs
+    if isinstance(left, list) and isinstance(right, list):
+        max_len = max(len(left), len(right))
+        for index in range(max_len):
+            child_path = f"{path}[{index}]"
+            if index >= len(left):
+                diffs.append({"path": child_path, "local": None, "remote": right[index], "reason": "missing_local"})
+            elif index >= len(right):
+                diffs.append({"path": child_path, "local": left[index], "remote": None, "reason": "missing_remote"})
+            else:
+                diffs.extend(_diff_json_values(left[index], right[index], child_path))
+        return diffs
+    if left != right:
+        diffs.append({"path": path, "local": left, "remote": right, "reason": "value_mismatch"})
+    return diffs
+
+
+def command_node_compare_block_payloads(args: argparse.Namespace) -> int:
+    server_url = normalize_server_url(args.server)
+    peer_url = normalize_server_url(args.peer)
+    remote_block = _first_peer_block(peer_url, args.height)
+    if remote_block is None:
+        print_json(
+            {
+                "status": "error",
+                "server": server_url,
+                "peer": peer_url,
+                "height": args.height,
+                "error": "remote block not found",
+            }
+        )
+        return 1
+    local_debug = get_json(server_url, f"/consensus/debug/block/{args.height}")
+    remote_debug = post_json(server_url, "/consensus/debug/hash", remote_block)
+    local_payload = local_debug.get("normalized_payload")
+    remote_payload = remote_debug.get("normalized_payload")
+    diffs = _diff_json_values(local_payload, remote_payload) if local_payload is not None else []
+    output = {
+        "status": "ok" if remote_debug.get("matched") and not diffs else "mismatch",
+        "server": server_url,
+        "peer": peer_url,
+        "height": args.height,
+        "local": {
+            "source": local_debug.get("source"),
+            "expected_hash": local_debug.get("expected_hash"),
+            "computed_hash": local_debug.get("computed_hash"),
+            "matched": local_debug.get("matched"),
+            "matched_variant": local_debug.get("matched_variant"),
+        },
+        "remote": {
+            "expected_hash": remote_debug.get("expected_hash"),
+            "computed_hash": remote_debug.get("computed_hash"),
+            "matched": remote_debug.get("matched"),
+            "matched_variant": remote_debug.get("matched_variant"),
+        },
+        "diffs": diffs[: args.max_diffs],
+        "diff_count": len(diffs),
+    }
+    print_json(output)
+    return 0 if output["status"] == "ok" else 1
+
+
 def command_node_checkpoint_list(args: argparse.Namespace) -> int:
     print_json(get_json(args.server, f"/node/checkpoints?limit={args.limit}"))
     return 0
@@ -1130,6 +1212,16 @@ def add_node_parser(subparsers: argparse._SubParsersAction) -> None:
     compare_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
     compare_parser.add_argument("--peer", required=True)
     compare_parser.set_defaults(func=command_node_compare)
+
+    compare_payloads_parser = node_subparsers.add_parser(
+        "compare-block-payloads",
+        help="Compare local and peer canonical block hash payloads at one height",
+    )
+    compare_payloads_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    compare_payloads_parser.add_argument("--peer", required=True)
+    compare_payloads_parser.add_argument("--height", type=int, required=True)
+    compare_payloads_parser.add_argument("--max-diffs", type=int, default=50)
+    compare_payloads_parser.set_defaults(func=command_node_compare_block_payloads)
 
     checkpoint_parser = node_subparsers.add_parser("checkpoint", help="Create and verify canonical state checkpoints")
     checkpoint_parser.add_argument("--server", default=DEFAULT_SERVER_URL)

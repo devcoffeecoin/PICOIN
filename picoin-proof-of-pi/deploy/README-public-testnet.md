@@ -378,6 +378,21 @@ Healthy behavior after restore is that `effective_latest_block_height` advances
 toward the bootstrap height without repeated `cannot import block before ancestors`
 messages for pre-snapshot history.
 
+If replay reports `block_hash does not match canonical payload`, inspect the exact
+canonical hash inputs before restarting the network:
+
+```bash
+curl -s http://127.0.0.1:8000/consensus/debug/block/940; echo
+.venv/bin/python -m picoin node compare-block-payloads \
+  --server http://127.0.0.1:8000 \
+  --peer https://api.picoin.science \
+  --height 940
+```
+
+The debug output includes `canonical_payload`, `normalized_payload`, `hash_input`,
+`computed_hash`, `expected_hash`, and all known deterministic schema variants. A
+healthy block has `matched=true` and a non-empty `matched_variant`.
+
 ## Logs
 
 ```bash

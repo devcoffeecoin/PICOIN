@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import itertools
 import json
 from datetime import datetime, timezone
 from typing import Any
 
-from app.core.crypto import hash_block, sha256_text
+from app.core.crypto import canonical_json, hash_block, sha256_text
 from app.core.settings import (
     BOOTSTRAP_PEERS,
     GENESIS_HASH,
@@ -945,6 +946,76 @@ def list_consensus_votes(proposal_id: str) -> list[dict[str, Any]]:
         return votes
 
 
+def debug_block_determinism(height: int) -> dict[str, Any]:
+    if height < 1:
+        raise ConsensusError(422, "height must be positive")
+    with get_connection() as connection:
+        header = connection.execute(
+            """
+            SELECT block_hash, payload, status, reason, received_at
+            FROM network_block_headers
+            WHERE height = ?
+            ORDER BY
+                CASE status
+                    WHEN 'pending_replay' THEN 0
+                    WHEN 'pending_missing_ancestors' THEN 1
+                    WHEN 'imported' THEN 2
+                    ELSE 3
+                END,
+                received_at DESC
+            LIMIT 1
+            """,
+            (height,),
+        ).fetchone()
+        proposal = connection.execute(
+            """
+            SELECT block_hash, payload, status, updated_at
+            FROM consensus_block_proposals
+            WHERE height = ? AND status NOT IN ('rejected')
+            ORDER BY updated_at DESC
+            LIMIT 1
+            """,
+            (height,),
+        ).fetchone()
+        local = connection.execute(
+            """
+            SELECT height, previous_hash, miner_id, range_start, range_end, algorithm,
+                   result_hash, merkle_root, samples, timestamp, block_hash, reward,
+                   tx_merkle_root, tx_count, tx_hashes, fee_reward, state_root,
+                   difficulty, task_id, protocol_params_id, protocol_version,
+                   validation_mode, total_task_ms, total_block_ms,
+                   fraudulent, fraud_reason, fraud_detected_at
+            FROM blocks
+            WHERE height = ?
+            """,
+            (height,),
+        ).fetchone()
+    source = None
+    block: dict[str, Any] | None = None
+    source_meta: dict[str, Any] = {}
+    if header is not None and header["payload"]:
+        source = "network_block_headers"
+        block = json.loads(header["payload"])
+        source_meta = {
+            "status": header["status"],
+            "reason": header["reason"],
+            "received_at": header["received_at"],
+        }
+    elif proposal is not None and proposal["payload"]:
+        source = "consensus_block_proposals"
+        block = json.loads(proposal["payload"])
+        source_meta = {"status": proposal["status"], "updated_at": proposal["updated_at"]}
+    elif local is not None:
+        source = "blocks"
+        block = row_to_dict(local)
+        block["samples"] = json.loads(block["samples"]) if isinstance(block.get("samples"), str) else block["samples"]
+        block["tx_hashes"] = json.loads(block["tx_hashes"]) if isinstance(block.get("tx_hashes"), str) else []
+    if block is None:
+        raise ConsensusError(404, "block payload not found")
+    debug = block_hash_debug(block)
+    return {"height": height, "source": source, "source_meta": source_meta, **debug}
+
+
 def consensus_status() -> dict[str, Any]:
     with get_connection() as connection:
         counts = connection.execute(
@@ -1312,7 +1383,16 @@ def _validate_block_hash(block: dict[str, Any]) -> None:
     if len(str(block["block_hash"])) != 64 or len(str(block["previous_hash"])) != 64:
         raise ConsensusError(422, "invalid block hash length")
     if block["block_hash"] not in _block_hash_candidates(block):
-        raise ConsensusError(422, "block_hash does not match canonical payload")
+        diagnostics = block_hash_debug(block)
+        candidate_names = [
+            item["name"] for item in diagnostics["candidates"][:12]
+        ]
+        raise ConsensusError(
+            422,
+            "block_hash does not match canonical payload; "
+            f"expected={diagnostics['expected_hash']} computed={diagnostics['computed_hash']} "
+            f"candidate_count={len(diagnostics['candidates'])} candidate_sample={candidate_names}",
+        )
 
 
 def _normalize_block(block: dict[str, Any]) -> dict[str, Any]:
@@ -1374,22 +1454,114 @@ def _canonical_block_payload(block: dict[str, Any], include_protocol: bool) -> d
     return payload
 
 
-def _block_hash_candidates(block: dict[str, Any]) -> set[str]:
-    candidates = {
-        hash_block(_canonical_block_payload(block, include_protocol=True)),
-        hash_block(_canonical_block_payload(block, include_protocol=False)),
+def _block_hash_variant_payloads(block: dict[str, Any]) -> list[dict[str, Any]]:
+    mandatory = {
+        "algorithm": block["algorithm"],
+        "height": int(block["height"]),
+        "miner_id": block["miner_id"],
+        "previous_hash": block["previous_hash"],
+        "range_end": int(block["range_end"]),
+        "range_start": int(block["range_start"]),
+        "result_hash": block["result_hash"],
+        "reward": round(float(block["reward"]), 8),
+        "samples": block["samples"],
+        "timestamp": block["timestamp"],
     }
-    fraud_payload = _canonical_block_payload(block, include_protocol=True)
-    fraud_payload["fraudulent"] = bool(block.get("fraudulent", False))
-    fraud_payload["fraud_reason"] = block.get("fraud_reason")
-    fraud_payload["fraud_detected_at"] = block.get("fraud_detected_at")
-    candidates.add(hash_block(fraud_payload))
-    legacy_fraud_payload = _canonical_block_payload(block, include_protocol=False)
-    legacy_fraud_payload["fraudulent"] = bool(block.get("fraudulent", False))
-    legacy_fraud_payload["fraud_reason"] = block.get("fraud_reason")
-    legacy_fraud_payload["fraud_detected_at"] = block.get("fraud_detected_at")
-    candidates.add(hash_block(legacy_fraud_payload))
-    return candidates
+    optional_groups: list[tuple[str, dict[str, Any]]] = []
+    if block.get("difficulty") is not None:
+        optional_groups.append(("difficulty", {"difficulty": float(block["difficulty"])}))
+    if block.get("protocol_params_id") is not None:
+        optional_groups.append(("protocol_params_id", {"protocol_params_id": int(block["protocol_params_id"])}))
+    if block.get("total_block_ms") is not None:
+        optional_groups.append(("total_block_ms", {"total_block_ms": int(block["total_block_ms"])}))
+    if block.get("merkle_root"):
+        optional_groups.append(("merkle_root", {"merkle_root": block["merkle_root"]}))
+    protocol_version = block.get("protocol_version", PROTOCOL_VERSION)
+    validation_mode = block.get("validation_mode", VALIDATION_MODE)
+    optional_groups.append(("protocol_version", {"protocol_version": protocol_version}))
+    optional_groups.append(("validation_mode", {"validation_mode": validation_mode}))
+    if int(block.get("tx_count") or 0) > 0:
+        optional_groups.append(
+            (
+                "transactions",
+                {
+                    "tx_merkle_root": block.get("tx_merkle_root"),
+                    "tx_count": int(block.get("tx_count") or 0),
+                    "tx_hashes": block.get("tx_hashes") or [],
+                    "fee_reward": round(float(block.get("fee_reward") or 0), 8),
+                },
+            )
+        )
+    optional_groups.append(
+        (
+            "fraud_fields",
+            {
+                "fraudulent": bool(block.get("fraudulent", False)),
+                "fraud_reason": block.get("fraud_reason"),
+                "fraud_detected_at": block.get("fraud_detected_at"),
+            },
+        )
+    )
+
+    # Current canonical shape first, then explicit historical schema variants.
+    variants: list[dict[str, Any]] = [
+        _canonical_block_payload(block, include_protocol=True),
+        _canonical_block_payload(block, include_protocol=False),
+    ]
+    seen = {canonical_json(payload) for payload in variants}
+    for size in range(len(optional_groups) + 1):
+        for combo in itertools.combinations(optional_groups, size):
+            payload = dict(mandatory)
+            names = []
+            for name, fields in combo:
+                names.append(name)
+                payload.update(fields)
+            key = canonical_json(payload)
+            if key in seen:
+                continue
+            seen.add(key)
+            variants.append(payload)
+    return variants
+
+
+def _block_hash_variant_diagnostics(block: dict[str, Any]) -> list[dict[str, Any]]:
+    expected = block.get("block_hash")
+    diagnostics = []
+    for index, payload in enumerate(_block_hash_variant_payloads(block)):
+        hash_input = canonical_json(payload)
+        computed = sha256_text(hash_input)
+        diagnostics.append(
+            {
+                "index": index,
+                "name": "current" if index == 0 else "legacy_no_protocol" if index == 1 else f"schema_variant_{index}",
+                "hash": computed,
+                "matches": computed == expected,
+                "payload": payload,
+                "hash_input": hash_input,
+            }
+        )
+    return diagnostics
+
+
+def _block_hash_candidates(block: dict[str, Any]) -> set[str]:
+    return {item["hash"] for item in _block_hash_variant_diagnostics(block)}
+
+
+def block_hash_debug(block: dict[str, Any]) -> dict[str, Any]:
+    normalized = _normalize_block(block)
+    candidates = _block_hash_variant_diagnostics(normalized)
+    first = candidates[0]
+    match = next((item for item in candidates if item["matches"]), None)
+    return {
+        "expected_hash": normalized.get("block_hash"),
+        "computed_hash": first["hash"],
+        "matched": match is not None,
+        "matched_variant": match["name"] if match else None,
+        "canonical_payload": first["payload"],
+        "normalized_payload": normalized,
+        "hash_input": first["hash_input"],
+        "candidates": candidates,
+    }
 
 
 def _latest_tip(connection: Any) -> dict[str, Any]:
