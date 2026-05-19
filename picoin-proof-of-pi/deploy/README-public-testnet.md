@@ -347,6 +347,37 @@ curl http://127.0.0.1:8000/health
 sudo systemctl restart picoin-validator picoin-reconciler picoin-auditor picoin-miner
 ```
 
+After a checkpoint restore, a validator can legitimately show `local_block_height=0`
+because old local block rows were cleared and replaced by an active snapshot. The
+reconciler must use `snapshot_height` / `effective_latest_block_height` as the sync
+base and request only blocks after that height. For example, if the snapshot is at
+height `939` and the bootstrap is at height `960`, catch-up should request blocks
+starting after `939` and replay `940..960`.
+
+Check the restore/catch-up diagnostics:
+
+```bash
+curl -s http://127.0.0.1:8000/node/sync-status; echo
+.venv/bin/python -m picoin node catch-up \
+  --server http://127.0.0.1:8000 \
+  --peer https://api.picoin.science
+curl -X POST "http://127.0.0.1:8000/consensus/replay?limit=100"; echo
+```
+
+Fields to verify:
+
+- `local_block_height`: local block table height. This may remain `0` in snapshot mode.
+- `snapshot_height`: active restored checkpoint height.
+- `effective_latest_block_height`: best local chain state, including active snapshot and replayed blocks.
+- `peer_height`: bootstrap height reported during catch-up.
+- `catch_up_start_height`: the base height used for the next sync request.
+- `blocks_imported`: number of post-snapshot blocks imported.
+- `headers_skipped_pre_snapshot`: stale headers ignored because the snapshot already covers them.
+
+Healthy behavior after restore is that `effective_latest_block_height` advances
+toward the bootstrap height without repeated `cannot import block before ancestors`
+messages for pre-snapshot history.
+
 ## Logs
 
 ```bash

@@ -524,11 +524,13 @@ def replay_finalized_blocks(limit: int = 100) -> dict[str, Any]:
     skipped = 0
     headers_imported = 0
     headers_skipped = 0
+    headers_skipped_pre_snapshot = 0
     errors: list[str] = []
     missing_ancestors = 0
     try:
         with get_connection() as connection:
             normalized += _mark_existing_block_proposals_imported(connection)
+            headers_skipped_pre_snapshot += _quarantine_pre_snapshot_headers(connection)
             rows = connection.execute(
                 """
                 SELECT p.proposal_id, p.payload
@@ -580,6 +582,7 @@ def replay_finalized_blocks(limit: int = 100) -> dict[str, Any]:
                 header_result = _replay_pending_block_headers(connection, remaining)
                 headers_imported = header_result["imported"]
                 headers_skipped = header_result["skipped"]
+                headers_skipped_pre_snapshot += header_result.get("skipped_pre_snapshot", 0)
                 errors.extend(header_result["errors"])
             missing_ancestors = _missing_ancestor_count(connection)
     except Exception as exc:
@@ -591,6 +594,7 @@ def replay_finalized_blocks(limit: int = 100) -> dict[str, Any]:
             "skipped": skipped,
             "headers_imported": headers_imported,
             "headers_skipped": headers_skipped,
+            "headers_skipped_pre_snapshot": headers_skipped_pre_snapshot,
             "normalized": normalized,
             "missing_ancestors": missing_ancestors,
             "errors": errors[:20],
@@ -607,6 +611,7 @@ def replay_finalized_blocks(limit: int = 100) -> dict[str, Any]:
         "skipped": skipped,
         "headers_imported": headers_imported,
         "headers_skipped": headers_skipped,
+        "headers_skipped_pre_snapshot": headers_skipped_pre_snapshot,
         "normalized": normalized,
         "missing_ancestors": missing_ancestors,
         "errors": errors[:20],
@@ -644,22 +649,63 @@ def _mark_existing_block_proposals_imported(connection: Any) -> int:
     return int(cursor.rowcount)
 
 
+def _quarantine_pre_snapshot_headers(connection: Any) -> int:
+    active_base = active_snapshot_base_in_connection(connection)
+    if active_base is None or not active_base.get("state_applied"):
+        return 0
+    timestamp = utc_now()
+    cursor = connection.execute(
+        """
+        UPDATE network_block_headers
+        SET status = 'skipped_pre_snapshot',
+            reason = 'block covered by active snapshot base'
+        WHERE status IN ('pending_replay', 'pending_missing_ancestors')
+          AND height <= ?
+        """,
+        (int(active_base["height"]),),
+    )
+    if cursor.rowcount:
+        _record_consensus_event(
+            connection,
+            "pre_snapshot_headers_quarantined",
+            "skipped",
+            {"count": int(cursor.rowcount), "snapshot_height": int(active_base["height"]), "updated_at": timestamp},
+        )
+    return int(cursor.rowcount)
+
+
 def _replay_pending_block_headers(connection: Any, limit: int) -> dict[str, Any]:
+    active_base = active_snapshot_base_in_connection(connection)
+    snapshot_height = int(active_base["height"]) if active_base is not None and active_base.get("state_applied") else 0
     rows = connection.execute(
         """
         SELECT block_hash, height, payload
         FROM network_block_headers
         WHERE status IN ('pending_replay', 'pending_missing_ancestors')
+          AND height > ?
         ORDER BY height ASC, received_at ASC
         LIMIT ?
         """,
-        (limit,),
+        (snapshot_height, limit),
     ).fetchall()
     imported = 0
     skipped = 0
+    skipped_pre_snapshot = 0
     errors: list[str] = []
     for row in rows:
         block_hash = row["block_hash"]
+        if snapshot_height and int(row["height"]) <= snapshot_height:
+            skipped_pre_snapshot += 1
+            connection.execute(
+                """
+                UPDATE network_block_headers
+                SET status = 'skipped_pre_snapshot',
+                    reason = 'block covered by active snapshot base'
+                WHERE block_hash = ?
+                """,
+                (block_hash,),
+            )
+            continue
         block = _replay_payload_for_block_header(connection, block_hash, row["payload"])
         connection.execute("SAVEPOINT replay_pending_header")
         try:
@@ -712,7 +758,7 @@ def _replay_pending_block_headers(connection: Any, limit: int) -> dict[str, Any]
                 """,
                 (block_hash,),
             )
-    return {"imported": imported, "skipped": skipped, "errors": errors}
+    return {"imported": imported, "skipped": skipped, "skipped_pre_snapshot": skipped_pre_snapshot, "errors": errors}
 
 
 def _replay_payload_for_block_header(connection: Any, block_hash: str, header_payload: str) -> dict[str, Any]:

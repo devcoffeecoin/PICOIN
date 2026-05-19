@@ -853,6 +853,92 @@ def test_reconcile_peer_fetches_blocks_after_active_snapshot_base(tmp_path, monk
     assert result["errors"] == []
 
 
+def test_reconcile_after_restore_starts_after_snapshot_and_skips_stale_headers(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "snapshot-restore-catchup-source.sqlite3")
+
+    miner_key = generate_keypair()
+    miner = register_miner("snapshot-restore-catchup-miner", miner_key["public_key"])
+    for _ in range(3):
+        _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    snapshot = export_canonical_snapshot(height=3)
+    stale_block = get_block(2)
+    for _ in range(2):
+        _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    new_blocks = get_blocks_since(3)["blocks"]
+
+    _init_network_db(tmp_path, monkeypatch, "snapshot-restore-catchup-target.sqlite3")
+    imported = import_canonical_snapshot(snapshot, source="peer-a")
+    apply_imported_snapshot_state(imported["snapshot"]["snapshot_hash"])
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO network_block_headers (
+                block_hash, height, previous_hash, source_peer_id, status, reason, payload, received_at
+            )
+            VALUES (?, ?, ?, 'peer-a', 'pending_replay', 'stale pre-snapshot header', ?, ?)
+            """,
+            (
+                stale_block["block_hash"],
+                stale_block["height"],
+                stale_block["previous_hash"],
+                json.dumps(stale_block, sort_keys=True),
+                "2026-05-10T00:00:00+00:00",
+            ),
+        )
+
+    requested_urls: list[str] = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, timeout):
+        requested_urls.append(url)
+        if url.endswith("/node/identity"):
+            return FakeResponse(
+                {
+                    "node_id": "peer-a",
+                    "peer_address": "http://peer-a:8000",
+                    "peer_type": "full",
+                    "protocol_version": PROTOCOL_VERSION,
+                    "network_id": NETWORK_ID,
+                    "chain_id": CHAIN_ID,
+                    "genesis_hash": GENESIS_HASH,
+                    "bootstrap_peers": [],
+                }
+            )
+        if url.endswith("/node/peers"):
+            return FakeResponse([])
+        if url.endswith("/mempool?limit=100"):
+            return FakeResponse([])
+        if url.endswith("/consensus/proposals?limit=100"):
+            return FakeResponse([])
+        if "/node/sync/blocks?from_height=3" in url:
+            return FakeResponse({"from_height": 3, "count": len(new_blocks), "blocks": new_blocks})
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr("app.services.network.requests.get", fake_get)
+    result = reconcile_peer("http://peer-a:8000")
+    status = get_sync_status()
+    chain = verify_chain()
+
+    assert any("/node/sync/blocks?from_height=3" in url for url in requested_urls)
+    assert not any("/node/sync/blocks?from_height=0" in url for url in requested_urls)
+    assert result["local_block_height"] == 0
+    assert result["snapshot_height"] == 3
+    assert result["catch_up_start_height"] == 3
+    assert result["blocks_seen"] == 2
+    assert result["blocks_imported"] == 2
+    assert result["replay"]["headers_imported"] == 2
+    assert result["replay"]["headers_skipped_pre_snapshot"] == 1
+    assert status["effective_latest_block_height"] == 5
+    assert status["pending_replay_blocks"] == 0
+    assert chain["valid"] is True
+
+
 def test_replay_imports_pending_headers_after_active_snapshot_base(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "snapshot-header-replay-source.sqlite3")
 

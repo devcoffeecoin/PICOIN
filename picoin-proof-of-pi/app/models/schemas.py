@@ -475,13 +475,19 @@ class NodeIdentityResponse(BaseModel):
 class NodeSyncStatusResponse(NodeIdentityResponse):
     latest_block_height: int
     latest_block_hash: str
+    local_block_height: int = 0
+    local_block_hash: str | None = None
+    snapshot_height: int = 0
+    snapshot_hash: str | None = None
     effective_latest_block_height: int
     effective_latest_block_hash: str
+    catch_up_start_height: int = 0
     latest_checkpoint: dict[str, Any] | None = None
     active_snapshot_base: dict[str, Any] | None = None
     peer_counts: dict[str, Any]
     mempool: dict[str, int]
     pending_replay_blocks: int
+    headers_skipped_pre_snapshot: int = 0
     consensus: dict[str, int] = {}
     sync_mode: str
     checked_at: datetime
@@ -656,6 +662,7 @@ class ConsensusReplayResponse(BaseModel):
     checked_at: datetime
     headers_imported: int = 0
     headers_skipped: int = 0
+    headers_skipped_pre_snapshot: int = 0
     normalized: int = 0
     errors: list[str] = Field(default_factory=list)
 

@@ -212,10 +212,24 @@ def get_sync_status() -> dict[str, Any]:
         ).fetchall()
         checkpoint = latest_checkpoint_in_connection(connection)
         active_base = active_snapshot_base_in_connection(connection)
+        pre_snapshot_headers = connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM network_block_headers
+            WHERE status = 'skipped_pre_snapshot'
+               OR (
+                   status IN ('pending_replay', 'pending_missing_ancestors')
+                   AND height <= ?
+               )
+            """,
+            (int(active_base["height"]) if active_base is not None else 0,),
+        ).fetchone()
     latest_height = int(latest_block["height"]) if latest_block else 0
     latest_hash = latest_block["block_hash"] if latest_block else GENESIS_HASH
     effective_height = latest_height
     effective_hash = latest_hash
+    snapshot_height = int(active_base["height"]) if active_base is not None else 0
+    snapshot_hash = active_base["block_hash"] if active_base is not None else None
     if active_base is not None and int(active_base.get("height") or 0) > effective_height:
         effective_height = int(active_base["height"])
         effective_hash = active_base["block_hash"]
@@ -223,13 +237,19 @@ def get_sync_status() -> dict[str, Any]:
         **node_identity(),
         "latest_block_height": latest_height,
         "latest_block_hash": latest_hash,
+        "local_block_height": latest_height,
+        "local_block_hash": latest_hash,
+        "snapshot_height": snapshot_height,
+        "snapshot_hash": snapshot_hash,
         "effective_latest_block_height": effective_height,
         "effective_latest_block_hash": effective_hash,
+        "catch_up_start_height": effective_height,
         "latest_checkpoint": checkpoint,
         "active_snapshot_base": active_base,
         "peer_counts": dict(peer_counts) if peer_counts else {"total": 0, "connected": 0, "stale": 0},
         "mempool": {row["status"]: row["count"] for row in mempool_counts},
         "pending_replay_blocks": pending_headers["count"] if pending_headers else 0,
+        "headers_skipped_pre_snapshot": pre_snapshot_headers["count"] if pre_snapshot_headers else 0,
         "consensus": {row["status"]: row["count"] for row in consensus_counts},
         "sync_mode": "proposal_vote_finalize_replay_alpha",
         "checked_at": _now(),
@@ -314,13 +334,17 @@ def receive_block_header(block: dict[str, Any], source_peer_id: str | None = Non
         ).fetchone()
         latest_height = int(latest["height"]) if latest is not None else 0
         latest_hash = latest["block_hash"] if latest is not None else GENESIS_HASH
+        active_base = active_snapshot_base_in_connection(connection)
+        active_base_height = int(active_base["height"]) if active_base is not None else 0
         if local is not None and local["block_hash"] == block["block_hash"]:
             status = "known"
             reason = "block already known locally"
         elif local is not None and local["block_hash"] != block["block_hash"]:
             raise NetworkError(409, "conflicting block at height")
+        elif active_base is not None and int(block["height"]) <= active_base_height:
+            status = "skipped_pre_snapshot"
+            reason = "block covered by active snapshot base"
         elif int(block["height"]) == latest_height + 1 and block["previous_hash"] != latest_hash:
-            active_base = active_snapshot_base_in_connection(connection)
             continues_snapshot = (
                 active_base is not None
                 and latest_height == 0
@@ -334,7 +358,6 @@ def receive_block_header(block: dict[str, Any], source_peer_id: str | None = Non
                 status = "pending_missing_ancestors"
                 reason = "accepted but local chain tip does not match previous_hash"
         elif int(block["height"]) > latest_height + 1:
-            active_base = active_snapshot_base_in_connection(connection)
             if (
                 active_base is not None
                 and latest_height == 0
@@ -496,6 +519,12 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
         "blocks_seen": 0,
         "blocks_imported": 0,
         "sync_from_height": 0,
+        "catch_up_start_height": 0,
+        "local_block_height": 0,
+        "snapshot_height": 0,
+        "effective_latest_block_height": 0,
+        "replay": {},
+        "headers_skipped_pre_snapshot": 0,
         "errors": [],
     }
     try:
@@ -549,6 +578,14 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
     try:
         block_sync = sync_blocks_until(peer_address, limit=100)
         result["sync_from_height"] = block_sync["sync_from_height"]
+        result["catch_up_start_height"] = block_sync["catch_up_start_height"]
+        result["local_block_height"] = block_sync["local_block_height"]
+        result["snapshot_height"] = block_sync["snapshot_height"]
+        result["effective_latest_block_height"] = block_sync["effective_latest_block_height"]
+        result["replay"] = block_sync.get("replay", {})
+        result["headers_skipped_pre_snapshot"] = int(
+            result["replay"].get("headers_skipped_pre_snapshot") or 0
+        )
         result["blocks_seen"] += block_sync["blocks_seen"]
         result["blocks_imported"] += block_sync["blocks_imported"]
         result["errors"].extend(block_sync["errors"])
@@ -588,6 +625,10 @@ def sync_blocks_until(
     result = {
         "peer_address": peer_address,
         "sync_from_height": 0,
+        "local_block_height": 0,
+        "snapshot_height": 0,
+        "effective_latest_block_height": 0,
+        "catch_up_start_height": 0,
         "target_height": target_height,
         "blocks_seen": 0,
         "blocks_imported": 0,
@@ -599,8 +640,13 @@ def sync_blocks_until(
         latest_height = int(latest["height"] if latest else 0)
         active_base = active_snapshot_base_in_connection(connection)
         base_height = int(active_base["height"]) if active_base is not None else 0
-        sync_from_height = max(latest_height, base_height) if from_height is None else int(from_height)
+        effective_height = max(latest_height, base_height)
+        sync_from_height = effective_height if from_height is None else max(int(from_height), base_height)
+    result["local_block_height"] = latest_height
+    result["snapshot_height"] = base_height
+    result["effective_latest_block_height"] = effective_height
     result["sync_from_height"] = sync_from_height
+    result["catch_up_start_height"] = sync_from_height
 
     rounds = 0
     max_rounds = 20
@@ -637,6 +683,12 @@ def sync_blocks_until(
         from app.services.consensus import replay_finalized_blocks
 
         result["replay"] = replay_finalized_blocks(max(int(limit), 100))
+        with get_connection() as connection:
+            latest = connection.execute("SELECT COALESCE(MAX(height), 0) AS height FROM blocks").fetchone()
+            latest_height = int(latest["height"] if latest else 0)
+            active_base = active_snapshot_base_in_connection(connection)
+            base_height = int(active_base["height"]) if active_base is not None else 0
+            result["effective_latest_block_height"] = max(latest_height, base_height)
     except Exception as exc:
         result["errors"].append(f"replay: {exc}")
     return result

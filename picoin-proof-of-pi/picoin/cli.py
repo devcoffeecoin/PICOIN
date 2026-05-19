@@ -257,9 +257,16 @@ def command_node_catch_up(args: argparse.Namespace) -> int:
                 "imported": replay.get("imported", 0),
                 "headers_imported": replay.get("headers_imported", 0),
                 "headers_skipped": replay.get("headers_skipped", 0),
+                "headers_skipped_pre_snapshot": replay.get("headers_skipped_pre_snapshot", 0),
                 "normalized": replay.get("normalized", 0),
                 "errors": replay.get("errors", []),
             },
+            "local_block_height": final_sync.get("local_block_height", final_sync.get("latest_block_height", 0)),
+            "snapshot_height": final_sync.get("snapshot_height", 0),
+            "effective_latest_block_height": final_sync.get(
+                "effective_latest_block_height", final_sync.get("latest_block_height", 0)
+            ),
+            "catch_up_start_height": final_sync.get("catch_up_start_height", 0),
             "height": local_height,
             "latest_block_hash": local_hash,
             "peer_height": peer_height,
@@ -298,7 +305,11 @@ def command_node_catch_up(args: argparse.Namespace) -> int:
         "peer": peer_url,
         "status": "ok" if healthy else "needs_attention",
         "initial_height": initial_sync.get("effective_latest_block_height", initial_sync.get("latest_block_height", 0)),
+        "initial_local_block_height": initial_sync.get("local_block_height", initial_sync.get("latest_block_height", 0)),
+        "initial_snapshot_height": initial_sync.get("snapshot_height", 0),
         "final_height": final_sync.get("effective_latest_block_height", final_sync.get("latest_block_height", 0)),
+        "final_local_block_height": final_sync.get("local_block_height", final_sync.get("latest_block_height", 0)),
+        "final_snapshot_height": final_sync.get("snapshot_height", 0),
         "final_block_hash": final_sync.get("effective_latest_block_hash") or final_sync.get("latest_block_hash"),
         "peer_height": (
             peer_sync.get("effective_latest_block_height", peer_sync.get("latest_block_height"))
@@ -315,6 +326,10 @@ def command_node_catch_up(args: argparse.Namespace) -> int:
         "chain_matches_peer": None if peer_sync is None else final_sync.get("chain_id") == peer_sync.get("chain_id"),
         "genesis_matches_peer": None if peer_sync is None else final_sync.get("genesis_hash") == peer_sync.get("genesis_hash"),
         "pending_replay_blocks": final_sync.get("pending_replay_blocks", 0),
+        "catch_up_start_height": final_sync.get("catch_up_start_height", 0),
+        "headers_skipped_pre_snapshot": sum(
+            int((round_item.get("replay") or {}).get("headers_skipped_pre_snapshot") or 0) for round_item in rounds
+        ),
         "audit_valid": bool(final_audit.get("valid")),
         "audit_issues": final_audit.get("issues", []),
         "rounds": rounds,
