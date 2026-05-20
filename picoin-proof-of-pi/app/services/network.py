@@ -9,6 +9,7 @@ import requests
 from app.core.crypto import sha256_text
 from app.core.money import to_units
 from app.core.settings import (
+    AUTO_RECOVERY_ENABLED,
     BOOTSTRAP_PEERS,
     CHAIN_ID,
     GENESIS_HASH,
@@ -30,7 +31,12 @@ from app.core.settings import (
 )
 from app.core.signatures import verify_payload_signature
 from app.db.database import get_connection, row_to_dict
-from app.services.state import active_snapshot_base_in_connection, latest_checkpoint_in_connection
+from app.services.state import (
+    active_snapshot_base_in_connection,
+    import_canonical_snapshot,
+    latest_checkpoint_in_connection,
+    restore_imported_snapshot_state,
+)
 from app.services.wallet import address_matches_public_key, is_valid_address, transaction_hash, unsigned_transaction_payload
 
 
@@ -57,6 +63,58 @@ def _decode_json(value: str | None, default: Any) -> Any:
         return json.loads(value)
     except json.JSONDecodeError:
         return default
+
+
+def recover_from_peer_snapshot(
+    peer_address: str,
+    *,
+    height: int | None = None,
+    source: str = "auto-recovery",
+) -> dict[str, Any]:
+    peer_url = peer_address.rstrip("/")
+    path = "/node/snapshots/export"
+    if height is not None:
+        path = f"{path}?height={int(height)}"
+    try:
+        from app.services.consensus import clear_replay_liveness_status, set_replay_auto_recovery_active
+
+        set_replay_auto_recovery_active(True)
+        response = requests.get(
+            f"{peer_url}{path}",
+            timeout=max(10.0, float(GOSSIP_TIMEOUT_SECONDS) * 5),
+        )
+        response.raise_for_status()
+        snapshot = response.json()
+        imported = import_canonical_snapshot(snapshot, source=source)
+        snapshot_hash = imported.get("snapshot", {}).get("snapshot_hash") or snapshot.get("checkpoint", {}).get("snapshot_hash")
+        restored = restore_imported_snapshot_state(snapshot_hash)
+        status = "ok" if restored.get("applied") else "fail"
+        if status == "ok":
+            clear_replay_liveness_status("catching_up")
+        return {
+            "status": status,
+            "peer": peer_url,
+            "height": restored.get("height"),
+            "snapshot_hash": snapshot_hash,
+            "import": imported,
+            "restore": restored,
+            "checked_at": _now(),
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "peer": peer_url,
+            "height": height,
+            "error": str(exc),
+            "checked_at": _now(),
+        }
+    finally:
+        try:
+            from app.services.consensus import set_replay_auto_recovery_active
+
+            set_replay_auto_recovery_active(False)
+        except Exception:
+            pass
 
 
 def node_identity() -> dict[str, Any]:
@@ -714,6 +772,8 @@ def sync_blocks_until(
             result["replay"] = {"status": "skipped", "reason": "replay already active", **replay_status}
         elif replay_status.get("sync_status") == "divergent":
             result["replay"] = {"status": "skipped", "reason": "replay divergent; restore required", **replay_status}
+            if AUTO_RECOVERY_ENABLED:
+                result["auto_recovery"] = recover_from_peer_snapshot(peer_address, source="auto-recovery")
         elif int(replay_status.get("queue_size") or 0) > REPLAY_BACKLOG_THRESHOLD:
             result["replay"] = replay_finalized_blocks(REPLAY_BATCH_SIZE)
             result["replay"]["reason"] = "replay backlog drained with bounded batch"

@@ -668,6 +668,25 @@ def _mark_replay_divergent(reason: str) -> None:
         )
 
 
+def clear_replay_liveness_status(sync_status: str = "catching_up") -> None:
+    with _REPLAY_HEALTH_LOCK:
+        _REPLAY_HEALTH.update(
+            {
+                "sync_status": sync_status,
+                "replay_stalled": False,
+                "replay_consecutive_failures": 0,
+                "divergence_detected": False,
+                "divergence_reason": None,
+                "auto_recovery_active": False,
+            }
+        )
+
+
+def set_replay_auto_recovery_active(active: bool) -> None:
+    with _REPLAY_HEALTH_LOCK:
+        _REPLAY_HEALTH["auto_recovery_active"] = bool(active)
+
+
 def _update_replay_liveness(response: dict[str, Any], snapshot: dict[str, Any]) -> None:
     errors = [str(item) for item in response.get("errors") or []]
     error_text = " ; ".join(errors)
