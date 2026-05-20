@@ -725,6 +725,8 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "ledger_entries", "amount_units", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "ledger_entries", "balance_after_units", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "rewards", "amount_units", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "blocks", "reward_units", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "blocks", "fee_reward_units", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "canonical_checkpoints", "total_balance_units", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "canonical_snapshot_imports", "total_balance_units", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "canonical_snapshot_imports", "active", "INTEGER NOT NULL DEFAULT 0")
@@ -763,26 +765,49 @@ def _backfill_money_units(connection: sqlite3.Connection) -> None:
     }
     for table_name, pairs in money_columns.items():
         columns = [column for pair in pairs for column in pair]
+        existing_columns = {
+            row[1]
+            for row in connection.execute(f"PRAGMA table_info({_quoted_identifier(table_name)})").fetchall()
+        }
+        if not set(columns).issubset(existing_columns):
+            continue
         try:
             rows = connection.execute(
-                f"SELECT rowid, {', '.join(_quoted_identifier(column) for column in columns)} "
+                f"SELECT rowid AS _picoin_rowid, {', '.join(_quoted_identifier(column) for column in columns)} "
                 f"FROM {_quoted_identifier(table_name)}"
             ).fetchall()
         except sqlite3.OperationalError:
             continue
         for row in rows:
+            row_keys = set(row.keys()) if hasattr(row, "keys") else set()
+            if "_picoin_rowid" not in row_keys:
+                continue
             updates: list[str] = []
             values: list[int] = []
             for amount_column, units_column in pairs:
-                if int(row[units_column] or 0) == 0 and row[amount_column] not in {None, 0, 0.0, "0"}:
-                    updates.append(f"{_quoted_identifier(units_column)} = ?")
-                    values.append(to_units(row[amount_column]))
+                if amount_column not in row_keys or units_column not in row_keys:
+                    continue
+                try:
+                    units_value = int(row[units_column] or 0)
+                except (TypeError, ValueError):
+                    continue
+                if units_value != 0 or row[amount_column] in {None, 0, 0.0, "0"}:
+                    continue
+                try:
+                    amount_units = to_units(row[amount_column])
+                except (TypeError, ValueError, ArithmeticError):
+                    continue
+                updates.append(f"{_quoted_identifier(units_column)} = ?")
+                values.append(amount_units)
             if updates:
-                values.append(int(row["rowid"]))
-                connection.execute(
-                    f"UPDATE {_quoted_identifier(table_name)} SET {', '.join(updates)} WHERE rowid = ?",
-                    tuple(values),
-                )
+                try:
+                    values.append(int(row["_picoin_rowid"]))
+                    connection.execute(
+                        f"UPDATE {_quoted_identifier(table_name)} SET {', '.join(updates)} WHERE rowid = ?",
+                        tuple(values),
+                    )
+                except (TypeError, ValueError, sqlite3.Error):
+                    continue
 
 
 def _quoted_identifier(identifier: str) -> str:
