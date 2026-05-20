@@ -3,6 +3,10 @@ const PICOIN_UNIT = 1_000_000n;
 const PICOIN_DECIMALS = 6;
 const CHAIN_ID = "picoin-public-testnet-v018";
 const NETWORKS = {
+  "public-testnet": "/picoin-api",
+  localhost: "http://127.0.0.1:8000",
+};
+const NETWORK_LABELS = {
   "public-testnet": "https://api.picoin.science",
   localhost: "http://127.0.0.1:8000",
 };
@@ -105,12 +109,15 @@ function currentApi() {
 }
 
 function api(path) {
-  return `${currentApi()}${path}`;
+  const base = currentApi();
+  if (!base || base === "/") return path;
+  return `${base}${path}`;
 }
 
 async function fetchJson(path, options = {}) {
   const response = await fetch(api(path), {
     ...options,
+    mode: "cors",
     headers: { "content-type": "application/json", ...(options.headers || {}) },
   });
   const text = await response.text();
@@ -156,18 +163,19 @@ function renderWallet() {
 }
 
 async function refreshNetwork() {
-  els.apiDisplay.textContent = currentApi();
+  els.apiDisplay.textContent = NETWORK_LABELS[els.networkSelect.value] || currentApi();
   updateBadge(els.networkBadge, "checking");
-  try {
-    const [health, sync] = await Promise.all([
-      fetchJson("/health").catch(() => ({})),
-      fetchJson("/node/sync-status").catch(() => ({})),
-    ]);
-    const healthy = health.status === "ok" || health.status === "degraded";
-    updateBadge(els.networkBadge, healthy ? health.status : "offline", healthy ? "ok" : "bad");
-    els.latestBlock.textContent = sync.effective_latest_block_height ?? sync.latest_block_height ?? health.latest_block_height ?? "-";
-    els.syncStatus.textContent = sync.sync_mode || health.status || "-";
-  } catch (error) {
+  const [healthResult, syncResult] = await Promise.allSettled([fetchJson("/health"), fetchJson("/node/sync-status")]);
+  const health = healthResult.status === "fulfilled" ? healthResult.value : null;
+  const sync = syncResult.status === "fulfilled" ? syncResult.value : null;
+  const status = health?.status || (sync ? "ok" : null);
+  if (status) {
+    const mode = status === "ok" || status === "degraded" ? "ok" : "bad";
+    updateBadge(els.networkBadge, status, mode);
+    els.latestBlock.textContent = sync?.effective_latest_block_height ?? sync?.latest_block_height ?? health?.latest_block_height ?? "-";
+    els.syncStatus.textContent = sync?.sync_mode || health?.status || "connected";
+  } else {
+    const error = healthResult.reason || syncResult.reason || new Error("API unavailable");
     updateBadge(els.networkBadge, "offline", "bad");
     els.syncStatus.textContent = error.message;
   }
