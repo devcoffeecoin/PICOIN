@@ -14,6 +14,7 @@ from app.core.settings import (
     FAUCET_RATE_LIMIT_WINDOW_SECONDS,
     GENESIS_ACCOUNT_ID,
     MAX_TRANSACTIONS_PER_BLOCK,
+    MIN_TX_FEE_UNITS,
     NETWORK_ID,
     SCIENCE_MAX_PENDING_PER_REQUESTER,
 )
@@ -40,6 +41,7 @@ from app.services.wallet import address_matches_public_key, is_valid_address, tr
 
 
 SUPPORTED_BLOCK_TX_TYPES = {"transfer", "stake", "unstake", "science_job_create", "governance_action", "treasury_claim", "faucet"}
+EMPTY_TX_MERKLE_ROOT = ""
 SCIENCE_RESERVE_GOVERNANCE_ACTIONS = {
     "propose_activation",
     "approve_activation",
@@ -58,54 +60,252 @@ def utc_now() -> str:
 
 
 def select_block_transactions(connection: Any, limit: int = MAX_TRANSACTIONS_PER_BLOCK) -> list[dict[str, Any]]:
+    return select_transactions_for_task(connection, limit, _latest_height(connection))
+
+
+def selected_tx_hashes_hash(tx_hashes: list[str]) -> str:
+    return sha256_text(canonical_json(list(tx_hashes)))
+
+
+def select_transactions_for_task(connection: Any, max_count: int, chain_height: int) -> list[dict[str, Any]]:
     rows = connection.execute(
         """
         SELECT *
         FROM mempool_transactions
-        WHERE status IN ('pending', 'propagated')
-        ORDER BY sender ASC, nonce ASC, created_at ASC, tx_hash ASC
+        WHERE status = 'pending'
+        ORDER BY fee_units DESC, created_at ASC, tx_hash ASC
         """,
     ).fetchall()
-    executable_by_sender: dict[str, list[dict[str, Any]]] = {}
-    expected_nonce_by_sender: dict[str, int] = {}
-    reserved_debit_by_sender: dict[str, float] = {}
-    for row in rows:
-        tx = decode_mempool_transaction(row_to_dict(row))
-        if tx["tx_type"] not in SUPPORTED_BLOCK_TX_TYPES:
-            continue
-        reason = _transaction_rejection_reason(connection, tx, expected_nonce_by_sender)
-        if reason:
-            _reject_transaction(connection, tx["tx_hash"], reason)
-            continue
-        sender = tx["sender"]
-        reserved_debit = reserved_debit_by_sender.get(sender, 0.0)
-        total_debit = _total_debit(tx)
-        if _balance(connection, sender) < round(reserved_debit + total_debit, 8):
-            _reject_transaction(connection, tx["tx_hash"], "insufficient balance")
-            continue
-        executable_by_sender.setdefault(tx["sender"], []).append(tx)
-        expected_nonce_by_sender[tx["sender"]] = int(tx["nonce"]) + 1
-        reserved_debit_by_sender[sender] = round(reserved_debit + total_debit, 8)
+    max_count = max(0, int(max_count))
+    if max_count == 0:
+        return []
 
+    expected_nonce_by_sender: dict[str, int] = {}
+    reserved_units_by_sender: dict[str, int] = {}
     selected: list[dict[str, Any]] = []
-    while len(selected) < limit:
-        heads = [transactions[0] for transactions in executable_by_sender.values() if transactions]
-        if not heads:
-            break
-        next_tx = min(heads, key=_transaction_priority)
-        selected.append(next_tx)
-        executable_by_sender[next_tx["sender"]].pop(0)
+    selected_hashes: list[str] = []
+    progress = True
+    while progress and len(selected) < max_count:
+        progress = False
+        for row in rows:
+            if len(selected) >= max_count:
+                break
+            tx = decode_mempool_transaction(row_to_dict(row))
+            if tx["tx_hash"] in selected_hashes:
+                continue
+            if tx["tx_type"] not in SUPPORTED_BLOCK_TX_TYPES:
+                _fail_transaction(connection, tx["tx_hash"], "unsupported transaction type for block execution")
+                continue
+            reason = _basic_transaction_rejection_reason(tx)
+            if reason:
+                _fail_transaction(connection, tx["tx_hash"], reason)
+                continue
+            sender = tx["sender"]
+            expected_nonce = expected_nonce_by_sender.get(sender)
+            if expected_nonce is None:
+                confirmed = connection.execute(
+                    """
+                    SELECT COALESCE(MAX(nonce), 0) AS nonce
+                    FROM mempool_transactions
+                    WHERE sender = ? AND status = 'confirmed'
+                    """,
+                    (sender,),
+                ).fetchone()
+                expected_nonce = int(confirmed["nonce"]) + 1
+            tx_nonce = int(tx["nonce"])
+            if tx_nonce < expected_nonce:
+                _fail_transaction(connection, tx["tx_hash"], f"invalid nonce, expected {expected_nonce}")
+                continue
+            if tx_nonce > expected_nonce:
+                # Nonce gap: keep the transaction pending for a future pass/block.
+                continue
+            semantic_reason = _transaction_rejection_reason(connection, tx, expected_nonce_by_sender)
+            if semantic_reason:
+                _fail_transaction(connection, tx["tx_hash"], semantic_reason)
+                continue
+            debit_units = int(tx.get("amount_units") or to_units(tx.get("amount", 0))) + int(tx.get("fee_units") or to_units(tx.get("fee", 0)))
+            if _balance_units(connection, sender) < reserved_units_by_sender.get(sender, 0) + debit_units:
+                continue
+            selected.append(tx)
+            selected_hashes.append(tx["tx_hash"])
+            expected_nonce_by_sender[sender] = tx_nonce + 1
+            reserved_units_by_sender[sender] = reserved_units_by_sender.get(sender, 0) + debit_units
+            progress = True
     return selected
 
 
 def transaction_commitment(transactions: list[dict[str, Any]]) -> dict[str, Any]:
     tx_hashes = [tx["tx_hash"] for tx in transactions]
+    fee_units = sum(int(tx.get("fee_units") or to_units(tx.get("fee", 0))) for tx in transactions)
     return {
         "tx_count": len(tx_hashes),
         "tx_hashes": tx_hashes,
-        "tx_merkle_root": merkle_root(tx_hashes) if tx_hashes else None,
-        "fee_reward": round(sum(float(tx.get("fee", 0)) for tx in transactions), 8),
+        "tx_merkle_root": merkle_root(tx_hashes),
+        "selected_tx_hashes_hash": selected_tx_hashes_hash(tx_hashes),
+        "tx_fee_total_units": fee_units,
+        "fee_reward": units_to_float(fee_units),
     }
+
+
+def freeze_transactions_for_task(
+    connection: Any,
+    *,
+    task_id: str,
+    block_height: int,
+    max_count: int = MAX_TRANSACTIONS_PER_BLOCK,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    timestamp = timestamp or utc_now()
+    transactions = select_transactions_for_task(connection, max_count, block_height - 1)
+    commitment = transaction_commitment(transactions)
+    snapshot_id = sha256_text(
+        canonical_json(
+            {
+                "block_height": int(block_height),
+                "task_id": task_id,
+                "tx_hashes": commitment["tx_hashes"],
+                "tx_merkle_root": commitment["tx_merkle_root"],
+                "tx_fee_total_units": commitment["tx_fee_total_units"],
+            }
+        )
+    )
+    tx_hashes_json = json.dumps(commitment["tx_hashes"], sort_keys=True, separators=(",", ":"))
+    connection.execute(
+        """
+        INSERT INTO task_tx_snapshots (
+            snapshot_id, task_id, block_height, tx_hashes_json, tx_merkle_root,
+            tx_count, tx_fee_total_units, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(task_id) DO UPDATE SET
+            snapshot_id = excluded.snapshot_id,
+            block_height = excluded.block_height,
+            tx_hashes_json = excluded.tx_hashes_json,
+            tx_merkle_root = excluded.tx_merkle_root,
+            tx_count = excluded.tx_count,
+            tx_fee_total_units = excluded.tx_fee_total_units,
+            created_at = excluded.created_at
+        """,
+        (
+            snapshot_id,
+            task_id,
+            int(block_height),
+            tx_hashes_json,
+            commitment["tx_merkle_root"],
+            commitment["tx_count"],
+            commitment["tx_fee_total_units"],
+            timestamp,
+        ),
+    )
+    for tx_hash in commitment["tx_hashes"]:
+        connection.execute(
+            """
+            UPDATE mempool_transactions
+            SET status = 'selected',
+                selected_task_id = ?,
+                selected_block_height = ?,
+                mempool_snapshot_id = ?,
+                selected_at = ?,
+                released_at = NULL,
+                failure_reason = NULL,
+                updated_at = ?
+            WHERE tx_hash = ? AND status = 'pending'
+            """,
+            (task_id, int(block_height), snapshot_id, timestamp, timestamp, tx_hash),
+        )
+    connection.execute(
+        """
+        UPDATE tasks
+        SET mempool_snapshot_id = ?,
+            selected_tx_hashes = ?,
+            tx_merkle_root = ?,
+            tx_count = ?,
+            tx_fee_total_units = ?,
+            selected_tx_hashes_hash = ?
+        WHERE task_id = ?
+        """,
+        (
+            snapshot_id,
+            tx_hashes_json,
+            commitment["tx_merkle_root"],
+            commitment["tx_count"],
+            commitment["tx_fee_total_units"],
+            commitment["selected_tx_hashes_hash"],
+            task_id,
+        ),
+    )
+    return {
+        "snapshot_id": snapshot_id,
+        "task_id": task_id,
+        "block_height": int(block_height),
+        **commitment,
+    }
+
+
+def get_task_tx_snapshot(connection: Any, task_id: str) -> dict[str, Any] | None:
+    row = row_to_dict(connection.execute("SELECT * FROM task_tx_snapshots WHERE task_id = ?", (task_id,)).fetchone())
+    if row is None:
+        return None
+    tx_hashes = _decode_json(row.get("tx_hashes_json"), [])
+    return {
+        **row,
+        "selected_tx_hashes": tx_hashes,
+        "selected_tx_hashes_hash": selected_tx_hashes_hash(tx_hashes),
+        "tx_hashes": tx_hashes,
+        "tx_count": int(row.get("tx_count") or len(tx_hashes)),
+        "tx_fee_total_units": int(row.get("tx_fee_total_units") or 0),
+    }
+
+
+def load_snapshot_transactions(connection: Any, task_id: str) -> list[dict[str, Any]]:
+    snapshot = get_task_tx_snapshot(connection, task_id)
+    if snapshot is None:
+        return []
+    transactions: list[dict[str, Any]] = []
+    for tx_hash in snapshot["selected_tx_hashes"]:
+        row = row_to_dict(connection.execute("SELECT * FROM mempool_transactions WHERE tx_hash = ?", (tx_hash,)).fetchone())
+        if row is None:
+            raise TransactionExecutionError(f"snapshot transaction missing: {tx_hash}")
+        transactions.append(decode_mempool_transaction(row))
+    return transactions
+
+
+def release_selected_transactions(connection: Any, task_id: str, reason: str, timestamp: str | None = None) -> dict[str, Any]:
+    timestamp = timestamp or utc_now()
+    rows = connection.execute(
+        """
+        SELECT tx_hash, expires_at
+        FROM mempool_transactions
+        WHERE selected_task_id = ? AND status = 'selected'
+        ORDER BY tx_hash ASC
+        """,
+        (task_id,),
+    ).fetchall()
+    released = 0
+    expired = 0
+    for row in rows:
+        expires_at = str(row["expires_at"] or "")
+        status = "expired" if expires_at and expires_at < timestamp else "pending"
+        if status == "expired":
+            expired += 1
+        else:
+            released += 1
+        connection.execute(
+            """
+            UPDATE mempool_transactions
+            SET status = ?,
+                selected_task_id = NULL,
+                selected_block_height = NULL,
+                mempool_snapshot_id = NULL,
+                released_at = ?,
+                failure_reason = ?,
+                rejection_reason = CASE WHEN ? = 'expired' THEN 'ttl expired' ELSE rejection_reason END,
+                updated_at = ?
+            WHERE tx_hash = ?
+            """,
+            (status, timestamp, reason, status, timestamp, row["tx_hash"]),
+        )
+    return {"released": released, "expired": expired, "reason": reason}
 
 
 def apply_block_transactions(
@@ -147,11 +347,15 @@ def apply_block_transactions(
             UPDATE mempool_transactions
             SET status = 'confirmed',
                 block_height = ?,
+                selected_task_id = NULL,
+                selected_block_height = NULL,
+                confirmed_at = ?,
                 rejection_reason = NULL,
+                failure_reason = NULL,
                 updated_at = ?
             WHERE tx_hash = ?
             """,
-            (block_height, timestamp, tx["tx_hash"]),
+            (block_height, timestamp, timestamp, tx["tx_hash"]),
         )
         expected_nonce_by_sender[tx["sender"]] = int(tx["nonce"]) + 1
         applied.append(tx["tx_hash"])
@@ -251,6 +455,44 @@ def merkle_root(tx_hashes: list[str]) -> str:
             for index in range(0, len(level), 2)
         ]
     return level[0]
+
+
+def _latest_height(connection: Any) -> int:
+    row = connection.execute("SELECT COALESCE(MAX(height), 0) AS height FROM blocks").fetchone()
+    return int(row["height"] if row else 0)
+
+
+def _basic_transaction_rejection_reason(tx: dict[str, Any]) -> str | None:
+    if tx["tx_type"] not in SUPPORTED_BLOCK_TX_TYPES:
+        return "unsupported transaction type for block execution"
+    if not _is_signature_valid(tx):
+        return "invalid transaction signature"
+    if tx.get("network_id") != NETWORK_ID or tx.get("chain_id") != CHAIN_ID:
+        return "transaction network or chain mismatch"
+    if int(tx.get("fee_units") or to_units(tx.get("fee", 0))) < MIN_TX_FEE_UNITS:
+        return "transaction fee below minimum"
+    if int(tx.get("amount_units") or to_units(tx.get("amount", 0))) < 0:
+        return "amount must be non-negative"
+    return None
+
+
+def _balance_units(connection: Any, account_id: str) -> int:
+    row = connection.execute("SELECT balance_units FROM balances WHERE account_id = ?", (account_id,)).fetchone()
+    return int(row["balance_units"] if row else 0)
+
+
+def _fail_transaction(connection: Any, tx_hash: str, reason: str) -> None:
+    connection.execute(
+        """
+        UPDATE mempool_transactions
+        SET status = 'failed',
+            failure_reason = ?,
+            rejection_reason = ?,
+            updated_at = ?
+        WHERE tx_hash = ?
+        """,
+        (reason, reason, utc_now(), tx_hash),
+    )
 
 
 def _transaction_rejection_reason(

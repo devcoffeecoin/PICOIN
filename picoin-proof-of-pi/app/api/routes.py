@@ -109,7 +109,7 @@ from app.services.network import (
     submit_transaction,
 )
 from app.db.database import get_connection
-from app.services.transactions import get_wallet_nonce_status
+from app.services.transactions import get_task_tx_snapshot, get_wallet_nonce_status
 from app.services.treasury import (
     TreasuryError,
     claim_scientific_development_treasury,
@@ -552,12 +552,80 @@ def mempool(status: str | None = Query(None), limit: int = Query(100, ge=1, le=5
 
 @router.get("/mempool/status")
 def mempool_status() -> dict:
-    transactions = list_mempool(limit=500)
-    counts: dict[str, int] = {}
-    for tx in transactions:
-        status = tx.get("status") or "unknown"
-        counts[status] = counts.get(status, 0) + 1
-    return {"counts": counts, "total": sum(counts.values()), "checked_at": utc_now()}
+    with get_connection() as connection:
+        counts = {
+            row["status"]: int(row["count"])
+            for row in connection.execute(
+                "SELECT status, COUNT(*) AS count FROM mempool_transactions GROUP BY status ORDER BY status ASC"
+            ).fetchall()
+        }
+        pending_fees = connection.execute(
+            "SELECT COALESCE(SUM(fee_units), 0) AS total FROM mempool_transactions WHERE status = 'pending'"
+        ).fetchone()
+        oldest = connection.execute(
+            "SELECT created_at FROM mempool_transactions WHERE status = 'pending' ORDER BY created_at ASC LIMIT 1"
+        ).fetchone()
+        newest = connection.execute(
+            "SELECT created_at FROM mempool_transactions WHERE status = 'pending' ORDER BY created_at DESC LIMIT 1"
+        ).fetchone()
+        per_account = [
+            {"sender": row["sender"], "count": int(row["count"])}
+            for row in connection.execute(
+                """
+                SELECT sender, COUNT(*) AS count
+                FROM mempool_transactions
+                WHERE status = 'pending'
+                GROUP BY sender
+                ORDER BY count DESC, sender ASC
+                LIMIT 10
+                """
+            ).fetchall()
+        ]
+        selected_by_task = [
+            {"task_id": row["selected_task_id"], "count": int(row["count"])}
+            for row in connection.execute(
+                """
+                SELECT selected_task_id, COUNT(*) AS count
+                FROM mempool_transactions
+                WHERE status = 'selected' AND selected_task_id IS NOT NULL
+                GROUP BY selected_task_id
+                ORDER BY selected_task_id ASC
+                """
+            ).fetchall()
+        ]
+    return {
+        "pending_count": counts.get("pending", 0),
+        "selected_count": counts.get("selected", 0),
+        "confirmed_count": counts.get("confirmed", 0),
+        "released_count": counts.get("released", 0),
+        "expired_count": counts.get("expired", 0),
+        "failed_count": counts.get("failed", 0),
+        "counts": counts,
+        "total_pending_fees_units": int(pending_fees["total"] if pending_fees else 0),
+        "oldest_pending_tx": oldest["created_at"] if oldest else None,
+        "newest_pending_tx": newest["created_at"] if newest else None,
+        "tx_per_account_top": per_account,
+        "selected_by_task": selected_by_task,
+        "checked_at": utc_now(),
+    }
+
+
+@router.get("/mempool/task/{task_id}")
+def mempool_task(task_id: str) -> dict:
+    with get_connection() as connection:
+        snapshot = get_task_tx_snapshot(connection, task_id)
+        if snapshot is None:
+            raise HTTPException(status_code=404, detail="task transaction snapshot not found")
+        task = connection.execute("SELECT status FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+    return {
+        "task_id": task_id,
+        "snapshot_id": snapshot["snapshot_id"],
+        "selected_tx_hashes": snapshot["selected_tx_hashes"],
+        "tx_merkle_root": snapshot["tx_merkle_root"],
+        "tx_count": snapshot["tx_count"],
+        "tx_fee_total_units": snapshot["tx_fee_total_units"],
+        "status": task["status"] if task else "unknown",
+    }
 
 
 @router.get("/tx/{tx_hash}", response_model=MempoolTransactionResponse)
@@ -996,6 +1064,11 @@ def commit_task_endpoint(payload: TaskCommitRequest) -> dict:
         miner_id=payload.miner_id,
         result_hash=payload.result_hash,
         merkle_root=payload.merkle_root,
+        tx_merkle_root=payload.tx_merkle_root,
+        mempool_snapshot_id=payload.mempool_snapshot_id,
+        selected_tx_hashes_hash=payload.selected_tx_hashes_hash,
+        tx_count=payload.tx_count,
+        tx_fee_total_units=payload.tx_fee_total_units,
         signature=payload.signature,
         signed_at=payload.signed_at.isoformat(),
         compute_ms=payload.compute_ms,
@@ -1008,6 +1081,11 @@ def reveal_task_endpoint(payload: TaskRevealRequest) -> dict:
         task_id=payload.task_id,
         miner_id=payload.miner_id,
         revealed_samples=[sample.model_dump() for sample in payload.samples],
+        tx_merkle_root=payload.tx_merkle_root,
+        mempool_snapshot_id=payload.mempool_snapshot_id,
+        selected_tx_hashes_hash=payload.selected_tx_hashes_hash,
+        tx_count=payload.tx_count,
+        tx_fee_total_units=payload.tx_fee_total_units,
         signature=payload.signature,
         signed_at=payload.signed_at.isoformat(),
     )

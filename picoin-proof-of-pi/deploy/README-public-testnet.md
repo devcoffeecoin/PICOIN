@@ -408,6 +408,38 @@ You can also store `reward_address` in the identity JSON:
 
 Testnet warning: do not reuse private keys from any mainnet or production wallet.
 
+## Mempool and Block Commitments
+
+Public testnet blocks now commit to both Proof of Pi work and the economic transaction set.
+
+When a miner receives a task, the node creates a deterministic mempool snapshot:
+
+- pending transactions are ordered by `fee_units DESC`, `created_at ASC`, `tx_hash ASC`
+- sender nonces are enforced in sequence
+- double spends are filtered by an in-memory balance simulation
+- selected transactions move from `pending` to `selected`
+- the task stores `mempool_snapshot_id`, `selected_tx_hashes`, `tx_merkle_root`, `tx_count`, and `tx_fee_total_units`
+
+Transactions submitted after task assignment wait for the next block. Commit and reveal requests must carry the same transaction commitment, validators check the transaction Merkle commitment, and finalization uses the frozen snapshot instead of the live mempool.
+
+Useful checks:
+
+```bash
+curl https://api.picoin.science/mempool/status
+curl https://api.picoin.science/mempool/task/TASK_ID
+curl https://api.picoin.science/tx/TX_HASH
+```
+
+Optional anti-spam settings:
+
+```bash
+PICOIN_MIN_TX_FEE_UNITS=0
+PICOIN_MAX_MEMPOOL_TXS=10000
+PICOIN_MAX_MEMPOOL_TXS_PER_ACCOUNT=100
+PICOIN_MAX_TX_SIZE_BYTES=16384
+PICOIN_MEMPOOL_TX_TTL_SECONDS=3600
+```
+
 ## Systemd Services
 
 ```bash

@@ -16,8 +16,12 @@ from app.core.settings import (
     GOSSIP_ENABLED,
     GOSSIP_MAX_PEERS,
     GOSSIP_TIMEOUT_SECONDS,
+    MAX_MEMPOOL_TXS,
+    MAX_MEMPOOL_TXS_PER_ACCOUNT,
+    MAX_TX_SIZE_BYTES,
     MEMPOOL_MAX_FEE,
     MEMPOOL_TX_TTL_SECONDS,
+    MIN_TX_FEE_UNITS,
     NETWORK_ID,
     NODE_ID,
     NODE_PUBLIC_ADDRESS,
@@ -49,7 +53,7 @@ class NetworkError(Exception):
 
 ALLOWED_NODE_TYPES = {"full", "miner", "validator", "auditor", "bootstrap"}
 ALLOWED_TX_TYPES = {"transfer", "stake", "unstake", "science_job_create", "governance_action", "treasury_claim", "faucet"}
-TERMINAL_TX_STATUSES = {"confirmed", "rejected", "expired"}
+TERMINAL_TX_STATUSES = {"confirmed", "rejected", "failed", "expired"}
 
 
 def _now() -> str:
@@ -165,6 +169,17 @@ def register_peer(
     timestamp = _now()
     peer_id = sha256_text(f"{chain_id}:{peer_address}")[:32]
     with get_connection() as connection:
+        total_pending = connection.execute(
+            "SELECT COUNT(*) AS count FROM mempool_transactions WHERE status IN ('pending', 'selected', 'released')"
+        ).fetchone()
+        if int(total_pending["count"] if total_pending else 0) >= MAX_MEMPOOL_TXS:
+            raise NetworkError(429, "mempool is full")
+        account_pending = connection.execute(
+            "SELECT COUNT(*) AS count FROM mempool_transactions WHERE sender = ? AND status IN ('pending', 'selected', 'released')",
+            (tx["sender"],),
+        ).fetchone()
+        if int(account_pending["count"] if account_pending else 0) >= MAX_MEMPOOL_TXS_PER_ACCOUNT:
+            raise NetworkError(429, "sender has too many mempool transactions")
         connection.execute(
             """
             INSERT INTO network_peers (
@@ -502,7 +517,7 @@ def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str
             """
             SELECT tx_hash
             FROM mempool_transactions
-            WHERE sender = ? AND nonce = ? AND tx_hash <> ? AND status NOT IN ('rejected', 'expired')
+            WHERE sender = ? AND nonce = ? AND tx_hash <> ? AND status NOT IN ('rejected', 'failed', 'expired')
             """,
             (tx["sender"], int(tx["nonce"]), tx["tx_hash"]),
         ).fetchone()
@@ -511,7 +526,7 @@ def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str
         connection.execute(
             """
             DELETE FROM mempool_transactions
-            WHERE sender = ? AND nonce = ? AND status IN ('rejected', 'expired')
+            WHERE sender = ? AND nonce = ? AND status IN ('rejected', 'failed', 'expired')
             """,
             (tx["sender"], int(tx["nonce"])),
         )
@@ -833,8 +848,8 @@ def expire_mempool_transactions() -> int:
         cursor = connection.execute(
             """
             UPDATE mempool_transactions
-            SET status = 'expired', rejection_reason = 'ttl expired', updated_at = ?
-            WHERE status IN ('pending', 'propagated') AND expires_at < ?
+            SET status = 'expired', rejection_reason = 'ttl expired', failure_reason = 'ttl expired', updated_at = ?
+            WHERE status IN ('pending', 'propagated', 'released') AND expires_at < ?
             """,
             (timestamp, timestamp),
         )
@@ -858,12 +873,16 @@ def _validate_signed_transaction(tx: dict[str, Any]) -> None:
     missing = sorted(required - set(tx))
     if missing:
         raise NetworkError(422, f"missing transaction fields: {', '.join(missing)}")
+    if len(json.dumps(tx, sort_keys=True, separators=(",", ":")).encode("utf-8")) > MAX_TX_SIZE_BYTES:
+        raise NetworkError(413, "transaction payload too large")
     if tx["tx_type"] not in ALLOWED_TX_TYPES:
         raise NetworkError(422, "unsupported transaction type")
     if int(tx["nonce"]) < 1:
         raise NetworkError(422, "nonce must be >= 1")
     if float(tx.get("fee", 0)) < 0 or float(tx.get("fee", 0)) > MEMPOOL_MAX_FEE:
         raise NetworkError(422, "invalid fee")
+    if to_units(tx.get("fee", 0)) < MIN_TX_FEE_UNITS:
+        raise NetworkError(422, "transaction fee below minimum")
     if float(tx.get("amount", 0)) < 0:
         raise NetworkError(422, "amount must be >= 0")
     if tx["tx_type"] == "transfer" and not is_valid_address(tx.get("recipient")):

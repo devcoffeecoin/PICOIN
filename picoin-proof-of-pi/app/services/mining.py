@@ -36,6 +36,7 @@ from app.core.settings import (
     FRAUD_VALIDATOR_INVALID_RESULTS,
     GENESIS_ACCOUNT_ID,
     GENESIS_SUPPLY,
+    MAX_TRANSACTIONS_PER_BLOCK,
     MIN_VALIDATOR_STAKE,
     NETWORK_ID,
     NODE_TYPE,
@@ -97,7 +98,16 @@ from app.services.state import (
     update_block_state_root,
 )
 from app.services.treasury import record_scientific_development_treasury_for_block
-from app.services.transactions import apply_block_transactions, select_block_transactions, transaction_commitment
+from app.services.transactions import (
+    apply_block_transactions,
+    freeze_transactions_for_task,
+    get_task_tx_snapshot,
+    load_snapshot_transactions,
+    release_selected_transactions,
+    selected_tx_hashes_hash,
+    TransactionExecutionError,
+    transaction_commitment,
+)
 from app.services.wallet import is_valid_address
 from validator.proof import validate_submission
 
@@ -946,6 +956,27 @@ def create_next_task(
                 expires_at,
             ),
         )
+        next_height = _latest_chain_tip_in_connection(connection)["height"] + 1
+        tx_snapshot = freeze_transactions_for_task(
+            connection,
+            task_id=task_id,
+            block_height=next_height,
+            max_count=MAX_TRANSACTIONS_PER_BLOCK,
+            timestamp=now,
+        )
+        print(
+            json.dumps(
+                {
+                    "event": "task_tx_snapshot_created",
+                    "task_id": task_id,
+                    "tx_count": tx_snapshot["tx_count"],
+                    "tx_merkle_root": tx_snapshot["tx_merkle_root"],
+                    "mempool_snapshot_id": tx_snapshot["snapshot_id"],
+                    "tx_fee_total_units": tx_snapshot["tx_fee_total_units"],
+                },
+                sort_keys=True,
+            )
+        )
         row = connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
     return row_to_dict(row)
 
@@ -1097,6 +1128,14 @@ def _claim_global_task_for_miner(
             expires_at,
             row["task_id"],
         ),
+    )
+    next_height = _latest_chain_tip_in_connection(connection)["height"] + 1
+    freeze_transactions_for_task(
+        connection,
+        task_id=row["task_id"],
+        block_height=next_height,
+        max_count=MAX_TRANSACTIONS_PER_BLOCK,
+        timestamp=timestamp,
     )
     return row_to_dict(connection.execute("SELECT * FROM tasks WHERE task_id = ?", (row["task_id"],)).fetchone())
 
@@ -1271,7 +1310,7 @@ def submit_task(
         total_block_ms = int((utc_now_dt() - created_at).total_seconds() * 1000) if created_at else None
         total_task_ms = total_block_ms
 
-        block_transactions = select_block_transactions(connection)
+        block_transactions = load_snapshot_transactions(connection, task_id)
         tx_commitment = transaction_commitment(block_transactions)
         miner_reward_account, miner_reward_account_type = _reward_account_for_miner(connection, miner_id)
 
@@ -1438,6 +1477,11 @@ def commit_task(
     signature: str,
     signed_at: str,
     compute_ms: int | None = None,
+    tx_merkle_root: str = "",
+    mempool_snapshot_id: str | None = None,
+    selected_tx_hashes_hash: str | None = None,
+    tx_count: int = 0,
+    tx_fee_total_units: int = 0,
 ) -> dict[str, Any]:
     started = now_perf()
     with get_connection() as connection:
@@ -1466,6 +1510,22 @@ def commit_task(
                 }
         if task["status"] != "assigned":
             return _commit_rejected(f"task is not active: {task['status']}")
+        snapshot = get_task_tx_snapshot(connection, task_id)
+        if snapshot is None:
+            return _commit_rejected("tx snapshot not found for task")
+        expected_hash = snapshot["selected_tx_hashes_hash"]
+        expected_root = snapshot["tx_merkle_root"]
+        expected_snapshot_id = snapshot["snapshot_id"]
+        expected_count = int(snapshot["tx_count"])
+        expected_fee_units = int(snapshot["tx_fee_total_units"])
+        if (
+            (tx_merkle_root or "") != expected_root
+            or (mempool_snapshot_id or "") != expected_snapshot_id
+            or (selected_tx_hashes_hash or "") != expected_hash
+            or int(tx_count or 0) != expected_count
+            or int(tx_fee_total_units or 0) != expected_fee_units
+        ):
+            return _commit_rejected("invalid_tx_commitment")
 
         expires_at = parse_iso(task["expires_at"])
         if expires_at is not None and expires_at <= utc_now_dt():
@@ -1488,11 +1548,33 @@ def commit_task(
             result_hash=result_hash,
             merkle_root=merkle_root,
             signed_at=signed_at,
+            tx_merkle_root=expected_root,
+            mempool_snapshot_id=expected_snapshot_id,
+            selected_tx_hashes_hash=expected_hash,
+            tx_count=expected_count,
+            tx_fee_total_units=expected_fee_units,
+            chain_id=CHAIN_ID,
+            network_id=NETWORK_ID,
         )
         try:
             signature_valid = verify_payload_signature(miner["public_key"], payload, signature)
         except (RuntimeError, ValueError):
             signature_valid = False
+        if not signature_valid and expected_count == 0:
+            legacy_payload = build_commit_signature_payload(
+                task_id=task_id,
+                miner_id=miner_id,
+                range_start=task["range_start"],
+                range_end=task["range_end"],
+                algorithm=task["algorithm"],
+                result_hash=result_hash,
+                merkle_root=merkle_root,
+                signed_at=signed_at,
+            )
+            try:
+                signature_valid = verify_payload_signature(miner["public_key"], legacy_payload, signature)
+            except (RuntimeError, ValueError):
+                signature_valid = False
         if not signature_valid:
             return _commit_rejected("invalid miner signature")
 
@@ -1519,9 +1601,10 @@ def commit_task(
             """
             INSERT INTO commitments (
                 task_id, miner_id, result_hash, merkle_root, challenge_seed,
-                samples, signature, signed_at, commit_ms, created_at
+                samples, tx_merkle_root, mempool_snapshot_id, selected_tx_hashes_hash,
+                tx_count, tx_fee_total_units, signature, signed_at, commit_ms, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -1530,6 +1613,11 @@ def commit_task(
                 merkle_root,
                 challenge_seed,
                 json.dumps(samples),
+                expected_root,
+                expected_snapshot_id,
+                expected_hash,
+                expected_count,
+                expected_fee_units,
                 signature,
                 signed_at,
                 elapsed_ms(started),
@@ -1555,6 +1643,11 @@ def reveal_task(
     revealed_samples: list[dict[str, Any]],
     signature: str,
     signed_at: str,
+    tx_merkle_root: str = "",
+    mempool_snapshot_id: str | None = None,
+    selected_tx_hashes_hash: str | None = None,
+    tx_count: int = 0,
+    tx_fee_total_units: int = 0,
 ) -> dict[str, Any]:
     with get_connection() as connection:
         _expire_assigned_tasks(connection)
@@ -1603,6 +1696,42 @@ def reveal_task(
                 signature,
                 "",
             )
+        snapshot = get_task_tx_snapshot(connection, task_id)
+        if snapshot is None:
+            return _reject_in_connection(
+                connection,
+                "tx_snapshot_mismatch",
+                task_id,
+                miner_id,
+                commitment["result_hash"],
+                {},
+                PENALTY_INVALID_RESULT,
+                signature,
+                "",
+            )
+        expected_root = str(commitment.get("tx_merkle_root") or snapshot["tx_merkle_root"] or "")
+        expected_snapshot_id = str(commitment.get("mempool_snapshot_id") or snapshot["snapshot_id"] or "")
+        expected_hash = str(commitment.get("selected_tx_hashes_hash") or snapshot["selected_tx_hashes_hash"] or "")
+        expected_count = int(commitment.get("tx_count") or snapshot["tx_count"] or 0)
+        expected_fee_units = int(commitment.get("tx_fee_total_units") or snapshot["tx_fee_total_units"] or 0)
+        if (
+            (tx_merkle_root or "") != expected_root
+            or (mempool_snapshot_id or "") != expected_snapshot_id
+            or (selected_tx_hashes_hash or "") != expected_hash
+            or int(tx_count or 0) != expected_count
+            or int(tx_fee_total_units or 0) != expected_fee_units
+        ):
+            return _reject_in_connection(
+                connection,
+                "invalid_tx_commitment",
+                task_id,
+                miner_id,
+                commitment["result_hash"],
+                {"expected_tx_merkle_root": expected_root, "received_tx_merkle_root": tx_merkle_root},
+                PENALTY_INVALID_RESULT,
+                signature,
+                "",
+            )
 
         payload = build_reveal_signature_payload(
             task_id=task_id,
@@ -1610,11 +1739,26 @@ def reveal_task(
             merkle_root=commitment["merkle_root"],
             challenge_seed=commitment["challenge_seed"],
             signed_at=signed_at,
+            tx_merkle_root=expected_root,
+            mempool_snapshot_id=expected_snapshot_id,
+            selected_tx_hashes_hash=expected_hash,
         )
         try:
             signature_valid = verify_payload_signature(miner["public_key"], payload, signature)
         except (RuntimeError, ValueError):
             signature_valid = False
+        if not signature_valid and expected_count == 0:
+            legacy_payload = build_reveal_signature_payload(
+                task_id=task_id,
+                miner_id=miner_id,
+                merkle_root=commitment["merkle_root"],
+                challenge_seed=commitment["challenge_seed"],
+                signed_at=signed_at,
+            )
+            try:
+                signature_valid = verify_payload_signature(miner["public_key"], legacy_payload, signature)
+            except (RuntimeError, ValueError):
+                signature_valid = False
         if not signature_valid:
             connection.execute(
                 "UPDATE tasks SET status = 'rejected', submitted_at = ? WHERE task_id = ?",
@@ -1651,13 +1795,17 @@ def reveal_task(
         existing_job = row_to_dict(connection.execute("SELECT * FROM validation_jobs WHERE task_id = ?", (task_id,)).fetchone())
         if existing_job is None:
             job_id = f"job_{uuid.uuid4().hex[:16]}"
+            snapshot_transactions = load_snapshot_transactions(connection, task_id)
+            tx_hashes = snapshot["selected_tx_hashes"]
             connection.execute(
                 """
                 INSERT INTO validation_jobs (
                     job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
-                    samples, status, created_at
+                    samples, tx_merkle_root, mempool_snapshot_id, selected_tx_hashes_hash,
+                    tx_count, tx_fee_total_units, tx_hashes_json, transactions_json,
+                    status, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
                 """,
                 (
                     job_id,
@@ -1667,6 +1815,13 @@ def reveal_task(
                     commitment["merkle_root"],
                     commitment["challenge_seed"],
                     json.dumps(revealed_samples),
+                    expected_root,
+                    expected_snapshot_id,
+                    expected_hash,
+                    expected_count,
+                    expected_fee_units,
+                    json.dumps(tx_hashes, sort_keys=True),
+                    json.dumps(snapshot_transactions, sort_keys=True),
                     utc_now(),
                 ),
             )
@@ -1800,6 +1955,8 @@ def get_validation_job(
         required = _effective_required_validator_approvals(connection, params)
 
     job["samples"] = json.loads(job["samples"])
+    job["selected_tx_hashes"] = json.loads(job.get("tx_hashes_json") or "[]")
+    job["transactions"] = json.loads(job.get("transactions_json") or "[]")
     job["approvals"] = counts["approvals"]
     job["rejections"] = counts["rejections"]
     job["required_approvals"] = required
@@ -3230,6 +3387,7 @@ def _reject_in_connection(
     signature: str | None,
     segment: str,
 ) -> dict[str, Any]:
+    release_selected_transactions(connection, task_id, reason)
     connection.execute(
         """
         INSERT INTO rejected_submissions (task_id, miner_id, result_hash, reason, created_at)
@@ -3250,6 +3408,17 @@ def _reject_in_connection(
 
 
 def _expire_assigned_tasks(connection: Any) -> dict[str, int]:
+    expired_rows = connection.execute(
+        """
+        SELECT task_id
+        FROM tasks
+        WHERE status IN ('assigned', 'committed', 'revealed')
+        AND expires_at IS NOT NULL
+        AND expires_at <= ?
+        ORDER BY task_id ASC
+        """,
+        (utc_now(),),
+    ).fetchall()
     task_cursor = connection.execute(
         """
         UPDATE tasks
@@ -3273,6 +3442,8 @@ def _expire_assigned_tasks(connection: Any) -> dict[str, int]:
         """,
         (utc_now(),),
     )
+    for row in expired_rows:
+        release_selected_transactions(connection, row["task_id"], "task expired")
     return {
         "expired_tasks": max(0, task_cursor.rowcount),
         "expired_validation_jobs": max(0, job_cursor.rowcount),
@@ -4966,8 +5137,15 @@ def _accept_block_in_connection(
     if created_at is not None:
         total_task_ms = max(0, round((utc_now_dt() - created_at).total_seconds() * 1000))
     total_block_ms = total_task_ms
-    block_transactions = select_block_transactions(connection)
+    block_transactions = load_snapshot_transactions(connection, task["task_id"])
     tx_commitment = transaction_commitment(block_transactions)
+    if (
+        tx_commitment["tx_merkle_root"] != (task.get("tx_merkle_root") or "")
+        or tx_commitment["selected_tx_hashes_hash"] != (task.get("selected_tx_hashes_hash") or selected_tx_hashes_hash([]))
+        or int(tx_commitment["tx_count"]) != int(task.get("tx_count") or 0)
+        or int(tx_commitment["tx_fee_total_units"]) != int(task.get("tx_fee_total_units") or 0)
+    ):
+        raise TransactionExecutionError(f"tx snapshot mismatch for task {task['task_id']}")
     miner_reward_account, miner_reward_account_type = _reward_account_for_miner(connection, miner_id)
 
     block_payload = {

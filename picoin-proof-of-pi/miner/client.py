@@ -21,6 +21,7 @@ from app.core.signatures import (
     generate_keypair,
     sign_payload,
 )
+from app.core.settings import CHAIN_ID, NETWORK_ID
 
 
 DEFAULT_IDENTITY_PATH = Path("miner_identity.json")
@@ -178,6 +179,13 @@ def commit_result(
         result_hash=result_hash,
         merkle_root=root,
         signed_at=signed_at,
+        tx_merkle_root=task.get("tx_merkle_root", ""),
+        mempool_snapshot_id=task.get("mempool_snapshot_id"),
+        selected_tx_hashes_hash=task.get("selected_tx_hashes_hash"),
+        tx_count=int(task.get("tx_count") or 0),
+        tx_fee_total_units=int(task.get("tx_fee_total_units") or 0),
+        chain_id=task.get("chain_id") or CHAIN_ID,
+        network_id=task.get("network_id") or NETWORK_ID,
     )
     signature = sign_payload(identity["private_key"], signature_payload)
 
@@ -188,6 +196,11 @@ def commit_result(
             "miner_id": identity["miner_id"],
             "result_hash": result_hash,
             "merkle_root": root,
+            "tx_merkle_root": task.get("tx_merkle_root", ""),
+            "mempool_snapshot_id": task.get("mempool_snapshot_id"),
+            "selected_tx_hashes_hash": task.get("selected_tx_hashes_hash"),
+            "tx_count": int(task.get("tx_count") or 0),
+            "tx_fee_total_units": int(task.get("tx_fee_total_units") or 0),
             "compute_ms": compute_ms,
             "signature": signature,
             "signed_at": signed_at,
@@ -224,6 +237,9 @@ def reveal_samples(
         merkle_root=root,
         challenge_seed=challenge["challenge_seed"],
         signed_at=signed_at,
+        tx_merkle_root=task.get("tx_merkle_root", ""),
+        mempool_snapshot_id=task.get("mempool_snapshot_id"),
+        selected_tx_hashes_hash=task.get("selected_tx_hashes_hash"),
     )
     signature = sign_payload(identity["private_key"], signature_payload)
 
@@ -233,6 +249,11 @@ def reveal_samples(
             "task_id": task["task_id"],
             "miner_id": identity["miner_id"],
             "samples": samples,
+            "tx_merkle_root": task.get("tx_merkle_root", ""),
+            "mempool_snapshot_id": task.get("mempool_snapshot_id"),
+            "selected_tx_hashes_hash": task.get("selected_tx_hashes_hash"),
+            "tx_count": int(task.get("tx_count") or 0),
+            "tx_fee_total_units": int(task.get("tx_fee_total_units") or 0),
             "signature": signature,
             "signed_at": signed_at,
         },

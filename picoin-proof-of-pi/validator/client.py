@@ -11,7 +11,10 @@ import requests
 
 from app.core.merkle import verify_merkle_proof
 from app.core.pi import calculate_pi_segment
-from app.core.signatures import build_validation_result_signature_payload, generate_keypair, sign_payload
+from app.core.signatures import build_validation_result_signature_payload, generate_keypair, sign_payload, verify_payload_signature
+from app.core.settings import CHAIN_ID, NETWORK_ID
+from app.services.transactions import selected_tx_hashes_hash, transaction_commitment
+from app.services.wallet import transaction_hash
 
 
 DEFAULT_IDENTITY_PATH = Path("validator_identity.json")
@@ -94,6 +97,40 @@ def get_job(server_url: str, identity: dict[str, Any] | str) -> dict[str, Any] |
 
 
 def validate_job(job: dict[str, Any]) -> tuple[bool, str]:
+    tx_hashes = list(job.get("selected_tx_hashes") or [])
+    transactions = list(job.get("transactions") or [])
+    if len(tx_hashes) != int(job.get("tx_count") or 0):
+        return False, "tx_snapshot_mismatch"
+    if selected_tx_hashes_hash(tx_hashes) != (job.get("selected_tx_hashes_hash") or selected_tx_hashes_hash([])):
+        return False, "tx_snapshot_mismatch"
+    if transactions:
+        actual_hashes = [tx.get("tx_hash") for tx in transactions]
+        if actual_hashes != tx_hashes:
+            return False, "invalid_tx_order"
+        for tx in transactions:
+            unsigned = {
+                "amount": tx.get("amount", 0),
+                "chain_id": tx.get("chain_id"),
+                "fee": tx.get("fee", 0),
+                "network_id": tx.get("network_id"),
+                "nonce": int(tx.get("nonce") or 0),
+                "payload": tx.get("payload") or {},
+                "recipient": tx.get("recipient"),
+                "sender": tx.get("sender"),
+                "timestamp": tx.get("timestamp"),
+                "tx_type": tx.get("tx_type"),
+            }
+            if unsigned["chain_id"] != CHAIN_ID or unsigned["network_id"] != NETWORK_ID:
+                return False, "invalid_tx_payload"
+            if transaction_hash(unsigned, tx.get("public_key", "")) != tx.get("tx_hash"):
+                return False, "invalid_tx_payload"
+            if not verify_payload_signature(tx.get("public_key", ""), unsigned, tx.get("signature", "")):
+                return False, "invalid_tx_signature"
+        commitment = transaction_commitment(transactions)
+        if commitment["tx_merkle_root"] != (job.get("tx_merkle_root") or ""):
+            return False, "invalid_tx_merkle_root"
+        if int(commitment["tx_fee_total_units"]) != int(job.get("tx_fee_total_units") or 0):
+            return False, "invalid_fee_total"
     for sample in job["samples"]:
         position = sample["position"]
         digit = str(sample["digit"]).upper()
