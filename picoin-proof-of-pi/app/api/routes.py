@@ -565,14 +565,21 @@ def tx_submit(payload: SignedTransactionRequest) -> dict:
         raise _network_error(exc) from exc
 
 
+@router.post("/tx/send", response_model=MempoolTransactionResponse, status_code=201)
+def tx_send(payload: SignedTransactionRequest) -> dict:
+    return tx_submit(payload)
+
+
 @router.post("/transactions/submit", response_model=MempoolTransactionResponse, status_code=201)
 def transaction_submit(payload: SignedTransactionRequest) -> dict:
     return tx_submit(payload)
 
 
-@router.get("/transactions/{tx_hash}", response_model=MempoolTransactionResponse)
-def transaction_status(tx_hash: str) -> dict:
-    return tx_status(tx_hash)
+@router.get("/transactions/{identifier}")
+def transaction_status(identifier: str) -> dict | list[dict]:
+    if identifier.upper().startswith("PI"):
+        return get_ledger_entries(identifier, 100)
+    return tx_status(identifier)
 
 
 @router.post("/tx/receive", response_model=MempoolTransactionResponse, status_code=201)
@@ -592,6 +599,11 @@ def wallet_create(payload: WalletCreateRequest) -> dict:
 def wallet_nonce(address: str) -> dict:
     with get_connection() as connection:
         return get_wallet_nonce_status(connection, address)
+
+
+@router.get("/wallet/balance/{address}")
+def wallet_balance(address: str) -> dict:
+    return account_by_address(address)
 
 
 @router.websocket("/p2p/ws")

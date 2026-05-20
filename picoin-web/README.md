@@ -58,8 +58,25 @@ Open:
 
 ```text
 http://127.0.0.1:8080
+http://127.0.0.1:8080/wallet.html
 ```
 
 ## Hosting
 
 Deploy this folder to Netlify, Vercel, Cloudflare Pages, GitHub Pages, or any static hosting provider.
+
+## Web Wallet
+
+The public wallet route is served by the frontend deployment:
+
+```text
+https://www.picoin.science/wallet
+```
+
+It is not served by `api.picoin.science`. The wallet generates Ed25519 keys in the browser, stores the wallet JSON in `localStorage`, signs transactions locally, and talks to:
+
+```text
+https://api.picoin.science
+```
+
+The Vercel rewrite in `vercel.json` maps `/wallet` to `wallet.html`.

@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Picoin Wallet | Public Testnet</title>
+    <meta
+      name="description"
+      content="Create, import and use a Picoin public testnet wallet. Keys are generated and signed locally in the browser."
+    />
+    <link rel="icon" href="./assets/picoin-logo.png" />
+    <link rel="stylesheet" href="./styles.css" />
+    <link rel="stylesheet" href="./wallet.css" />
+  </head>
+  <body class="wallet-page">
+    <header class="site-header">
+      <a class="brand" href="./index.html" aria-label="Picoin home">
+        <img src="./assets/picoin-logo.png" alt="Picoin logo" />
+        <span>Picoin</span>
+      </a>
+      <nav aria-label="Primary navigation">
+        <a href="./index.html">Home</a>
+        <a href="./explorer.html">Explorer</a>
+        <a href="./wallet.html" aria-current="page">Wallet</a>
+        <a href="https://github.com/devcoffeecoin/PICOIN" target="_blank" rel="noreferrer">GitHub</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="wallet-hero">
+        <div>
+          <p class="eyebrow">Public Testnet Wallet</p>
+          <h1>Sign PICOIN transfers locally.</h1>
+          <p class="hero-lede">
+            Create or import a Picoin wallet in your browser, check your balance through the public API,
+            and submit signed transactions without sending your private key to any server.
+          </p>
+        </div>
+        <div class="wallet-status-card" aria-label="Network status">
+          <span id="networkBadge" class="status-pill">checking</span>
+          <dl>
+            <div>
+              <dt>API</dt>
+              <dd id="apiDisplay">https://api.picoin.science</dd>
+            </div>
+            <div>
+              <dt>Latest block</dt>
+              <dd id="latestBlock">-</dd>
+            </div>
+            <div>
+              <dt>Sync</dt>
+              <dd id="syncStatus">-</dd>
+            </div>
+          </dl>
+        </div>
+      </section>
+
+      <section class="wallet-console" aria-label="Wallet controls">
+        <aside class="wallet-sidebar">
+          <label>
+            Network
+            <select id="networkSelect">
+              <option value="public-testnet" selected>public-testnet</option>
+              <option value="localhost">localhost</option>
+            </select>
+          </label>
+          <label>
+            API endpoint
+            <input id="apiUrl" value="https://api.picoin.science" />
+          </label>
+          <button id="refreshNetwork" class="button secondary" type="button">Refresh network</button>
+          <button id="createWallet" class="button primary" type="button">Create wallet</button>
+          <label class="button secondary import-button">
+            Import wallet
+            <input id="importWallet" type="file" accept="application/json" />
+          </label>
+          <button id="exportWallet" class="button secondary" type="button">Export private key</button>
+        </aside>
+
+        <section class="wallet-main">
+          <article class="wallet-panel account-panel">
+            <div class="panel-title">
+              <div>
+                <p class="eyebrow">Account</p>
+                <h2>Your wallet</h2>
+              </div>
+              <span id="walletBadge" class="status-pill">No wallet</span>
+            </div>
+            <div class="address-box">
+              <span>Address</span>
+              <strong id="walletAddress">Create or import a wallet</strong>
+              <button id="copyAddress" type="button">Copy</button>
+            </div>
+            <div class="wallet-facts">
+              <article>
+                <span>Balance</span>
+                <strong id="walletBalance">-</strong>
+              </article>
+              <article>
+                <span>Nonce</span>
+                <strong id="walletNonce">-</strong>
+              </article>
+              <article>
+                <span>Last tx</span>
+                <strong id="lastTxHash">-</strong>
+              </article>
+            </div>
+          </article>
+
+          <article class="wallet-panel">
+            <div class="panel-title">
+              <div>
+                <p class="eyebrow">Send PICOIN</p>
+                <h2>Signed transfer</h2>
+              </div>
+              <span class="status-pill ok">local signing</span>
+            </div>
+            <form id="sendForm" class="send-grid">
+              <label>
+                To address
+                <input id="txTo" placeholder="PI..." required />
+              </label>
+              <label>
+                Amount
+                <input id="txAmount" type="number" min="0" step="0.000001" value="1" required />
+              </label>
+              <label>
+                Fee
+                <input id="txFee" type="number" min="0" step="0.000001" value="0.001" />
+              </label>
+              <button class="button primary" type="submit">Sign and send</button>
+            </form>
+            <pre id="txResult" class="wallet-output"></pre>
+          </article>
+        </section>
+      </section>
+
+      <section class="section wallet-history-section">
+        <div class="section-heading">
+          <p class="eyebrow">Transaction History</p>
+          <h2>Recent wallet activity.</h2>
+          <button id="refreshHistory" class="button secondary" type="button">Reload history</button>
+        </div>
+        <div id="historyList" class="wallet-history"></div>
+      </section>
+    </main>
+
+    <script src="./wallet.js" defer></script>
+  </body>
+</html>
