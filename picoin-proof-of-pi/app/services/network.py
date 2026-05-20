@@ -7,6 +7,7 @@ from typing import Any
 import requests
 
 from app.core.crypto import sha256_text
+from app.core.money import to_units
 from app.core.settings import (
     BOOTSTRAP_PEERS,
     CHAIN_ID,
@@ -444,11 +445,11 @@ def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str
         connection.execute(
             """
             INSERT INTO mempool_transactions (
-                tx_hash, tx_type, sender, recipient, amount, nonce, fee,
+                tx_hash, tx_type, sender, recipient, amount, amount_units, nonce, fee, fee_units,
                 payload, public_key, signature, status, propagated,
                 block_height, rejection_reason, expires_at, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, NULL, NULL, ?, ?, ?)
             """,
             (
                 tx["tx_hash"],
@@ -456,8 +457,10 @@ def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str
                 tx["sender"],
                 tx.get("recipient"),
                 float(tx.get("amount", 0)),
+                to_units(tx.get("amount", 0)),
                 int(tx["nonce"]),
                 float(tx.get("fee", 0)),
+                to_units(tx.get("fee", 0)),
                 payload_json,
                 tx["public_key"],
                 tx["signature"],

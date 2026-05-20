@@ -32,6 +32,7 @@ from app.core.settings import (
     TASK_SEGMENT_SIZE,
     VALIDATION_MODE,
 )
+from app.core.money import to_units
 from app.services.genesis import load_genesis_allocations
 
 
@@ -216,10 +217,12 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 timestamp TEXT NOT NULL,
                 block_hash TEXT NOT NULL UNIQUE,
                 reward REAL NOT NULL,
+                reward_units INTEGER NOT NULL DEFAULT 0,
                 tx_merkle_root TEXT,
                 tx_count INTEGER NOT NULL DEFAULT 0,
                 tx_hashes TEXT NOT NULL DEFAULT '[]',
                 fee_reward REAL NOT NULL DEFAULT 0,
+                fee_reward_units INTEGER NOT NULL DEFAULT 0,
                 miner_reward_address TEXT,
                 state_root TEXT,
                 difficulty REAL,
@@ -308,6 +311,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 miner_id TEXT NOT NULL,
                 block_height INTEGER NOT NULL,
                 amount REAL NOT NULL,
+                amount_units INTEGER NOT NULL DEFAULT 0,
                 reason TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(miner_id) REFERENCES miners(miner_id),
@@ -318,6 +322,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 account_id TEXT PRIMARY KEY,
                 account_type TEXT NOT NULL,
                 balance REAL NOT NULL DEFAULT 0,
+                balance_units INTEGER NOT NULL DEFAULT 0,
                 updated_at TEXT NOT NULL
             );
 
@@ -326,7 +331,9 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 account_id TEXT NOT NULL,
                 account_type TEXT NOT NULL,
                 amount REAL NOT NULL,
+                amount_units INTEGER NOT NULL DEFAULT 0,
                 balance_after REAL NOT NULL,
+                balance_after_units INTEGER NOT NULL DEFAULT 0,
                 entry_type TEXT NOT NULL,
                 block_height INTEGER,
                 related_id TEXT,
@@ -499,8 +506,10 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 sender TEXT NOT NULL,
                 recipient TEXT,
                 amount REAL NOT NULL DEFAULT 0,
+                amount_units INTEGER NOT NULL DEFAULT 0,
                 nonce INTEGER NOT NULL,
                 fee REAL NOT NULL DEFAULT 0,
+                fee_units INTEGER NOT NULL DEFAULT 0,
                 payload TEXT NOT NULL,
                 public_key TEXT NOT NULL,
                 signature TEXT NOT NULL,
@@ -589,6 +598,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 balances_count INTEGER NOT NULL,
                 ledger_entries_count INTEGER NOT NULL,
                 total_balance REAL NOT NULL DEFAULT 0,
+                total_balance_units INTEGER NOT NULL DEFAULT 0,
                 trusted INTEGER NOT NULL DEFAULT 1,
                 source TEXT NOT NULL DEFAULT 'local',
                 created_at TEXT NOT NULL,
@@ -607,6 +617,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 snapshot_hash TEXT NOT NULL UNIQUE,
                 balances_count INTEGER NOT NULL,
                 total_balance REAL NOT NULL DEFAULT 0,
+                total_balance_units INTEGER NOT NULL DEFAULT 0,
                 source TEXT NOT NULL DEFAULT 'import',
                 active INTEGER NOT NULL DEFAULT 0,
                 activated_at TEXT,
@@ -667,6 +678,8 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "blocks", "tx_count", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "blocks", "tx_hashes", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_column(connection, "blocks", "fee_reward", "REAL NOT NULL DEFAULT 0")
+        _ensure_column(connection, "blocks", "reward_units", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "blocks", "fee_reward_units", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "blocks", "miner_reward_address", "TEXT")
         _ensure_column(connection, "blocks", "state_root", "TEXT")
         _ensure_column(connection, "blocks", "difficulty", "REAL")
@@ -706,6 +719,14 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "science_reserve_governance", "emergency_paused", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "network_peers", "genesis_hash", f"TEXT NOT NULL DEFAULT '{GENESIS_HASH}'")
         _ensure_column(connection, "mempool_transactions", "expires_at", "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'")
+        _ensure_column(connection, "mempool_transactions", "amount_units", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "mempool_transactions", "fee_units", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "balances", "balance_units", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "ledger_entries", "amount_units", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "ledger_entries", "balance_after_units", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "rewards", "amount_units", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "canonical_checkpoints", "total_balance_units", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "canonical_snapshot_imports", "total_balance_units", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "canonical_snapshot_imports", "active", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "canonical_snapshot_imports", "activated_at", "TEXT")
         _ensure_column(connection, "canonical_snapshot_imports", "state_applied", "INTEGER NOT NULL DEFAULT 0")
@@ -718,6 +739,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_default_protocol_params(connection)
         _ensure_genesis_balance(connection)
         _ensure_existing_validator_stake_balances(connection)
+        _backfill_money_units(connection)
 
 
 def _ensure_column(connection: sqlite3.Connection, table_name: str, column_name: str, definition: str) -> None:
@@ -727,6 +749,40 @@ def _ensure_column(connection: sqlite3.Connection, table_name: str, column_name:
     }
     if column_name not in columns:
         connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+
+def _backfill_money_units(connection: sqlite3.Connection) -> None:
+    money_columns = {
+        "balances": [("balance", "balance_units")],
+        "ledger_entries": [("amount", "amount_units"), ("balance_after", "balance_after_units")],
+        "rewards": [("amount", "amount_units")],
+        "blocks": [("reward", "reward_units"), ("fee_reward", "fee_reward_units")],
+        "mempool_transactions": [("amount", "amount_units"), ("fee", "fee_units")],
+        "canonical_checkpoints": [("total_balance", "total_balance_units")],
+        "canonical_snapshot_imports": [("total_balance", "total_balance_units")],
+    }
+    for table_name, pairs in money_columns.items():
+        columns = [column for pair in pairs for column in pair]
+        try:
+            rows = connection.execute(
+                f"SELECT rowid, {', '.join(_quoted_identifier(column) for column in columns)} "
+                f"FROM {_quoted_identifier(table_name)}"
+            ).fetchall()
+        except sqlite3.OperationalError:
+            continue
+        for row in rows:
+            updates: list[str] = []
+            values: list[int] = []
+            for amount_column, units_column in pairs:
+                if int(row[units_column] or 0) == 0 and row[amount_column] not in {None, 0, 0.0, "0"}:
+                    updates.append(f"{_quoted_identifier(units_column)} = ?")
+                    values.append(to_units(row[amount_column]))
+            if updates:
+                values.append(int(row["rowid"]))
+                connection.execute(
+                    f"UPDATE {_quoted_identifier(table_name)} SET {', '.join(updates)} WHERE rowid = ?",
+                    tuple(values),
+                )
 
 
 def _quoted_identifier(identifier: str) -> str:
@@ -961,26 +1017,28 @@ def _ensure_genesis_balance(connection: sqlite3.Connection) -> None:
         _ensure_genesis_allocations(connection)
         return
     timestamp = "1970-01-01T00:00:00+00:00"
+    genesis_units = to_units(GENESIS_SUPPLY)
     connection.execute(
         """
-        INSERT INTO balances (account_id, account_type, balance, updated_at)
-        VALUES (?, 'genesis', ?, ?)
+        INSERT INTO balances (account_id, account_type, balance, balance_units, updated_at)
+        VALUES (?, 'genesis', ?, ?, ?)
         ON CONFLICT(account_id) DO UPDATE SET
             account_type = excluded.account_type,
             balance = excluded.balance,
+            balance_units = excluded.balance_units,
             updated_at = excluded.updated_at
         """,
-        (GENESIS_ACCOUNT_ID, GENESIS_SUPPLY, timestamp),
+        (GENESIS_ACCOUNT_ID, GENESIS_SUPPLY, genesis_units, timestamp),
     )
     connection.execute(
         """
         INSERT INTO ledger_entries (
-            account_id, account_type, amount, balance_after, entry_type,
+            account_id, account_type, amount, amount_units, balance_after, balance_after_units, entry_type,
             block_height, related_id, description, created_at
         )
-        VALUES (?, 'genesis', ?, ?, 'genesis', 0, 'genesis', 'genesis allocation', ?)
+        VALUES (?, 'genesis', ?, ?, ?, ?, 'genesis', 0, 'genesis', 'genesis allocation', ?)
         """,
-        (GENESIS_ACCOUNT_ID, GENESIS_SUPPLY, GENESIS_SUPPLY, timestamp),
+        (GENESIS_ACCOUNT_ID, GENESIS_SUPPLY, genesis_units, GENESIS_SUPPLY, genesis_units, timestamp),
     )
     _ensure_genesis_allocations(connection)
 
@@ -1013,67 +1071,75 @@ def _ensure_genesis_allocations(connection: sqlite3.Connection) -> None:
         if existing is not None:
             continue
         amount = round(float(allocation["amount"]), 8)
+        amount_units = to_units(allocation["amount"])
         genesis = connection.execute(
-            "SELECT balance FROM balances WHERE account_id = ?",
+            "SELECT balance, balance_units FROM balances WHERE account_id = ?",
             (GENESIS_ACCOUNT_ID,),
         ).fetchone()
-        genesis_balance = 0.0 if genesis is None else float(genesis["balance"] if isinstance(genesis, sqlite3.Row) else genesis[0])
-        if genesis_balance < amount:
+        genesis_units = 0 if genesis is None else int(genesis["balance_units"] if isinstance(genesis, sqlite3.Row) else genesis[1])
+        if genesis_units < amount_units:
             raise RuntimeError(f"genesis balance insufficient for allocation to {account_id}")
-        genesis_after = round(genesis_balance - amount, 8)
+        genesis_after_units = genesis_units - amount_units
+        genesis_after = round(genesis_after_units / 1_000_000, 8)
         connection.execute(
-            "UPDATE balances SET balance = ?, updated_at = ? WHERE account_id = ?",
-            (genesis_after, timestamp, GENESIS_ACCOUNT_ID),
+            "UPDATE balances SET balance = ?, balance_units = ?, updated_at = ? WHERE account_id = ?",
+            (genesis_after, genesis_after_units, timestamp, GENESIS_ACCOUNT_ID),
         )
         connection.execute(
             """
             INSERT INTO ledger_entries (
-                account_id, account_type, amount, balance_after, entry_type,
+                account_id, account_type, amount, amount_units, balance_after, balance_after_units, entry_type,
                 block_height, related_id, description, created_at
             )
-            VALUES (?, 'genesis', ?, ?, 'genesis_allocation_debit', NULL, ?, ?, ?)
+            VALUES (?, 'genesis', ?, ?, ?, ?, 'genesis_allocation_debit', NULL, ?, ?, ?)
             """,
             (
                 GENESIS_ACCOUNT_ID,
                 -amount,
+                -amount_units,
                 genesis_after,
+                genesis_after_units,
                 account_id,
                 f"genesis allocation debit for {account_id}",
                 timestamp,
             ),
         )
         balance_row = connection.execute(
-            "SELECT balance FROM balances WHERE account_id = ?",
+            "SELECT balance, balance_units FROM balances WHERE account_id = ?",
             (account_id,),
         ).fetchone()
-        current_balance = 0.0 if balance_row is None else float(
-            balance_row["balance"] if isinstance(balance_row, sqlite3.Row) else balance_row[0]
+        current_units = 0 if balance_row is None else int(
+            balance_row["balance_units"] if isinstance(balance_row, sqlite3.Row) else balance_row[1]
         )
-        next_balance = round(current_balance + amount, 8)
+        next_units = current_units + amount_units
+        next_balance = round(next_units / 1_000_000, 8)
         connection.execute(
             """
-            INSERT INTO balances (account_id, account_type, balance, updated_at)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO balances (account_id, account_type, balance, balance_units, updated_at)
+            VALUES (?, ?, ?, ?, ?)
             ON CONFLICT(account_id) DO UPDATE SET
                 account_type = excluded.account_type,
                 balance = excluded.balance,
+                balance_units = excluded.balance_units,
                 updated_at = excluded.updated_at
             """,
-            (account_id, allocation["account_type"], next_balance, timestamp),
+            (account_id, allocation["account_type"], next_balance, next_units, timestamp),
         )
         connection.execute(
             """
             INSERT INTO ledger_entries (
-                account_id, account_type, amount, balance_after, entry_type,
+                account_id, account_type, amount, amount_units, balance_after, balance_after_units, entry_type,
                 block_height, related_id, description, created_at
             )
-            VALUES (?, ?, ?, ?, 'genesis_allocation', NULL, 'genesis', ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, 'genesis_allocation', NULL, 'genesis', ?, ?)
             """,
             (
                 account_id,
                 allocation["account_type"],
                 amount,
+                amount_units,
                 next_balance,
+                next_units,
                 allocation["description"],
                 timestamp,
             ),

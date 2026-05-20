@@ -43,6 +43,20 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
     genesis_hash = parser.parse_args(["node", "genesis-hash", "--file", "genesis.json"])
     compare = parser.parse_args(["node", "compare", "--peer", "http://peer:8000"])
     repair_rewards = parser.parse_args(["node", "repair-rewards"])
+    debug_replay = parser.parse_args(
+            [
+                "debug",
+                "--server",
+                "http://127.0.0.1:8000",
+                "replay-check",
+                "--peer",
+                "https://api.picoin.science",
+            "--from-height",
+            "939",
+            "--to-height",
+            "960",
+        ]
+    )
 
     assert peers.command == "node"
     assert peers.node_command == "peers"
@@ -75,6 +89,11 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
     assert compare.node_command == "compare"
     assert compare.peer == "http://peer:8000"
     assert repair_rewards.node_command == "repair-rewards"
+    assert debug_replay.command == "debug"
+    assert debug_replay.debug_command == "replay-check"
+    assert debug_replay.peer == "https://api.picoin.science"
+    assert debug_replay.from_height == 939
+    assert debug_replay.to_height == 960
 
 
 def test_picoin_cli_parses_wallet_and_tx_commands() -> None:

@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.core.crypto import canonical_json, sha256_text
+from app.core.money import to_units, units_from_db, units_to_float
 from app.core.settings import (
     CHAIN_ID,
     FAUCET_ALLOWED_NETWORKS,
@@ -173,11 +174,11 @@ def ensure_block_transactions_in_mempool(connection: Any, transactions: list[dic
         connection.execute(
             """
             INSERT INTO mempool_transactions (
-                tx_hash, tx_type, sender, recipient, amount, nonce, fee,
+                tx_hash, tx_type, sender, recipient, amount, amount_units, nonce, fee, fee_units,
                 payload, public_key, signature, status, propagated,
                 block_height, rejection_reason, expires_at, created_at, updated_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1, NULL, NULL, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 1, NULL, NULL, ?, ?, ?)
             """,
             (
                 tx["tx_hash"],
@@ -185,8 +186,10 @@ def ensure_block_transactions_in_mempool(connection: Any, transactions: list[dic
                 tx["sender"],
                 tx.get("recipient"),
                 float(tx.get("amount", 0)),
+                to_units(tx.get("amount", 0)),
                 int(tx["nonce"]),
                 float(tx.get("fee", 0)),
+                to_units(tx.get("fee", 0)),
                 json.dumps(unsigned_payload, sort_keys=True),
                 tx["public_key"],
                 tx["signature"],
@@ -906,8 +909,8 @@ def _reject_transaction(connection: Any, tx_hash: str, reason: str) -> None:
 
 
 def _balance(connection: Any, account_id: str) -> float:
-    row = connection.execute("SELECT balance FROM balances WHERE account_id = ?", (account_id,)).fetchone()
-    return 0.0 if row is None else round(float(row["balance"]), 8)
+    row = connection.execute("SELECT balance, balance_units FROM balances WHERE account_id = ?", (account_id,)).fetchone()
+    return 0.0 if row is None else units_to_float(units_from_db(row["balance"], row["balance_units"]))
 
 
 def _apply_account_delta(
@@ -921,34 +924,43 @@ def _apply_account_delta(
     description: str,
     timestamp: str,
 ) -> None:
-    previous = _balance(connection, account_id)
-    balance_after = round(previous + float(amount), 8)
-    if balance_after < -0.00000001:
+    current = connection.execute(
+        "SELECT balance, balance_units FROM balances WHERE account_id = ?",
+        (account_id,),
+    ).fetchone()
+    amount_units = to_units(amount)
+    previous_units = units_from_db(current["balance"], current["balance_units"]) if current is not None else 0
+    balance_after_units = previous_units + amount_units
+    balance_after = units_to_float(balance_after_units)
+    if balance_after_units < 0:
         raise TransactionExecutionError(f"negative balance for {account_id}")
     connection.execute(
         """
-        INSERT INTO balances (account_id, account_type, balance, updated_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO balances (account_id, account_type, balance, balance_units, updated_at)
+        VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(account_id) DO UPDATE SET
             account_type = excluded.account_type,
             balance = excluded.balance,
+            balance_units = excluded.balance_units,
             updated_at = excluded.updated_at
         """,
-        (account_id, account_type, balance_after, timestamp),
+        (account_id, account_type, balance_after, balance_after_units, timestamp),
     )
     connection.execute(
         """
         INSERT INTO ledger_entries (
-            account_id, account_type, amount, balance_after, entry_type,
+            account_id, account_type, amount, amount_units, balance_after, balance_after_units, entry_type,
             block_height, related_id, description, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             account_id,
             account_type,
-            round(float(amount), 8),
+            units_to_float(amount_units),
+            amount_units,
             balance_after,
+            balance_after_units,
             entry_type,
             block_height,
             related_id,

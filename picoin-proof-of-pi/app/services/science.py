@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from app.core.money import to_units, units_from_db, units_to_float
 from app.core.settings import (
     SCIENCE_ALLOW_SELF_WORK,
     SCIENCE_BASE_MONTHLY_QUOTA_UNITS,
@@ -1209,30 +1210,35 @@ def _apply_ledger_entry(
 ) -> None:
     _ensure_balance_account(connection, account_id, account_type)
     current = connection.execute(
-        "SELECT balance FROM balances WHERE account_id = ?",
+        "SELECT balance, balance_units FROM balances WHERE account_id = ?",
         (account_id,),
     ).fetchone()
-    balance_after = round(float(current["balance"]) + float(amount), 8)
-    if balance_after < 0:
+    amount_units = to_units(amount)
+    current_units = units_from_db(current["balance"], current["balance_units"])
+    balance_after_units = current_units + amount_units
+    balance_after = units_to_float(balance_after_units)
+    if balance_after_units < 0:
         raise ScienceError(409, "science ledger operation would create a negative balance")
     timestamp = utc_now()
     connection.execute(
-        "UPDATE balances SET balance = ?, updated_at = ? WHERE account_id = ?",
-        (balance_after, timestamp, account_id),
+        "UPDATE balances SET balance = ?, balance_units = ?, updated_at = ? WHERE account_id = ?",
+        (balance_after, balance_after_units, timestamp, account_id),
     )
     connection.execute(
         """
         INSERT INTO ledger_entries (
-            account_id, account_type, amount, balance_after, entry_type,
+            account_id, account_type, amount, amount_units, balance_after, balance_after_units, entry_type,
             block_height, related_id, description, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             account_id,
             account_type,
-            round(float(amount), 8),
+            units_to_float(amount_units),
+            amount_units,
             balance_after,
+            balance_after_units,
             entry_type,
             block_height,
             related_id,
@@ -1245,8 +1251,8 @@ def _apply_ledger_entry(
 def _ensure_balance_account(connection: Any, account_id: str, account_type: str) -> None:
     connection.execute(
         """
-        INSERT INTO balances (account_id, account_type, balance, updated_at)
-        VALUES (?, ?, 0, ?)
+        INSERT INTO balances (account_id, account_type, balance, balance_units, updated_at)
+        VALUES (?, ?, 0, 0, ?)
         ON CONFLICT(account_id) DO NOTHING
         """,
         (account_id, account_type, utc_now()),
