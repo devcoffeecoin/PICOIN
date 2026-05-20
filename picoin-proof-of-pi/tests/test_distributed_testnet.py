@@ -228,6 +228,36 @@ def test_sync_blocks_drains_replay_backlog_with_bounded_batch(tmp_path, monkeypa
     assert result["replay"]["replay_stalled"] is True
 
 
+def test_sync_blocks_can_trigger_opt_in_auto_recovery_after_divergence(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "sync-auto-recovery.sqlite3")
+    block = {
+        "height": 1,
+        "previous_hash": "f" * 64,
+        "block_hash": "a" * 64,
+        "timestamp": "2026-05-12T00:00:00+00:00",
+    }
+    receive_block_header(block, source_peer_id="peer-a")
+    replay_finalized_blocks()
+
+    class EmptyBlocksResponse:
+        def json(self) -> dict:
+            return {"blocks": []}
+
+    monkeypatch.setattr("app.services.network.AUTO_RECOVERY_ENABLED", True)
+    monkeypatch.setattr("app.services.network.requests.get", lambda *args, **kwargs: EmptyBlocksResponse())
+    monkeypatch.setattr(
+        "app.services.network.recover_from_peer_snapshot",
+        lambda peer_address, source="auto-recovery": {"status": "ok", "peer": peer_address, "source": source},
+    )
+
+    result = sync_blocks_until("http://peer-a:8000", limit=10)
+
+    assert result["replay"]["status"] == "skipped"
+    assert result["replay"]["sync_status"] == "divergent"
+    assert result["auto_recovery"]["status"] == "ok"
+    assert result["auto_recovery"]["peer"] == "http://peer-a:8000"
+
+
 def test_peer_rejects_wrong_chain(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "wrong-chain.sqlite3")
 

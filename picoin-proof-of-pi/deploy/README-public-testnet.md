@@ -498,6 +498,13 @@ after three consecutive no-progress batches. `PICOIN_MIN_QUORUM_PEERS=1` is
 acceptable for the current small bootstrap-led testnet. Raise it for mainnet
 restore policy.
 
+`PICOIN_AUTO_RECOVERY_ENABLED=1` enables an opt-in testnet recovery path during
+`node catch-up`: when replay is already marked `divergent`, the node downloads a
+fresh canonical snapshot from the configured peer and restores local state
+without stopping the API process. Keep this disabled on bootstrap and enable it
+only on disposable validator nodes until the recovery policy is hardened for
+mainnet.
+
 If replay reports `block_hash does not match canonical payload`, inspect the exact
 canonical hash inputs before restarting the network:
 
