@@ -14,13 +14,16 @@ import requests
 from app.core.crypto import canonical_json, hash_block, sha256_text
 from app.core.money import to_units, units_from_db, units_to_float
 from app.core.settings import (
+    AUTO_RECOVERY_ENABLED,
     BOOTSTRAP_PEERS,
     GENESIS_HASH,
+    MIN_QUORUM_PEERS,
     MIN_VALIDATOR_STAKE,
     NODE_ID,
     PROOF_OF_PI_REWARD_PERCENT,
     PROTOCOL_VERSION,
     REPLAY_BATCH_SIZE,
+    REPLAY_STALL_FAILURES,
     REPLAY_WORKER_ENABLED,
     REPLAY_WORKER_INTERVAL_SECONDS,
     REQUIRED_VALIDATOR_APPROVALS,
@@ -93,6 +96,28 @@ _REPLAY_METRICS: dict[str, Any] = {
     "total_batches": 0,
     "last_error": None,
 }
+_REPLAY_HEALTH_LOCK = threading.Lock()
+_REPLAY_HEALTH: dict[str, Any] = {
+    "sync_status": "healthy",
+    "replay_stalled": False,
+    "replay_last_progress_at": None,
+    "replay_last_imported_height": 0,
+    "replay_consecutive_failures": 0,
+    "divergence_detected": False,
+    "divergence_reason": None,
+    "auto_recovery_active": False,
+    "min_quorum_peers": MIN_QUORUM_PEERS,
+    "auto_recovery_enabled": AUTO_RECOVERY_ENABLED,
+    "database_path": None,
+}
+_DIVERGENCE_MARKERS = (
+    "state_root mismatch",
+    "cannot import block before ancestors",
+    "orphan replay chain",
+    "block_hash does not match canonical payload",
+    "missing block fields",
+    "previous_hash",
+)
 
 
 def utc_now() -> str:
@@ -589,11 +614,147 @@ def _replay_queue_snapshot(connection: Any) -> dict[str, Any]:
     }
 
 
+def _replay_health_snapshot() -> dict[str, Any]:
+    with _REPLAY_HEALTH_LOCK:
+        snapshot = dict(_REPLAY_HEALTH)
+    snapshot.pop("database_path", None)
+    return snapshot
+
+
+def _reset_replay_health_for_database(database_path: str | None) -> None:
+    with _REPLAY_HEALTH_LOCK:
+        if _REPLAY_HEALTH.get("database_path") == database_path:
+            return
+        _REPLAY_HEALTH.update(
+            {
+                "sync_status": "healthy",
+                "replay_stalled": False,
+                "replay_last_progress_at": None,
+                "replay_last_imported_height": 0,
+                "replay_consecutive_failures": 0,
+                "divergence_detected": False,
+                "divergence_reason": None,
+                "auto_recovery_active": False,
+                "database_path": database_path,
+            }
+        )
+
+
+def _connection_database_path(connection: Any) -> str | None:
+    try:
+        row = connection.execute("PRAGMA database_list").fetchone()
+        if row is None:
+            return None
+        keys = row.keys()
+        if "file" in keys:
+            return str(row["file"])
+        return str(row[2])
+    except Exception:
+        return None
+
+
+def _mark_replay_divergent(reason: str) -> None:
+    now = utc_now()
+    with _REPLAY_HEALTH_LOCK:
+        _REPLAY_HEALTH.update(
+            {
+                "sync_status": "divergent",
+                "replay_stalled": True,
+                "divergence_detected": True,
+                "divergence_reason": reason,
+                "replay_consecutive_failures": int(_REPLAY_HEALTH.get("replay_consecutive_failures") or 0) + 1,
+                "replay_last_progress_at": _REPLAY_HEALTH.get("replay_last_progress_at") or now,
+            }
+        )
+
+
+def _update_replay_liveness(response: dict[str, Any], snapshot: dict[str, Any]) -> None:
+    errors = [str(item) for item in response.get("errors") or []]
+    error_text = " ; ".join(errors)
+    lower_error_text = error_text.lower()
+    queue_size = int(snapshot.get("queue_size") or 0)
+    current_height = int(snapshot.get("current_height") or 0)
+    imported = int(response.get("imported") or 0)
+    headers_imported = int(response.get("headers_imported") or 0)
+    normalized = int(response.get("normalized") or 0)
+    pre_snapshot_skipped = int(response.get("headers_skipped_pre_snapshot") or 0)
+    progress = imported + headers_imported + normalized + pre_snapshot_skipped
+    divergence_reason = next((marker for marker in _DIVERGENCE_MARKERS if marker in lower_error_text), None)
+    now = utc_now()
+
+    with _REPLAY_HEALTH_LOCK:
+        if divergence_reason:
+            _REPLAY_HEALTH.update(
+                {
+                    "sync_status": "divergent",
+                    "replay_stalled": True,
+                    "divergence_detected": True,
+                    "divergence_reason": error_text[:500] or divergence_reason,
+                    "replay_consecutive_failures": int(_REPLAY_HEALTH.get("replay_consecutive_failures") or 0) + 1,
+                    "replay_last_progress_at": _REPLAY_HEALTH.get("replay_last_progress_at") or now,
+                    "replay_last_imported_height": current_height,
+                }
+            )
+            return
+
+        if progress > 0:
+            _REPLAY_HEALTH.update(
+                {
+                    "sync_status": "catching_up" if queue_size > 0 else "healthy",
+                    "replay_stalled": False,
+                    "replay_last_progress_at": now,
+                    "replay_last_imported_height": current_height,
+                    "replay_consecutive_failures": 0,
+                    "divergence_detected": False,
+                    "divergence_reason": None,
+                }
+            )
+            return
+
+        if queue_size > 0:
+            failures = int(_REPLAY_HEALTH.get("replay_consecutive_failures") or 0) + 1
+            stalled = failures >= max(1, int(REPLAY_STALL_FAILURES))
+            _REPLAY_HEALTH.update(
+                {
+                    "sync_status": "stalled" if stalled else "catching_up",
+                    "replay_stalled": stalled,
+                    "replay_consecutive_failures": failures,
+                    "replay_last_progress_at": _REPLAY_HEALTH.get("replay_last_progress_at") or now,
+                    "replay_last_imported_height": current_height,
+                    "divergence_reason": error_text[:500] if error_text else _REPLAY_HEALTH.get("divergence_reason"),
+                }
+            )
+            return
+
+        _REPLAY_HEALTH.update(
+            {
+                "sync_status": "healthy",
+                "replay_stalled": False,
+                "replay_last_imported_height": current_height,
+                "replay_consecutive_failures": 0,
+                "divergence_detected": False,
+                "divergence_reason": None,
+            }
+        )
+
+
 def get_replay_status() -> dict[str, Any]:
     with get_connection() as connection:
+        _reset_replay_health_for_database(_connection_database_path(connection))
         snapshot = _replay_queue_snapshot(connection)
     avg_ms = float(_REPLAY_METRICS.get("avg_ms") or 0.0)
     queue_size = int(snapshot["queue_size"])
+    if queue_size == 0 and not _REPLAY_LOCK.locked():
+        with _REPLAY_HEALTH_LOCK:
+            _REPLAY_HEALTH.update(
+                {
+                    "sync_status": "healthy",
+                    "replay_stalled": False,
+                    "replay_consecutive_failures": 0,
+                    "divergence_detected": False,
+                    "divergence_reason": None,
+                }
+            )
     eta = round((queue_size * avg_ms) / 1000.0, 3) if avg_ms > 0 and queue_size > 0 else None
     return {
         **snapshot,
@@ -611,6 +772,7 @@ def get_replay_status() -> dict[str, Any]:
         "total_processed": int(_REPLAY_METRICS.get("total_processed") or 0),
         "total_batches": int(_REPLAY_METRICS.get("total_batches") or 0),
         "last_error": _REPLAY_METRICS.get("last_error"),
+        **_replay_health_snapshot(),
         "checked_at": utc_now(),
     }
 
@@ -641,10 +803,15 @@ async def _replay_worker_loop() -> None:
     while _REPLAY_WORKER_STOP is None or not _REPLAY_WORKER_STOP.is_set():
         try:
             status = await asyncio.to_thread(get_replay_status)
-            if int(status.get("queue_size") or 0) > 0 and not bool(status.get("active")):
+            if (
+                int(status.get("queue_size") or 0) > 0
+                and not bool(status.get("active"))
+                and status.get("sync_status") != "divergent"
+            ):
                 await asyncio.to_thread(replay_finalized_blocks, REPLAY_BATCH_SIZE)
         except Exception as exc:
             _REPLAY_METRICS["last_error"] = str(exc)
+            _mark_replay_divergent(str(exc))
         try:
             await asyncio.wait_for(
                 _REPLAY_WORKER_STOP.wait() if _REPLAY_WORKER_STOP is not None else asyncio.sleep(0),
@@ -719,6 +886,12 @@ def replay_finalized_blocks(limit: int = 100) -> dict[str, Any]:
                     skipped += 1
                     reason = str(exc)
                     errors.append(f"proposal {proposal_id}: {reason}")
+                    if any(marker in reason.lower() for marker in _DIVERGENCE_MARKERS):
+                        logger.error(
+                            "Picoin replay divergence proposal_id=%s reason=%s",
+                            proposal_id,
+                            reason,
+                        )
                     connection.execute(
                         """
                         UPDATE consensus_block_proposals
@@ -803,6 +976,7 @@ def _record_replay_metrics(response: dict[str, Any], started: float, started_at:
     duration_ms = max(0.001, (time.perf_counter() - started) * 1000.0)
     processed = int(response.get("imported") or 0) + int(response.get("headers_imported") or 0)
     with get_connection() as connection:
+        _reset_replay_health_for_database(_connection_database_path(connection))
         snapshot = _replay_queue_snapshot(connection)
     if processed > 0:
         batch_avg = duration_ms / processed
@@ -825,6 +999,8 @@ def _record_replay_metrics(response: dict[str, Any], started: float, started_at:
             "last_error": "; ".join(response.get("errors") or []) or None,
         }
     )
+    _update_replay_liveness(response, snapshot)
+    health = _replay_health_snapshot()
     queue_size = int(snapshot.get("queue_size") or 0)
     eta = None
     if float(_REPLAY_METRICS.get("avg_ms") or 0.0) > 0 and queue_size > 0:
@@ -838,6 +1014,7 @@ def _record_replay_metrics(response: dict[str, Any], started: float, started_at:
             "replay_avg_ms": round(float(_REPLAY_METRICS.get("avg_ms") or 0.0), 3),
             "replay_last_processed_height": int(_REPLAY_METRICS.get("last_processed_height") or 0),
             "replay_eta_seconds": eta,
+            **health,
         }
     )
 
@@ -941,6 +1118,13 @@ def _replay_pending_block_headers(connection: Any, limit: int) -> dict[str, Any]
             reason = str(exc)
             status = "pending_missing_ancestors" if "ancestor" in reason.lower() else "pending_replay"
             errors.append(f"header {block_hash}: {reason}")
+            if any(marker in reason.lower() for marker in _DIVERGENCE_MARKERS):
+                logger.error(
+                    "Picoin replay divergence header=%s height=%s reason=%s",
+                    block_hash,
+                    row["height"],
+                    reason,
+                )
             connection.execute(
                 """
                 UPDATE network_block_headers

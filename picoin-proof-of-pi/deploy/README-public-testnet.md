@@ -127,6 +127,11 @@ PICOIN_SMOKE_WARN_ONLY=1
 PICOIN_SMOKE_TIMEOUT=60
 PICOIN_AUDITOR_INTERVAL=300
 PICOIN_RECONCILER_SKIP_WITHOUT_PEER=1
+PICOIN_REPLAY_BATCH_SIZE=10
+PICOIN_REPLAY_BACKLOG_THRESHOLD=25
+PICOIN_REPLAY_STALL_FAILURES=3
+PICOIN_MIN_QUORUM_PEERS=1
+PICOIN_AUTO_RECOVERY_ENABLED=0
 PICOIN_WALLET_PATH=/var/lib/picoin/data/wallets/default.json
 PICOIN_MINER_REWARD_ADDRESS=PI...
 PICOIN_VALIDATOR_REWARD_ADDRESS=PI...
@@ -469,6 +474,13 @@ Fields to verify:
 - `replay.queue_size`: pending replay backlog.
 - `replay.active`: true while the background replay worker is processing a batch.
 - `replay.replay_blocks_per_second`, `replay.replay_avg_ms`, `replay.replay_eta_seconds`: replay drain metrics.
+- `sync_status`: `healthy`, `catching_up`, `stalled`, or `divergent`.
+- `replay_stalled`: true when replay has pending work but repeated batches make no height/import progress.
+- `replay_last_progress_at`: last time a replay batch imported or normalized work.
+- `replay_last_imported_height`: latest local height observed by replay health.
+- `replay_consecutive_failures`: consecutive no-progress replay batches.
+- `divergence_detected` and `divergence_reason`: explicit signal for state-root, canonical hash, missing-field, or ancestor failures.
+- `auto_recovery_active`: reserved for guarded restore automation. Keep `PICOIN_AUTO_RECOVERY_ENABLED=0` unless testing recovery on a disposable testnet node.
 
 Healthy behavior after restore is that `effective_latest_block_height` advances
 toward the bootstrap height without repeated `cannot import block before ancestors`
@@ -476,9 +488,15 @@ messages for pre-snapshot history.
 
 Replay is intentionally throttled. The node drains replay in small batches
 (`PICOIN_REPLAY_BATCH_SIZE=10` by default). If the replay backlog is above
-`PICOIN_REPLAY_BACKLOG_THRESHOLD=25`, catch-up skips new peer fetches and lets
-the replay worker reduce the queue first. This prevents reconciler storms and
-keeps `/health`, `/node/sync-status`, and `/replay/status` responsive.
+`PICOIN_REPLAY_BACKLOG_THRESHOLD=25`, catch-up avoids large synchronous replay
+and runs one bounded drain batch. This prevents reconciler storms while still
+allowing the queue to make progress, and keeps `/health`, `/node/sync-status`,
+and `/replay/status` responsive.
+
+For public testnet, `PICOIN_REPLAY_STALL_FAILURES=3` marks replay as stalled
+after three consecutive no-progress batches. `PICOIN_MIN_QUORUM_PEERS=1` is
+acceptable for the current small bootstrap-led testnet. Raise it for mainnet
+restore policy.
 
 If replay reports `block_hash does not match canonical payload`, inspect the exact
 canonical hash inputs before restarting the network:
@@ -572,6 +590,9 @@ SOURCE_DIR="$PWD/picoin-proof-of-pi"
 - If block height stalls, check `curl https://api.picoin.science/node/sync-status`, `consensus.pending`, `consensus.pending_missing_ancestors`, miner logs, validator logs, and reconciler logs.
 - If `pending_missing_ancestors` is non-zero, inspect `curl 'https://api.picoin.science/consensus/proposals?status=pending_missing_ancestors&limit=20'`; do not delete proposals silently.
 - If `/consensus/replay` is slow, call it with a bounded batch such as `curl -X POST 'http://127.0.0.1:8000/consensus/replay?limit=50'` and check the structured `status`, `missing_ancestors`, and `errors` fields.
+- If `/health` reports `sync_status=stalled` or `sync_status=divergent`, stop validator/miner signing on that droplet and restore from a verified peer snapshot before rejoining consensus.
+- If replay shows `state_root mismatch after canonical replay`, use `/consensus/debug/block/{height}` and `node compare-block-payloads` before deleting data. This is treated as deterministic consensus divergence, not a networking issue.
+- If replay shows `cannot import block before ancestors`, check `snapshot_height`, `effective_latest_block_height`, `headers_skipped_pre_snapshot`, and `pending_missing_ancestors` in `/node/sync-status`.
 - On bootstrap, keep `PICOIN_SMOKE_SKIP_CATCH_UP=1` and `PICOIN_SMOKE_WARN_ONLY=1` if the auditor is enabled, because bootstrap has no upstream peer.
 - If a validator auto-registers the wrong identity, check `PICOIN_VALIDATOR_IDENTITY`, `PICOIN_VALIDATOR_NAME`, and the JSON identity path.
 - If a service uses the wrong script, run `sudo systemctl cat picoin-validator`.

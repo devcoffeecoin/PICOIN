@@ -177,9 +177,32 @@ def test_sync_status_reports_replay_queue_metrics(tmp_path, monkeypatch) -> None
     assert sync_status["replay"]["queue_size"] == 1
     assert sync_status["replay"]["header_queue_size"] == 1
     assert replay_status["queue_size"] == 1
+    assert sync_status["sync_status"] == replay_status["sync_status"]
+    assert "replay_stalled" in sync_status
 
 
-def test_sync_blocks_skips_replay_when_backlog_is_high(tmp_path, monkeypatch) -> None:
+def test_health_exposes_replay_divergence_state(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "health-replay-divergent.sqlite3")
+    block = {
+        "height": 1,
+        "previous_hash": "f" * 64,
+        "block_hash": "a" * 64,
+        "timestamp": "2026-05-12T00:00:00+00:00",
+    }
+    receive_block_header(block, source_peer_id="peer-a")
+
+    replay = replay_finalized_blocks()
+    health = get_health_status()
+
+    assert replay["sync_status"] == "divergent"
+    assert health["sync_status"] == "divergent"
+    assert health["replay_stalled"] is True
+    assert health["divergence_detected"] is True
+    assert health["mining_ready"] is False
+    assert health["can_assign_tasks"] is False
+
+
+def test_sync_blocks_drains_replay_backlog_with_bounded_batch(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "sync-replay-throttle.sqlite3")
     block = {
         "height": 1,
@@ -198,9 +221,11 @@ def test_sync_blocks_skips_replay_when_backlog_is_high(tmp_path, monkeypatch) ->
 
     result = sync_blocks_until("http://peer-a:8000", limit=10)
 
-    assert result["replay"]["status"] == "skipped"
-    assert result["replay"]["reason"] == "replay backlog above threshold"
+    assert result["replay"]["status"] == "partial"
+    assert result["replay"]["reason"] == "replay backlog drained with bounded batch"
     assert result["replay"]["queue_size"] == 1
+    assert result["replay"]["sync_status"] == "divergent"
+    assert result["replay"]["replay_stalled"] is True
 
 
 def test_peer_rejects_wrong_chain(tmp_path, monkeypatch) -> None:

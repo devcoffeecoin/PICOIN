@@ -260,6 +260,14 @@ def get_sync_status() -> dict[str, Any]:
         "pending_replay_blocks": pending_headers["count"] if pending_headers else 0,
         "headers_skipped_pre_snapshot": pre_snapshot_headers["count"] if pre_snapshot_headers else 0,
         "replay": replay_status,
+        "sync_status": replay_status.get("sync_status", "healthy"),
+        "replay_stalled": bool(replay_status.get("replay_stalled")),
+        "replay_last_progress_at": replay_status.get("replay_last_progress_at"),
+        "replay_last_imported_height": replay_status.get("replay_last_imported_height"),
+        "replay_consecutive_failures": int(replay_status.get("replay_consecutive_failures") or 0),
+        "divergence_detected": bool(replay_status.get("divergence_detected")),
+        "divergence_reason": replay_status.get("divergence_reason"),
+        "auto_recovery_active": bool(replay_status.get("auto_recovery_active")),
         "consensus": {row["status"]: row["count"] for row in consensus_counts},
         "sync_mode": "proposal_vote_finalize_replay_alpha",
         "checked_at": _now(),
@@ -704,8 +712,11 @@ def sync_blocks_until(
         replay_status = get_replay_status()
         if bool(replay_status.get("active")):
             result["replay"] = {"status": "skipped", "reason": "replay already active", **replay_status}
+        elif replay_status.get("sync_status") == "divergent":
+            result["replay"] = {"status": "skipped", "reason": "replay divergent; restore required", **replay_status}
         elif int(replay_status.get("queue_size") or 0) > REPLAY_BACKLOG_THRESHOLD:
-            result["replay"] = {"status": "skipped", "reason": "replay backlog above threshold", **replay_status}
+            result["replay"] = replay_finalized_blocks(REPLAY_BATCH_SIZE)
+            result["replay"]["reason"] = "replay backlog drained with bounded batch"
         else:
             result["replay"] = replay_finalized_blocks(min(max(int(limit), 1), REPLAY_BATCH_SIZE))
         with get_connection() as connection:
