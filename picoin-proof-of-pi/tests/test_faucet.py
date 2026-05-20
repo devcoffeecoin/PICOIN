@@ -121,3 +121,41 @@ def test_signed_faucet_accepts_legacy_sender_address_for_existing_wallets(tmp_pa
 
     assert submitted["sender"] == legacy_address
     assert submitted["status"] == "pending"
+
+
+def test_signed_faucet_can_retry_nonce_after_rejected_mempool_entry(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "retry-rejected-wallet-faucet.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    wallet = create_wallet("retry-faucet-wallet")
+    first_tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="faucet",
+        sender=wallet["address"],
+        amount=3.1416,
+        nonce=1,
+        fee=0.0,
+    )
+    submit_transaction(first_tx)
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE mempool_transactions SET status = 'rejected', rejection_reason = 'test retry' WHERE tx_hash = ?",
+            (first_tx["tx_hash"],),
+        )
+
+    retry_tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="faucet",
+        sender=wallet["address"],
+        amount=1.0,
+        nonce=1,
+        fee=0.0,
+    )
+    submitted = submit_transaction(retry_tx)
+
+    assert submitted["tx_hash"] == retry_tx["tx_hash"]
+    assert submitted["status"] == "pending"

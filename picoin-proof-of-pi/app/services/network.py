@@ -444,6 +444,13 @@ def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str
             raise NetworkError(409, "duplicate sender nonce")
         connection.execute(
             """
+            DELETE FROM mempool_transactions
+            WHERE sender = ? AND nonce = ? AND status IN ('rejected', 'expired')
+            """,
+            (tx["sender"], int(tx["nonce"])),
+        )
+        connection.execute(
+            """
             INSERT INTO mempool_transactions (
                 tx_hash, tx_type, sender, recipient, amount, amount_units, nonce, fee, fee_units,
                 payload, public_key, signature, status, propagated,
