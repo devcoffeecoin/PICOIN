@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.core.crypto import canonical_json, sha256_text
+from app.core.money import canonical_amount, to_units, units_from_db, units_to_float
 from app.core.settings import CHAIN_ID, CHECKPOINT_INTERVAL_BLOCKS, GENESIS_HASH, NETWORK_ID, PROTOCOL_VERSION
 from app.db.database import get_connection, row_to_dict
 
@@ -21,45 +22,55 @@ def _now() -> str:
 
 
 def balance_snapshot(connection: Any, block_height: int, block_timestamp: str | None = None) -> list[dict[str, Any]]:
+    return [
+        {
+            "account_id": item["account_id"],
+            "account_type": item["account_type"],
+            "balance": canonical_amount(item["balance_units"]),
+            "balance_units": item["balance_units"],
+        }
+        for item in canonical_balance_snapshot(connection, block_height, block_timestamp)
+    ]
+
+
+def canonical_balance_snapshot(connection: Any, block_height: int, block_timestamp: str | None = None) -> list[dict[str, Any]]:
     if block_height < 0:
         raise ValueError("block_height must be >= 0")
     rows = connection.execute(
         """
-        SELECT account_id, ROUND(COALESCE(SUM(amount), 0), 8) AS balance
+        SELECT account_id, account_type, amount, amount_units
         FROM ledger_entries
         WHERE block_height IS NOT NULL AND block_height <= ?
-        GROUP BY account_id
-        HAVING ABS(balance) > 0.00000001
-        ORDER BY account_id ASC
+        ORDER BY block_height ASC, id ASC
         """,
         (block_height,),
     ).fetchall()
-    balances = [
-        {"account_id": row["account_id"], "balance": round(float(row["balance"] or 0), 8)}
-        for row in rows
-    ]
+    merged: dict[tuple[str, str], int] = {}
+    for row in rows:
+        account_id = str(row["account_id"])
+        account_type = str(row["account_type"] or _infer_account_type(account_id))
+        key = (account_id, account_type)
+        merged[key] = merged.get(key, 0) + units_from_db(row["amount"], row["amount_units"])
     if block_timestamp is not None:
         loose_rows = connection.execute(
             """
-            SELECT account_id, ROUND(COALESCE(SUM(amount), 0), 8) AS balance
+            SELECT account_id, account_type, amount, amount_units
             FROM ledger_entries
             WHERE block_height IS NULL AND created_at <= ?
-            GROUP BY account_id
-            HAVING ABS(balance) > 0.00000001
-            ORDER BY account_id ASC
+            ORDER BY created_at ASC, id ASC
             """,
             (block_timestamp,),
         ).fetchall()
-        merged = {item["account_id"]: item["balance"] for item in balances}
         for row in loose_rows:
-            account_id = row["account_id"]
-            merged[account_id] = round(merged.get(account_id, 0.0) + float(row["balance"] or 0), 8)
-        balances = [
-            {"account_id": account_id, "balance": balance}
-            for account_id, balance in sorted(merged.items())
-            if abs(balance) > 0.00000001
-        ]
-    return balances
+            account_id = str(row["account_id"])
+            account_type = str(row["account_type"] or _infer_account_type(account_id))
+            key = (account_id, account_type)
+            merged[key] = merged.get(key, 0) + units_from_db(row["amount"], row["amount_units"])
+    return [
+        {"account_id": account_id, "account_type": account_type, "balance_units": units}
+        for (account_id, account_type), units in sorted(merged.items(), key=lambda item: (item[0][0], item[0][1]))
+        if units != 0
+    ]
 
 
 def calculate_state_root(connection: Any, block_height: int, block_timestamp: str | None = None) -> str:
@@ -132,7 +143,8 @@ def create_canonical_checkpoint_in_connection(
             (height, block["timestamp"]),
         ).fetchone()["count"]
     )
-    total_balance = round(sum(float(item["balance"]) for item in balances), 8)
+    total_balance_units = sum(int(item["balance_units"]) for item in balances)
+    total_balance = units_to_float(total_balance_units)
     payload = {
         "chain_id": CHAIN_ID,
         "network_id": NETWORK_ID,
@@ -146,6 +158,7 @@ def create_canonical_checkpoint_in_connection(
         "balances_count": len(balances),
         "ledger_entries_count": ledger_entries_count,
         "total_balance": total_balance,
+        "total_balance_units": total_balance_units,
     }
     snapshot_hash = sha256_text(canonical_json(payload))
     checkpoint_id = sha256_text(f"{CHAIN_ID}:{height}:{block['block_hash']}")[:32]
@@ -157,9 +170,9 @@ def create_canonical_checkpoint_in_connection(
         INSERT INTO canonical_checkpoints (
             checkpoint_id, height, block_hash, previous_hash, state_root,
             balances_hash, snapshot_hash, balances_count, ledger_entries_count,
-            total_balance, trusted, source, created_at, verified_at, payload
+            total_balance, total_balance_units, trusted, source, created_at, verified_at, payload
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(height) DO UPDATE SET
             block_hash = excluded.block_hash,
             previous_hash = excluded.previous_hash,
@@ -169,6 +182,7 @@ def create_canonical_checkpoint_in_connection(
             balances_count = excluded.balances_count,
             ledger_entries_count = excluded.ledger_entries_count,
             total_balance = excluded.total_balance,
+            total_balance_units = excluded.total_balance_units,
             trusted = excluded.trusted,
             source = excluded.source,
             verified_at = excluded.verified_at,
@@ -185,6 +199,7 @@ def create_canonical_checkpoint_in_connection(
             len(balances),
             ledger_entries_count,
             total_balance,
+            total_balance_units,
             1 if trusted else 0,
             source,
             timestamp,
@@ -266,7 +281,8 @@ def verify_checkpoint(height: int) -> dict[str, Any]:
                 (height, block["timestamp"]),
             ).fetchone()["count"]
         )
-        total_balance = round(sum(float(item["balance"]) for item in balances), 8)
+        total_balance_units = sum(int(item["balance_units"]) for item in balances)
+        total_balance = units_to_float(total_balance_units)
         payload = {
             "chain_id": CHAIN_ID,
             "network_id": NETWORK_ID,
@@ -280,6 +296,7 @@ def verify_checkpoint(height: int) -> dict[str, Any]:
             "balances_count": len(balances),
             "ledger_entries_count": ledger_entries_count,
             "total_balance": total_balance,
+            "total_balance_units": total_balance_units,
         }
         snapshot_hash = sha256_text(canonical_json(payload))
         issues = []
@@ -295,7 +312,7 @@ def verify_checkpoint(height: int) -> dict[str, Any]:
             issues.append("balances_count mismatch")
         if checkpoint["ledger_entries_count"] != ledger_entries_count:
             issues.append("ledger_entries_count mismatch")
-        if round(float(checkpoint["total_balance"]), 8) != total_balance:
+        if int(checkpoint.get("total_balance_units") or to_units(checkpoint["total_balance"])) != total_balance_units:
             issues.append("total_balance mismatch")
         if checkpoint["snapshot_hash"] != snapshot_hash:
             issues.append("snapshot_hash mismatch")
@@ -368,11 +385,11 @@ def import_canonical_snapshot(document: dict[str, Any], *, source: str = "import
             """
             INSERT INTO canonical_snapshot_imports (
                 import_id, height, block_hash, previous_hash, state_root,
-                balances_hash, snapshot_hash, balances_count, total_balance,
+                balances_hash, snapshot_hash, balances_count, total_balance, total_balance_units,
                 source, active, activated_at, state_applied, state_applied_at,
                 imported_at, verified_at, payload
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, NULL, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NULL, 0, NULL, ?, ?, ?)
             ON CONFLICT(snapshot_hash) DO UPDATE SET
                 source = excluded.source,
                 imported_at = excluded.imported_at,
@@ -389,6 +406,7 @@ def import_canonical_snapshot(document: dict[str, Any], *, source: str = "import
                 checkpoint["snapshot_hash"],
                 checkpoint["balances_count"],
                 checkpoint["total_balance"],
+                checkpoint["total_balance_units"],
                 source,
                 timestamp,
                 timestamp,
@@ -435,9 +453,14 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
         issues.append("genesis_hash mismatch")
 
     height = int(checkpoint.get("height") or 0)
-    normalized_balances = _normalize_snapshot_balances(balances)
+    try:
+        normalized_balances = _normalize_snapshot_balances(balances)
+    except ValueError as exc:
+        normalized_balances = []
+        issues.append(str(exc))
     balances_hash = sha256_text(canonical_json({"height": height, "balances": normalized_balances}))
-    total_balance = round(sum(float(item["balance"]) for item in normalized_balances), 8)
+    total_balance_units = sum(int(item["balance_units"]) for item in normalized_balances)
+    total_balance = units_to_float(total_balance_units)
     payload = {
         "chain_id": checkpoint.get("chain_id"),
         "network_id": checkpoint.get("network_id"),
@@ -451,6 +474,7 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
         "balances_count": len(normalized_balances),
         "ledger_entries_count": int(checkpoint.get("ledger_entries_count") or 0),
         "total_balance": total_balance,
+        "total_balance_units": total_balance_units,
     }
     snapshot_hash = sha256_text(canonical_json(payload))
     if checkpoint.get("balances_hash") != balances_hash:
@@ -459,20 +483,27 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
         issues.append("state_root mismatch")
     if int(checkpoint.get("balances_count") or -1) != len(normalized_balances):
         issues.append("balances_count mismatch")
-    if round(float(checkpoint.get("total_balance") or 0), 8) != total_balance:
+    if int(checkpoint.get("total_balance_units") or to_units(checkpoint.get("total_balance") or 0)) != total_balance_units:
         issues.append("total_balance mismatch")
     if checkpoint.get("snapshot_hash") != snapshot_hash:
         issues.append("snapshot_hash mismatch")
     return {
         "valid": not issues,
         "issues": issues,
-        "checkpoint": {**checkpoint, "height": height, "balances_count": len(normalized_balances), "total_balance": total_balance},
+        "checkpoint": {
+            **checkpoint,
+            "height": height,
+            "balances_count": len(normalized_balances),
+            "total_balance": total_balance,
+            "total_balance_units": total_balance_units,
+        },
         "computed": {
             "balances_hash": balances_hash,
             "state_root": balances_hash,
             "snapshot_hash": snapshot_hash,
             "balances_count": len(normalized_balances),
             "total_balance": total_balance,
+            "total_balance_units": total_balance_units,
         },
     }
 
@@ -521,26 +552,30 @@ def apply_imported_snapshot_state(snapshot_hash: str, *, replace_existing: bool 
         connection.execute("DELETE FROM ledger_entries")
         connection.execute("DELETE FROM balances")
         for item in balances:
+            balance_units = int(item["balance_units"])
+            balance = units_to_float(balance_units)
             connection.execute(
                 """
-                INSERT INTO balances (account_id, account_type, balance, updated_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO balances (account_id, account_type, balance, balance_units, updated_at)
+                VALUES (?, ?, ?, ?, ?)
                 """,
-                (item["account_id"], item["account_type"], item["balance"], timestamp),
+                (item["account_id"], item["account_type"], balance, balance_units, timestamp),
             )
             connection.execute(
                 """
                 INSERT INTO ledger_entries (
-                    account_id, account_type, amount, balance_after, entry_type,
+                    account_id, account_type, amount, amount_units, balance_after, balance_after_units, entry_type,
                     block_height, related_id, description, created_at
                 )
-                VALUES (?, ?, ?, ?, 'snapshot_state_import', ?, ?, 'canonical snapshot state import', ?)
+                VALUES (?, ?, ?, ?, ?, ?, 'snapshot_state_import', ?, ?, 'canonical snapshot state import', ?)
                 """,
                 (
                     item["account_id"],
                     item["account_type"],
-                    item["balance"],
-                    item["balance"],
+                    balance,
+                    balance_units,
+                    balance,
+                    balance_units,
                     checkpoint["height"],
                     snapshot_hash,
                     timestamp,
@@ -673,16 +708,24 @@ def _checkpoint_public_payload(checkpoint: dict[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_snapshot_balances(balances: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    merged: dict[str, float] = {}
+    merged: dict[tuple[str, str], int] = {}
     for item in balances:
         account_id = str(item.get("account_id") or "").strip()
         if not account_id:
             continue
-        merged[account_id] = round(merged.get(account_id, 0.0) + float(item.get("balance") or 0), 8)
+        account_type = str(item.get("account_type") or _infer_account_type(account_id)).strip() or "wallet"
+        balance_units = units_from_db(item.get("balance") or 0, item.get("balance_units"))
+        key = (account_id, account_type)
+        merged[key] = merged.get(key, 0) + balance_units
     return [
-        {"account_id": account_id, "balance": balance}
-        for account_id, balance in sorted(merged.items())
-        if abs(balance) > 0.00000001
+        {
+            "account_id": account_id,
+            "account_type": account_type,
+            "balance": canonical_amount(balance_units),
+            "balance_units": balance_units,
+        }
+        for (account_id, account_type), balance_units in sorted(merged.items(), key=lambda item: (item[0][0], item[0][1]))
+        if balance_units != 0
     ]
 
 
@@ -692,17 +735,24 @@ def _normalize_snapshot_balances_with_type(balances: list[dict[str, Any]]) -> li
         account_id = str(item.get("account_id") or "").strip()
         if not account_id:
             continue
-        balance = round(float(item.get("balance") or 0), 8)
+        balance_units = units_from_db(item.get("balance") or 0, item.get("balance_units"))
         account_type = str(item.get("account_type") or _infer_account_type(account_id)).strip() or "wallet"
         existing = merged.get(account_id)
         if existing is None:
-            merged[account_id] = {"account_id": account_id, "account_type": account_type, "balance": balance}
+            merged[account_id] = {
+                "account_id": account_id,
+                "account_type": account_type,
+                "balance_units": balance_units,
+            }
         else:
-            existing["balance"] = round(float(existing["balance"]) + balance, 8)
+            existing["balance_units"] = int(existing["balance_units"]) + balance_units
     return [
-        item
-        for _, item in sorted(merged.items())
-        if abs(float(item["balance"])) > 0.00000001
+        {
+            **item,
+            "balance": canonical_amount(int(item["balance_units"])),
+        }
+        for _, item in sorted(merged.items(), key=lambda item: (item[1]["account_id"], item[1]["account_type"]))
+        if int(item["balance_units"]) != 0
     ]
 
 
@@ -732,6 +782,7 @@ def _decode_checkpoint(row: dict[str, Any] | None) -> dict[str, Any] | None:
     row["height"] = int(row["height"])
     row["balances_count"] = int(row["balances_count"])
     row["ledger_entries_count"] = int(row["ledger_entries_count"])
+    row["total_balance_units"] = int(row.get("total_balance_units") or to_units(row["total_balance"] or 0))
     row["total_balance"] = round(float(row["total_balance"] or 0), 8)
     return row
 
@@ -741,6 +792,7 @@ def _decode_snapshot_import(row: dict[str, Any] | None) -> dict[str, Any] | None
         return None
     row["height"] = int(row["height"])
     row["balances_count"] = int(row["balances_count"])
+    row["total_balance_units"] = int(row.get("total_balance_units") or to_units(row["total_balance"] or 0))
     row["total_balance"] = round(float(row["total_balance"] or 0), 8)
     row["active"] = bool(row.get("active", 0))
     row["state_applied"] = bool(row.get("state_applied", 0))

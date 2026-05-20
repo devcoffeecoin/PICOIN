@@ -9,7 +9,10 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+import requests
+
 from app.core.crypto import canonical_json, hash_block, sha256_text
+from app.core.money import to_units, units_from_db, units_to_float
 from app.core.settings import (
     BOOTSTRAP_PEERS,
     GENESIS_HASH,
@@ -28,7 +31,13 @@ from app.core.settings import (
 from app.core.signatures import verify_payload_signature
 from app.db.database import get_connection, row_to_dict
 from app.services.science import record_science_reserve_for_block
-from app.services.state import active_snapshot_base_in_connection, maybe_create_checkpoint_in_connection, update_block_state_root
+from app.services.state import (
+    active_snapshot_base_in_connection,
+    balance_snapshot,
+    calculate_state_root,
+    maybe_create_checkpoint_in_connection,
+    update_block_state_root,
+)
 from app.services.treasury import record_scientific_development_treasury_for_block
 from app.services.transactions import (
     apply_block_transactions,
@@ -1229,6 +1238,91 @@ def debug_block_determinism(height: int) -> dict[str, Any]:
     return {"height": height, "source": source, "source_meta": source_meta, **debug}
 
 
+def replay_divergence_report(from_height: int, to_height: int, peer: str | None = None) -> dict[str, Any]:
+    from_height = max(1, int(from_height))
+    to_height = max(from_height, int(to_height))
+    remote_by_height: dict[int, dict[str, Any]] = {}
+    if peer:
+        peer_url = peer.rstrip("/")
+        cursor = from_height - 1
+        while cursor < to_height:
+            limit = min(100, to_height - cursor)
+            response = requests.get(
+                f"{peer_url}/node/sync/blocks?from_height={cursor}&limit={limit}",
+                timeout=20,
+            )
+            response.raise_for_status()
+            blocks = response.json().get("blocks") or []
+            if not blocks:
+                break
+            for block in blocks:
+                height = int(block.get("height") or 0)
+                if from_height <= height <= to_height:
+                    remote_by_height[height] = block
+            cursor = max(int(block.get("height") or cursor) for block in blocks)
+
+    checked: list[dict[str, Any]] = []
+    first_divergence: dict[str, Any] | None = None
+    with get_connection() as connection:
+        for height in range(from_height, to_height + 1):
+            block = row_to_dict(
+                connection.execute(
+                    """
+                    SELECT height, block_hash, previous_hash, state_root, timestamp, miner_id,
+                           miner_reward_address, reward, fee_reward, tx_count, tx_hashes
+                    FROM blocks
+                    WHERE height = ?
+                    """,
+                    (height,),
+                ).fetchone()
+            )
+            remote = remote_by_height.get(height)
+            if block is None:
+                item = {
+                    "height": height,
+                    "status": "missing_local",
+                    "expected_state_root": remote.get("state_root") if remote else None,
+                    "block_hash": remote.get("block_hash") if remote else None,
+                }
+                checked.append(item)
+                first_divergence = first_divergence or item
+                break
+            actual_state_root = calculate_state_root(connection, height, block.get("timestamp"))
+            expected_state_root = (remote or block).get("state_root")
+            item = {
+                "height": height,
+                "status": "ok" if expected_state_root == actual_state_root else "diverged",
+                "expected_state_root": expected_state_root,
+                "actual_state_root": actual_state_root,
+                "block_hash": block.get("block_hash"),
+                "remote_block_hash": remote.get("block_hash") if remote else None,
+                "previous_hash": block.get("previous_hash"),
+                "tx_count": int(block.get("tx_count") or 0),
+                "tx_hashes": json.loads(block.get("tx_hashes") or "[]") if isinstance(block.get("tx_hashes"), str) else block.get("tx_hashes"),
+                "reward": block.get("reward"),
+                "fee_reward": block.get("fee_reward"),
+                "miner_id": block.get("miner_id"),
+                "miner_reward_address": block.get("miner_reward_address"),
+            }
+            checked.append(item)
+            if item["status"] != "ok":
+                item["balances_sample"] = balance_snapshot(connection, height, block.get("timestamp"))[:25]
+                first_divergence = item
+                break
+    return {
+        "status": "ok" if first_divergence is None else "diverged",
+        "from_height": from_height,
+        "to_height": to_height,
+        "peer": peer,
+        "first_divergence_height": first_divergence.get("height") if first_divergence else None,
+        "expected_state_root": first_divergence.get("expected_state_root") if first_divergence else None,
+        "actual_state_root": first_divergence.get("actual_state_root") if first_divergence else None,
+        "mismatched_accounts": first_divergence.get("balances_sample", []) if first_divergence else [],
+        "replay_operations": checked,
+        "checked_at": utc_now(),
+    }
+
+
 def consensus_status() -> dict[str, Any]:
     with get_connection() as connection:
         counts = connection.execute(
@@ -1339,11 +1433,11 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
         """
         INSERT INTO blocks (
             height, previous_hash, miner_id, range_start, range_end, algorithm,
-            result_hash, merkle_root, samples, timestamp, block_hash, reward, tx_merkle_root,
-            tx_count, tx_hashes, fee_reward, miner_reward_address, state_root, difficulty, task_id, protocol_params_id,
+            result_hash, merkle_root, samples, timestamp, block_hash, reward, reward_units, tx_merkle_root,
+            tx_count, tx_hashes, fee_reward, fee_reward_units, miner_reward_address, state_root, difficulty, task_id, protocol_params_id,
             protocol_version, validation_mode, total_task_ms, total_block_ms, validation_ms
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             block["height"],
@@ -1358,10 +1452,12 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
             timestamp,
             block["block_hash"],
             block["reward"],
+            to_units(block["reward"]),
             block.get("tx_merkle_root"),
             int(block.get("tx_count") or 0),
             json.dumps(block.get("tx_hashes") or [], sort_keys=True),
             round(float(block.get("fee_reward") or 0), 8),
+            to_units(block.get("fee_reward") or 0),
             block.get("miner_reward_address"),
             block.get("state_root"),
             block.get("difficulty"),
@@ -1376,10 +1472,10 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
     )
     connection.execute(
         """
-        INSERT INTO rewards (miner_id, block_height, amount, reason, created_at)
-        VALUES (?, ?, ?, 'distributed block finalized', ?)
+        INSERT INTO rewards (miner_id, block_height, amount, amount_units, reason, created_at)
+        VALUES (?, ?, ?, ?, 'distributed block finalized', ?)
         """,
-        (block["miner_id"], block["height"], block["reward"], timestamp),
+        (block["miner_id"], block["height"], block["reward"], to_units(block["reward"]), timestamp),
     )
     _apply_account_delta(
         connection,
@@ -1407,6 +1503,20 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
     _apply_distributed_validator_rewards(connection, block, proposal_id, total_block_reward, timestamp)
     state_root = update_block_state_root(connection, block["height"], timestamp)
     if block.get("state_root") and block["state_root"] != state_root:
+        logger.error(
+            "state_root mismatch after canonical replay: height=%s expected=%s computed=%s previous_hash=%s block_hash=%s tx_count=%s reward=%s fee_reward=%s miner_id=%s miner_reward_address=%s validator_reward=%s",
+            block.get("height"),
+            block.get("state_root"),
+            state_root,
+            block.get("previous_hash"),
+            block.get("block_hash"),
+            int(block.get("tx_count") or 0),
+            block.get("reward"),
+            block.get("fee_reward"),
+            block.get("miner_id"),
+            block.get("miner_reward_address"),
+            block.get("validator_reward"),
+        )
         raise ConsensusError(422, "state_root mismatch after canonical replay")
     maybe_create_checkpoint_in_connection(connection, block["height"])
     return True
@@ -1492,31 +1602,46 @@ def _apply_account_delta(
     timestamp: str,
 ) -> None:
     current = connection.execute(
-        "SELECT balance FROM balances WHERE account_id = ?",
+        "SELECT balance, balance_units FROM balances WHERE account_id = ?",
         (account_id,),
     ).fetchone()
-    previous = float(current["balance"]) if current is not None else 0.0
-    balance_after = round(previous + float(amount), 8)
+    amount_units = to_units(amount)
+    previous_units = units_from_db(current["balance"], current["balance_units"]) if current is not None else 0
+    balance_after_units = previous_units + amount_units
+    balance_after = units_to_float(balance_after_units)
     connection.execute(
         """
-        INSERT INTO balances (account_id, account_type, balance, updated_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO balances (account_id, account_type, balance, balance_units, updated_at)
+        VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(account_id) DO UPDATE SET
             account_type = excluded.account_type,
             balance = excluded.balance,
+            balance_units = excluded.balance_units,
             updated_at = excluded.updated_at
         """,
-        (account_id, account_type, balance_after, timestamp),
+        (account_id, account_type, balance_after, balance_after_units, timestamp),
     )
     connection.execute(
         """
         INSERT INTO ledger_entries (
-            account_id, account_type, amount, balance_after, entry_type,
+            account_id, account_type, amount, amount_units, balance_after, balance_after_units, entry_type,
             block_height, related_id, description, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
-        (account_id, account_type, amount, balance_after, entry_type, block_height, related_id, description, timestamp),
+        (
+            account_id,
+            account_type,
+            units_to_float(amount_units),
+            amount_units,
+            balance_after,
+            balance_after_units,
+            entry_type,
+            block_height,
+            related_id,
+            description,
+            timestamp,
+        ),
     )
 
 

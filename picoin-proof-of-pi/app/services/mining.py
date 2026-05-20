@@ -9,6 +9,7 @@ from app.core.crypto import canonical_json, hash_block, hash_result, sha256_text
 from app.core.difficulty import calculate_difficulty, calculate_reward
 from app.services.difficulty_service import DifficultyService
 from app.core.merkle import verify_merkle_proof
+from app.core.money import to_units, units_from_db, units_to_float
 from app.core.performance import elapsed_ms, now_perf
 from app.core.pi import calculate_pi_segment
 from app.core.pi import pi_cache_info
@@ -706,11 +707,11 @@ def submit_task(
             """
             INSERT INTO blocks (
                 height, previous_hash, miner_id, range_start, range_end, algorithm,
-                result_hash, samples, timestamp, block_hash, reward, tx_merkle_root,
-                tx_count, tx_hashes, fee_reward, miner_reward_address, difficulty, task_id, protocol_params_id,
+                result_hash, samples, timestamp, block_hash, reward, reward_units, tx_merkle_root,
+                tx_count, tx_hashes, fee_reward, fee_reward_units, miner_reward_address, difficulty, task_id, protocol_params_id,
                 protocol_version, validation_mode, total_task_ms, total_block_ms
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 next_height,
@@ -724,10 +725,12 @@ def submit_task(
                 timestamp,
                 block_hash,
                 reward,
+                to_units(reward),
                 tx_commitment["tx_merkle_root"],
                 tx_commitment["tx_count"],
                 json.dumps(tx_commitment["tx_hashes"], sort_keys=True),
                 tx_commitment["fee_reward"],
+                to_units(tx_commitment["fee_reward"]),
                 block_payload.get("miner_reward_address"),
                 difficulty,
                 task_id,
@@ -745,10 +748,10 @@ def submit_task(
         _record_submission(connection, task_id, miner_id, result_hash, segment, signature, True, "accepted")
         connection.execute(
             """
-            INSERT INTO rewards (miner_id, block_height, amount, reason, created_at)
-            VALUES (?, ?, ?, 'block accepted', ?)
+            INSERT INTO rewards (miner_id, block_height, amount, amount_units, reason, created_at)
+            VALUES (?, ?, ?, ?, 'block accepted', ?)
             """,
-            (miner_id, next_height, reward, timestamp),
+            (miner_id, next_height, reward, to_units(reward), timestamp),
         )
         _apply_ledger_entry(
             connection,
@@ -1886,15 +1889,24 @@ def repair_missing_block_rewards() -> dict[str, Any]:
             if row["reward_id"] is None:
                 connection.execute(
                     """
-                    INSERT INTO rewards (miner_id, block_height, amount, reason, created_at)
-                    VALUES (?, ?, ?, 'block reward repair', ?)
+                    INSERT INTO rewards (miner_id, block_height, amount, amount_units, reason, created_at)
+                    VALUES (?, ?, ?, ?, 'block reward repair', ?)
                     """,
-                    (row["miner_id"], height, reward, row["timestamp"] or timestamp),
+                    (row["miner_id"], height, reward, to_units(reward), row["timestamp"] or timestamp),
                 )
                 rewards_inserted += 1
             if row["ledger_entry_id"] is None:
                 repair_account = row["miner_reward_address"] or row["miner_id"]
                 repair_account_type = "wallet" if row["miner_reward_address"] else "miner"
+                balance_row = connection.execute(
+                    "SELECT balance FROM balances WHERE account_id = ?",
+                    (repair_account,),
+                ).fetchone()
+                if balance_row is not None:
+                    connection.execute(
+                        "UPDATE balances SET balance_units = ? WHERE account_id = ?",
+                        (to_units(balance_row["balance"]), repair_account),
+                    )
                 _apply_ledger_entry(
                     connection,
                     account_id=repair_account,
@@ -2465,8 +2477,12 @@ def verify_chain() -> dict[str, Any]:
             issues.append({"height": height, "reason": "block_hash does not match block payload"})
         if block.get("state_root"):
             with get_connection() as connection:
-                expected_state_root = calculate_state_root(connection, height, block.get("timestamp"))
-            if block["state_root"] != expected_state_root:
+                try:
+                    expected_state_root = calculate_state_root(connection, height, block.get("timestamp"))
+                except ValueError as exc:
+                    issues.append({"height": height, "reason": "state_root does not match ledger replay", "detail": str(exc)})
+                    expected_state_root = None
+            if expected_state_root is not None and block["state_root"] != expected_state_root:
                 issues.append({"height": height, "reason": "state_root does not match ledger replay"})
 
         previous_hash = block["block_hash"]
@@ -3138,8 +3154,8 @@ def get_balance_amount(account_id: str) -> float:
 def _ensure_balance_account(connection: Any, account_id: str, account_type: str) -> None:
     connection.execute(
         """
-        INSERT INTO balances (account_id, account_type, balance, updated_at)
-        VALUES (?, ?, 0, ?)
+        INSERT INTO balances (account_id, account_type, balance, balance_units, updated_at)
+        VALUES (?, ?, 0, 0, ?)
         ON CONFLICT(account_id) DO NOTHING
         """,
         (account_id, account_type, utc_now()),
@@ -3176,28 +3192,33 @@ def _apply_ledger_entry(
 ) -> None:
     _ensure_balance_account(connection, account_id, account_type)
     current = connection.execute(
-        "SELECT balance FROM balances WHERE account_id = ?",
+        "SELECT balance, balance_units FROM balances WHERE account_id = ?",
         (account_id,),
     ).fetchone()
-    balance_after = round(float(current["balance"]) + float(amount), 8)
+    amount_units = to_units(amount)
+    current_units = units_from_db(current["balance"], current["balance_units"])
+    balance_after_units = current_units + amount_units
+    balance_after = units_to_float(balance_after_units)
     timestamp = timestamp or utc_now()
     connection.execute(
-        "UPDATE balances SET balance = ?, updated_at = ? WHERE account_id = ?",
-        (balance_after, timestamp, account_id),
+        "UPDATE balances SET balance = ?, balance_units = ?, updated_at = ? WHERE account_id = ?",
+        (balance_after, balance_after_units, timestamp, account_id),
     )
     connection.execute(
         """
         INSERT INTO ledger_entries (
-            account_id, account_type, amount, balance_after, entry_type,
+            account_id, account_type, amount, amount_units, balance_after, balance_after_units, entry_type,
             block_height, related_id, description, created_at
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             account_id,
             account_type,
-            round(float(amount), 8),
+            units_to_float(amount_units),
+            amount_units,
             balance_after,
+            balance_after_units,
             entry_type,
             block_height,
             related_id,
@@ -4186,11 +4207,11 @@ def _accept_block_in_connection(
         """
         INSERT INTO blocks (
             height, previous_hash, miner_id, range_start, range_end, algorithm,
-            result_hash, merkle_root, samples, timestamp, block_hash, reward, tx_merkle_root,
-            tx_count, tx_hashes, fee_reward, miner_reward_address, difficulty, task_id, protocol_params_id,
+            result_hash, merkle_root, samples, timestamp, block_hash, reward, reward_units, tx_merkle_root,
+            tx_count, tx_hashes, fee_reward, fee_reward_units, miner_reward_address, difficulty, task_id, protocol_params_id,
             protocol_version, validation_mode, total_task_ms, total_block_ms, validation_ms
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             next_height,
@@ -4205,10 +4226,12 @@ def _accept_block_in_connection(
             timestamp,
             block_hash,
             reward,
+            to_units(reward),
             tx_commitment["tx_merkle_root"],
             tx_commitment["tx_count"],
             json.dumps(tx_commitment["tx_hashes"], sort_keys=True),
             tx_commitment["fee_reward"],
+            to_units(tx_commitment["fee_reward"]),
             block_payload.get("miner_reward_address"),
             difficulty,
             task["task_id"],
@@ -4227,10 +4250,10 @@ def _accept_block_in_connection(
     _record_submission(connection, task["task_id"], miner_id, result_hash, "", signature, True, submission_reason)
     connection.execute(
         """
-        INSERT INTO rewards (miner_id, block_height, amount, reason, created_at)
-        VALUES (?, ?, ?, 'block accepted', ?)
+        INSERT INTO rewards (miner_id, block_height, amount, amount_units, reason, created_at)
+        VALUES (?, ?, ?, ?, 'block accepted', ?)
         """,
-        (miner_id, next_height, reward, timestamp),
+        (miner_id, next_height, reward, to_units(reward), timestamp),
     )
     _apply_ledger_entry(
         connection,

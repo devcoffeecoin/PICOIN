@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.core.crypto import canonical_json, sha256_text
+from app.core.money import canonical_amount, to_units
 from app.core.settings import CHAIN_ID, NETWORK_ID
 from app.core.signatures import generate_keypair, sign_payload
 
@@ -67,10 +68,14 @@ def unsigned_transaction_payload(
     network_id: str = NETWORK_ID,
     chain_id: str = CHAIN_ID,
 ) -> dict[str, Any]:
+    amount_units = to_units(amount)
+    fee_units = to_units(fee)
     return {
-        "amount": round(float(amount), 8),
+        "amount": canonical_amount(amount_units),
+        "amount_units": amount_units,
         "chain_id": chain_id,
-        "fee": round(float(fee), 8),
+        "fee": canonical_amount(fee_units),
+        "fee_units": fee_units,
         "network_id": network_id,
         "nonce": int(nonce),
         "payload": payload or {},

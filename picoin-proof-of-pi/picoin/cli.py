@@ -617,6 +617,16 @@ def command_node_compare_block_payloads(args: argparse.Namespace) -> int:
     return 0 if output["status"] == "ok" else 1
 
 
+def command_debug_replay_check(args: argparse.Namespace) -> int:
+    server_url = normalize_server_url(args.server)
+    params = f"from_height={args.from_height}&to_height={args.to_height}"
+    if args.peer:
+        params += f"&peer={args.peer}"
+    report = get_json(server_url, f"/debug/replay/divergence?{params}")
+    print_json(report)
+    return 0 if report.get("status") == "ok" else 1
+
+
 def command_node_checkpoint_list(args: argparse.Namespace) -> int:
     print_json(get_json(args.server, f"/node/checkpoints?limit={args.limit}"))
     return 0
@@ -765,7 +775,8 @@ def _snapshot_from_sqlite(path: Path, height: int | None) -> dict[str, Any]:
                 (height, block["timestamp"]),
             ).fetchone()["count"]
         )
-        total_balance = round(sum(float(item["balance"]) for item in balances), 8)
+        total_balance_units = sum(int(item["balance_units"]) for item in balances)
+        total_balance = round(total_balance_units / 1_000_000, 8)
         checkpoint = {
             "chain_id": CHAIN_ID,
             "network_id": NETWORK_ID,
@@ -779,6 +790,7 @@ def _snapshot_from_sqlite(path: Path, height: int | None) -> dict[str, Any]:
             "balances_count": len(balances),
             "ledger_entries_count": ledger_entries_count,
             "total_balance": total_balance,
+            "total_balance_units": total_balance_units,
         }
         checkpoint["snapshot_hash"] = sha256_text(canonical_json(checkpoint))
         return {
@@ -1661,6 +1673,18 @@ def add_testnet_parser(subparsers: argparse._SubParsersAction) -> None:
     fund_wallet_parser.set_defaults(func=command_testnet_fund_wallet)
 
 
+def add_debug_parser(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser("debug", help="Deterministic consensus diagnostics")
+    parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    debug_subparsers = parser.add_subparsers(dest="debug_command", required=True)
+
+    replay_parser = debug_subparsers.add_parser("replay-check", help="Find the first local replay state-root divergence")
+    replay_parser.add_argument("--peer")
+    replay_parser.add_argument("--from-height", type=int, required=True)
+    replay_parser.add_argument("--to-height", type=int, required=True)
+    replay_parser.set_defaults(func=command_debug_replay_check)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="picoin", description=f"{PROJECT_NAME} local node CLI")
     parser.add_argument("--version", action="store_true", help="Show CLI version context and exit")
@@ -1675,6 +1699,7 @@ def build_parser() -> argparse.ArgumentParser:
     add_treasury_parser(subparsers)
     add_reserve_parser(subparsers)
     add_testnet_parser(subparsers)
+    add_debug_parser(subparsers)
     return parser
 
 

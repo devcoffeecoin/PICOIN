@@ -85,6 +85,7 @@ from app.services.consensus import (
     get_replay_status,
     list_consensus_votes,
     list_block_proposals,
+    replay_divergence_report,
     replay_finalized_blocks,
     vote_on_proposal,
 )
@@ -410,6 +411,20 @@ def consensus_debug_block(height: int) -> dict:
         return debug_block_determinism(height)
     except ConsensusError as exc:
         raise _consensus_error(exc) from exc
+
+
+@router.get("/debug/replay/divergence")
+def debug_replay_divergence(
+    from_height: int = Query(..., ge=1),
+    to_height: int = Query(..., ge=1),
+    peer: str | None = Query(None),
+) -> dict:
+    try:
+        return replay_divergence_report(from_height, to_height, peer)
+    except ConsensusError as exc:
+        raise _consensus_error(exc) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @router.post("/consensus/debug/hash")
