@@ -132,12 +132,58 @@ PICOIN_REPLAY_BACKLOG_THRESHOLD=25
 PICOIN_REPLAY_STALL_FAILURES=3
 PICOIN_MIN_QUORUM_PEERS=1
 PICOIN_AUTO_RECOVERY_ENABLED=0
+PICOIN_LIVENESS_INTERVAL_SECONDS=30
 PICOIN_WALLET_PATH=/var/lib/picoin/data/wallets/default.json
 PICOIN_MINER_REWARD_ADDRESS=PI...
 PICOIN_VALIDATOR_REWARD_ADDRESS=PI...
 ```
 
 On bootstrap, the auditor is optional and should run warning-only if enabled. Bootstrap can use local health, audit, and sync checks without a bootstrap peer; external validators should use `https://api.picoin.science` as peer.
+
+## Liveness And Participation
+
+The bootstrap/API tracks real miner and validator participation with signed heartbeats and excludes stale, offline, banned, disabled, or out-of-sync validators from the live quorum. This prevents registered-but-offline validators from freezing tasks in `revealed`.
+
+Signed heartbeat endpoints:
+
+```bash
+POST https://api.picoin.science/validators/heartbeat
+POST https://api.picoin.science/miners/heartbeat
+```
+
+Monitoring endpoints for the explorer and operators:
+
+```bash
+curl https://api.picoin.science/validators/status
+curl https://api.picoin.science/miners/status
+curl https://api.picoin.science/network/status
+curl https://api.picoin.science/consensus/status
+```
+
+Validator liveness states:
+
+- `online`: last signed heartbeat is 120 seconds old or less.
+- `stale`: last signed heartbeat is older than 120 seconds and up to 300 seconds.
+- `offline`: last signed heartbeat is older than 300 seconds.
+- `out_of_sync`: validator has `sync_lag > 3` or pending replay blocks sustained for more than 60 seconds.
+
+Only validators with `enabled=1`, `is_banned=0`, `online_status=online`, compatible protocol version, sufficient stake/trust, and `sync_status != out_of_sync` count as eligible. Public testnet quorum is adaptive for small networks while respecting the configured quorum when enough validators are live:
+
+```text
+required_approvals = min(configured_required_approvals, eligible_validators)
+```
+
+Administrative CLI:
+
+```bash
+python -m picoin validators list --server https://api.picoin.science
+python -m picoin miners list --server https://api.picoin.science
+python -m picoin validators disable validator_xxx --server http://127.0.0.1:8000
+python -m picoin validators enable validator_xxx --server http://127.0.0.1:8000
+python -m picoin validators prune-stale --older-than 300 --server http://127.0.0.1:8000
+python -m picoin miners disable miner_xxx --server http://127.0.0.1:8000
+python -m picoin miners enable miner_xxx --server http://127.0.0.1:8000
+```
 
 ## Run a Node
 
