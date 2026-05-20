@@ -1704,6 +1704,9 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
     record_science_reserve_for_block(connection, block["height"], total_block_reward)
     record_scientific_development_treasury_for_block(connection, block["height"], total_block_reward)
     _apply_distributed_validator_rewards(connection, block, proposal_id, total_block_reward, timestamp)
+    from app.services.mining import _maybe_run_scheduled_retroactive_audit
+
+    _maybe_run_scheduled_retroactive_audit(connection, block["height"])
     state_root = update_block_state_root(connection, block["height"], timestamp)
     if block.get("state_root") and block["state_root"] != state_root:
         logger.error(
