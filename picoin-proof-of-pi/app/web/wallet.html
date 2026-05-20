@@ -4,13 +4,16 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Picoin Wallet</title>
-    <link rel="stylesheet" href="/dashboard/static/wallet.css" />
+    <link rel="stylesheet" href="/wallet/static/wallet.css" />
   </head>
   <body>
     <main class="wallet-shell">
       <section class="hero">
-        <p class="eyebrow">Picoin public testnet</p>
-        <h1>Wallet</h1>
+        <div>
+          <p class="eyebrow">Picoin public testnet</p>
+          <h1>Wallet</h1>
+          <p class="hero-copy">Create, import, sign, and submit PICOIN transfers from the browser.</p>
+        </div>
         <div class="hero-actions">
           <a href="/dashboard">Dashboard</a>
           <a href="https://github.com/devcoffeecoin/PICOIN/tree/main" target="_blank" rel="noreferrer">GitHub</a>
@@ -49,6 +52,10 @@
               <dt>Nonce</dt>
               <dd id="walletNonce">-</dd>
             </div>
+            <div>
+              <dt>Last transaction hash</dt>
+              <dd id="lastTxHash">-</dd>
+            </div>
           </dl>
           <button id="refreshWallet" type="button">Refresh</button>
         </article>
@@ -86,6 +93,6 @@
       </section>
     </main>
 
-    <script src="/dashboard/static/wallet.js"></script>
+    <script src="/wallet/static/wallet.js"></script>
   </body>
 </html>

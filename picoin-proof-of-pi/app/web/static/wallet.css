@@ -8,6 +8,7 @@
   --blue: #19b8ff;
   --violet: #9a6cff;
   --green: #64e39c;
+  --danger: #ff7f8e;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
@@ -20,8 +21,9 @@ body {
   margin: 0;
   color: var(--text);
   background:
+    linear-gradient(180deg, rgba(3, 9, 18, 0.14), rgba(4, 10, 19, 0.92)),
     radial-gradient(circle at 85% 10%, rgba(154, 108, 255, 0.18), transparent 28rem),
-    radial-gradient(circle at 12% 12%, rgba(25, 184, 255, 0.2), transparent 24rem),
+    radial-gradient(circle at 12% 12%, rgba(25, 184, 255, 0.22), transparent 24rem),
     var(--bg);
 }
 
@@ -70,7 +72,7 @@ input {
   align-items: end;
   justify-content: space-between;
   gap: 1rem;
-  padding: 1rem 0 1.5rem;
+  padding: 1.2rem 0 1.7rem;
   border-bottom: 1px solid var(--line);
 }
 
@@ -88,6 +90,14 @@ h2 {
 
 h1 {
   font-size: clamp(2.2rem, 7vw, 5rem);
+}
+
+.hero-copy {
+  max-width: 42rem;
+  margin: 0.65rem 0 0;
+  color: var(--muted);
+  font-size: 1.05rem;
+  line-height: 1.6;
 }
 
 h2 {
@@ -108,7 +118,8 @@ h2 {
   padding: 1rem;
   border: 1px solid var(--line);
   border-radius: 8px;
-  background: rgba(7, 21, 35, 0.82);
+  background: rgba(7, 21, 35, 0.86);
+  box-shadow: 0 18px 60px rgba(0, 0, 0, 0.25);
 }
 
 .toolbar label {
@@ -131,6 +142,7 @@ h2 {
   border-radius: 8px;
   background: linear-gradient(180deg, rgba(7, 21, 35, 0.92), rgba(4, 10, 19, 0.9));
   padding: 1rem;
+  box-shadow: inset 0 1px 0 rgba(25, 184, 255, 0.08);
 }
 
 .panel-title {
@@ -160,6 +172,7 @@ h2 {
 .facts dd {
   margin: 0.2rem 0 0;
   overflow-wrap: anywhere;
+  line-height: 1.45;
 }
 
 .form {
@@ -198,7 +211,7 @@ h2 {
 }
 
 .negative {
-  color: #ff7f8e;
+  color: var(--danger);
 }
 
 @media (max-width: 760px) {

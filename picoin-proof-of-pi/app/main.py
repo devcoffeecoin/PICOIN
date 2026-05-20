@@ -67,3 +67,4 @@ def web_wallet_slash() -> FileResponse:
 
 app.include_router(router)
 app.mount("/dashboard/static", StaticFiles(directory=STATIC_DIR), name="dashboard-static")
+app.mount("/wallet/static", StaticFiles(directory=STATIC_DIR), name="wallet-static")
