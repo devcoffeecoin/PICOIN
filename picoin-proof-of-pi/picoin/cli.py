@@ -53,7 +53,7 @@ from app.services.state import (
     restore_imported_snapshot_state,
     validate_snapshot_document,
 )
-from app.services.wallet import address_from_public_key, create_wallet, sign_transaction
+from app.services.wallet import address_from_public_key, address_matches_public_key, create_wallet, sign_transaction
 
 
 DEFAULT_SERVER_URL = os.getenv("PICOIN_SERVER", "http://127.0.0.1:8000")
@@ -1185,13 +1185,16 @@ def command_testnet_continuous(args: argparse.Namespace) -> int:
 def command_testnet_fund_wallet(args: argparse.Namespace) -> int:
     if args.wallet:
         wallet = json.loads(args.wallet.read_text(encoding="utf-8"))
-        sender = wallet["address"]
+        public_key = wallet["public_key"]
+        sender = wallet.get("address") or address_from_public_key(public_key)
+        if not address_matches_public_key(sender, public_key):
+            sender = address_from_public_key(public_key)
         nonce = args.nonce
         if nonce is None:
             nonce = int(get_json(args.server, f"/wallet/{sender}/nonce")["next_nonce"])
         tx = sign_transaction(
             private_key=wallet["private_key"],
-            public_key=wallet["public_key"],
+            public_key=public_key,
             tx_type="faucet",
             sender=sender,
             amount=args.amount,

@@ -6,7 +6,7 @@ from app.db.database import get_connection, init_db
 from app.services.mining import MiningError, get_balance, get_ledger_entries, register_miner, request_faucet
 from app.services.network import submit_transaction
 from app.services.transactions import apply_block_transactions
-from app.services.wallet import create_wallet, sign_transaction
+from app.services.wallet import create_wallet, legacy_address_from_public_key, sign_transaction
 
 
 def test_local_faucet_credits_registered_miner_from_genesis_reward_supply(tmp_path, monkeypatch) -> None:
@@ -97,3 +97,27 @@ def test_signed_faucet_transaction_replays_as_canonical_block_state(tmp_path, mo
     assert wallet_balance["account_type"] == "wallet"
     assert wallet_balance["balance"] == 0.25
     assert genesis_balance["balance"] == pytest.approx(GENESIS_SUPPLY - 0.25)
+
+
+def test_signed_faucet_accepts_legacy_sender_address_for_existing_wallets(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "legacy-signed-wallet-faucet.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    wallet = create_wallet("legacy-signed-faucet-wallet")
+    legacy_address = legacy_address_from_public_key(wallet["public_key"])
+    tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="faucet",
+        sender=legacy_address,
+        amount=0.25,
+        nonce=1,
+        fee=0.0,
+    )
+
+    submitted = submit_transaction(tx)
+
+    assert submitted["sender"] == legacy_address
+    assert submitted["status"] == "pending"

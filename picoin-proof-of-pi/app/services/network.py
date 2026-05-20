@@ -31,7 +31,7 @@ from app.core.settings import (
 from app.core.signatures import verify_payload_signature
 from app.db.database import get_connection, row_to_dict
 from app.services.state import active_snapshot_base_in_connection, latest_checkpoint_in_connection
-from app.services.wallet import address_from_public_key, is_valid_address, transaction_hash, unsigned_transaction_payload
+from app.services.wallet import address_matches_public_key, is_valid_address, transaction_hash, unsigned_transaction_payload
 
 
 class NetworkError(Exception):
@@ -790,7 +790,7 @@ def _validate_signed_transaction(tx: dict[str, Any]) -> None:
         raise NetworkError(422, "amount must be >= 0")
     if tx["tx_type"] == "transfer" and not is_valid_address(tx.get("recipient")):
         raise NetworkError(422, "transfer transaction requires a valid PI recipient")
-    if address_from_public_key(tx["public_key"]) != tx["sender"]:
+    if not address_matches_public_key(tx["sender"], tx["public_key"]):
         raise NetworkError(401, "sender address does not match public key")
     unsigned_payload = _unsigned_from_tx(tx)
     if tx["network_id"] != NETWORK_ID or tx["chain_id"] != CHAIN_ID:
