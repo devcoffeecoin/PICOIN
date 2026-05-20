@@ -1,4 +1,6 @@
 const STORE_KEY = "picoin:testnet:wallet";
+const PICOIN_UNIT = 1_000_000n;
+const PICOIN_DECIMALS = 6;
 const encoder = new TextEncoder();
 
 const els = {
@@ -12,6 +14,7 @@ const els = {
   walletAddress: document.getElementById("walletAddress"),
   walletBalance: document.getElementById("walletBalance"),
   walletNonce: document.getElementById("walletNonce"),
+  lastTxHash: document.getElementById("lastTxHash"),
   sendForm: document.getElementById("sendForm"),
   txTo: document.getElementById("txTo"),
   txAmount: document.getElementById("txAmount"),
@@ -54,6 +57,24 @@ function canonicalJson(value) {
     .sort()
     .map((key) => `${JSON.stringify(key)}:${canonicalJson(value[key])}`)
     .join(",")}}`;
+}
+
+function toUnits(value) {
+  const raw = String(value ?? "0").trim();
+  if (!/^\d+(\.\d+)?$/.test(raw)) throw new Error("Invalid PICOIN amount.");
+  const [whole, fraction = ""] = raw.split(".");
+  if (fraction.length > PICOIN_DECIMALS) throw new Error(`Use at most ${PICOIN_DECIMALS} decimal places.`);
+  const units = BigInt(whole) * PICOIN_UNIT + BigInt(fraction.padEnd(PICOIN_DECIMALS, "0"));
+  if (units > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error("Amount is too large for browser signing.");
+  return units;
+}
+
+function canonicalAmount(units) {
+  const sign = units < 0n ? "-" : "";
+  const value = units < 0n ? -units : units;
+  const whole = value / PICOIN_UNIT;
+  const fraction = String(value % PICOIN_UNIT).padStart(PICOIN_DECIMALS, "0");
+  return `${sign}${whole}.${fraction}`;
 }
 
 async function signPayload(wallet, payload) {
@@ -104,6 +125,7 @@ function renderWallet(wallet) {
   els.walletAddress.textContent = wallet?.address || "-";
   els.walletBalance.textContent = "-";
   els.walletNonce.textContent = "-";
+  els.lastTxHash.textContent = localStorage.getItem(`${STORE_KEY}:last_tx`) || "-";
 }
 
 async function createWallet() {
@@ -159,10 +181,14 @@ async function submitTransaction(event) {
   const wallet = getWallet();
   if (!wallet) throw new Error("Create or import a wallet first.");
   const nonce = Number(els.walletNonce.textContent || 0) || (await fetchJson(`/wallet/${wallet.address}/nonce`)).next_nonce;
+  const amountUnits = toUnits(els.txAmount.value);
+  const feeUnits = toUnits(els.txFee.value || "0");
   const unsignedPayload = {
-    amount: Number(Number(els.txAmount.value).toFixed(8)),
+    amount: canonicalAmount(amountUnits),
+    amount_units: Number(amountUnits),
     chain_id: "picoin-public-testnet-v018",
-    fee: Number(Number(els.txFee.value || 0).toFixed(8)),
+    fee: canonicalAmount(feeUnits),
+    fee_units: Number(feeUnits),
     network_id: "public-testnet",
     nonce,
     payload: {},
@@ -177,6 +203,8 @@ async function submitTransaction(event) {
     method: "POST",
     body: JSON.stringify({ ...unsignedPayload, public_key: wallet.public_key, signature, tx_hash }),
   });
+  localStorage.setItem(`${STORE_KEY}:last_tx`, submitted.tx_hash || tx_hash);
+  els.lastTxHash.textContent = submitted.tx_hash || tx_hash;
   els.txResult.textContent = JSON.stringify(submitted, null, 2);
   await refreshWallet();
   await refreshHistory();

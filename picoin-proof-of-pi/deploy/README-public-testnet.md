@@ -324,10 +324,26 @@ Send a signed testnet transaction:
 Web wallet:
 
 ```text
-https://api.picoin.science/wallet
+https://www.picoin.science/wallet
 ```
 
-The web wallet signs locally in the browser with WebCrypto Ed25519 when supported by the browser. The private key is not sent to the server.
+The web wallet is a frontend page, not an API JSON endpoint. It signs locally in the browser with WebCrypto Ed25519 when supported by the browser, and connects to the public API at `https://api.picoin.science`. The private key is not sent to the server.
+
+If `www.picoin.science` is served by Nginx/static hosting, publish:
+
+```text
+/opt/picoin/picoin-proof-of-pi/app/web/wallet.html
+/opt/picoin/picoin-proof-of-pi/app/web/static/wallet.css
+/opt/picoin/picoin-proof-of-pi/app/web/static/wallet.js
+```
+
+Recommended web routes:
+
+```text
+https://www.picoin.science/wallet
+https://www.picoin.science/wallet/static/wallet.css
+https://www.picoin.science/wallet/static/wallet.js
+```
 
 Configure miner rewards:
 
