@@ -9,6 +9,10 @@
       "destination": "/explorer.html"
     },
     {
+      "source": "/picoin-api/:path*",
+      "destination": "https://api.picoin.science/:path*"
+    },
+    {
       "source": "/api/bootstrap/:path*",
       "destination": "https://api.picoin.science/:path*"
     },
