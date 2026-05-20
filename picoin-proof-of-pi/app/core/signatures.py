@@ -128,8 +128,15 @@ def build_commit_signature_payload(
     result_hash: str,
     merkle_root: str,
     signed_at: str,
+    tx_merkle_root: str | None = None,
+    mempool_snapshot_id: str | None = None,
+    selected_tx_hashes_hash: str | None = None,
+    tx_count: int | None = None,
+    tx_fee_total_units: int | None = None,
+    chain_id: str | None = None,
+    network_id: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "algorithm": algorithm,
         "merkle_root": merkle_root,
         "miner_id": miner_id,
@@ -139,6 +146,21 @@ def build_commit_signature_payload(
         "signed_at": signed_at,
         "task_id": task_id,
     }
+    if tx_merkle_root is not None:
+        payload.update(
+            {
+                "tx_merkle_root": tx_merkle_root,
+                "mempool_snapshot_id": mempool_snapshot_id,
+                "selected_tx_hashes_hash": selected_tx_hashes_hash,
+                "tx_count": int(tx_count or 0),
+                "tx_fee_total_units": int(tx_fee_total_units or 0),
+            }
+        )
+    if chain_id is not None:
+        payload["chain_id"] = chain_id
+    if network_id is not None:
+        payload["network_id"] = network_id
+    return payload
 
 
 def build_reveal_signature_payload(
@@ -148,14 +170,26 @@ def build_reveal_signature_payload(
     merkle_root: str,
     challenge_seed: str,
     signed_at: str,
+    tx_merkle_root: str | None = None,
+    mempool_snapshot_id: str | None = None,
+    selected_tx_hashes_hash: str | None = None,
 ) -> dict[str, Any]:
-    return {
+    payload = {
         "challenge_seed": challenge_seed,
         "merkle_root": merkle_root,
         "miner_id": miner_id,
         "signed_at": signed_at,
         "task_id": task_id,
     }
+    if tx_merkle_root is not None:
+        payload.update(
+            {
+                "tx_merkle_root": tx_merkle_root,
+                "mempool_snapshot_id": mempool_snapshot_id,
+                "selected_tx_hashes_hash": selected_tx_hashes_hash,
+            }
+        )
+    return payload
 
 
 def build_validation_result_signature_payload(

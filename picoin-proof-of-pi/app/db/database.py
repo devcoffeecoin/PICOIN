@@ -200,6 +200,12 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 created_at TEXT NOT NULL,
                 expires_at TEXT,
                 submitted_at TEXT,
+                mempool_snapshot_id TEXT,
+                selected_tx_hashes TEXT NOT NULL DEFAULT '[]',
+                tx_merkle_root TEXT NOT NULL DEFAULT '',
+                tx_count INTEGER NOT NULL DEFAULT 0,
+                tx_fee_total_units INTEGER NOT NULL DEFAULT 0,
+                selected_tx_hashes_hash TEXT,
                 FOREIGN KEY(miner_id) REFERENCES miners(miner_id),
                 FOREIGN KEY(protocol_params_id) REFERENCES protocol_params(id)
             );
@@ -248,6 +254,11 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 merkle_root TEXT NOT NULL,
                 challenge_seed TEXT NOT NULL,
                 samples TEXT NOT NULL,
+                tx_merkle_root TEXT NOT NULL DEFAULT '',
+                mempool_snapshot_id TEXT,
+                selected_tx_hashes_hash TEXT,
+                tx_count INTEGER NOT NULL DEFAULT 0,
+                tx_fee_total_units INTEGER NOT NULL DEFAULT 0,
                 signature TEXT NOT NULL,
                 signed_at TEXT NOT NULL,
                 commit_ms INTEGER,
@@ -264,6 +275,13 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 merkle_root TEXT NOT NULL,
                 challenge_seed TEXT NOT NULL,
                 samples TEXT NOT NULL,
+                tx_merkle_root TEXT NOT NULL DEFAULT '',
+                mempool_snapshot_id TEXT,
+                selected_tx_hashes_hash TEXT,
+                tx_count INTEGER NOT NULL DEFAULT 0,
+                tx_fee_total_units INTEGER NOT NULL DEFAULT 0,
+                tx_hashes_json TEXT NOT NULL DEFAULT '[]',
+                transactions_json TEXT NOT NULL DEFAULT '[]',
                 status TEXT NOT NULL,
                 assigned_validator_id TEXT,
                 result_reason TEXT,
@@ -514,6 +532,13 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 public_key TEXT NOT NULL,
                 signature TEXT NOT NULL,
                 status TEXT NOT NULL,
+                selected_task_id TEXT,
+                selected_block_height INTEGER,
+                mempool_snapshot_id TEXT,
+                selected_at TEXT,
+                confirmed_at TEXT,
+                released_at TEXT,
+                failure_reason TEXT,
                 propagated INTEGER NOT NULL DEFAULT 0,
                 block_height INTEGER,
                 rejection_reason TEXT,
@@ -521,6 +546,18 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE(sender, nonce)
+            );
+
+            CREATE TABLE IF NOT EXISTS task_tx_snapshots (
+                snapshot_id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL UNIQUE,
+                block_height INTEGER NOT NULL,
+                tx_hashes_json TEXT NOT NULL,
+                tx_merkle_root TEXT NOT NULL,
+                tx_count INTEGER NOT NULL,
+                tx_fee_total_units INTEGER NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(task_id) REFERENCES tasks(task_id)
             );
 
             CREATE TABLE IF NOT EXISTS network_block_headers (
@@ -646,6 +683,8 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_network_peers_last_seen ON network_peers(last_seen);
             CREATE INDEX IF NOT EXISTS idx_mempool_status ON mempool_transactions(status);
             CREATE INDEX IF NOT EXISTS idx_mempool_sender_nonce ON mempool_transactions(sender, nonce);
+            CREATE INDEX IF NOT EXISTS idx_mempool_selected_task ON mempool_transactions(selected_task_id);
+            CREATE INDEX IF NOT EXISTS idx_task_tx_snapshots_task ON task_tx_snapshots(task_id);
             CREATE INDEX IF NOT EXISTS idx_network_block_headers_height ON network_block_headers(height);
             CREATE INDEX IF NOT EXISTS idx_consensus_block_proposals_status ON consensus_block_proposals(status);
             CREATE INDEX IF NOT EXISTS idx_consensus_block_proposals_height ON consensus_block_proposals(height);
@@ -745,6 +784,31 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "mempool_transactions", "expires_at", "TEXT NOT NULL DEFAULT '1970-01-01T00:00:00+00:00'")
         _ensure_column(connection, "mempool_transactions", "amount_units", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "mempool_transactions", "fee_units", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "mempool_transactions", "selected_task_id", "TEXT")
+        _ensure_column(connection, "mempool_transactions", "selected_block_height", "INTEGER")
+        _ensure_column(connection, "mempool_transactions", "mempool_snapshot_id", "TEXT")
+        _ensure_column(connection, "mempool_transactions", "selected_at", "TEXT")
+        _ensure_column(connection, "mempool_transactions", "confirmed_at", "TEXT")
+        _ensure_column(connection, "mempool_transactions", "released_at", "TEXT")
+        _ensure_column(connection, "mempool_transactions", "failure_reason", "TEXT")
+        _ensure_column(connection, "tasks", "mempool_snapshot_id", "TEXT")
+        _ensure_column(connection, "tasks", "selected_tx_hashes", "TEXT NOT NULL DEFAULT '[]'")
+        _ensure_column(connection, "tasks", "tx_merkle_root", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "tasks", "tx_count", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "tasks", "tx_fee_total_units", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "tasks", "selected_tx_hashes_hash", "TEXT")
+        _ensure_column(connection, "commitments", "tx_merkle_root", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "commitments", "mempool_snapshot_id", "TEXT")
+        _ensure_column(connection, "commitments", "selected_tx_hashes_hash", "TEXT")
+        _ensure_column(connection, "commitments", "tx_count", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "commitments", "tx_fee_total_units", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "validation_jobs", "tx_merkle_root", "TEXT NOT NULL DEFAULT ''")
+        _ensure_column(connection, "validation_jobs", "mempool_snapshot_id", "TEXT")
+        _ensure_column(connection, "validation_jobs", "selected_tx_hashes_hash", "TEXT")
+        _ensure_column(connection, "validation_jobs", "tx_count", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "validation_jobs", "tx_fee_total_units", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "validation_jobs", "tx_hashes_json", "TEXT NOT NULL DEFAULT '[]'")
+        _ensure_column(connection, "validation_jobs", "transactions_json", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_column(connection, "balances", "balance_units", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "ledger_entries", "amount_units", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "ledger_entries", "balance_after_units", "INTEGER NOT NULL DEFAULT 0")

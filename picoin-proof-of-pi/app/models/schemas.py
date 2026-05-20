@@ -132,6 +132,12 @@ class TaskResponse(BaseModel):
     assignment_ms: int | None = None
     compute_ms: int | None = None
     protocol_params_id: int | None = None
+    mempool_snapshot_id: str | None = None
+    selected_tx_hashes: Any = Field(default_factory=list)
+    tx_merkle_root: str = ""
+    tx_count: int = 0
+    tx_fee_total_units: int = 0
+    selected_tx_hashes_hash: str | None = None
     created_at: datetime
     expires_at: datetime | None = None
 
@@ -150,6 +156,11 @@ class TaskCommitRequest(BaseModel):
     miner_id: str
     result_hash: str = Field(..., min_length=64, max_length=64)
     merkle_root: str = Field(..., min_length=64, max_length=64)
+    tx_merkle_root: str = ""
+    mempool_snapshot_id: str | None = None
+    selected_tx_hashes_hash: str | None = None
+    tx_count: int = Field(default=0, ge=0)
+    tx_fee_total_units: int = Field(default=0, ge=0)
     compute_ms: int | None = Field(default=None, ge=0)
     signature: str = Field(..., min_length=1, max_length=256)
     signed_at: datetime
@@ -178,6 +189,11 @@ class TaskRevealRequest(BaseModel):
     task_id: str
     miner_id: str
     samples: list[SampleReveal]
+    tx_merkle_root: str = ""
+    mempool_snapshot_id: str | None = None
+    selected_tx_hashes_hash: str | None = None
+    tx_count: int = Field(default=0, ge=0)
+    tx_fee_total_units: int = Field(default=0, ge=0)
     signature: str = Field(..., min_length=1, max_length=256)
     signed_at: datetime
 
@@ -579,6 +595,13 @@ class MempoolTransactionResponse(BaseModel):
     public_key: str
     signature: str
     status: str
+    selected_task_id: str | None = None
+    selected_block_height: int | None = None
+    mempool_snapshot_id: str | None = None
+    selected_at: datetime | None = None
+    confirmed_at: datetime | None = None
+    released_at: datetime | None = None
+    failure_reason: str | None = None
     propagated: bool
     block_height: int | None = None
     rejection_reason: str | None = None
@@ -1002,6 +1025,13 @@ class ValidationJobResponse(BaseModel):
     merkle_root: str
     challenge_seed: str
     samples: list[dict[str, Any]]
+    selected_tx_hashes: list[str] = Field(default_factory=list)
+    transactions: list[dict[str, Any]] = Field(default_factory=list)
+    tx_merkle_root: str = ""
+    mempool_snapshot_id: str | None = None
+    selected_tx_hashes_hash: str | None = None
+    tx_count: int = 0
+    tx_fee_total_units: int = 0
     status: str
     assigned_validator_id: str | None = None
     selection_score: float | None = None
