@@ -923,6 +923,46 @@ def command_consensus_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_validators_list(args: argparse.Namespace) -> int:
+    print_json(get_json(args.server, "/validators/status"))
+    return 0
+
+
+def command_validators_prune_stale(args: argparse.Namespace) -> int:
+    print_json(post_json(args.server, f"/validators/prune-stale?older_than={args.older_than}"))
+    return 0
+
+
+def command_validators_enable(args: argparse.Namespace) -> int:
+    print_json(post_json(args.server, f"/validators/{args.validator_id}/enable"))
+    return 0
+
+
+def command_validators_disable(args: argparse.Namespace) -> int:
+    print_json(post_json(args.server, f"/validators/{args.validator_id}/disable"))
+    return 0
+
+
+def command_miners_list(args: argparse.Namespace) -> int:
+    print_json(get_json(args.server, "/miners/status"))
+    return 0
+
+
+def command_miners_prune_stale(args: argparse.Namespace) -> int:
+    print_json(post_json(args.server, f"/miners/prune-stale?older_than={args.older_than}"))
+    return 0
+
+
+def command_miners_enable(args: argparse.Namespace) -> int:
+    print_json(post_json(args.server, f"/miners/{args.miner_id}/enable"))
+    return 0
+
+
+def command_miners_disable(args: argparse.Namespace) -> int:
+    print_json(post_json(args.server, f"/miners/{args.miner_id}/disable"))
+    return 0
+
+
 def command_consensus_proposals(args: argparse.Namespace) -> int:
     path = f"/consensus/proposals?limit={args.limit}"
     if args.status:
@@ -1545,6 +1585,56 @@ def add_validator_parser(subparsers: argparse._SubParsersAction) -> None:
     validate_parser.set_defaults(func=command_validate)
 
 
+def add_validators_admin_parser(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser("validators", help="Inspect and administer validator liveness")
+    parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    validators_subparsers = parser.add_subparsers(dest="validators_command", required=True)
+
+    list_parser = validators_subparsers.add_parser("list", help="List validator status and quorum eligibility")
+    list_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    list_parser.set_defaults(func=command_validators_list)
+
+    prune_parser = validators_subparsers.add_parser("prune-stale", help="Prune old offline validators without history")
+    prune_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    prune_parser.add_argument("--older-than", type=int, default=300)
+    prune_parser.set_defaults(func=command_validators_prune_stale)
+
+    enable_parser = validators_subparsers.add_parser("enable", help="Enable a validator")
+    enable_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    enable_parser.add_argument("validator_id")
+    enable_parser.set_defaults(func=command_validators_enable)
+
+    disable_parser = validators_subparsers.add_parser("disable", help="Disable a validator")
+    disable_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    disable_parser.add_argument("validator_id")
+    disable_parser.set_defaults(func=command_validators_disable)
+
+
+def add_miners_admin_parser(subparsers: argparse._SubParsersAction) -> None:
+    parser = subparsers.add_parser("miners", help="Inspect and administer miner liveness")
+    parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    miners_subparsers = parser.add_subparsers(dest="miners_command", required=True)
+
+    list_parser = miners_subparsers.add_parser("list", help="List miner status")
+    list_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    list_parser.set_defaults(func=command_miners_list)
+
+    prune_parser = miners_subparsers.add_parser("prune-stale", help="Prune old offline miners without blocks")
+    prune_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    prune_parser.add_argument("--older-than", type=int, default=300)
+    prune_parser.set_defaults(func=command_miners_prune_stale)
+
+    enable_parser = miners_subparsers.add_parser("enable", help="Enable a miner")
+    enable_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    enable_parser.add_argument("miner_id")
+    enable_parser.set_defaults(func=command_miners_enable)
+
+    disable_parser = miners_subparsers.add_parser("disable", help="Disable a miner")
+    disable_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    disable_parser.add_argument("miner_id")
+    disable_parser.set_defaults(func=command_miners_disable)
+
+
 def add_science_parser(subparsers: argparse._SubParsersAction) -> None:
     parser = subparsers.add_parser("science", help="Manage Science Compute Access Layer")
     parser.add_argument("--server", default=DEFAULT_SERVER_URL)
@@ -1698,6 +1788,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_consensus_parser(subparsers)
     add_miner_parser(subparsers)
     add_validator_parser(subparsers)
+    add_miners_admin_parser(subparsers)
+    add_validators_admin_parser(subparsers)
     add_science_parser(subparsers)
     add_treasury_parser(subparsers)
     add_reserve_parser(subparsers)

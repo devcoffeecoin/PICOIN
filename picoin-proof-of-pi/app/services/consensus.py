@@ -59,6 +59,32 @@ class ConsensusError(Exception):
         super().__init__(detail)
 
 
+def _eligible_validator_count_for_quorum(connection: Any) -> int:
+    row = connection.execute(
+        """
+        SELECT COUNT(*) AS count
+        FROM validators
+        WHERE is_banned = 0
+          AND enabled = 1
+          AND online_status = 'online'
+          AND sync_status != 'out_of_sync'
+          AND protocol_version = ?
+          AND stake_locked >= ?
+          AND trust_score >= ?
+        """,
+        (PROTOCOL_VERSION, MIN_VALIDATOR_STAKE, VALIDATOR_MIN_TRUST_SCORE),
+    ).fetchone()
+    return int((row["count"] if row else 0) or 0)
+
+
+def _required_validator_approvals_for_quorum(connection: Any) -> int:
+    eligible_count = _eligible_validator_count_for_quorum(connection)
+    if eligible_count <= 0:
+        return REQUIRED_VALIDATOR_APPROVALS
+    adaptive = max(1, eligible_count)
+    return max(1, min(REQUIRED_VALIDATOR_APPROVALS, adaptive))
+
+
 BLOCK_REQUIRED_FIELDS = {
     "height",
     "previous_hash",
@@ -389,13 +415,21 @@ def vote_on_proposal(
         if proposal["status"] in {"finalized", "imported", "rejected"}:
             raise ConsensusError(409, f"proposal already {proposal['status']}")
         validator = connection.execute(
-            "SELECT validator_id, public_key, is_banned FROM validators WHERE validator_id = ?",
+            "SELECT * FROM validators WHERE validator_id = ?",
             (validator_id,),
         ).fetchone()
         if validator is None:
             raise ConsensusError(404, "validator not found")
         if bool(validator["is_banned"]):
             raise ConsensusError(403, "validator is banned")
+        if not bool(validator["enabled"]):
+            raise ConsensusError(403, "validator is disabled")
+        if validator["online_status"] != "online":
+            raise ConsensusError(403, f"validator is {validator['online_status']}")
+        if validator["sync_status"] == "out_of_sync":
+            raise ConsensusError(403, "validator is out_of_sync")
+        if validator["protocol_version"] != PROTOCOL_VERSION:
+            raise ConsensusError(403, "validator protocol version is incompatible")
         existing_vote = connection.execute(
             "SELECT 1 FROM consensus_votes WHERE proposal_id = ? AND validator_id = ?",
             (proposal_id, validator_id),
@@ -465,9 +499,10 @@ def vote_on_proposal(
                 "rejections": proposal["rejections"],
             },
         )
-        if proposal["approvals"] >= REQUIRED_VALIDATOR_APPROVALS:
+        required_approvals = _required_validator_approvals_for_quorum(connection)
+        if proposal["approvals"] >= required_approvals:
             proposal = finalize_proposal(proposal_id, connection=connection)
-        elif proposal["rejections"] >= REQUIRED_VALIDATOR_APPROVALS:
+        elif proposal["rejections"] >= required_approvals:
             connection.execute(
                 """
                 UPDATE consensus_block_proposals
@@ -504,7 +539,8 @@ def finalize_proposal(proposal_id: str, connection: Any | None = None) -> dict[s
             raise ConsensusError(404, "block proposal not found")
         if proposal["status"] in {"finalized", "imported"}:
             return proposal
-        if proposal["approvals"] < REQUIRED_VALIDATOR_APPROVALS:
+        required_approvals = _required_validator_approvals_for_quorum(connection)
+        if proposal["approvals"] < required_approvals:
             raise ConsensusError(409, "validator quorum not reached")
         winner = select_fork_choice(proposal["height"], proposal["previous_hash"], connection=connection)
         if winner is not None and winner["proposal_id"] != proposal_id:
@@ -524,7 +560,7 @@ def finalize_proposal(proposal_id: str, connection: Any | None = None) -> dict[s
                 ORDER BY created_at ASC
                 LIMIT ?
                 """,
-                (proposal_id, REQUIRED_VALIDATOR_APPROVALS),
+                (proposal_id, required_approvals),
             ).fetchall()
         ]
         finalization_id = sha256_text(f"{proposal_id}:{timestamp}:finalized")
@@ -546,7 +582,7 @@ def finalize_proposal(proposal_id: str, connection: Any | None = None) -> dict[s
                 proposal_id,
                 proposal["block_hash"],
                 proposal["height"],
-                REQUIRED_VALIDATOR_APPROVALS,
+                required_approvals,
                 proposal["approvals"],
                 json.dumps(validators),
                 1 if imported else 0,
@@ -1546,16 +1582,8 @@ def consensus_status() -> dict[str, Any]:
             "SELECT height, block_hash FROM blocks ORDER BY height DESC LIMIT 1"
         ).fetchone()
         finalizations = connection.execute("SELECT COUNT(*) AS count FROM consensus_finalizations").fetchone()
-        eligible = connection.execute(
-            """
-            SELECT COUNT(*) AS count
-            FROM validators
-            WHERE is_banned = 0
-              AND stake_locked >= ?
-              AND trust_score >= ?
-            """,
-            (MIN_VALIDATOR_STAKE, VALIDATOR_MIN_TRUST_SCORE),
-        ).fetchone()
+        eligible_count = _eligible_validator_count_for_quorum(connection)
+        required_approvals = _required_validator_approvals_for_quorum(connection)
         missing_ancestor_rows = connection.execute(
             """
             SELECT *
@@ -1567,14 +1595,13 @@ def consensus_status() -> dict[str, Any]:
         ).fetchall()
         fork_groups = list_fork_choice_groups(limit=10, connection=connection)
         competing_proposals = sum(int(group["proposal_count"]) for group in fork_groups)
-    eligible_count = int((eligible["count"] if eligible else 0) or 0)
     quorum_warning = None
-    if eligible_count < REQUIRED_VALIDATOR_APPROVALS:
+    if eligible_count < required_approvals:
         quorum_warning = (
-            f"eligible_validators={eligible_count} is below required_validator_approvals={REQUIRED_VALIDATOR_APPROVALS}"
+            f"eligible_validators={eligible_count} is below required_validator_approvals={required_approvals}"
         )
     return {
-        "required_validator_approvals": REQUIRED_VALIDATOR_APPROVALS,
+        "required_validator_approvals": required_approvals,
         "eligible_validators": eligible_count,
         "quorum_warning": quorum_warning,
         "fork_choice_rule": FORK_CHOICE_RULE,
@@ -1747,7 +1774,7 @@ def _apply_distributed_validator_rewards(
             ORDER BY created_at ASC
             LIMIT ?
             """,
-            (proposal_id, REQUIRED_VALIDATOR_APPROVALS),
+            (proposal_id, _required_validator_approvals_for_quorum(connection)),
         ).fetchall()
         validator_ids = [row["validator_id"] for row in validator_rows]
     if not validator_ids:

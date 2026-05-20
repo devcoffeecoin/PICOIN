@@ -1,6 +1,6 @@
 import asyncio
 
-from fastapi import APIRouter, Body, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
 from app.core.settings import REPLAY_BATCH_SIZE
 from app.models.schemas import (
@@ -27,6 +27,7 @@ from app.models.schemas import (
     MaintenanceCleanupResponse,
     MempoolTransactionResponse,
     MinerRegisterRequest,
+    MinerHeartbeatRequest,
     MinerResponse,
     NodeEventResponse,
     NodeIdentityResponse,
@@ -70,6 +71,7 @@ from app.models.schemas import (
     ValidationResultRequest,
     ValidationResultResponse,
     ValidatorRegisterRequest,
+    ValidatorHeartbeatRequest,
     ValidatorResponse,
     WalletCreateRequest,
     WalletCreateResponse,
@@ -162,6 +164,8 @@ from app.services.mining import (
     get_block,
     get_blocks,
     get_ledger_entries,
+    get_miners_status,
+    get_network_participation_status,
     get_miner,
     get_node_status,
     get_performance_stats,
@@ -175,6 +179,11 @@ from app.services.mining import (
     get_validation_job,
     get_validator,
     get_validators,
+    get_validators_status,
+    prune_stale_miners,
+    prune_stale_validators,
+    record_miner_heartbeat,
+    record_validator_heartbeat,
     register_miner,
     register_validator,
     preview_retarget,
@@ -183,6 +192,8 @@ from app.services.mining import (
     reveal_task,
     run_retarget,
     run_retroactive_audit,
+    set_miner_enabled,
+    set_validator_enabled,
     submit_validation_result,
     submit_task,
     utc_now,
@@ -846,6 +857,40 @@ def register_miner_endpoint(payload: MinerRegisterRequest) -> dict:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
+@router.post("/miners/heartbeat")
+def miner_heartbeat(payload: MinerHeartbeatRequest, request: Request) -> dict:
+    try:
+        return record_miner_heartbeat(payload.model_dump(), request.client.host if request.client else None)
+    except MiningError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.get("/miners/status")
+def miners_status(limit: int = Query(500, ge=1, le=1000)) -> dict:
+    return get_miners_status(limit)
+
+
+@router.post("/miners/{miner_id}/enable")
+def enable_miner(miner_id: str) -> dict:
+    try:
+        return set_miner_enabled(miner_id, True)
+    except MiningError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post("/miners/{miner_id}/disable")
+def disable_miner(miner_id: str) -> dict:
+    try:
+        return set_miner_enabled(miner_id, False)
+    except MiningError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post("/miners/prune-stale")
+def prune_miners(older_than: int = Query(300, ge=1)) -> dict:
+    return prune_stale_miners(older_than)
+
+
 @router.post("/validators/register", response_model=ValidatorResponse, status_code=201)
 def register_validator_endpoint(payload: ValidatorRegisterRequest) -> dict:
     try:
@@ -854,9 +899,48 @@ def register_validator_endpoint(payload: ValidatorRegisterRequest) -> dict:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
+@router.post("/validators/heartbeat")
+def validator_heartbeat(payload: ValidatorHeartbeatRequest, request: Request) -> dict:
+    try:
+        return record_validator_heartbeat(payload.model_dump(), request.client.host if request.client else None)
+    except MiningError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
 @router.get("/validators", response_model=list[ValidatorResponse])
 def validators(limit: int = Query(100, ge=1, le=500), eligible_only: bool = Query(False)) -> list[dict]:
     return get_validators(limit, eligible_only)
+
+
+@router.get("/validators/status")
+def validators_status(limit: int = Query(500, ge=1, le=1000)) -> dict:
+    return get_validators_status(limit)
+
+
+@router.get("/network/status")
+def network_status() -> dict:
+    return get_network_participation_status()
+
+
+@router.post("/validators/{validator_id}/enable")
+def enable_validator(validator_id: str) -> dict:
+    try:
+        return set_validator_enabled(validator_id, True)
+    except MiningError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post("/validators/{validator_id}/disable")
+def disable_validator(validator_id: str) -> dict:
+    try:
+        return set_validator_enabled(validator_id, False)
+    except MiningError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post("/validators/prune-stale")
+def prune_validators(older_than: int = Query(300, ge=1)) -> dict:
+    return prune_stale_validators(older_than)
 
 
 @router.get("/validators/{validator_id}", response_model=ValidatorResponse)

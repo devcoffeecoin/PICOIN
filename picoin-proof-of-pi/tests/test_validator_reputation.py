@@ -48,10 +48,10 @@ def test_validator_reputation_tracks_completed_approved_jobs(tmp_path, monkeypat
     updated = get_validator(validator["validator_id"])
 
     assert response["accepted"] is True
-    assert response["status"] == "validation_pending"
+    assert response["status"] == "approved"
     assert response["approvals"] == 1
-    assert response["required_approvals"] == 3
-    assert response["block"] is None
+    assert response["required_approvals"] == 1
+    assert response["block"] is not None
     assert updated["accepted_jobs"] == 1
     assert updated["completed_jobs"] == 1
     assert updated["invalid_results"] == 0

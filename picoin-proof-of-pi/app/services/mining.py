@@ -2,6 +2,7 @@ import json
 import os
 import random
 import uuid
+import asyncio
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -103,6 +104,13 @@ from validator.proof import validate_submission
 
 GENESIS_HASH = "0" * 64
 ECONOMIC_AUDIT_TOLERANCE = 0.000001
+PARTICIPANT_ONLINE_SECONDS = 120
+PARTICIPANT_OFFLINE_SECONDS = 300
+VALIDATOR_SYNC_LAG_BLOCKS = 3
+VALIDATOR_OUT_OF_SYNC_SECONDS = 60
+VALIDATION_JOB_ASSIGNMENT_TIMEOUT_SECONDS = 60
+PARTICIPANT_LIVENESS_INTERVAL_SECONDS = int(os.getenv("PICOIN_LIVENESS_INTERVAL_SECONDS", "30"))
+_PARTICIPANT_LIVENESS_TASK: asyncio.Task | None = None
 
 
 class MiningError(Exception):
@@ -160,10 +168,17 @@ def register_miner(name: str, public_key: str | None = None, reward_address: str
     reward_address = _normalize_reward_address(reward_address)
 
     miner_id = f"miner_{uuid.uuid4().hex[:16]}"
+    timestamp = utc_now()
     with get_connection() as connection:
         connection.execute(
-            "INSERT INTO miners (miner_id, name, public_key, reward_address, registered_at) VALUES (?, ?, ?, ?, ?)",
-            (miner_id, name, public_key, reward_address, utc_now()),
+            """
+            INSERT INTO miners (
+                miner_id, name, public_key, reward_address, registered_at,
+                last_seen_at, last_heartbeat_at, online_status, protocol_version, enabled
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'online', ?, 1)
+            """,
+            (miner_id, name, public_key, reward_address, timestamp, timestamp, timestamp, PROTOCOL_VERSION),
         )
         _ensure_balance_account(connection, miner_id, "miner")
         if reward_address:
@@ -189,10 +204,18 @@ def register_validator(name: str, public_key: str, reward_address: str | None = 
     reward_address = _normalize_reward_address(reward_address)
 
     validator_id = f"validator_{uuid.uuid4().hex[:16]}"
+    timestamp = utc_now()
     with get_connection() as connection:
         connection.execute(
-            "INSERT INTO validators (validator_id, name, public_key, reward_address, registered_at) VALUES (?, ?, ?, ?, ?)",
-            (validator_id, name, public_key, reward_address, utc_now()),
+            """
+            INSERT INTO validators (
+                validator_id, name, public_key, reward_address, registered_at,
+                last_seen_at, last_heartbeat_at, online_status, sync_status,
+                protocol_version, enabled
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, 'online', 'synced', ?, 1)
+            """,
+            (validator_id, name, public_key, reward_address, timestamp, timestamp, timestamp, PROTOCOL_VERSION),
         )
         _ensure_balance_account(connection, validator_id, "validator")
         if reward_address:
@@ -208,11 +231,20 @@ def get_validator(validator_id: str) -> dict[str, Any] | None:
 
 
 def get_validators(limit: int = 100, eligible_only: bool = False) -> list[dict[str, Any]]:
+    refresh_participant_liveness()
     where = ""
     params: tuple[Any, ...] = ()
     if eligible_only:
-        where = "WHERE is_banned = 0 AND stake_locked >= ? AND trust_score >= ?"
-        params = (MIN_VALIDATOR_STAKE, VALIDATOR_MIN_TRUST_SCORE)
+        where = """
+        WHERE is_banned = 0
+        AND enabled = 1
+        AND online_status = 'online'
+        AND sync_status != 'out_of_sync'
+        AND protocol_version = ?
+        AND stake_locked >= ?
+        AND trust_score >= ?
+        """
+        params = (PROTOCOL_VERSION, MIN_VALIDATOR_STAKE, VALIDATOR_MIN_TRUST_SCORE)
     with get_connection() as connection:
         rows = connection.execute(
             f"""
@@ -238,6 +270,10 @@ def enrich_validator(validator: dict[str, Any] | None, connection: Any | None = 
     reward_address = validator.get("reward_address")
     validator["balance"] = get_balance_amount(reward_address or validator["validator_id"])
     validator["is_banned"] = bool(validator["is_banned"])
+    validator["enabled"] = bool(validator.get("enabled", 1))
+    validator["online_status"] = validator.get("online_status") or "offline"
+    validator["sync_status"] = validator.get("sync_status") or "unknown"
+    validator["eligible"] = _validator_row_is_eligible(validator)
     validator["total_rewards"] = _validator_reward_total(
         [validator["validator_id"], reward_address] if reward_address else [validator["validator_id"]]
     )
@@ -268,6 +304,8 @@ def enrich_miner(miner: dict[str, Any] | None) -> dict[str, Any] | None:
     reward_address = miner.get("reward_address")
     miner["balance"] = get_balance_amount(reward_address or miner["miner_id"])
     miner["is_banned"] = bool(miner["is_banned"])
+    miner["enabled"] = bool(miner.get("enabled", 1))
+    miner["online_status"] = miner.get("online_status") or "offline"
     return miner
 
 
@@ -284,6 +322,527 @@ def _ensure_replay_can_accept_work() -> None:
         raise MiningError(503, f"node replay is {sync_status}: {reason}")
 
 
+async def start_participant_liveness_worker() -> None:
+    global _PARTICIPANT_LIVENESS_TASK
+    if _PARTICIPANT_LIVENESS_TASK is not None and not _PARTICIPANT_LIVENESS_TASK.done():
+        return
+    _PARTICIPANT_LIVENESS_TASK = asyncio.create_task(_participant_liveness_loop())
+
+
+async def stop_participant_liveness_worker() -> None:
+    global _PARTICIPANT_LIVENESS_TASK
+    task = _PARTICIPANT_LIVENESS_TASK
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    _PARTICIPANT_LIVENESS_TASK = None
+
+
+async def _participant_liveness_loop() -> None:
+    while True:
+        try:
+            refresh_participant_liveness()
+        except Exception:
+            pass
+        await asyncio.sleep(max(5, PARTICIPANT_LIVENESS_INTERVAL_SECONDS))
+
+
+def _heartbeat_signature_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in payload.items() if key != "signature"}
+
+
+def _status_from_heartbeat(last_heartbeat_at: str | None, now: datetime | None = None) -> str:
+    if not last_heartbeat_at:
+        return "offline"
+    now_dt = now or utc_now_dt()
+    heartbeat_dt = parse_iso(last_heartbeat_at)
+    if heartbeat_dt is None:
+        return "offline"
+    age_seconds = (now_dt - heartbeat_dt).total_seconds()
+    if age_seconds <= PARTICIPANT_ONLINE_SECONDS:
+        return "online"
+    if age_seconds <= PARTICIPANT_OFFLINE_SECONDS:
+        return "stale"
+    return "offline"
+
+
+def _sync_status_from_metrics(
+    *,
+    sync_lag: int,
+    pending_replay_blocks: int,
+    out_of_sync_since: str | None,
+    now: datetime | None = None,
+) -> tuple[str, str | None]:
+    now_dt = now or utc_now_dt()
+    is_bad = sync_lag > VALIDATOR_SYNC_LAG_BLOCKS or pending_replay_blocks > 0
+    if not is_bad:
+        return "synced", None
+    since = out_of_sync_since or now_dt.isoformat()
+    since_dt = parse_iso(since)
+    if since_dt is not None and (now_dt - since_dt).total_seconds() >= VALIDATOR_OUT_OF_SYNC_SECONDS:
+        return "out_of_sync", since
+    return "syncing", since
+
+
+def _validator_row_is_eligible(validator: dict[str, Any]) -> bool:
+    cooldown_until = parse_iso(validator.get("cooldown_until"))
+    if cooldown_until is not None and cooldown_until > utc_now_dt():
+        return False
+    return (
+        not bool(validator.get("is_banned"))
+        and bool(validator.get("enabled", 1))
+        and float(validator.get("stake_locked") or 0) >= MIN_VALIDATOR_STAKE
+        and float(validator.get("trust_score") or 0) >= VALIDATOR_MIN_TRUST_SCORE
+        and str(validator.get("online_status") or "") == "online"
+        and str(validator.get("sync_status") or "") != "out_of_sync"
+        and str(validator.get("protocol_version") or PROTOCOL_VERSION) == PROTOCOL_VERSION
+    )
+
+
+def adaptive_required_validator_approvals(eligible_validators: int) -> int:
+    if eligible_validators <= 0:
+        return 1
+    return max(1, eligible_validators)
+
+
+def _effective_required_validator_approvals(connection: Any, params: dict[str, Any] | None = None) -> int:
+    eligible_count = len(_eligible_validator_rows(connection))
+    if eligible_count <= 0:
+        return int((params or {}).get("required_validator_approvals") or REQUIRED_VALIDATOR_APPROVALS)
+    configured = int((params or {}).get("required_validator_approvals") or REQUIRED_VALIDATOR_APPROVALS)
+    return max(1, min(configured, adaptive_required_validator_approvals(eligible_count)))
+
+
+def refresh_participant_liveness(now: datetime | None = None) -> dict[str, Any]:
+    now_dt = now or utc_now_dt()
+    updates = {"validators": 0, "miners": 0}
+    with get_connection() as connection:
+        validator_rows = connection.execute("SELECT * FROM validators").fetchall()
+        for row in validator_rows:
+            validator = row_to_dict(row)
+            online_status = _status_from_heartbeat(validator.get("last_heartbeat_at"), now_dt)
+            if bool(validator.get("is_banned")) or not bool(validator.get("enabled", 1)):
+                online_status = "offline"
+            sync_status, out_of_sync_since = _sync_status_from_metrics(
+                sync_lag=int(validator.get("sync_lag") or 0),
+                pending_replay_blocks=int(validator.get("pending_replay_blocks") or 0),
+                out_of_sync_since=validator.get("out_of_sync_since"),
+                now=now_dt,
+            )
+            reason = None
+            if not bool(validator.get("enabled", 1)):
+                reason = validator.get("reason_if_not_eligible") or "validator disabled"
+            elif bool(validator.get("is_banned")):
+                reason = "validator banned"
+            elif online_status != "online":
+                reason = f"validator {online_status}"
+            elif sync_status == "out_of_sync":
+                reason = "validator out of sync"
+            elif str(validator.get("protocol_version") or PROTOCOL_VERSION) != PROTOCOL_VERSION:
+                reason = "protocol version mismatch"
+            connection.execute(
+                """
+                UPDATE validators
+                SET online_status = ?, sync_status = ?, out_of_sync_since = ?,
+                    reason_if_not_eligible = ?
+                WHERE validator_id = ?
+                """,
+                (online_status, sync_status, out_of_sync_since, reason, validator["validator_id"]),
+            )
+            updates["validators"] += 1
+
+        miner_rows = connection.execute("SELECT * FROM miners").fetchall()
+        for row in miner_rows:
+            miner = row_to_dict(row)
+            online_status = _status_from_heartbeat(miner.get("last_heartbeat_at"), now_dt)
+            if bool(miner.get("is_banned")) or not bool(miner.get("enabled", 1)):
+                online_status = "offline"
+            connection.execute(
+                "UPDATE miners SET online_status = ? WHERE miner_id = ?",
+                (online_status, miner["miner_id"]),
+            )
+            updates["miners"] += 1
+    return {"updated": updates, "checked_at": now_dt.isoformat()}
+
+
+def record_validator_heartbeat(payload: dict[str, Any], client_host: str | None = None) -> dict[str, Any]:
+    signed_payload = _heartbeat_signature_payload(payload)
+    public_key = str(payload.get("public_key") or "")
+    try:
+        validate_public_key(public_key)
+        signature_valid = verify_payload_signature(public_key, signed_payload, str(payload.get("signature") or ""))
+    except (RuntimeError, ValueError):
+        signature_valid = False
+    if not signature_valid:
+        raise MiningError(401, "invalid validator heartbeat signature")
+
+    validator_id = str(payload.get("validator_id") or "").strip()
+    if not validator_id:
+        raise MiningError(400, "validator_id is required")
+    timestamp = utc_now()
+    sync_lag = max(0, int(payload.get("sync_lag") or 0))
+    pending_replay = max(0, int(payload.get("pending_replay_blocks") or 0))
+
+    with get_connection() as connection:
+        duplicate = row_to_dict(
+            connection.execute(
+                "SELECT validator_id FROM validators WHERE public_key = ? AND validator_id != ? LIMIT 1",
+                (public_key, validator_id),
+            ).fetchone()
+        )
+        if duplicate is not None:
+            connection.execute(
+                """
+                INSERT INTO validators (
+                    validator_id, name, public_key, registered_at, last_seen_at,
+                    last_heartbeat_at, online_status, sync_status, enabled,
+                    reason_if_not_eligible, node_id, advertised_address, last_ip,
+                    effective_height, sync_lag, pending_replay_blocks, protocol_version
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'duplicated_identity', 'unknown', 0, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(validator_id) DO UPDATE SET
+                    public_key = excluded.public_key,
+                    last_seen_at = excluded.last_seen_at,
+                    last_heartbeat_at = excluded.last_heartbeat_at,
+                    online_status = 'duplicated_identity',
+                    enabled = 0,
+                    reason_if_not_eligible = excluded.reason_if_not_eligible,
+                    node_id = excluded.node_id,
+                    advertised_address = excluded.advertised_address,
+                    last_ip = excluded.last_ip,
+                    effective_height = excluded.effective_height,
+                    sync_lag = excluded.sync_lag,
+                    pending_replay_blocks = excluded.pending_replay_blocks,
+                    protocol_version = excluded.protocol_version
+                """,
+                (
+                    validator_id,
+                    str(payload.get("name") or validator_id)[:80],
+                    public_key,
+                    timestamp,
+                    timestamp,
+                    timestamp,
+                    "duplicate public key identity detected",
+                    payload.get("node_id"),
+                    payload.get("address"),
+                    client_host,
+                    int(payload.get("effective_height") or payload.get("local_height") or 0),
+                    sync_lag,
+                    pending_replay,
+                    str(payload.get("version") or PROTOCOL_VERSION),
+                ),
+            )
+        else:
+            existing = row_to_dict(connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone())
+            sync_status, out_of_sync_since = _sync_status_from_metrics(
+                sync_lag=sync_lag,
+                pending_replay_blocks=pending_replay,
+                out_of_sync_since=(existing or {}).get("out_of_sync_since"),
+            )
+            connection.execute(
+                """
+                INSERT INTO validators (
+                    validator_id, name, public_key, registered_at, last_seen_at,
+                    last_heartbeat_at, online_status, sync_status, out_of_sync_since,
+                    node_id, advertised_address, last_ip, effective_height, sync_lag,
+                    pending_replay_blocks, protocol_version, enabled
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 'online', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                ON CONFLICT(validator_id) DO UPDATE SET
+                    name = COALESCE(NULLIF(excluded.name, ''), validators.name),
+                    public_key = excluded.public_key,
+                    last_seen_at = excluded.last_seen_at,
+                    last_heartbeat_at = excluded.last_heartbeat_at,
+                    online_status = 'online',
+                    sync_status = excluded.sync_status,
+                    out_of_sync_since = excluded.out_of_sync_since,
+                    node_id = excluded.node_id,
+                    advertised_address = excluded.advertised_address,
+                    last_ip = excluded.last_ip,
+                    effective_height = excluded.effective_height,
+                    sync_lag = excluded.sync_lag,
+                    pending_replay_blocks = excluded.pending_replay_blocks,
+                    protocol_version = excluded.protocol_version
+                """,
+                (
+                    validator_id,
+                    str(payload.get("name") or validator_id)[:80],
+                    public_key,
+                    timestamp,
+                    timestamp,
+                    timestamp,
+                    sync_status,
+                    out_of_sync_since,
+                    payload.get("node_id"),
+                    payload.get("address"),
+                    client_host,
+                    int(payload.get("effective_height") or payload.get("local_height") or 0),
+                    sync_lag,
+                    pending_replay,
+                    str(payload.get("version") or PROTOCOL_VERSION),
+                ),
+            )
+            _ensure_balance_account(connection, validator_id, "validator")
+        row = connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone()
+    refresh_participant_liveness()
+    return enrich_validator(row_to_dict(row))
+
+
+def record_miner_heartbeat(payload: dict[str, Any], client_host: str | None = None) -> dict[str, Any]:
+    signed_payload = _heartbeat_signature_payload(payload)
+    public_key = str(payload.get("public_key") or "")
+    try:
+        validate_public_key(public_key)
+        signature_valid = verify_payload_signature(public_key, signed_payload, str(payload.get("signature") or ""))
+    except (RuntimeError, ValueError):
+        signature_valid = False
+    if not signature_valid:
+        raise MiningError(401, "invalid miner heartbeat signature")
+
+    miner_id = str(payload.get("miner_id") or "").strip()
+    if not miner_id:
+        raise MiningError(400, "miner_id is required")
+    timestamp = utc_now()
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO miners (
+                miner_id, name, public_key, registered_at, last_seen_at, last_heartbeat_at,
+                online_status, node_id, advertised_address, last_ip, last_task_id,
+                last_task_status, last_compute_ms, protocol_version, enabled
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 'online', ?, ?, ?, ?, ?, ?, ?, 1)
+            ON CONFLICT(miner_id) DO UPDATE SET
+                name = COALESCE(NULLIF(excluded.name, ''), miners.name),
+                public_key = COALESCE(miners.public_key, excluded.public_key),
+                last_seen_at = excluded.last_seen_at,
+                last_heartbeat_at = excluded.last_heartbeat_at,
+                online_status = 'online',
+                node_id = excluded.node_id,
+                advertised_address = excluded.advertised_address,
+                last_ip = excluded.last_ip,
+                last_task_id = excluded.last_task_id,
+                last_task_status = excluded.last_task_status,
+                last_compute_ms = excluded.last_compute_ms,
+                protocol_version = excluded.protocol_version
+            """,
+            (
+                miner_id,
+                str(payload.get("name") or miner_id)[:80],
+                public_key,
+                timestamp,
+                timestamp,
+                timestamp,
+                payload.get("node_id"),
+                payload.get("server"),
+                client_host,
+                payload.get("last_task_id"),
+                payload.get("last_task_status"),
+                payload.get("last_compute_ms"),
+                str(payload.get("version") or PROTOCOL_VERSION),
+            ),
+        )
+        _ensure_balance_account(connection, miner_id, "miner")
+        row = connection.execute("SELECT * FROM miners WHERE miner_id = ?", (miner_id,)).fetchone()
+    refresh_participant_liveness()
+    return enrich_miner(row_to_dict(row))
+
+
+def get_validators_status(limit: int = 500) -> dict[str, Any]:
+    refresh_participant_liveness()
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM validators
+            ORDER BY
+                CASE online_status
+                    WHEN 'online' THEN 0
+                    WHEN 'stale' THEN 1
+                    WHEN 'offline' THEN 2
+                    ELSE 3
+                END,
+                effective_height DESC,
+                validator_id ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        validators = [enrich_validator(row_to_dict(row), connection) for row in rows]
+        counts = connection.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                COALESCE(SUM(CASE WHEN online_status = 'online' THEN 1 ELSE 0 END), 0) AS online,
+                COALESCE(SUM(CASE WHEN online_status = 'stale' THEN 1 ELSE 0 END), 0) AS stale,
+                COALESCE(SUM(CASE WHEN online_status = 'offline' THEN 1 ELSE 0 END), 0) AS offline,
+                COALESCE(SUM(CASE WHEN sync_status = 'out_of_sync' THEN 1 ELSE 0 END), 0) AS out_of_sync,
+                COALESCE(SUM(CASE WHEN enabled = 0 THEN 1 ELSE 0 END), 0) AS disabled
+            FROM validators
+            """
+        ).fetchone()
+        eligible = len(_eligible_validator_rows(connection))
+        required = _effective_required_validator_approvals(connection)
+    return {
+        "checked_at": utc_now(),
+        "required_validator_approvals": required,
+        "eligible_validators": eligible,
+        "counts": {key: int(counts[key]) for key in counts.keys()},
+        "validators": validators,
+    }
+
+
+def get_miners_status(limit: int = 500) -> dict[str, Any]:
+    refresh_participant_liveness()
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT *
+            FROM miners
+            ORDER BY
+                CASE online_status
+                    WHEN 'online' THEN 0
+                    WHEN 'stale' THEN 1
+                    WHEN 'offline' THEN 2
+                    ELSE 3
+                END,
+                COALESCE(last_compute_ms, 0) ASC,
+                miner_id ASC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        miners = [enrich_miner(row_to_dict(row)) for row in rows]
+        counts = connection.execute(
+            """
+            SELECT
+                COUNT(*) AS total,
+                COALESCE(SUM(CASE WHEN online_status = 'online' THEN 1 ELSE 0 END), 0) AS online,
+                COALESCE(SUM(CASE WHEN online_status = 'stale' THEN 1 ELSE 0 END), 0) AS stale,
+                COALESCE(SUM(CASE WHEN online_status = 'offline' THEN 1 ELSE 0 END), 0) AS offline,
+                COALESCE(SUM(CASE WHEN enabled = 0 THEN 1 ELSE 0 END), 0) AS disabled
+            FROM miners
+            """
+        ).fetchone()
+    return {
+        "checked_at": utc_now(),
+        "counts": {key: int(counts[key]) for key in counts.keys()},
+        "miners": miners,
+    }
+
+
+def get_network_participation_status() -> dict[str, Any]:
+    refresh_participant_liveness()
+    with get_connection() as connection:
+        params = _active_protocol_params(connection)
+        counts = _node_counts(connection, params)
+        latest_height = _latest_block_height(connection)
+        latest_hash = _latest_block_hash(connection)
+        revealed_waiting = int(
+            connection.execute("SELECT COUNT(*) AS count FROM tasks WHERE status = 'revealed'").fetchone()["count"]
+        )
+        stuck_jobs = int(
+            connection.execute("SELECT COUNT(*) AS count FROM validation_jobs WHERE status = 'pending'").fetchone()["count"]
+        )
+        eligible = counts["eligible_validators"]
+        required = counts["required_validator_approvals"]
+    blocking_reason = None
+    if eligible <= 0:
+        blocking_reason = "not_enough_online_validators"
+    elif eligible < required:
+        blocking_reason = "waiting_for_validators"
+    return {
+        "checked_at": utc_now(),
+        "network_id": NETWORK_ID,
+        "protocol_version": PROTOCOL_VERSION,
+        "latest_block_height": latest_height,
+        "latest_block_hash": latest_hash,
+        "quorum": {
+            "healthy": eligible >= required,
+            "eligible_validators": eligible,
+            "required_validator_approvals": required,
+            "blocking_reason": blocking_reason,
+        },
+        "tasks": {
+            "revealed_tasks_waiting": revealed_waiting,
+            "stuck_validation_jobs": stuck_jobs,
+        },
+        "counts": counts,
+    }
+
+
+def set_validator_enabled(validator_id: str, enabled: bool) -> dict[str, Any]:
+    reason = None if enabled else "disabled by operator"
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            UPDATE validators
+            SET enabled = ?, reason_if_not_eligible = ?, online_status = CASE WHEN ? = 0 THEN 'offline' ELSE online_status END
+            WHERE validator_id = ?
+            """,
+            (1 if enabled else 0, reason, 1 if enabled else 0, validator_id),
+        )
+        if cursor.rowcount == 0:
+            raise MiningError(404, "validator not found")
+        row = connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone()
+    refresh_participant_liveness()
+    return enrich_validator(row_to_dict(row))
+
+
+def set_miner_enabled(miner_id: str, enabled: bool) -> dict[str, Any]:
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            UPDATE miners
+            SET enabled = ?, online_status = CASE WHEN ? = 0 THEN 'offline' ELSE online_status END
+            WHERE miner_id = ?
+            """,
+            (1 if enabled else 0, 1 if enabled else 0, miner_id),
+        )
+        if cursor.rowcount == 0:
+            raise MiningError(404, "miner not found")
+        row = connection.execute("SELECT * FROM miners WHERE miner_id = ?", (miner_id,)).fetchone()
+    refresh_participant_liveness()
+    return enrich_miner(row_to_dict(row))
+
+
+def prune_stale_validators(older_than_seconds: int = PARTICIPANT_OFFLINE_SECONDS) -> dict[str, Any]:
+    threshold = (utc_now_dt() - timedelta(seconds=max(1, older_than_seconds))).isoformat()
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            DELETE FROM validators
+            WHERE online_status = 'offline'
+              AND COALESCE(last_heartbeat_at, registered_at) < ?
+              AND accepted_jobs = 0
+              AND rejected_jobs = 0
+            """,
+            (threshold,),
+        )
+        deleted = max(0, cursor.rowcount)
+    return {"deleted": deleted, "older_than_seconds": older_than_seconds, "checked_at": utc_now()}
+
+
+def prune_stale_miners(older_than_seconds: int = PARTICIPANT_OFFLINE_SECONDS) -> dict[str, Any]:
+    threshold = (utc_now_dt() - timedelta(seconds=max(1, older_than_seconds))).isoformat()
+    with get_connection() as connection:
+        cursor = connection.execute(
+            """
+            DELETE FROM miners
+            WHERE online_status = 'offline'
+              AND COALESCE(last_heartbeat_at, registered_at) < ?
+              AND NOT EXISTS (SELECT 1 FROM blocks WHERE blocks.miner_id = miners.miner_id)
+            """,
+            (threshold,),
+        )
+        deleted = max(0, cursor.rowcount)
+    return {"deleted": deleted, "older_than_seconds": older_than_seconds, "checked_at": utc_now()}
+
+
 def create_next_task(
     miner_id: str,
     *,
@@ -293,6 +852,7 @@ def create_next_task(
 ) -> dict[str, Any] | None:
     started = now_perf()
     _ensure_replay_can_accept_work()
+    refresh_participant_liveness()
     with get_connection() as connection:
         _expire_assigned_tasks(connection)
         miner = row_to_dict(connection.execute("SELECT * FROM miners WHERE miner_id = ?", (miner_id,)).fetchone())
@@ -306,6 +866,16 @@ def create_next_task(
 
         if miner["is_banned"]:
             raise MiningError(403, "miner is banned")
+        if not bool(miner.get("enabled", 1)):
+            raise MiningError(403, "miner is disabled")
+        connection.execute(
+            """
+            UPDATE miners
+            SET last_seen_at = ?, last_heartbeat_at = ?, online_status = 'online'
+            WHERE miner_id = ?
+            """,
+            (utc_now(), utc_now(), miner_id),
+        )
 
         cooldown_until = parse_iso(miner["cooldown_until"])
         if cooldown_until is not None and cooldown_until > utc_now_dt():
@@ -398,14 +968,21 @@ def _restore_miner_identity(
     timestamp = utc_now()
     connection.execute(
         """
-        INSERT INTO miners (miner_id, name, public_key, reward_address, registered_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO miners (
+            miner_id, name, public_key, reward_address, registered_at,
+            last_seen_at, last_heartbeat_at, online_status, protocol_version, enabled
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'online', ?, 1)
         ON CONFLICT(miner_id) DO UPDATE SET
             name = COALESCE(NULLIF(excluded.name, ''), miners.name),
             public_key = COALESCE(miners.public_key, excluded.public_key),
-            reward_address = COALESCE(excluded.reward_address, miners.reward_address)
+            reward_address = COALESCE(excluded.reward_address, miners.reward_address),
+            last_seen_at = excluded.last_seen_at,
+            last_heartbeat_at = excluded.last_heartbeat_at,
+            online_status = 'online',
+            protocol_version = excluded.protocol_version
         """,
-        (miner_id, (name or miner_id)[:80], public_key, reward_address, timestamp),
+        (miner_id, (name or miner_id)[:80], public_key, reward_address, timestamp, timestamp, timestamp, PROTOCOL_VERSION),
     )
     _ensure_balance_account(connection, miner_id, "miner")
     if reward_address:
@@ -439,15 +1016,25 @@ def _restore_validator_identity(
     timestamp = utc_now()
     connection.execute(
         """
-        INSERT INTO validators (validator_id, name, public_key, reward_address, registered_at, last_seen_at)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO validators (
+            validator_id, name, public_key, reward_address, registered_at,
+            last_seen_at, last_heartbeat_at, online_status, sync_status, protocol_version, enabled
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'online', 'synced', ?, 1)
         ON CONFLICT(validator_id) DO UPDATE SET
             name = COALESCE(NULLIF(excluded.name, ''), validators.name),
             public_key = COALESCE(validators.public_key, excluded.public_key),
             reward_address = COALESCE(excluded.reward_address, validators.reward_address),
-            last_seen_at = excluded.last_seen_at
+            last_seen_at = excluded.last_seen_at,
+            last_heartbeat_at = excluded.last_heartbeat_at,
+            online_status = 'online',
+            sync_status = CASE
+                WHEN validators.sync_status = 'out_of_sync' THEN validators.sync_status
+                ELSE 'synced'
+            END,
+            protocol_version = excluded.protocol_version
         """,
-        (validator_id, (name or validator_id)[:80], public_key, reward_address, timestamp, timestamp),
+        (validator_id, (name or validator_id)[:80], public_key, reward_address, timestamp, timestamp, timestamp, PROTOCOL_VERSION),
     )
     _ensure_balance_account(connection, validator_id, "validator")
     if reward_address:
@@ -1109,7 +1696,9 @@ def get_validation_job(
     reward_address: str | None = None,
 ) -> dict[str, Any] | None:
     _ensure_replay_can_accept_work()
+    refresh_participant_liveness()
     with get_connection() as connection:
+        _release_timed_out_validation_assignments(connection)
         validator = row_to_dict(connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone())
         if validator is None and public_key:
             validator = _restore_validator_identity(connection, validator_id, public_key, name, reward_address)
@@ -1120,6 +1709,8 @@ def get_validation_job(
             return None
         if validator["is_banned"]:
             raise MiningError(403, "validator is banned")
+        if not bool(validator.get("enabled", 1)):
+            raise MiningError(403, validator.get("reason_if_not_eligible") or "validator is disabled")
         cooldown_until = parse_iso(validator["cooldown_until"])
         if cooldown_until is not None and cooldown_until > utc_now_dt():
             raise MiningError(429, f"validator is in cooldown until {validator['cooldown_until']}")
@@ -1128,9 +1719,18 @@ def get_validation_job(
         if float(validator["trust_score"]) < VALIDATOR_MIN_TRUST_SCORE:
             raise MiningError(403, "validator trust score is below the minimum required")
         connection.execute(
-            "UPDATE validators SET last_seen_at = ? WHERE validator_id = ?",
-            (utc_now(), validator_id),
+            """
+            UPDATE validators
+            SET last_seen_at = ?, last_heartbeat_at = ?, online_status = 'online'
+            WHERE validator_id = ?
+            """,
+            (utc_now(), utc_now(), validator_id),
         )
+        validator = row_to_dict(connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone())
+        if str(validator.get("sync_status") or "unknown") == "out_of_sync":
+            raise MiningError(403, "validator is out_of_sync")
+        if str(validator.get("protocol_version") or PROTOCOL_VERSION) != PROTOCOL_VERSION:
+            raise MiningError(403, "validator protocol version is incompatible")
 
         candidate_rows = connection.execute(
             """
@@ -1139,6 +1739,12 @@ def get_validation_job(
             FROM validation_jobs
             JOIN tasks ON tasks.task_id = validation_jobs.task_id
             WHERE validation_jobs.status = 'pending'
+            AND (
+                validation_jobs.assigned_validator_id IS NULL
+                OR validation_jobs.assigned_validator_id = ?
+                OR validation_jobs.assigned_at IS NULL
+                OR validation_jobs.assigned_at < ?
+            )
             AND NOT EXISTS (
                 SELECT 1
                 FROM validation_votes
@@ -1152,7 +1758,7 @@ def get_validation_job(
             ) ASC, validation_jobs.created_at ASC
             LIMIT 20
             """,
-            (validator_id,),
+            (validator_id, iso_ago(VALIDATION_JOB_ASSIGNMENT_TIMEOUT_SECONDS), validator_id),
         ).fetchall()
 
         job = None
@@ -1176,18 +1782,48 @@ def get_validation_job(
 
         if job is None:
             return None
+        assigned_at = utc_now()
+        connection.execute(
+            """
+            UPDATE validation_jobs
+            SET assigned_validator_id = ?, assigned_at = ?, blocking_reason = NULL
+            WHERE job_id = ?
+            """,
+            (validator_id, assigned_at, job["job_id"]),
+        )
         job["assigned_validator_id"] = validator_id
+        job["assigned_at"] = assigned_at
         job["selection_score"] = selection_meta["selection_score"] if selection_meta else None
         job["selection_rank"] = selection_meta["selection_rank"] if selection_meta else None
         counts = _validation_vote_counts(connection, job["job_id"])
         params = _protocol_params_for_task(connection, job)
+        required = _effective_required_validator_approvals(connection, params)
 
     job["samples"] = json.loads(job["samples"])
     job["approvals"] = counts["approvals"]
     job["rejections"] = counts["rejections"]
-    job["required_approvals"] = params["required_validator_approvals"]
-    job["required_rejections"] = params["required_validator_approvals"]
+    job["required_approvals"] = required
+    job["required_rejections"] = required
     return job
+
+
+def _release_timed_out_validation_assignments(connection: Any) -> int:
+    threshold = iso_ago(VALIDATION_JOB_ASSIGNMENT_TIMEOUT_SECONDS)
+    cursor = connection.execute(
+        """
+        UPDATE validation_jobs
+        SET assigned_validator_id = NULL,
+            assigned_at = NULL,
+            assignment_failures = assignment_failures + 1,
+            blocking_reason = 'assigned_validator_timeout'
+        WHERE status = 'pending'
+          AND assigned_validator_id IS NOT NULL
+          AND assigned_at IS NOT NULL
+          AND assigned_at < ?
+        """,
+        (threshold,),
+    )
+    return max(0, cursor.rowcount)
 
 
 def submit_validation_result(
@@ -1225,6 +1861,7 @@ def submit_validation_result(
         if job["status"] != "pending":
             counts = _validation_vote_counts(connection, job_id)
             params = _protocol_params_for_task(connection, job)
+            required = _effective_required_validator_approvals(connection, params)
             return {
                 "accepted": False,
                 "status": job["status"],
@@ -1232,8 +1869,8 @@ def submit_validation_result(
                 "block": None,
                 "approvals": counts["approvals"],
                 "rejections": counts["rejections"],
-                "required_approvals": params["required_validator_approvals"],
-                "required_rejections": params["required_validator_approvals"],
+                "required_approvals": required,
+                "required_rejections": required,
             }
         existing_vote = connection.execute(
             "SELECT 1 FROM validation_votes WHERE job_id = ? AND validator_id = ?",
@@ -1242,6 +1879,7 @@ def submit_validation_result(
         if existing_vote is not None:
             counts = _validation_vote_counts(connection, job_id)
             params = _protocol_params_for_task(connection, job)
+            required = _effective_required_validator_approvals(connection, params)
             return {
                 "accepted": False,
                 "status": "already_voted",
@@ -1249,8 +1887,8 @@ def submit_validation_result(
                 "block": None,
                 "approvals": counts["approvals"],
                 "rejections": counts["rejections"],
-                "required_approvals": params["required_validator_approvals"],
-                "required_rejections": params["required_validator_approvals"],
+                "required_approvals": required,
+                "required_rejections": required,
             }
 
         payload = build_validation_result_signature_payload(
@@ -1296,7 +1934,7 @@ def submit_validation_result(
         )
         _record_validator_completed_vote(connection, validator_id, approved, validation_ms)
         counts = _validation_vote_counts(connection, job_id)
-        required = params["required_validator_approvals"]
+        required = _effective_required_validator_approvals(connection, params)
 
         if approved and counts["approvals"] >= required:
             block = _accept_block_in_connection(
@@ -2072,18 +2710,10 @@ def get_health_status() -> dict[str, Any]:
             latest_hash = _latest_block_hash(connection)
             snapshot_base = active_snapshot_base_in_connection(connection)
             miners = int(connection.execute("SELECT COUNT(*) AS count FROM miners").fetchone()["count"])
-            validators = connection.execute(
-                """
-                SELECT
-                    COUNT(*) AS total,
-                    COALESCE(SUM(CASE WHEN is_banned = 0 AND stake_locked >= ? AND trust_score >= ? THEN 1 ELSE 0 END), 0) AS eligible
-                FROM validators
-                """,
-                (MIN_VALIDATOR_STAKE, VALIDATOR_MIN_TRUST_SCORE),
-            ).fetchone()
+            validators = connection.execute("SELECT COUNT(*) AS total FROM validators").fetchone()
             active_protocol = params is not None
-            required_approvals = int(params["required_validator_approvals"])
-            eligible_validators = int(validators["eligible"])
+            eligible_validators = len(_eligible_validator_rows(connection))
+            required_approvals = _effective_required_validator_approvals(connection, params)
             database = {
                 "connected": True,
                 "active_protocol": active_protocol,
@@ -2763,7 +3393,7 @@ def _selected_validators_for_job(
     params: dict[str, Any],
 ) -> list[dict[str, Any]]:
     eligible = _eligible_validator_rows(connection)
-    required = int(params["required_validator_approvals"])
+    required = _effective_required_validator_approvals(connection, params)
     pool_size = min(len(eligible), max(required, required * VALIDATOR_SELECTION_POOL_MULTIPLIER))
     scored: list[dict[str, Any]] = []
     for validator in eligible:
@@ -2787,15 +3417,42 @@ def _selected_validators_for_job(
 
 
 def _eligible_validator_rows(connection: Any) -> list[dict[str, Any]]:
+    refresh_rows = connection.execute("SELECT COUNT(*) AS count FROM validators").fetchone()
+    if refresh_rows and int(refresh_rows["count"] or 0) > 0:
+        # Keep the eligibility view fresh for callers that do not go through an HTTP route.
+        now = utc_now_dt()
+        for row in connection.execute("SELECT * FROM validators").fetchall():
+            validator = row_to_dict(row)
+            online_status = _status_from_heartbeat(validator.get("last_heartbeat_at"), now)
+            if bool(validator.get("is_banned")) or not bool(validator.get("enabled", 1)):
+                online_status = "offline"
+            sync_status, out_of_sync_since = _sync_status_from_metrics(
+                sync_lag=int(validator.get("sync_lag") or 0),
+                pending_replay_blocks=int(validator.get("pending_replay_blocks") or 0),
+                out_of_sync_since=validator.get("out_of_sync_since"),
+                now=now,
+            )
+            connection.execute(
+                """
+                UPDATE validators
+                SET online_status = ?, sync_status = ?, out_of_sync_since = ?
+                WHERE validator_id = ?
+                """,
+                (online_status, sync_status, out_of_sync_since, validator["validator_id"]),
+            )
     rows = connection.execute(
         """
         SELECT *
         FROM validators
         WHERE is_banned = 0
+        AND enabled = 1
+        AND online_status = 'online'
+        AND sync_status != 'out_of_sync'
+        AND protocol_version = ?
         AND stake_locked >= ?
         AND trust_score >= ?
         """,
-        (MIN_VALIDATOR_STAKE, VALIDATOR_MIN_TRUST_SCORE),
+        (PROTOCOL_VERSION, MIN_VALIDATOR_STAKE, VALIDATOR_MIN_TRUST_SCORE),
     ).fetchall()
     eligible: list[dict[str, Any]] = []
     now = utc_now_dt()
@@ -2850,15 +3507,18 @@ def _selection_jitter(seed: str, validator_id: str) -> float:
 
 
 def _node_counts(connection: Any, params: dict[str, Any]) -> dict[str, Any]:
+    eligible_validators = len(_eligible_validator_rows(connection))
     validators = connection.execute(
         """
         SELECT
             COUNT(*) AS total,
-            COALESCE(SUM(CASE WHEN is_banned = 0 THEN 1 ELSE 0 END), 0) AS active,
-            COALESCE(SUM(CASE WHEN is_banned = 0 AND stake_locked >= ? AND trust_score >= ? THEN 1 ELSE 0 END), 0) AS eligible
+            COALESCE(SUM(CASE WHEN is_banned = 0 AND enabled = 1 THEN 1 ELSE 0 END), 0) AS active,
+            COALESCE(SUM(CASE WHEN online_status = 'online' THEN 1 ELSE 0 END), 0) AS online,
+            COALESCE(SUM(CASE WHEN online_status = 'stale' THEN 1 ELSE 0 END), 0) AS stale,
+            COALESCE(SUM(CASE WHEN online_status = 'offline' THEN 1 ELSE 0 END), 0) AS offline,
+            COALESCE(SUM(CASE WHEN sync_status = 'out_of_sync' THEN 1 ELSE 0 END), 0) AS out_of_sync
         FROM validators
-        """,
-        (MIN_VALIDATOR_STAKE, VALIDATOR_MIN_TRUST_SCORE),
+        """
     ).fetchone()
     tasks = connection.execute(
         """
@@ -2887,8 +3547,12 @@ def _node_counts(connection: Any, params: dict[str, Any]) -> dict[str, Any]:
         "miners": int(connection.execute("SELECT COUNT(*) AS count FROM miners").fetchone()["count"]),
         "validators": int(validators["total"]),
         "active_validators": int(validators["active"]),
-        "eligible_validators": int(validators["eligible"]),
-        "required_validator_approvals": int(params["required_validator_approvals"]),
+        "online_validators": int(validators["online"]),
+        "stale_validators": int(validators["stale"]),
+        "offline_validators": int(validators["offline"]),
+        "out_of_sync_validators": int(validators["out_of_sync"]),
+        "eligible_validators": eligible_validators,
+        "required_validator_approvals": _effective_required_validator_approvals(connection, params),
         "blocks": _latest_block_height(connection),
         "tasks": {
             "total": int(tasks["total"]),

@@ -10,6 +10,19 @@ class MinerRegisterRequest(BaseModel):
     reward_address: str | None = Field(default=None, min_length=1, max_length=80)
 
 
+class MinerHeartbeatRequest(BaseModel):
+    miner_id: str = Field(..., min_length=1, max_length=128)
+    name: str | None = Field(default=None, max_length=80)
+    node_id: str | None = Field(default=None, max_length=128)
+    public_key: str = Field(..., min_length=1, max_length=256)
+    server: str | None = Field(default=None, max_length=256)
+    last_task_id: str | None = Field(default=None, max_length=128)
+    last_task_status: str | None = Field(default=None, max_length=80)
+    last_compute_ms: int | None = Field(default=None, ge=0)
+    version: str = Field("0.18", min_length=1, max_length=32)
+    signature: str = Field(..., min_length=1, max_length=256)
+
+
 class MinerResponse(BaseModel):
     miner_id: str
     name: str
@@ -19,6 +32,16 @@ class MinerResponse(BaseModel):
     trust_score: float = 1.0
     cooldown_until: datetime | None = None
     is_banned: bool = False
+    enabled: bool = True
+    last_seen_at: datetime | None = None
+    last_heartbeat_at: datetime | None = None
+    online_status: str = "offline"
+    node_id: str | None = None
+    advertised_address: str | None = None
+    last_task_id: str | None = None
+    last_task_status: str | None = None
+    last_compute_ms: int | None = None
+    protocol_version: str | None = None
     accepted_blocks: int = 0
     rejected_submissions: int = 0
     total_rewards: float = 0.0
@@ -29,6 +52,20 @@ class ValidatorRegisterRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=80)
     public_key: str = Field(..., min_length=1, max_length=256)
     reward_address: str | None = Field(default=None, min_length=1, max_length=80)
+
+
+class ValidatorHeartbeatRequest(BaseModel):
+    validator_id: str = Field(..., min_length=1, max_length=128)
+    node_id: str | None = Field(default=None, max_length=128)
+    public_key: str = Field(..., min_length=1, max_length=256)
+    address: str | None = Field(default=None, max_length=256)
+    local_height: int = Field(default=0, ge=0)
+    effective_height: int = Field(default=0, ge=0)
+    latest_block_hash: str | None = Field(default=None, max_length=64)
+    pending_replay_blocks: int = Field(default=0, ge=0)
+    sync_lag: int = Field(default=0, ge=0)
+    version: str = Field("0.18", min_length=1, max_length=32)
+    signature: str = Field(..., min_length=1, max_length=256)
 
 
 class FaucetRequest(BaseModel):
@@ -69,6 +106,18 @@ class ValidatorResponse(BaseModel):
     availability_score: float = 0.0
     balance: float = 0.0
     is_banned: bool = False
+    enabled: bool = True
+    last_heartbeat_at: datetime | None = None
+    online_status: str = "offline"
+    sync_status: str = "unknown"
+    node_id: str | None = None
+    advertised_address: str | None = None
+    effective_height: int = 0
+    sync_lag: int = 0
+    pending_replay_blocks: int = 0
+    protocol_version: str | None = None
+    reason_if_not_eligible: str | None = None
+    eligible: bool = False
 
 
 class TaskResponse(BaseModel):

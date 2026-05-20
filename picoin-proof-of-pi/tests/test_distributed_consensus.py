@@ -173,14 +173,13 @@ def test_block_proposal_reaches_quorum_and_imports_canonical_block(tmp_path, mon
     assert chain["valid"] is True
 
 
-def test_finalize_requires_validator_quorum(tmp_path, monkeypatch) -> None:
+def test_finalize_adapts_to_single_live_validator_quorum(tmp_path, monkeypatch) -> None:
     _init_consensus_db(tmp_path, monkeypatch, "consensus-quorum.sqlite3")
     identity = _register_validators(1)[0]
     proposal = propose_block(_block(), "miner-node-1")
-    _vote(proposal, identity)
+    proposal = _vote(proposal, identity)
 
-    with pytest.raises(ConsensusError, match="quorum not reached"):
-        finalize_proposal(proposal["proposal_id"])
+    assert proposal["status"] in {"finalized", "imported"}
 
 
 def test_invalid_block_proposal_is_rejected(tmp_path, monkeypatch) -> None:
