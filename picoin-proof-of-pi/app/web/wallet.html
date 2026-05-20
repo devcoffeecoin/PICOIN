@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Picoin Wallet</title>
+    <link rel="stylesheet" href="/dashboard/static/wallet.css" />
+  </head>
+  <body>
+    <main class="wallet-shell">
+      <section class="hero">
+        <p class="eyebrow">Picoin public testnet</p>
+        <h1>Wallet</h1>
+        <div class="hero-actions">
+          <a href="/dashboard">Dashboard</a>
+          <a href="https://github.com/devcoffeecoin/PICOIN/tree/main" target="_blank" rel="noreferrer">GitHub</a>
+        </div>
+      </section>
+
+      <section class="toolbar">
+        <label>
+          API
+          <input id="apiUrl" value="https://api.picoin.science" />
+        </label>
+        <button id="createWallet" type="button">Create wallet</button>
+        <button id="exportWallet" type="button">Export JSON</button>
+        <label class="file-button">
+          Import JSON
+          <input id="importWallet" type="file" accept="application/json" />
+        </label>
+      </section>
+
+      <section class="grid">
+        <article class="panel">
+          <div class="panel-title">
+            <h2>Account</h2>
+            <span id="walletStatus">No wallet</span>
+          </div>
+          <dl class="facts">
+            <div>
+              <dt>Address</dt>
+              <dd id="walletAddress">-</dd>
+            </div>
+            <div>
+              <dt>Balance</dt>
+              <dd id="walletBalance">-</dd>
+            </div>
+            <div>
+              <dt>Nonce</dt>
+              <dd id="walletNonce">-</dd>
+            </div>
+          </dl>
+          <button id="refreshWallet" type="button">Refresh</button>
+        </article>
+
+        <article class="panel">
+          <div class="panel-title">
+            <h2>Send</h2>
+            <span>Signed locally</span>
+          </div>
+          <form id="sendForm" class="form">
+            <label>
+              To
+              <input id="txTo" placeholder="PI..." required />
+            </label>
+            <label>
+              Amount
+              <input id="txAmount" type="number" min="0" step="0.000001" value="1" required />
+            </label>
+            <label>
+              Fee
+              <input id="txFee" type="number" min="0" step="0.000001" value="0.001" />
+            </label>
+            <button type="submit">Sign and submit</button>
+          </form>
+          <pre id="txResult" class="output"></pre>
+        </article>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">
+          <h2>History</h2>
+          <button id="refreshHistory" type="button">Reload</button>
+        </div>
+        <div id="historyList" class="history"></div>
+      </section>
+    </main>
+
+    <script src="/dashboard/static/wallet.js"></script>
+  </body>
+</html>

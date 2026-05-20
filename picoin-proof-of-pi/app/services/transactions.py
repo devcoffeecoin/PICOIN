@@ -111,6 +111,7 @@ def apply_block_transactions(
     connection: Any,
     *,
     miner_id: str,
+    miner_account_type: str = "miner",
     block_height: int,
     transactions: list[dict[str, Any]],
     timestamp: str | None = None,
@@ -139,7 +140,7 @@ def apply_block_transactions(
             _apply_treasury_claim_transaction(connection, tx, block_height, timestamp)
         elif tx["tx_type"] == "faucet":
             _apply_faucet_transaction(connection, tx, block_height, timestamp)
-        _apply_fee_reward(connection, miner_id, tx, block_height, timestamp)
+        _apply_fee_reward(connection, miner_id, miner_account_type, tx, block_height, timestamp)
         connection.execute(
             """
             UPDATE mempool_transactions
@@ -738,14 +739,21 @@ def _apply_treasury_claim_transaction(connection: Any, tx: dict[str, Any], block
         raise TransactionExecutionError(exc.detail) from exc
 
 
-def _apply_fee_reward(connection: Any, miner_id: str, tx: dict[str, Any], block_height: int, timestamp: str) -> None:
+def _apply_fee_reward(
+    connection: Any,
+    miner_id: str,
+    miner_account_type: str,
+    tx: dict[str, Any],
+    block_height: int,
+    timestamp: str,
+) -> None:
     fee = round(float(tx.get("fee", 0)), 8)
     if fee <= 0:
         return
     _apply_account_delta(
         connection,
         miner_id,
-        "miner",
+        miner_account_type,
         fee,
         "transaction_fee_reward",
         block_height,

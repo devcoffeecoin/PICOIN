@@ -127,6 +127,9 @@ PICOIN_SMOKE_WARN_ONLY=1
 PICOIN_SMOKE_TIMEOUT=60
 PICOIN_AUDITOR_INTERVAL=300
 PICOIN_RECONCILER_SKIP_WITHOUT_PEER=1
+PICOIN_WALLET_PATH=/var/lib/picoin/data/wallets/default.json
+PICOIN_MINER_REWARD_ADDRESS=PI...
+PICOIN_VALIDATOR_REWARD_ADDRESS=PI...
 ```
 
 On bootstrap, the auditor is optional and should run warning-only if enabled. Bootstrap can use local health, audit, and sync checks without a bootstrap peer; external validators should use `https://api.picoin.science` as peer.
@@ -186,6 +189,7 @@ PICOIN_WORKER_ROLE=miner
 PICOIN_MINER_SERVER=https://api.picoin.science
 PICOIN_MINER_NAME=miner-yourname
 PICOIN_MINER_IDENTITY=/var/lib/picoin/data/testnet/identities/miner-yourname.json
+PICOIN_MINER_REWARD_ADDRESS=PI...
 PICOIN_MINER_LOOPS=1
 PICOIN_MINER_SLEEP=5
 PICOIN_MINER_WORKERS=1
@@ -223,6 +227,7 @@ PICOIN_WORKER_ROLE=validator
 PICOIN_VALIDATOR_SERVER=https://api.picoin.science
 PICOIN_VALIDATOR_NAME=validator-one
 PICOIN_VALIDATOR_IDENTITY=/var/lib/picoin/data/testnet/identities/validator-one.json
+PICOIN_VALIDATOR_REWARD_ADDRESS=PI...
 PICOIN_VALIDATOR_LOOPS=1
 PICOIN_VALIDATOR_SLEEP=5
 PICOIN_WORKER_SLEEP=10
@@ -235,6 +240,7 @@ PICOIN_WORKER_ROLE=validator
 PICOIN_VALIDATOR_SERVER=https://api.picoin.science
 PICOIN_VALIDATOR_NAME=validator-two
 PICOIN_VALIDATOR_IDENTITY=/var/lib/picoin/data/testnet/identities/validator-two.json
+PICOIN_VALIDATOR_REWARD_ADDRESS=PI...
 ```
 
 Validator three:
@@ -244,6 +250,7 @@ PICOIN_WORKER_ROLE=validator
 PICOIN_VALIDATOR_SERVER=https://api.picoin.science
 PICOIN_VALIDATOR_NAME=validator-three
 PICOIN_VALIDATOR_IDENTITY=/var/lib/picoin/data/testnet/identities/validator-three.json
+PICOIN_VALIDATOR_REWARD_ADDRESS=PI...
 ```
 
 Manual validator command:
@@ -264,6 +271,91 @@ Systemd:
 sudo systemctl restart picoin-validator
 sudo journalctl -u picoin-validator -f
 ```
+
+## Wallets and Reward Addresses
+
+Public testnet rewards can now be paid to real Picoin wallet addresses instead of only internal operational accounts such as `miner_xxx` or `validator_xxx`.
+
+Operational identities still sign miner/validator actions:
+
+- Miner identity: `miner_id`, `public_key`, `private_key`
+- Validator identity: `validator_id`, `public_key`, `private_key`
+
+Economic ownership is separate:
+
+- Miner rewards use `PICOIN_MINER_REWARD_ADDRESS`
+- Validator rewards use `PICOIN_VALIDATOR_REWARD_ADDRESS`
+- If a reward address is not configured, Picoin keeps legacy behavior and pays the internal `miner_xxx` or `validator_xxx` account.
+- Existing balances are not migrated; only new rewards use the configured wallet address.
+
+Create a testnet wallet:
+
+```bash
+cd /opt/picoin/picoin-proof-of-pi
+.venv/bin/python -m picoin wallet create --name yourname
+.venv/bin/python -m picoin wallet address
+```
+
+The default wallet path is:
+
+```text
+~/.picoin/wallets/default.json
+```
+
+Query balance and history:
+
+```bash
+.venv/bin/python -m picoin wallet balance --server https://api.picoin.science
+.venv/bin/python -m picoin wallet history --server https://api.picoin.science
+curl https://api.picoin.science/accounts/PI...
+curl https://api.picoin.science/accounts/PI.../history
+```
+
+Send a signed testnet transaction:
+
+```bash
+.venv/bin/python -m picoin wallet send \
+  --server https://api.picoin.science \
+  --to PI... \
+  --amount 1 \
+  --fee 0.001
+```
+
+Web wallet:
+
+```text
+https://api.picoin.science/wallet
+```
+
+The web wallet signs locally in the browser with WebCrypto Ed25519 when supported by the browser. The private key is not sent to the server.
+
+Configure miner rewards:
+
+```bash
+PICOIN_MINER_REWARD_ADDRESS=PI...
+```
+
+Configure validator rewards:
+
+```bash
+PICOIN_VALIDATOR_REWARD_ADDRESS=PI...
+```
+
+You can also store `reward_address` in the identity JSON:
+
+```json
+{
+  "name": "validator-yourname",
+  "validator_id": "validator_your_id",
+  "public_key": "ed25519:YOUR_PUBLIC_KEY",
+  "private_key": "ed25519:YOUR_PRIVATE_KEY",
+  "reward_address": "PI...",
+  "server_url": "https://api.picoin.science",
+  "created_at": "2026-01-01T00:00:00+00:00"
+}
+```
+
+Testnet warning: do not reuse private keys from any mainnet or production wallet.
 
 ## Systemd Services
 

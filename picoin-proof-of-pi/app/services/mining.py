@@ -96,6 +96,7 @@ from app.services.state import (
 )
 from app.services.treasury import record_scientific_development_treasury_for_block
 from app.services.transactions import apply_block_transactions, select_block_transactions, transaction_commitment
+from app.services.wallet import is_valid_address
 from validator.proof import validate_submission
 
 
@@ -137,21 +138,35 @@ def parse_iso(value: str | None) -> datetime | None:
 NODE_STARTED_AT = utc_now_dt()
 
 
-def register_miner(name: str, public_key: str | None = None) -> dict[str, Any]:
+def _normalize_reward_address(reward_address: str | None) -> str | None:
+    if reward_address is None:
+        return None
+    normalized = reward_address.strip().upper()
+    if not normalized:
+        return None
+    if not is_valid_address(normalized):
+        raise MiningError(400, "reward_address must be a valid PI wallet address")
+    return normalized
+
+
+def register_miner(name: str, public_key: str | None = None, reward_address: str | None = None) -> dict[str, Any]:
     if public_key is None:
         raise MiningError(400, "public_key is required")
     try:
         validate_public_key(public_key)
     except (RuntimeError, ValueError) as exc:
         raise MiningError(400, str(exc)) from exc
+    reward_address = _normalize_reward_address(reward_address)
 
     miner_id = f"miner_{uuid.uuid4().hex[:16]}"
     with get_connection() as connection:
         connection.execute(
-            "INSERT INTO miners (miner_id, name, public_key, registered_at) VALUES (?, ?, ?, ?)",
-            (miner_id, name, public_key, utc_now()),
+            "INSERT INTO miners (miner_id, name, public_key, reward_address, registered_at) VALUES (?, ?, ?, ?, ?)",
+            (miner_id, name, public_key, reward_address, utc_now()),
         )
         _ensure_balance_account(connection, miner_id, "miner")
+        if reward_address:
+            _ensure_balance_account(connection, reward_address, "wallet")
         row = connection.execute("SELECT * FROM miners WHERE miner_id = ?", (miner_id,)).fetchone()
     return enrich_miner(row_to_dict(row))
 
@@ -165,19 +180,22 @@ def get_miner(miner_id: str) -> dict[str, Any] | None:
     return enrich_miner(miner)
 
 
-def register_validator(name: str, public_key: str) -> dict[str, Any]:
+def register_validator(name: str, public_key: str, reward_address: str | None = None) -> dict[str, Any]:
     try:
         validate_public_key(public_key)
     except (RuntimeError, ValueError) as exc:
         raise MiningError(400, str(exc)) from exc
+    reward_address = _normalize_reward_address(reward_address)
 
     validator_id = f"validator_{uuid.uuid4().hex[:16]}"
     with get_connection() as connection:
         connection.execute(
-            "INSERT INTO validators (validator_id, name, public_key, registered_at) VALUES (?, ?, ?, ?)",
-            (validator_id, name, public_key, utc_now()),
+            "INSERT INTO validators (validator_id, name, public_key, reward_address, registered_at) VALUES (?, ?, ?, ?, ?)",
+            (validator_id, name, public_key, reward_address, utc_now()),
         )
         _ensure_balance_account(connection, validator_id, "validator")
+        if reward_address:
+            _ensure_balance_account(connection, reward_address, "wallet")
         row = connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone()
     return enrich_validator(row_to_dict(row))
 
@@ -216,9 +234,12 @@ def enrich_validator(validator: dict[str, Any] | None, connection: Any | None = 
     total_validation_ms = int(validator.get("total_validation_ms") or 0)
     validator["completed_jobs"] = completed_jobs
     validator["avg_validation_ms"] = round(total_validation_ms / completed_jobs, 2) if completed_jobs else 0.0
-    validator["balance"] = get_balance_amount(validator["validator_id"])
+    reward_address = validator.get("reward_address")
+    validator["balance"] = get_balance_amount(reward_address or validator["validator_id"])
     validator["is_banned"] = bool(validator["is_banned"])
-    validator["total_rewards"] = _validator_reward_total(validator["validator_id"])
+    validator["total_rewards"] = _validator_reward_total(
+        [validator["validator_id"], reward_address] if reward_address else [validator["validator_id"]]
+    )
     if connection is None:
         with get_connection() as score_connection:
             selection = _validator_selection_metrics(score_connection, validator)
@@ -243,7 +264,8 @@ def enrich_miner(miner: dict[str, Any] | None) -> dict[str, Any] | None:
     miner["accepted_blocks"] = accepted_blocks["count"]
     miner["total_rewards"] = accepted_blocks["rewards"]
     miner["rejected_submissions"] = rejected["count"]
-    miner["balance"] = get_balance_amount(miner["miner_id"])
+    reward_address = miner.get("reward_address")
+    miner["balance"] = get_balance_amount(reward_address or miner["miner_id"])
     miner["is_banned"] = bool(miner["is_banned"])
     return miner
 
@@ -253,13 +275,17 @@ def create_next_task(
     *,
     public_key: str | None = None,
     name: str | None = None,
+    reward_address: str | None = None,
 ) -> dict[str, Any] | None:
     started = now_perf()
     with get_connection() as connection:
         _expire_assigned_tasks(connection)
         miner = row_to_dict(connection.execute("SELECT * FROM miners WHERE miner_id = ?", (miner_id,)).fetchone())
         if miner is None and public_key:
-            miner = _restore_miner_identity(connection, miner_id, public_key, name)
+            miner = _restore_miner_identity(connection, miner_id, public_key, name, reward_address)
+        elif miner is not None and reward_address:
+            _update_miner_reward_address(connection, miner_id, reward_address)
+            miner = row_to_dict(connection.execute("SELECT * FROM miners WHERE miner_id = ?", (miner_id,)).fetchone())
         if miner is None:
             return None
 
@@ -344,6 +370,7 @@ def _restore_miner_identity(
     miner_id: str,
     public_key: str,
     name: str | None,
+    reward_address: str | None = None,
 ) -> dict[str, Any] | None:
     miner_id = miner_id.strip()
     if not miner_id.startswith("miner_"):
@@ -352,19 +379,31 @@ def _restore_miner_identity(
         validate_public_key(public_key)
     except (RuntimeError, ValueError) as exc:
         raise MiningError(400, str(exc)) from exc
+    reward_address = _normalize_reward_address(reward_address)
     timestamp = utc_now()
     connection.execute(
         """
-        INSERT INTO miners (miner_id, name, public_key, registered_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO miners (miner_id, name, public_key, reward_address, registered_at)
+        VALUES (?, ?, ?, ?, ?)
         ON CONFLICT(miner_id) DO UPDATE SET
             name = COALESCE(NULLIF(excluded.name, ''), miners.name),
-            public_key = COALESCE(miners.public_key, excluded.public_key)
+            public_key = COALESCE(miners.public_key, excluded.public_key),
+            reward_address = COALESCE(excluded.reward_address, miners.reward_address)
         """,
-        (miner_id, (name or miner_id)[:80], public_key, timestamp),
+        (miner_id, (name or miner_id)[:80], public_key, reward_address, timestamp),
     )
     _ensure_balance_account(connection, miner_id, "miner")
+    if reward_address:
+        _ensure_balance_account(connection, reward_address, "wallet")
     return row_to_dict(connection.execute("SELECT * FROM miners WHERE miner_id = ?", (miner_id,)).fetchone())
+
+
+def _update_miner_reward_address(connection: Any, miner_id: str, reward_address: str) -> None:
+    reward_address = _normalize_reward_address(reward_address)
+    if not reward_address:
+        return
+    connection.execute("UPDATE miners SET reward_address = ? WHERE miner_id = ?", (reward_address, miner_id))
+    _ensure_balance_account(connection, reward_address, "wallet")
 
 
 def _restore_validator_identity(
@@ -372,6 +411,7 @@ def _restore_validator_identity(
     validator_id: str,
     public_key: str,
     name: str | None,
+    reward_address: str | None = None,
 ) -> dict[str, Any] | None:
     validator_id = validator_id.strip()
     if not validator_id.startswith("validator_"):
@@ -380,20 +420,32 @@ def _restore_validator_identity(
         validate_public_key(public_key)
     except (RuntimeError, ValueError) as exc:
         raise MiningError(400, str(exc)) from exc
+    reward_address = _normalize_reward_address(reward_address)
     timestamp = utc_now()
     connection.execute(
         """
-        INSERT INTO validators (validator_id, name, public_key, registered_at, last_seen_at)
-        VALUES (?, ?, ?, ?, ?)
+        INSERT INTO validators (validator_id, name, public_key, reward_address, registered_at, last_seen_at)
+        VALUES (?, ?, ?, ?, ?, ?)
         ON CONFLICT(validator_id) DO UPDATE SET
             name = COALESCE(NULLIF(excluded.name, ''), validators.name),
             public_key = COALESCE(validators.public_key, excluded.public_key),
+            reward_address = COALESCE(excluded.reward_address, validators.reward_address),
             last_seen_at = excluded.last_seen_at
         """,
-        (validator_id, (name or validator_id)[:80], public_key, timestamp, timestamp),
+        (validator_id, (name or validator_id)[:80], public_key, reward_address, timestamp, timestamp),
     )
     _ensure_balance_account(connection, validator_id, "validator")
+    if reward_address:
+        _ensure_balance_account(connection, reward_address, "wallet")
     return row_to_dict(connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone())
+
+
+def _update_validator_reward_address(connection: Any, validator_id: str, reward_address: str) -> None:
+    reward_address = _normalize_reward_address(reward_address)
+    if not reward_address:
+        return
+    connection.execute("UPDATE validators SET reward_address = ? WHERE validator_id = ?", (reward_address, validator_id))
+    _ensure_balance_account(connection, reward_address, "wallet")
 
 
 def _claim_global_task_for_miner(
@@ -619,6 +671,7 @@ def submit_task(
 
         block_transactions = select_block_transactions(connection)
         tx_commitment = transaction_commitment(block_transactions)
+        miner_reward_account, miner_reward_account_type = _reward_account_for_miner(connection, miner_id)
 
         block_payload = {
             "algorithm": task["algorithm"],
@@ -640,6 +693,8 @@ def submit_task(
             "fraud_reason": None,
             "fraud_detected_at": None,
         }
+        if miner_reward_account_type == "wallet":
+            block_payload["miner_reward_address"] = miner_reward_account
         if tx_commitment["tx_count"]:
             block_payload["tx_merkle_root"] = tx_commitment["tx_merkle_root"]
             block_payload["tx_count"] = tx_commitment["tx_count"]
@@ -652,10 +707,10 @@ def submit_task(
             INSERT INTO blocks (
                 height, previous_hash, miner_id, range_start, range_end, algorithm,
                 result_hash, samples, timestamp, block_hash, reward, tx_merkle_root,
-                tx_count, tx_hashes, fee_reward, difficulty, task_id, protocol_params_id,
+                tx_count, tx_hashes, fee_reward, miner_reward_address, difficulty, task_id, protocol_params_id,
                 protocol_version, validation_mode, total_task_ms, total_block_ms
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 next_height,
@@ -673,6 +728,7 @@ def submit_task(
                 tx_commitment["tx_count"],
                 json.dumps(tx_commitment["tx_hashes"], sort_keys=True),
                 tx_commitment["fee_reward"],
+                block_payload.get("miner_reward_address"),
                 difficulty,
                 task_id,
                 params["id"],
@@ -696,8 +752,8 @@ def submit_task(
         )
         _apply_ledger_entry(
             connection,
-            account_id=miner_id,
-            account_type="miner",
+            account_id=miner_reward_account,
+            account_type=miner_reward_account_type,
             amount=reward,
             entry_type="block_reward",
             block_height=next_height,
@@ -706,7 +762,8 @@ def submit_task(
         )
         tx_execution = apply_block_transactions(
             connection,
-            miner_id=miner_id,
+            miner_id=miner_reward_account,
+            miner_account_type=miner_reward_account_type,
             block_height=next_height,
             transactions=block_transactions,
             timestamp=timestamp,
@@ -731,6 +788,7 @@ def submit_task(
             "timestamp": timestamp,
             "block_hash": block_hash,
             "reward": reward,
+            "miner_reward_address": block_payload.get("miner_reward_address"),
             "tx_merkle_root": tx_commitment["tx_merkle_root"],
             "tx_count": tx_commitment["tx_count"],
             "tx_hashes": tx_commitment["tx_hashes"],
@@ -1031,11 +1089,15 @@ def get_validation_job(
     *,
     public_key: str | None = None,
     name: str | None = None,
+    reward_address: str | None = None,
 ) -> dict[str, Any] | None:
     with get_connection() as connection:
         validator = row_to_dict(connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone())
         if validator is None and public_key:
-            validator = _restore_validator_identity(connection, validator_id, public_key, name)
+            validator = _restore_validator_identity(connection, validator_id, public_key, name, reward_address)
+        elif validator is not None and reward_address:
+            _update_validator_reward_address(connection, validator_id, reward_address)
+            validator = row_to_dict(connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone())
         if validator is None:
             return None
         if validator["is_banned"]:
@@ -1793,6 +1855,7 @@ def repair_missing_block_rewards() -> dict[str, Any]:
             SELECT
                 blocks.height,
                 blocks.miner_id,
+                blocks.miner_reward_address,
                 blocks.reward,
                 blocks.task_id,
                 blocks.timestamp,
@@ -1805,7 +1868,7 @@ def repair_missing_block_rewards() -> dict[str, Any]:
                AND ABS(rewards.amount - blocks.reward) <= ?
             LEFT JOIN ledger_entries
                 ON ledger_entries.block_height = blocks.height
-               AND ledger_entries.account_id = blocks.miner_id
+               AND ledger_entries.account_id = COALESCE(blocks.miner_reward_address, blocks.miner_id)
                AND ledger_entries.entry_type = 'block_reward'
                AND ABS(ledger_entries.amount - blocks.reward) <= ?
             WHERE rewards.id IS NULL OR ledger_entries.id IS NULL
@@ -1830,10 +1893,12 @@ def repair_missing_block_rewards() -> dict[str, Any]:
                 )
                 rewards_inserted += 1
             if row["ledger_entry_id"] is None:
+                repair_account = row["miner_reward_address"] or row["miner_id"]
+                repair_account_type = "wallet" if row["miner_reward_address"] else "miner"
                 _apply_ledger_entry(
                     connection,
-                    account_id=row["miner_id"],
-                    account_type="miner",
+                    account_id=repair_account,
+                    account_type=repair_account_type,
                     amount=reward,
                     entry_type="block_reward",
                     block_height=height,
@@ -2555,16 +2620,20 @@ def calculate_scientific_development_treasury_reward(params: dict[str, Any]) -> 
     return round(calculate_reward(params) * SCIENTIFIC_DEVELOPMENT_REWARD_PERCENT_OF_BLOCK, 8)
 
 
-def _validator_reward_total(validator_id: str) -> float:
+def _validator_reward_total(account_ids: list[str | None]) -> float:
+    normalized = [account_id for account_id in account_ids if account_id]
+    if not normalized:
+        return 0.0
+    placeholders = ",".join("?" for _ in normalized)
     with get_connection() as connection:
         row = connection.execute(
-            """
+            f"""
             SELECT COALESCE(SUM(amount), 0) AS total
             FROM ledger_entries
-            WHERE account_id = ?
+            WHERE account_id IN ({placeholders})
             AND entry_type = 'validator_reward'
             """,
-            (validator_id,),
+            tuple(normalized),
         ).fetchone()
     return round(float(row["total"]), 8)
 
@@ -2597,15 +2666,19 @@ def _apply_validator_rewards(
 
     per_validator = round(pool / len(validator_ids), 8)
     distributed = 0.0
+    reward_addresses: dict[str, str] = {}
     for index, validator_id in enumerate(validator_ids, start=1):
         amount = per_validator
         if index == len(validator_ids):
             amount = round(pool - distributed, 8)
         distributed = round(distributed + amount, 8)
+        reward_account, reward_account_type = _reward_account_for_validator(connection, validator_id)
+        if reward_account_type == "wallet":
+            reward_addresses[validator_id] = reward_account
         _apply_ledger_entry(
             connection,
-            account_id=validator_id,
-            account_type="validator",
+            account_id=reward_account,
+            account_type=reward_account_type,
             amount=amount,
             entry_type="validator_reward",
             block_height=block_height,
@@ -2617,6 +2690,7 @@ def _apply_validator_rewards(
         "pool": pool,
         "per_validator": per_validator,
         "validator_ids": validator_ids,
+        "reward_addresses": reward_addresses,
     }
 
 
@@ -3070,6 +3144,22 @@ def _ensure_balance_account(connection: Any, account_id: str, account_type: str)
         """,
         (account_id, account_type, utc_now()),
     )
+
+
+def _reward_account_for_miner(connection: Any, miner_id: str) -> tuple[str, str]:
+    row = connection.execute("SELECT reward_address FROM miners WHERE miner_id = ?", (miner_id,)).fetchone()
+    reward_address = row["reward_address"] if row is not None else None
+    if reward_address and is_valid_address(reward_address):
+        return reward_address, "wallet"
+    return miner_id, "miner"
+
+
+def _reward_account_for_validator(connection: Any, validator_id: str) -> tuple[str, str]:
+    row = connection.execute("SELECT reward_address FROM validators WHERE validator_id = ?", (validator_id,)).fetchone()
+    reward_address = row["reward_address"] if row is not None else None
+    if reward_address and is_valid_address(reward_address):
+        return reward_address, "wallet"
+    return validator_id, "validator"
 
 
 def _apply_ledger_entry(
@@ -4062,6 +4152,7 @@ def _accept_block_in_connection(
     total_block_ms = total_task_ms
     block_transactions = select_block_transactions(connection)
     tx_commitment = transaction_commitment(block_transactions)
+    miner_reward_account, miner_reward_account_type = _reward_account_for_miner(connection, miner_id)
 
     block_payload = {
         "algorithm": task["algorithm"],
@@ -4080,6 +4171,8 @@ def _accept_block_in_connection(
         "total_block_ms": total_block_ms,
         "validation_mode": params["validation_mode"],
     }
+    if miner_reward_account_type == "wallet":
+        block_payload["miner_reward_address"] = miner_reward_account
     if merkle_root:
         block_payload["merkle_root"] = merkle_root
     if tx_commitment["tx_count"]:
@@ -4094,10 +4187,10 @@ def _accept_block_in_connection(
         INSERT INTO blocks (
             height, previous_hash, miner_id, range_start, range_end, algorithm,
             result_hash, merkle_root, samples, timestamp, block_hash, reward, tx_merkle_root,
-            tx_count, tx_hashes, fee_reward, difficulty, task_id, protocol_params_id,
+            tx_count, tx_hashes, fee_reward, miner_reward_address, difficulty, task_id, protocol_params_id,
             protocol_version, validation_mode, total_task_ms, total_block_ms, validation_ms
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             next_height,
@@ -4116,6 +4209,7 @@ def _accept_block_in_connection(
             tx_commitment["tx_count"],
             json.dumps(tx_commitment["tx_hashes"], sort_keys=True),
             tx_commitment["fee_reward"],
+            block_payload.get("miner_reward_address"),
             difficulty,
             task["task_id"],
             params["id"],
@@ -4140,8 +4234,8 @@ def _accept_block_in_connection(
     )
     _apply_ledger_entry(
         connection,
-        account_id=miner_id,
-        account_type="miner",
+        account_id=miner_reward_account,
+        account_type=miner_reward_account_type,
         amount=reward,
         entry_type="block_reward",
         block_height=next_height,
@@ -4150,7 +4244,8 @@ def _accept_block_in_connection(
     )
     tx_execution = apply_block_transactions(
         connection,
-        miner_id=miner_id,
+        miner_id=miner_reward_account,
+        miner_account_type=miner_reward_account_type,
         block_height=next_height,
         transactions=block_transactions,
         timestamp=timestamp,
@@ -4184,6 +4279,7 @@ def _accept_block_in_connection(
         "timestamp": timestamp,
         "block_hash": block_hash,
         "reward": reward,
+        "miner_reward_address": block_payload.get("miner_reward_address"),
         "tx_merkle_root": tx_commitment["tx_merkle_root"],
         "tx_count": tx_commitment["tx_count"],
         "tx_hashes": tx_commitment["tx_hashes"],

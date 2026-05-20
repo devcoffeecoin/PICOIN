@@ -53,13 +53,14 @@ from app.services.state import (
     restore_imported_snapshot_state,
     validate_snapshot_document,
 )
-from app.services.wallet import create_wallet, sign_transaction
+from app.services.wallet import address_from_public_key, create_wallet, sign_transaction
 
 
 DEFAULT_SERVER_URL = os.getenv("PICOIN_SERVER", "http://127.0.0.1:8000")
 DEFAULT_HOST = os.getenv("PICOIN_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.getenv("PICOIN_PORT", "8000"))
 DEFAULT_SCIENCE_ADDRESS = os.getenv("PICOIN_SCIENCE_ADDRESS", "local-science-user")
+DEFAULT_WALLET_PATH = Path(os.getenv("PICOIN_WALLET_PATH", str(Path.home() / ".picoin" / "wallets" / "default.json")))
 
 
 def http_timeout_seconds() -> float:
@@ -815,15 +816,53 @@ def command_node_genesis_hash(args: argparse.Namespace) -> int:
 
 def command_wallet_create(args: argparse.Namespace) -> int:
     wallet = create_wallet(args.name)
-    if args.output:
-        args.output.parent.mkdir(parents=True, exist_ok=True)
-        args.output.write_text(json.dumps(wallet, indent=2, sort_keys=True), encoding="utf-8")
+    output = args.output or DEFAULT_WALLET_PATH
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(wallet, indent=2, sort_keys=True), encoding="utf-8")
     print_json(wallet)
     return 0
 
 
+def _load_wallet_file(path: Path | None) -> dict[str, Any]:
+    wallet_path = path or DEFAULT_WALLET_PATH
+    return json.loads(wallet_path.read_text(encoding="utf-8"))
+
+
+def command_wallet_import(args: argparse.Namespace) -> int:
+    wallet = json.loads(args.file.read_text(encoding="utf-8"))
+    if "address" not in wallet and "public_key" in wallet:
+        wallet["address"] = address_from_public_key(wallet["public_key"])
+    output = args.output or DEFAULT_WALLET_PATH
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text(json.dumps(wallet, indent=2, sort_keys=True), encoding="utf-8")
+    print_json({"status": "ok", "address": wallet.get("address"), "wallet": str(output)})
+    return 0
+
+
+def command_wallet_export(args: argparse.Namespace) -> int:
+    print_json(_load_wallet_file(args.wallet))
+    return 0
+
+
+def command_wallet_address(args: argparse.Namespace) -> int:
+    wallet = _load_wallet_file(args.wallet)
+    print_json({"address": wallet.get("address") or address_from_public_key(wallet["public_key"])})
+    return 0
+
+
 def command_wallet_balance(args: argparse.Namespace) -> int:
-    print_json(get_json(args.server, f"/balances/{args.address}"))
+    address = args.address
+    if not address:
+        address = _load_wallet_file(args.wallet).get("address")
+    print_json(get_json(args.server, f"/accounts/{address}"))
+    return 0
+
+
+def command_wallet_history(args: argparse.Namespace) -> int:
+    address = args.address
+    if not address:
+        address = _load_wallet_file(args.wallet).get("address")
+    print_json(get_json(args.server, f"/accounts/{address}/history?limit={args.limit}"))
     return 0
 
 
@@ -833,7 +872,7 @@ def command_wallet_nonce(args: argparse.Namespace) -> int:
 
 
 def command_tx_send(args: argparse.Namespace) -> int:
-    wallet = json.loads(args.wallet.read_text(encoding="utf-8"))
+    wallet = _load_wallet_file(args.wallet)
     payload = json.loads(args.payload) if args.payload else {}
     sender = args.sender or wallet["address"]
     nonce = args.nonce
@@ -850,7 +889,7 @@ def command_tx_send(args: argparse.Namespace) -> int:
         fee=args.fee,
         payload=payload,
     )
-    print_json(post_json(args.server, "/tx/submit", tx))
+    print_json(post_json(args.server, "/transactions/submit", tx))
     return 0
 
 
@@ -1343,9 +1382,40 @@ def add_wallet_parser(subparsers: argparse._SubParsersAction) -> None:
     create_parser.add_argument("--output", type=Path)
     create_parser.set_defaults(func=command_wallet_create)
 
+    import_parser = wallet_subparsers.add_parser("import", help="Import a wallet JSON into the local default wallet path")
+    import_parser.add_argument("--file", type=Path, required=True)
+    import_parser.add_argument("--output", type=Path)
+    import_parser.set_defaults(func=command_wallet_import)
+
+    export_parser = wallet_subparsers.add_parser("export", help="Print a local wallet JSON")
+    export_parser.add_argument("--wallet", type=Path)
+    export_parser.set_defaults(func=command_wallet_export)
+
+    address_parser = wallet_subparsers.add_parser("address", help="Print a wallet address")
+    address_parser.add_argument("--wallet", type=Path)
+    address_parser.set_defaults(func=command_wallet_address)
+
     balance_parser = wallet_subparsers.add_parser("balance", help="Query a wallet/account balance")
-    balance_parser.add_argument("--address", required=True)
+    balance_parser.add_argument("--address")
+    balance_parser.add_argument("--wallet", type=Path)
     balance_parser.set_defaults(func=command_wallet_balance)
+
+    history_parser = wallet_subparsers.add_parser("history", help="Show wallet/account ledger history")
+    history_parser.add_argument("--address")
+    history_parser.add_argument("--wallet", type=Path)
+    history_parser.add_argument("--limit", type=int, default=100)
+    history_parser.set_defaults(func=command_wallet_history)
+
+    send_parser = wallet_subparsers.add_parser("send", help="Submit a signed wallet transfer")
+    send_parser.add_argument("--wallet", type=Path)
+    send_parser.add_argument("--to", required=True)
+    send_parser.add_argument("--amount", type=float, required=True)
+    send_parser.add_argument("--fee", type=float, default=0.0)
+    send_parser.add_argument("--nonce", type=int)
+    send_parser.add_argument("--sender")
+    send_parser.add_argument("--payload", help="Optional JSON payload")
+    send_parser.add_argument("--type", default="transfer")
+    send_parser.set_defaults(func=command_tx_send)
 
     nonce_parser = wallet_subparsers.add_parser("nonce", help="Show confirmed, pending and next nonce for an address")
     nonce_parser.add_argument("--address", required=True)
@@ -1358,7 +1428,7 @@ def add_tx_parser(subparsers: argparse._SubParsersAction) -> None:
     tx_subparsers = parser.add_subparsers(dest="tx_command", required=True)
 
     send_parser = tx_subparsers.add_parser("send", help="Submit a signed transaction to the mempool")
-    send_parser.add_argument("--wallet", type=Path, required=True)
+    send_parser.add_argument("--wallet", type=Path)
     send_parser.add_argument("--to")
     send_parser.add_argument("--amount", type=float, default=0.0)
     send_parser.add_argument("--fee", type=float, default=0.0)

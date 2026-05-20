@@ -1340,10 +1340,10 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
         INSERT INTO blocks (
             height, previous_hash, miner_id, range_start, range_end, algorithm,
             result_hash, merkle_root, samples, timestamp, block_hash, reward, tx_merkle_root,
-            tx_count, tx_hashes, fee_reward, state_root, difficulty, task_id, protocol_params_id,
+            tx_count, tx_hashes, fee_reward, miner_reward_address, state_root, difficulty, task_id, protocol_params_id,
             protocol_version, validation_mode, total_task_ms, total_block_ms, validation_ms
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """,
         (
             block["height"],
@@ -1362,6 +1362,7 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
             int(block.get("tx_count") or 0),
             json.dumps(block.get("tx_hashes") or [], sort_keys=True),
             round(float(block.get("fee_reward") or 0), 8),
+            block.get("miner_reward_address"),
             block.get("state_root"),
             block.get("difficulty"),
             task_id,
@@ -1382,8 +1383,8 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
     )
     _apply_account_delta(
         connection,
-        block["miner_id"],
-        "miner",
+        block.get("miner_reward_address") or block["miner_id"],
+        "wallet" if block.get("miner_reward_address") else "miner",
         block["reward"],
         "block_reward",
         block["height"],
@@ -1394,7 +1395,8 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
     if transactions:
         apply_block_transactions(
             connection,
-            miner_id=block["miner_id"],
+            miner_id=block.get("miner_reward_address") or block["miner_id"],
+            miner_account_type="wallet" if block.get("miner_reward_address") else "miner",
             block_height=block["height"],
             transactions=transactions,
             timestamp=timestamp,
@@ -1440,12 +1442,14 @@ def _apply_distributed_validator_rewards(
     per_validator = round(float(payload_reward.get("per_validator") or 0), 8)
     if per_validator <= 0:
         per_validator = round(pool / len(validator_ids), 8)
+    reward_addresses = payload_reward.get("reward_addresses") if isinstance(payload_reward.get("reward_addresses"), dict) else {}
     for validator_id in validator_ids:
         _ensure_validator(connection, validator_id, timestamp)
+        reward_address = reward_addresses.get(validator_id)
         _apply_account_delta(
             connection,
-            validator_id,
-            "validator",
+            reward_address or validator_id,
+            "wallet" if reward_address else "validator",
             per_validator,
             "validator_reward",
             block_height,
@@ -1626,6 +1630,8 @@ def _normalize_block(block: dict[str, Any]) -> dict[str, Any]:
         normalized["tx_hashes"] = json.loads(normalized["tx_hashes"])
     normalized["tx_count"] = int(normalized.get("tx_count") or 0)
     normalized["fee_reward"] = round(float(normalized.get("fee_reward") or 0), 8)
+    if normalized.get("miner_reward_address"):
+        normalized["miner_reward_address"] = str(normalized["miner_reward_address"]).strip().upper()
     if normalized.get("state_root") is not None and len(str(normalized["state_root"])) != 64:
         raise ConsensusError(422, "invalid state_root length")
     if normalized["tx_count"] > 0 and not normalized.get("tx_merkle_root"):
@@ -1656,6 +1662,8 @@ def _canonical_block_payload(block: dict[str, Any], include_protocol: bool) -> d
         payload["total_block_ms"] = int(block["total_block_ms"])
     if block.get("merkle_root"):
         payload["merkle_root"] = block["merkle_root"]
+    if block.get("miner_reward_address"):
+        payload["miner_reward_address"] = str(block["miner_reward_address"]).strip().upper()
     if int(block.get("tx_count") or 0) > 0:
         payload["tx_merkle_root"] = block.get("tx_merkle_root")
         payload["tx_count"] = int(block.get("tx_count") or 0)
@@ -1689,6 +1697,10 @@ def _block_hash_variant_payloads(block: dict[str, Any]) -> list[dict[str, Any]]:
         optional_groups.append(("total_block_ms", {"total_block_ms": int(block["total_block_ms"])}))
     if block.get("merkle_root"):
         optional_groups.append(("merkle_root", {"merkle_root": block["merkle_root"]}))
+    if block.get("miner_reward_address"):
+        optional_groups.append(
+            ("miner_reward_address", {"miner_reward_address": str(block["miner_reward_address"]).strip().upper()})
+        )
     protocol_version = block.get("protocol_version", PROTOCOL_VERSION)
     validation_mode = block.get("validation_mode", VALIDATION_MODE)
     optional_groups.append(("protocol_version", {"protocol_version": protocol_version}))

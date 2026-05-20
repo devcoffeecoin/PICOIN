@@ -3,6 +3,7 @@
   "validator_id": "validator_your_id",
   "public_key": "ed25519:YOUR_PUBLIC_KEY",
   "private_key": "ed25519:YOUR_PRIVATE_KEY",
+  "reward_address": "PIYOUR_REWARD_WALLET_ADDRESS",
   "server_url": "https://api.picoin.science",
   "created_at": "2026-01-01T00:00:00+00:00"
 }

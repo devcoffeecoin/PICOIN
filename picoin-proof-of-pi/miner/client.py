@@ -25,6 +25,7 @@ from app.core.signatures import (
 
 DEFAULT_IDENTITY_PATH = Path("miner_identity.json")
 AUTO_REGISTER_IDENTITY = os.getenv("PICOIN_AUTO_REGISTER_IDENTITY", "1").strip().lower() not in {"0", "false", "no"}
+MINER_REWARD_ADDRESS = os.getenv("PICOIN_MINER_REWARD_ADDRESS", "").strip()
 
 
 def utc_now() -> str:
@@ -34,7 +35,10 @@ def utc_now() -> str:
 def load_identity(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"identity file not found: {path}")
-    return json.loads(path.read_text(encoding="utf-8"))
+    identity = json.loads(path.read_text(encoding="utf-8"))
+    if MINER_REWARD_ADDRESS:
+        identity["reward_address"] = MINER_REWARD_ADDRESS
+    return identity
 
 
 def load_or_register_identity(server_url: str, identity_path: Path, default_name: str | None = None) -> dict[str, Any]:
@@ -78,7 +82,7 @@ def register(server_url: str, name: str, identity_path: Path, overwrite: bool) -
     keypair = generate_keypair()
     response = requests.post(
         f"{server_url}/miners/register",
-        json={"name": name, "public_key": keypair["public_key"]},
+        json={"name": name, "public_key": keypair["public_key"], "reward_address": MINER_REWARD_ADDRESS or None},
         timeout=20,
     )
     response.raise_for_status()
@@ -88,6 +92,7 @@ def register(server_url: str, name: str, identity_path: Path, overwrite: bool) -
         "name": miner["name"],
         "public_key": keypair["public_key"],
         "private_key": keypair["private_key"],
+        "reward_address": MINER_REWARD_ADDRESS or miner.get("reward_address"),
         "server_url": server_url,
         "created_at": utc_now(),
     }
@@ -106,7 +111,9 @@ def get_task_for_identity(server_url: str, identity: dict[str, Any]) -> dict[str
         "miner_id": identity["miner_id"],
         "public_key": identity.get("public_key"),
         "name": identity.get("name") or identity["miner_id"],
+        "reward_address": identity.get("reward_address"),
     }
+    params = {key: value for key, value in params.items() if value}
     response = requests.get(f"{server_url}/tasks/next", params=params, timeout=20)
     response.raise_for_status()
     return response.json()

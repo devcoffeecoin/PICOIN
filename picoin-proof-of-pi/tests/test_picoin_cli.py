@@ -81,6 +81,10 @@ def test_picoin_cli_parses_wallet_and_tx_commands() -> None:
     parser = build_parser()
 
     wallet = parser.parse_args(["wallet", "create", "--name", "alice", "--output", "alice.json"])
+    wallet_address = parser.parse_args(["wallet", "address", "--wallet", "alice.json"])
+    wallet_balance = parser.parse_args(["wallet", "balance", "--wallet", "alice.json"])
+    wallet_history = parser.parse_args(["wallet", "history", "--address", "PIB", "--limit", "10"])
+    wallet_send = parser.parse_args(["wallet", "send", "--wallet", "alice.json", "--to", "PIB", "--amount", "1"])
     tx = parser.parse_args(
         [
             "tx",
@@ -102,6 +106,14 @@ def test_picoin_cli_parses_wallet_and_tx_commands() -> None:
     assert wallet.command == "wallet"
     assert wallet.wallet_command == "create"
     assert wallet.output == Path("alice.json")
+    assert wallet_address.wallet_command == "address"
+    assert wallet_address.wallet == Path("alice.json")
+    assert wallet_balance.wallet_command == "balance"
+    assert wallet_balance.wallet == Path("alice.json")
+    assert wallet_history.wallet_command == "history"
+    assert wallet_history.limit == 10
+    assert wallet_send.wallet_command == "send"
+    assert wallet_send.to == "PIB"
     assert tx.command == "tx"
     assert tx.tx_command == "send"
     assert tx.wallet == Path("alice.json")

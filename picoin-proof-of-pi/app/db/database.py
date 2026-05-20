@@ -122,6 +122,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 miner_id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 public_key TEXT,
+                reward_address TEXT,
                 registered_at TEXT NOT NULL,
                 trust_score REAL NOT NULL DEFAULT 1.0,
                 cooldown_until TEXT,
@@ -132,6 +133,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 validator_id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
                 public_key TEXT NOT NULL,
+                reward_address TEXT,
                 registered_at TEXT NOT NULL,
                 accepted_jobs INTEGER NOT NULL DEFAULT 0,
                 rejected_jobs INTEGER NOT NULL DEFAULT 0,
@@ -218,6 +220,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 tx_count INTEGER NOT NULL DEFAULT 0,
                 tx_hashes TEXT NOT NULL DEFAULT '[]',
                 fee_reward REAL NOT NULL DEFAULT 0,
+                miner_reward_address TEXT,
                 state_root TEXT,
                 difficulty REAL,
                 task_id TEXT NOT NULL UNIQUE,
@@ -643,6 +646,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "miners", "trust_score", "REAL NOT NULL DEFAULT 1.0")
         _ensure_column(connection, "miners", "cooldown_until", "TEXT")
         _ensure_column(connection, "miners", "is_banned", "INTEGER NOT NULL DEFAULT 0")
+        _ensure_column(connection, "miners", "reward_address", "TEXT")
         _ensure_column(connection, "validators", "invalid_results", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "validators", "trust_score", "REAL NOT NULL DEFAULT 1.0")
         _ensure_column(connection, "validators", "cooldown_until", "TEXT")
@@ -650,6 +654,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "validators", "total_validation_ms", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "validators", "stake_locked", f"REAL NOT NULL DEFAULT {MIN_VALIDATOR_STAKE}")
         _ensure_column(connection, "validators", "slashed_amount", "REAL NOT NULL DEFAULT 0")
+        _ensure_column(connection, "validators", "reward_address", "TEXT")
         _ensure_column(connection, "tasks", "expires_at", "TEXT")
         _ensure_column(connection, "tasks", "assignment_seed", "TEXT")
         _ensure_column(connection, "tasks", "assignment_mode", "TEXT")
@@ -662,6 +667,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "blocks", "tx_count", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "blocks", "tx_hashes", "TEXT NOT NULL DEFAULT '[]'")
         _ensure_column(connection, "blocks", "fee_reward", "REAL NOT NULL DEFAULT 0")
+        _ensure_column(connection, "blocks", "miner_reward_address", "TEXT")
         _ensure_column(connection, "blocks", "state_root", "TEXT")
         _ensure_column(connection, "blocks", "difficulty", "REAL")
         _ensure_column(connection, "blocks", "protocol_params_id", "INTEGER")

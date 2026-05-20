@@ -274,7 +274,7 @@ def get_blocks_since(from_height: int, limit: int = 100) -> dict[str, Any]:
             """
             SELECT height, previous_hash, miner_id, range_start, range_end, algorithm,
                    result_hash, merkle_root, samples, timestamp, block_hash, reward,
-                   tx_merkle_root, tx_count, tx_hashes, fee_reward, state_root,
+                   tx_merkle_root, tx_count, tx_hashes, fee_reward, miner_reward_address, state_root,
                    difficulty, task_id, protocol_params_id, protocol_version,
                    validation_mode, total_task_ms, total_block_ms,
                    fraudulent, fraud_reason, fraud_detected_at
