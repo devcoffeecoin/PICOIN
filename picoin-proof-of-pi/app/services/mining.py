@@ -3468,11 +3468,16 @@ def _run_retroactive_audit_in_connection(
     block_height: int | None,
     sample_multiplier: int,
     automatic: bool,
+    trigger_height: int | None = None,
+    trigger_timestamp: str | None = None,
 ) -> dict[str, Any]:
     if block_height is None:
-        row = connection.execute(
-            "SELECT * FROM blocks ORDER BY RANDOM() LIMIT 1"
-        ).fetchone()
+        if automatic:
+            row = _select_scheduled_retroactive_audit_block(connection, trigger_height)
+        else:
+            row = connection.execute(
+                "SELECT * FROM blocks ORDER BY RANDOM() LIMIT 1"
+            ).fetchone()
     else:
         row = connection.execute(
             "SELECT * FROM blocks WHERE height = ?",
@@ -3485,19 +3490,28 @@ def _run_retroactive_audit_in_connection(
     params = _protocol_params_for_block(connection, block)
     base_samples = int(params["sample_count"])
     sample_count = min(block["range_end"] - block["range_start"] + 1, base_samples * sample_multiplier)
-    timestamp = utc_now()
-    audit_seed = sha256_text(
-        canonical_json(
-            {
-                "audit_id": uuid.uuid4().hex,
-                "automatic": automatic,
-                "block_hash": block["block_hash"],
-                "block_height": block["height"],
-                "created_at": timestamp,
-                "sample_count": sample_count,
-            }
+    timestamp = trigger_timestamp if automatic and trigger_timestamp else utc_now()
+    if automatic:
+        audit_seed = _scheduled_retroactive_audit_seed(block, sample_count, trigger_height, timestamp)
+    else:
+        audit_seed = sha256_text(
+            canonical_json(
+                {
+                    "audit_id": uuid.uuid4().hex,
+                    "automatic": automatic,
+                    "block_hash": block["block_hash"],
+                    "block_height": block["height"],
+                    "created_at": timestamp,
+                    "sample_count": sample_count,
+                }
+            )
         )
-    )
+    existing = connection.execute(
+        "SELECT * FROM retroactive_audits WHERE audit_seed = ?",
+        (audit_seed,),
+    ).fetchone()
+    if existing is not None:
+        return row_to_dict(existing)
     segment = calculate_pi_segment(block["range_start"], block["range_end"], block["algorithm"])
     actual_hash = hash_result(segment, block["range_start"], block["range_end"], block["algorithm"])
     requested_samples = _build_challenge_samples(
@@ -3579,6 +3593,70 @@ def _apply_retroactive_audit_reward(
     return reward
 
 
+def _select_scheduled_retroactive_audit_block(connection: Any, trigger_height: int | None) -> Any:
+    max_height = int(trigger_height or 0)
+    if max_height <= 0:
+        latest = connection.execute("SELECT COALESCE(MAX(height), 0) AS height FROM blocks").fetchone()
+        max_height = int((latest["height"] if latest else 0) or 0)
+    count_row = connection.execute(
+        "SELECT COUNT(*) AS count FROM blocks WHERE height <= ?",
+        (max_height,),
+    ).fetchone()
+    count = int((count_row["count"] if count_row else 0) or 0)
+    if count <= 0:
+        return None
+    trigger = connection.execute(
+        "SELECT block_hash, previous_hash, timestamp FROM blocks WHERE height = ?",
+        (max_height,),
+    ).fetchone()
+    seed = sha256_text(
+        canonical_json(
+            {
+                "chain_id": CHAIN_ID,
+                "network_id": NETWORK_ID,
+                "trigger_block_hash": trigger["block_hash"] if trigger else None,
+                "trigger_height": max_height,
+                "trigger_previous_hash": trigger["previous_hash"] if trigger else None,
+                "type": "scheduled_retroactive_audit_selection",
+            }
+        )
+    )
+    offset = int(seed[:16], 16) % count
+    return connection.execute(
+        """
+        SELECT *
+        FROM blocks
+        WHERE height <= ?
+        ORDER BY height ASC
+        LIMIT 1 OFFSET ?
+        """,
+        (max_height, offset),
+    ).fetchone()
+
+
+def _scheduled_retroactive_audit_seed(
+    block: dict[str, Any],
+    sample_count: int,
+    trigger_height: int | None,
+    trigger_timestamp: str,
+) -> str:
+    return sha256_text(
+        canonical_json(
+            {
+                "automatic": True,
+                "audited_block_hash": block["block_hash"],
+                "audited_block_height": block["height"],
+                "chain_id": CHAIN_ID,
+                "created_at": trigger_timestamp,
+                "network_id": NETWORK_ID,
+                "sample_count": sample_count,
+                "trigger_height": int(trigger_height or 0),
+                "type": "scheduled_retroactive_audit",
+            }
+        )
+    )
+
+
 def _mark_block_fraudulent(connection: Any, block: dict[str, Any], reason: str, detected_at: str) -> None:
     connection.execute(
         """
@@ -3658,11 +3736,17 @@ def _apply_validator_fraud_penalty(connection: Any, validator_id: str, reason: s
 def _maybe_run_scheduled_retroactive_audit(connection: Any, current_height: int) -> dict[str, Any] | None:
     if current_height <= 0 or current_height % RETROACTIVE_AUDIT_INTERVAL_BLOCKS != 0:
         return None
+    trigger = connection.execute(
+        "SELECT timestamp FROM blocks WHERE height = ?",
+        (current_height,),
+    ).fetchone()
     return _run_retroactive_audit_in_connection(
         connection,
         block_height=None,
         sample_multiplier=RETROACTIVE_AUDIT_SAMPLE_MULTIPLIER,
         automatic=True,
+        trigger_height=current_height,
+        trigger_timestamp=trigger["timestamp"] if trigger else None,
     )
 
 
