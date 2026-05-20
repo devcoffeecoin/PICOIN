@@ -271,6 +271,19 @@ def enrich_miner(miner: dict[str, Any] | None) -> dict[str, Any] | None:
     return miner
 
 
+def _ensure_replay_can_accept_work() -> None:
+    try:
+        from app.services.consensus import get_replay_status
+
+        replay_status = get_replay_status()
+    except Exception:
+        return
+    sync_status = str(replay_status.get("sync_status") or "healthy")
+    if sync_status in {"stalled", "divergent"}:
+        reason = replay_status.get("divergence_reason") or f"replay {sync_status}"
+        raise MiningError(503, f"node replay is {sync_status}: {reason}")
+
+
 def create_next_task(
     miner_id: str,
     *,
@@ -279,6 +292,7 @@ def create_next_task(
     reward_address: str | None = None,
 ) -> dict[str, Any] | None:
     started = now_perf()
+    _ensure_replay_can_accept_work()
     with get_connection() as connection:
         _expire_assigned_tasks(connection)
         miner = row_to_dict(connection.execute("SELECT * FROM miners WHERE miner_id = ?", (miner_id,)).fetchone())
@@ -1094,6 +1108,7 @@ def get_validation_job(
     name: str | None = None,
     reward_address: str | None = None,
 ) -> dict[str, Any] | None:
+    _ensure_replay_can_accept_work()
     with get_connection() as connection:
         validator = row_to_dict(connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone())
         if validator is None and public_key:
@@ -2038,6 +2053,16 @@ def get_health_status() -> dict[str, Any]:
     issues: list[str] = []
     database = {"connected": False}
     snapshot_base: dict[str, Any] | None = None
+    replay_status: dict[str, Any] = {
+        "sync_status": "healthy",
+        "replay_stalled": False,
+        "replay_last_progress_at": None,
+        "replay_last_imported_height": 0,
+        "replay_consecutive_failures": 0,
+        "divergence_detected": False,
+        "divergence_reason": None,
+        "auto_recovery_active": False,
+    }
 
     try:
         with get_connection() as connection:
@@ -2105,12 +2130,26 @@ def get_health_status() -> dict[str, Any]:
         issues.append("chain verification failed")
     if not audit["valid"]:
         issues.append("economic audit has issues")
+    try:
+        from app.services.consensus import get_replay_status
+
+        replay_status = get_replay_status()
+    except Exception as exc:
+        issues.append(f"replay status unavailable: {exc}")
+    sync_status = str(replay_status.get("sync_status") or "healthy")
+    if sync_status in {"stalled", "divergent"}:
+        issues.append(f"replay {sync_status}")
+    if replay_status.get("divergence_reason"):
+        issues.append(str(replay_status["divergence_reason"])[:180])
     local_quorum_roles = {"full", "bootstrap", "miner"}
     if active_protocol and NODE_TYPE in local_quorum_roles and eligible_validators < required_approvals:
         issues.append("not enough eligible validators for quorum")
 
     can_assign_tasks = bool(database["connected"] and active_protocol)
     mining_ready = bool(can_assign_tasks and miners > 0 and eligible_validators >= required_approvals)
+    if sync_status in {"stalled", "divergent"}:
+        can_assign_tasks = False
+        mining_ready = False
     status = "ok" if not issues else "degraded"
 
     protocol_version = params["protocol_version"] if params is not None else PROTOCOL_VERSION
@@ -2133,6 +2172,14 @@ def get_health_status() -> dict[str, Any]:
         "latest_block_hash": latest_hash,
         "local_block_height": local_height,
         "local_block_hash": local_hash,
+        "sync_status": sync_status,
+        "replay_stalled": bool(replay_status.get("replay_stalled")),
+        "replay_last_progress_at": replay_status.get("replay_last_progress_at"),
+        "replay_last_imported_height": int(replay_status.get("replay_last_imported_height") or 0),
+        "replay_consecutive_failures": int(replay_status.get("replay_consecutive_failures") or 0),
+        "divergence_detected": bool(replay_status.get("divergence_detected")),
+        "divergence_reason": replay_status.get("divergence_reason"),
+        "auto_recovery_active": bool(replay_status.get("auto_recovery_active")),
         "can_assign_tasks": can_assign_tasks,
         "mining_ready": mining_ready,
         "issues": issues,

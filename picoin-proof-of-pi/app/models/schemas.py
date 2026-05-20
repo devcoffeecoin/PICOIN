@@ -750,6 +750,14 @@ class HealthResponse(BaseModel):
     latest_block_hash: str
     local_block_height: int | None = None
     local_block_hash: str | None = None
+    sync_status: str = "healthy"
+    replay_stalled: bool = False
+    replay_last_progress_at: datetime | None = None
+    replay_last_imported_height: int | None = None
+    replay_consecutive_failures: int = 0
+    divergence_detected: bool = False
+    divergence_reason: str | None = None
+    auto_recovery_active: bool = False
     can_assign_tasks: bool
     mining_ready: bool
     issues: list[str]
