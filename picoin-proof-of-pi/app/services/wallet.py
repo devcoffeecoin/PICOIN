@@ -21,9 +21,23 @@ def address_checksum(address_body: str) -> str:
     return sha256_text(address_body).upper()[:ADDRESS_CHECKSUM_LENGTH]
 
 
-def address_from_public_key(public_key: str) -> str:
+def legacy_address_from_public_key(public_key: str) -> str:
     body = sha256_text(public_key).upper()[:ADDRESS_HASH_LENGTH]
+    return f"{ADDRESS_PREFIX}{body}"
+
+
+def address_from_public_key(public_key: str) -> str:
+    body = legacy_address_from_public_key(public_key)[len(ADDRESS_PREFIX) :]
     return f"{ADDRESS_PREFIX}{body}{address_checksum(body)}"
+
+
+def address_matches_public_key(address: str | None, public_key: str | None) -> bool:
+    if not isinstance(public_key, str):
+        return False
+    if not is_valid_address(address):
+        return False
+    normalized = str(address).strip().upper()
+    return normalized in {address_from_public_key(public_key), legacy_address_from_public_key(public_key)}
 
 
 def is_valid_address(address: str | None) -> bool:

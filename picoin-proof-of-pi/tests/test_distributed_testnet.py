@@ -61,7 +61,14 @@ from app.services.treasury import (
     get_scientific_development_treasury,
 )
 from app.services.transactions import get_wallet_nonce_status, select_block_transactions
-from app.services.wallet import address_from_public_key, create_wallet, is_valid_address, sign_transaction
+from app.services.wallet import (
+    address_from_public_key,
+    address_matches_public_key,
+    create_wallet,
+    is_valid_address,
+    legacy_address_from_public_key,
+    sign_transaction,
+)
 from picoin.cli import _snapshot_from_sqlite
 
 
@@ -87,12 +94,17 @@ def test_wallet_address_derivation_uses_stable_checksum() -> None:
 
     first = address_from_public_key(keypair["public_key"])
     second = address_from_public_key(keypair["public_key"])
+    legacy = legacy_address_from_public_key(keypair["public_key"])
     mutated = f"{first[:-1]}{'0' if first[-1] != '0' else '1'}"
 
     assert first == second
     assert first.startswith("PI")
     assert is_valid_address(first) is True
+    assert is_valid_address(legacy) is True
+    assert address_matches_public_key(first, keypair["public_key"]) is True
+    assert address_matches_public_key(legacy, keypair["public_key"]) is True
     assert is_valid_address(mutated) is False
+    assert address_matches_public_key(mutated, keypair["public_key"]) is False
     assert is_valid_address("PI340F7EEA37754C5F9C9ADE84D98F9B4AE10F0E") is True
 
 

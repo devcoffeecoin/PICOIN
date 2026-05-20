@@ -36,7 +36,7 @@ from app.services.science import (
 )
 from app.services import treasury as treasury_service
 from app.services.treasury import TreasuryError, claim_scientific_development_treasury_in_connection
-from app.services.wallet import address_from_public_key, is_valid_address, transaction_hash, unsigned_transaction_payload
+from app.services.wallet import address_matches_public_key, is_valid_address, transaction_hash, unsigned_transaction_payload
 
 
 SUPPORTED_BLOCK_TX_TYPES = {"transfer", "stake", "unstake", "science_job_create", "governance_action", "treasury_claim", "faucet"}
@@ -976,7 +976,7 @@ def _is_signature_valid(tx: dict[str, Any]) -> bool:
         return (
             tx.get("network_id") == NETWORK_ID
             and tx.get("chain_id") == CHAIN_ID
-            and address_from_public_key(tx["public_key"]) == tx["sender"]
+            and address_matches_public_key(tx.get("sender"), tx.get("public_key"))
             and transaction_hash(unsigned_payload, tx["public_key"]) == tx["tx_hash"]
             and verify_payload_signature(tx["public_key"], unsigned_payload, tx["signature"])
         )
