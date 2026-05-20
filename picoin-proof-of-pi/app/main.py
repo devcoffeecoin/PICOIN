@@ -55,5 +55,15 @@ def dashboard_slash() -> FileResponse:
     return dashboard()
 
 
+@app.get("/wallet", include_in_schema=False)
+def web_wallet() -> FileResponse:
+    return FileResponse(WEB_DIR / "wallet.html")
+
+
+@app.get("/wallet/", include_in_schema=False)
+def web_wallet_slash() -> FileResponse:
+    return web_wallet()
+
+
 app.include_router(router)
 app.mount("/dashboard/static", StaticFiles(directory=STATIC_DIR), name="dashboard-static")

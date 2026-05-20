@@ -524,6 +524,16 @@ def mempool(status: str | None = Query(None), limit: int = Query(100, ge=1, le=5
     return list_mempool(status, limit)
 
 
+@router.get("/mempool/status")
+def mempool_status() -> dict:
+    transactions = list_mempool(limit=500)
+    counts: dict[str, int] = {}
+    for tx in transactions:
+        status = tx.get("status") or "unknown"
+        counts[status] = counts.get(status, 0) + 1
+    return {"counts": counts, "total": sum(counts.values()), "checked_at": utc_now()}
+
+
 @router.get("/tx/{tx_hash}", response_model=MempoolTransactionResponse)
 def tx_status(tx_hash: str) -> dict:
     tx = get_transaction(tx_hash)
@@ -538,6 +548,16 @@ def tx_submit(payload: SignedTransactionRequest) -> dict:
         return submit_transaction(payload.model_dump(mode="json"), propagated=False)
     except NetworkError as exc:
         raise _network_error(exc) from exc
+
+
+@router.post("/transactions/submit", response_model=MempoolTransactionResponse, status_code=201)
+def transaction_submit(payload: SignedTransactionRequest) -> dict:
+    return tx_submit(payload)
+
+
+@router.get("/transactions/{tx_hash}", response_model=MempoolTransactionResponse)
+def transaction_status(tx_hash: str) -> dict:
+    return tx_status(tx_hash)
 
 
 @router.post("/tx/receive", response_model=MempoolTransactionResponse, status_code=201)
@@ -794,7 +814,7 @@ def retroactive_audit_run(
 @router.post("/miners/register", response_model=MinerResponse, status_code=201)
 def register_miner_endpoint(payload: MinerRegisterRequest) -> dict:
     try:
-        return register_miner(payload.name, payload.public_key)
+        return register_miner(payload.name, payload.public_key, payload.reward_address)
     except MiningError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
@@ -802,7 +822,7 @@ def register_miner_endpoint(payload: MinerRegisterRequest) -> dict:
 @router.post("/validators/register", response_model=ValidatorResponse, status_code=201)
 def register_validator_endpoint(payload: ValidatorRegisterRequest) -> dict:
     try:
-        return register_validator(payload.name, payload.public_key)
+        return register_validator(payload.name, payload.public_key, payload.reward_address)
     except MiningError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
@@ -833,9 +853,10 @@ def next_task(
     miner_id: str = Query(..., min_length=1),
     public_key: str | None = Query(default=None, min_length=1),
     name: str | None = Query(default=None, min_length=1, max_length=80),
+    reward_address: str | None = Query(default=None, min_length=1),
 ) -> dict:
     try:
-        task = create_next_task(miner_id, public_key=public_key, name=name)
+        task = create_next_task(miner_id, public_key=public_key, name=name, reward_address=reward_address)
     except MiningError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
     if task is None:
@@ -888,9 +909,10 @@ def validation_job(
     validator_id: str = Query(..., min_length=1),
     public_key: str | None = Query(default=None, min_length=1),
     name: str | None = Query(default=None, min_length=1, max_length=80),
+    reward_address: str | None = Query(default=None, min_length=1),
 ) -> dict | None:
     try:
-        return get_validation_job(validator_id, public_key=public_key, name=name)
+        return get_validation_job(validator_id, public_key=public_key, name=name, reward_address=reward_address)
     except MiningError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
@@ -951,9 +973,29 @@ def balance_by_account(account_id: str) -> dict:
     return balance
 
 
+@router.get("/accounts/{address}")
+def account_by_address(address: str) -> dict:
+    balance = get_balance(address)
+    if balance is None:
+        raise HTTPException(status_code=404, detail="account not found")
+    return {
+        "address": balance["account_id"],
+        "account_id": balance["account_id"],
+        "balance": balance["balance"],
+        "account_type": balance["account_type"],
+        "last_updated": balance["updated_at"],
+        "updated_at": balance["updated_at"],
+    }
+
+
 @router.get("/ledger", response_model=list[LedgerEntryResponse])
 def ledger(account_id: str | None = Query(None), limit: int = Query(100, ge=1, le=500)) -> list[dict]:
     return get_ledger_entries(account_id, limit)
+
+
+@router.get("/accounts/{address}/history", response_model=list[LedgerEntryResponse])
+def account_history(address: str, limit: int = Query(100, ge=1, le=500)) -> list[dict]:
+    return get_ledger_entries(address, limit)
 
 
 @router.get("/audit/summary", response_model=AuditSummaryResponse)

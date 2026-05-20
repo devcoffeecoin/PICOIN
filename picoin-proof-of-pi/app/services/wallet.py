@@ -11,15 +11,31 @@ from app.core.signatures import generate_keypair, sign_payload
 
 ADDRESS_PREFIX = "PI"
 ADDRESS_HASH_LENGTH = 38
-ADDRESS_PATTERN = re.compile(rf"^{ADDRESS_PREFIX}[0-9A-F]{{{ADDRESS_HASH_LENGTH}}}$")
+ADDRESS_CHECKSUM_LENGTH = 8
+LEGACY_ADDRESS_PATTERN = re.compile(rf"^{ADDRESS_PREFIX}[0-9A-F]{{{ADDRESS_HASH_LENGTH}}}$")
+ADDRESS_PATTERN = re.compile(rf"^{ADDRESS_PREFIX}[0-9A-F]{{{ADDRESS_HASH_LENGTH + ADDRESS_CHECKSUM_LENGTH}}}$")
+
+
+def address_checksum(address_body: str) -> str:
+    return sha256_text(address_body).upper()[:ADDRESS_CHECKSUM_LENGTH]
 
 
 def address_from_public_key(public_key: str) -> str:
-    return f"{ADDRESS_PREFIX}{sha256_text(public_key).upper()[:ADDRESS_HASH_LENGTH]}"
+    body = sha256_text(public_key).upper()[:ADDRESS_HASH_LENGTH]
+    return f"{ADDRESS_PREFIX}{body}{address_checksum(body)}"
 
 
 def is_valid_address(address: str | None) -> bool:
-    return isinstance(address, str) and bool(ADDRESS_PATTERN.fullmatch(address))
+    if not isinstance(address, str):
+        return False
+    normalized = address.strip().upper()
+    if LEGACY_ADDRESS_PATTERN.fullmatch(normalized):
+        return True
+    if not ADDRESS_PATTERN.fullmatch(normalized):
+        return False
+    body = normalized[len(ADDRESS_PREFIX) : len(ADDRESS_PREFIX) + ADDRESS_HASH_LENGTH]
+    checksum = normalized[-ADDRESS_CHECKSUM_LENGTH:]
+    return checksum == address_checksum(body)
 
 
 def create_wallet(name: str = "picoin-wallet") -> dict[str, Any]:
@@ -27,6 +43,7 @@ def create_wallet(name: str = "picoin-wallet") -> dict[str, Any]:
     address = address_from_public_key(keypair["public_key"])
     timestamp = datetime.now(timezone.utc).isoformat()
     return {
+        "version": 1,
         "name": name,
         "address": address,
         "public_key": keypair["public_key"],

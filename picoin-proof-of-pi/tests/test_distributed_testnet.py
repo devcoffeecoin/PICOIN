@@ -61,7 +61,7 @@ from app.services.treasury import (
     get_scientific_development_treasury,
 )
 from app.services.transactions import get_wallet_nonce_status, select_block_transactions
-from app.services.wallet import create_wallet, sign_transaction
+from app.services.wallet import address_from_public_key, create_wallet, is_valid_address, sign_transaction
 from picoin.cli import _snapshot_from_sqlite
 
 
@@ -80,6 +80,20 @@ def test_canonical_json_serialization_is_stable() -> None:
     assert encoded == '{"a":{"a":1,"b":2},"list":[{"x":1,"y":2}],"z":1}'
     assert " " not in encoded
     assert canonical_json(json.loads(encoded)) == encoded
+
+
+def test_wallet_address_derivation_uses_stable_checksum() -> None:
+    keypair = generate_keypair()
+
+    first = address_from_public_key(keypair["public_key"])
+    second = address_from_public_key(keypair["public_key"])
+    mutated = f"{first[:-1]}{'0' if first[-1] != '0' else '1'}"
+
+    assert first == second
+    assert first.startswith("PI")
+    assert is_valid_address(first) is True
+    assert is_valid_address(mutated) is False
+    assert is_valid_address("PI340F7EEA37754C5F9C9ADE84D98F9B4AE10F0E") is True
 
 
 def test_block_hash_debug_accepts_historical_fraud_field_schema(tmp_path, monkeypatch) -> None:

@@ -6,6 +6,8 @@ from app.core.signatures import build_submission_signature_payload, build_valida
 from app.db.database import get_connection, init_db
 from app.services.mining import (
     create_next_task,
+    get_balance_amount,
+    get_block,
     get_full_economic_audit,
     register_miner,
     register_validator,
@@ -13,6 +15,7 @@ from app.services.mining import (
     submit_validation_result,
     submit_task,
 )
+from app.services.wallet import create_wallet
 
 
 def test_full_economic_audit_passes_for_valid_local_economy(tmp_path, monkeypatch) -> None:
@@ -94,6 +97,61 @@ def test_full_economic_audit_includes_additional_validator_rewards(tmp_path, mon
     assert audit["rewards"]["science_reserve_total"] == 0.62832
     assert audit["rewards"]["scientific_development_treasury_total"] == 0.094248
     assert audit["rewards"]["total_minted_rewards"] == 3.1416
+
+
+def test_miner_reward_address_receives_new_block_rewards(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "economic-miner-reward-address.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    miner_keys = generate_keypair()
+    reward_wallet = create_wallet("miner-reward")
+    miner = register_miner("reward-address-miner", miner_keys["public_key"], reward_wallet["address"])
+
+    _mine_legacy_block(miner["miner_id"], miner_keys["private_key"])
+    block = get_block(1)
+    audit = get_full_economic_audit()
+
+    assert block is not None
+    assert block["miner_reward_address"] == reward_wallet["address"]
+    assert get_balance_amount(reward_wallet["address"]) == pytest.approx(block["reward"])
+    assert get_balance_amount(miner["miner_id"]) == pytest.approx(0)
+    assert audit["valid"] is True
+
+
+def test_validator_reward_address_receives_new_validator_rewards(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "economic-validator-reward-address.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    miner, _ = _register_miner_with_keys("validator-wallet-miner")
+    first_keys = generate_keypair()
+    second_keys = generate_keypair()
+    third_keys = generate_keypair()
+    first_reward = create_wallet("validator-one-reward")
+    second_reward = create_wallet("validator-two-reward")
+    third_reward = create_wallet("validator-three-reward")
+    first_validator = register_validator("validator-wallet-one", first_keys["public_key"], first_reward["address"])
+    second_validator = register_validator("validator-wallet-two", second_keys["public_key"], second_reward["address"])
+    third_validator = register_validator("validator-wallet-three", third_keys["public_key"], third_reward["address"])
+    job_id, task_id = _insert_validation_job(miner["miner_id"])
+
+    _submit_vote(job_id, task_id, first_validator["validator_id"], first_keys["private_key"], "first")
+    _submit_vote(job_id, task_id, second_validator["validator_id"], second_keys["private_key"], "second")
+    response = _submit_vote(job_id, task_id, third_validator["validator_id"], third_keys["private_key"], "third")
+    audit = get_full_economic_audit()
+
+    reward_addresses = response["block"]["validator_reward"]["reward_addresses"]
+    per_validator = response["block"]["validator_reward"]["per_validator"]
+    assert response["status"] == "approved"
+    assert reward_addresses[first_validator["validator_id"]] == first_reward["address"]
+    assert reward_addresses[second_validator["validator_id"]] == second_reward["address"]
+    assert reward_addresses[third_validator["validator_id"]] == third_reward["address"]
+    assert get_balance_amount(first_reward["address"]) == pytest.approx(per_validator)
+    assert get_balance_amount(first_validator["validator_id"]) == pytest.approx(0)
+    assert audit["valid"] is True
 
 
 def _register_miner_with_keys(name: str) -> tuple[dict, dict]:

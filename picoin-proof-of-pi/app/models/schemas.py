@@ -7,12 +7,14 @@ from pydantic import BaseModel, Field
 class MinerRegisterRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=80)
     public_key: str = Field(..., min_length=1, max_length=256)
+    reward_address: str | None = Field(default=None, min_length=1, max_length=80)
 
 
 class MinerResponse(BaseModel):
     miner_id: str
     name: str
     public_key: str | None
+    reward_address: str | None = None
     registered_at: datetime
     trust_score: float = 1.0
     cooldown_until: datetime | None = None
@@ -26,6 +28,7 @@ class MinerResponse(BaseModel):
 class ValidatorRegisterRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=80)
     public_key: str = Field(..., min_length=1, max_length=256)
+    reward_address: str | None = Field(default=None, min_length=1, max_length=80)
 
 
 class FaucetRequest(BaseModel):
@@ -47,6 +50,7 @@ class ValidatorResponse(BaseModel):
     validator_id: str
     name: str
     public_key: str
+    reward_address: str | None = None
     registered_at: datetime
     accepted_jobs: int = 0
     rejected_jobs: int = 0
@@ -154,6 +158,7 @@ class BlockResponse(BaseModel):
     tx_count: int = 0
     tx_hashes: list[str] = Field(default_factory=list)
     fee_reward: float = 0.0
+    miner_reward_address: str | None = None
     state_root: str | None = None
     difficulty: float | None = None
     protocol_params_id: int | None = None
