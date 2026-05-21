@@ -287,6 +287,14 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 result_reason TEXT,
                 validator_signature TEXT,
                 validation_ms INTEGER,
+                job_created_at TEXT,
+                first_vote_at TEXT,
+                second_vote_at TEXT,
+                quorum_reached_at TEXT,
+                finalized_at TEXT,
+                waiting_for_first_vote_ms INTEGER,
+                waiting_for_quorum_ms INTEGER,
+                finalization_ms INTEGER,
                 created_at TEXT NOT NULL,
                 completed_at TEXT,
                 FOREIGN KEY(miner_id) REFERENCES miners(miner_id),
@@ -304,6 +312,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 signature TEXT NOT NULL,
                 signed_at TEXT NOT NULL,
                 validation_ms INTEGER,
+                submit_result_latency_ms INTEGER,
                 created_at TEXT NOT NULL,
                 UNIQUE(job_id, validator_id),
                 FOREIGN KEY(job_id) REFERENCES validation_jobs(job_id),
@@ -836,6 +845,16 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "validation_jobs", "assigned_at", "TEXT")
         _ensure_column(connection, "validation_jobs", "assignment_failures", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "validation_jobs", "blocking_reason", "TEXT")
+        _ensure_column(connection, "validation_jobs", "job_created_at", "TEXT")
+        _ensure_column(connection, "validation_jobs", "first_vote_at", "TEXT")
+        _ensure_column(connection, "validation_jobs", "second_vote_at", "TEXT")
+        _ensure_column(connection, "validation_jobs", "quorum_reached_at", "TEXT")
+        _ensure_column(connection, "validation_jobs", "finalized_at", "TEXT")
+        _ensure_column(connection, "validation_jobs", "waiting_for_first_vote_ms", "INTEGER")
+        _ensure_column(connection, "validation_jobs", "waiting_for_quorum_ms", "INTEGER")
+        _ensure_column(connection, "validation_jobs", "finalization_ms", "INTEGER")
+        _ensure_column(connection, "validation_votes", "submit_result_latency_ms", "INTEGER")
+        connection.execute("UPDATE validation_jobs SET job_created_at = created_at WHERE job_created_at IS NULL")
         _ensure_default_protocol_params(connection)
         _ensure_genesis_balance(connection)
         _ensure_existing_validator_stake_balances(connection)
