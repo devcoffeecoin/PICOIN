@@ -996,7 +996,13 @@ def create_next_task(
             )
         )
         row = connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
-    return row_to_dict(row)
+        task = row_to_dict(row)
+        if isinstance(task.get("selected_tx_hashes"), str):
+            try:
+                task["selected_tx_hashes"] = json.loads(task["selected_tx_hashes"])
+            except (TypeError, ValueError):
+                task["selected_tx_hashes"] = []
+    return task
 
 
 def _restore_miner_identity(
@@ -1531,11 +1537,11 @@ def commit_task(
         snapshot = get_task_tx_snapshot(connection, task_id)
         if snapshot is None:
             return _commit_rejected("tx snapshot not found for task")
-        expected_hash = snapshot["selected_tx_hashes_hash"]
-        expected_root = snapshot["tx_merkle_root"]
-        expected_snapshot_id = snapshot["snapshot_id"]
-        expected_count = int(snapshot["tx_count"])
-        expected_fee_units = int(snapshot["tx_fee_total_units"])
+        expected_root = str(snapshot["tx_merkle_root"] or "")
+        expected_hash = str(snapshot["selected_tx_hashes_hash"] or "")
+        expected_snapshot_id = str(snapshot["snapshot_id"] or "")
+        expected_count = int(snapshot["tx_count"] or 0)
+        expected_fee_units = int(snapshot["tx_fee_total_units"] or 0)
         if (
             (tx_merkle_root or "") != expected_root
             or (mempool_snapshot_id or "") != expected_snapshot_id
@@ -1743,11 +1749,11 @@ def reveal_task(
                 signature,
                 "",
             )
-        expected_root = str(commitment.get("tx_merkle_root") or snapshot["tx_merkle_root"] or "")
-        expected_snapshot_id = str(commitment.get("mempool_snapshot_id") or snapshot["snapshot_id"] or "")
-        expected_hash = str(commitment.get("selected_tx_hashes_hash") or snapshot["selected_tx_hashes_hash"] or "")
-        expected_count = int(commitment.get("tx_count") or snapshot["tx_count"] or 0)
-        expected_fee_units = int(commitment.get("tx_fee_total_units") or snapshot["tx_fee_total_units"] or 0)
+        expected_root = str(commitment.get("tx_merkle_root") if commitment.get("tx_merkle_root") is not None else snapshot["tx_merkle_root"] or "")
+        expected_snapshot_id = str(commitment.get("mempool_snapshot_id") if commitment.get("mempool_snapshot_id") is not None else snapshot["snapshot_id"] or "")
+        expected_hash = str(commitment.get("selected_tx_hashes_hash") if commitment.get("selected_tx_hashes_hash") is not None else snapshot["selected_tx_hashes_hash"] or "")
+        expected_count = int(commitment.get("tx_count") if commitment.get("tx_count") is not None else snapshot["tx_count"] or 0)
+        expected_fee_units = int(commitment.get("tx_fee_total_units") if commitment.get("tx_fee_total_units") is not None else snapshot["tx_fee_total_units"] or 0)
         if (
             (tx_merkle_root or "") != expected_root
             or (mempool_snapshot_id or "") != expected_snapshot_id
