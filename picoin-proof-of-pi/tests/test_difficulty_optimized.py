@@ -65,6 +65,7 @@ def test_calculate_next_difficulty_network_too_fast():
     new_params, meta = DifficultyService.calculate_next_difficulty(history, current_params, 1000)
     
     assert new_params["segment_size"] > current_params["segment_size"]
+    assert new_params["segment_size"] <= current_params["segment_size"] + DifficultyService.MAX_SEGMENT_STEP
     assert meta["action"] == "increase"
     assert meta["adjustment_ratio"] < 1.0
 
@@ -79,6 +80,7 @@ def test_calculate_next_difficulty_network_too_slow():
     new_params, meta = DifficultyService.calculate_next_difficulty(history, current_params, 1000)
     
     assert new_params["segment_size"] < current_params["segment_size"]
+    assert new_params["segment_size"] >= current_params["segment_size"] - DifficultyService.MAX_SEGMENT_STEP
     assert meta["action"] == "decrease"
     assert meta["adjustment_ratio"] > 1.0
 
@@ -94,7 +96,22 @@ def test_calculate_next_difficulty_within_deadband():
     
     assert new_params == current_params
     assert meta["action"] == "keep"
-    assert "Within deadband" in meta["reason"]
+    assert meta["within_hysteresis"] is True
+    assert "Within hysteresis" in meta["reason"]
+
+
+def test_calculate_next_difficulty_hysteresis_keeps_72_seconds():
+    current_params = {"segment_size": 64, "sample_count": 8, "max_pi_position": 10000}
+    history = [
+        {"total_task_ms": 72000, "range_start": 1000, "range_end": 1063, "total_block_ms": 72000}
+        for _ in range(DifficultyService.RETARGET_WINDOW)
+    ]
+
+    new_params, meta = DifficultyService.calculate_next_difficulty(history, current_params, 1000)
+
+    assert new_params == current_params
+    assert meta["action"] == "keep"
+    assert meta["within_hysteresis"] is True
 
 
 def test_calculate_next_difficulty_emergency_decrease():
@@ -151,6 +168,56 @@ def test_calculate_next_difficulty_bucket_filtering():
     assert meta["observed_median_ms"] == int(expected_median_miner_ms)
     assert meta["bucket"] == "1000-2500"
     assert new_params["segment_size"] > current_params["segment_size"]
+    assert new_params["segment_size"] <= current_params["segment_size"] + DifficultyService.MAX_SEGMENT_STEP
+
+
+def test_bbp_guardrail_is_inactive_below_one_million_positions():
+    current_params = {"difficulty": 0.125, "segment_size": 32, "sample_count": 32, "max_pi_position": 10000}
+    history = [
+        {
+            "total_task_ms": 60000,
+            "range_start": 500000,
+            "range_end": 500031,
+            "segment_size": 32,
+            "sample_count": 32,
+            "difficulty": 0.125,
+            "validation_ms": 1000,
+            "total_block_ms": 60000,
+        }
+        for _ in range(DifficultyService.RETARGET_WINDOW)
+    ]
+
+    new_params, meta = DifficultyService.calculate_next_difficulty(history, current_params, 900000)
+
+    assert meta["within_hysteresis"] is True
+    assert meta["bbp_guardrail_active"] is False
+    assert new_params["segment_size"] == current_params["segment_size"]
+    assert new_params["difficulty"] == current_params["difficulty"]
+
+
+def test_bbp_guardrail_above_one_million_reduces_segment_by_max_two():
+    current_params = {"difficulty": 0.125, "segment_size": 32, "sample_count": 32, "max_pi_position": 10000}
+    history = [
+        {
+            "total_task_ms": 60000,
+            "range_start": 500000,
+            "range_end": 500031,
+            "segment_size": 32,
+            "sample_count": 32,
+            "difficulty": 0.125,
+            "validation_ms": 1000,
+            "total_block_ms": 60000,
+        }
+        for _ in range(DifficultyService.RETARGET_WINDOW)
+    ]
+
+    new_params, meta = DifficultyService.calculate_next_difficulty(history, current_params, 2_000_000)
+
+    assert meta["within_hysteresis"] is True
+    assert meta["bbp_guardrail_active"] is True
+    assert meta["predicted_next_task_ms"] > DifficultyService.DEADBAND_HIGH
+    assert new_params["difficulty"] == current_params["difficulty"]
+    assert new_params["segment_size"] == current_params["segment_size"] - DifficultyService.MAX_SEGMENT_STEP
 
 
 def test_calculate_difficulty_visual_metric():

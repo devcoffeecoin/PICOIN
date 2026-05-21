@@ -225,8 +225,8 @@ def test_retarget_clamps_adjustment_and_uses_total_block_time(tmp_path, monkeypa
 
     assert result["retargeted"] is True
     assert result["event"]["action"] == "decrease"
-    assert result["event"]["adjustment_factor"] == 0.75
-    assert after["difficulty"] == round(before["difficulty"] * 0.75, 6)
+    assert result["event"]["adjustment_factor"] == 0.85
+    assert after["difficulty"] == round(before["difficulty"] * 0.85, 6)
 
 
 def test_retarget_persists_protocol_metadata_and_bucket_metrics(tmp_path, monkeypatch) -> None:
@@ -282,7 +282,7 @@ def test_difficulty_service_is_deterministic_for_same_history() -> None:
     second = DifficultyService.calculate_next_protocol_params(history, params, 1000)
 
     assert first == second
-    assert first[0]["difficulty"] == 0.09375
+    assert first[0]["difficulty"] == 0.10625
 
 
 def test_bucket_history_drives_target_range_retarget() -> None:
