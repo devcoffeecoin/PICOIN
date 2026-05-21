@@ -98,6 +98,7 @@ from app.services.network import (
     get_transaction,
     get_sync_status,
     heartbeat_peer,
+    discover_peers,
     list_mempool,
     list_peers,
     node_identity,
@@ -270,6 +271,11 @@ def node_register_peer(payload: PeerRegisterRequest) -> dict:
         )
     except NetworkError as exc:
         raise _network_error(exc) from exc
+
+
+@router.post("/node/peers/discover")
+def node_discover_peers(limit: int = Query(32, ge=1, le=256)) -> dict:
+    return discover_peers(limit=limit)
 
 
 @router.post("/node/peers/{peer_id}/heartbeat", response_model=PeerResponse)

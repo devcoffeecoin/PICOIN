@@ -144,6 +144,8 @@ On bootstrap, the auditor is optional and should run warning-only if enabled. Bo
 
 The bootstrap/API tracks real miner and validator participation with signed heartbeats and excludes stale, offline, banned, disabled, or out-of-sync validators from the live quorum. This prevents registered-but-offline validators from freezing tasks in `revealed`.
 
+Validators must run a local Picoin node. Polling `/validation/jobs` is not a heartbeat and does not make a validator eligible. The validator worker signs `/validators/heartbeat` using its validator identity after reading its local node `/node/sync-status`; if the local node is down, missing `node_id`, missing advertised address, stale, or out of sync, the validator is not eligible for jobs.
+
 Signed heartbeat endpoints:
 
 ```bash
@@ -167,7 +169,7 @@ Validator liveness states:
 - `offline`: last signed heartbeat is older than 300 seconds.
 - `out_of_sync`: validator has `sync_lag > 3` or pending replay blocks sustained for more than 60 seconds.
 
-Only validators with `enabled=1`, `is_banned=0`, `online_status=online`, compatible protocol version, sufficient stake/trust, and `sync_status != out_of_sync` count as eligible. Public testnet quorum is adaptive for small networks while respecting the configured quorum when enough validators are live:
+Only validators with `enabled=1`, `is_banned=0`, `online_status=online`, compatible protocol version, sufficient stake/trust, non-empty `node_id`, non-empty `advertised_address`, and `sync_status != out_of_sync` count as eligible. Public testnet quorum is adaptive for small networks while respecting the configured quorum when enough validators are live:
 
 ```text
 required_approvals = min(configured_required_approvals, eligible_validators)
@@ -176,6 +178,7 @@ required_approvals = min(configured_required_approvals, eligible_validators)
 Administrative CLI:
 
 ```bash
+python -m picoin node discover-peers --server http://127.0.0.1:8000
 python -m picoin validators list --server https://api.picoin.science
 python -m picoin miners list --server https://api.picoin.science
 python -m picoin validators disable validator_xxx --server http://127.0.0.1:8000
@@ -211,6 +214,10 @@ PICOIN_NODE_TYPE=validator
 PICOIN_NODE_ADDRESS=https://validador.picoin.science
 PICOIN_BOOTSTRAP_PEER=https://api.picoin.science
 PICOIN_BOOTSTRAP_PEERS=https://api.picoin.science
+PICOIN_PEER_DISCOVERY_ENABLED=1
+PICOIN_PEER_DISCOVERY_INTERVAL_SECONDS=300
+PICOIN_VALIDATOR_NODE_SERVER=http://127.0.0.1:8000
+PICOIN_VALIDATOR_NODE_ADDRESS=https://validador.picoin.science
 ```
 
 Manual node commands:

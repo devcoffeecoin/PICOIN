@@ -45,6 +45,7 @@ while true; do
         --server "$PICOIN_VALIDATOR_SERVER" \
         --identity "$CURRENT_IDENTITY" \
         validate \
+        --node-server "${PICOIN_VALIDATOR_NODE_SERVER:-http://127.0.0.1:8000}" \
         --loops "${PICOIN_VALIDATOR_LOOPS:-1}" \
         --sleep "${PICOIN_VALIDATOR_SLEEP:-5}"
       rc=$?

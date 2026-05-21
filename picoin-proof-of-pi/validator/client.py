@@ -21,6 +21,8 @@ from app.services.wallet import transaction_hash, unsigned_transaction_payload
 DEFAULT_IDENTITY_PATH = Path("validator_identity.json")
 AUTO_REGISTER_IDENTITY = os.getenv("PICOIN_AUTO_REGISTER_IDENTITY", "1").strip().lower() not in {"0", "false", "no"}
 VALIDATOR_REWARD_ADDRESS = os.getenv("PICOIN_VALIDATOR_REWARD_ADDRESS", "").strip()
+DEFAULT_NODE_SERVER = os.getenv("PICOIN_VALIDATOR_NODE_SERVER", os.getenv("PICOIN_NODE_SERVER", "http://127.0.0.1:8000"))
+VALIDATOR_NODE_ADDRESS = os.getenv("PICOIN_VALIDATOR_NODE_ADDRESS", "").strip().rstrip("/")
 
 
 def utc_now() -> str:
@@ -94,6 +96,64 @@ def get_job(server_url: str, identity: dict[str, Any] | str) -> dict[str, Any] |
     response.raise_for_status()
     if not response.content or response.text == "null":
         return None
+    return response.json()
+
+
+def send_validator_heartbeat(
+    server_url: str,
+    identity: dict[str, Any],
+    *,
+    node_server_url: str,
+    timeout: float = 10.0,
+) -> dict[str, Any]:
+    node_server = node_server_url.rstrip("/")
+    coordinator = server_url.rstrip("/")
+    local_response = requests.get(f"{node_server}/node/sync-status", timeout=timeout)
+    local_response.raise_for_status()
+    local_status = local_response.json()
+
+    try:
+        remote_response = requests.get(f"{coordinator}/node/sync-status", timeout=timeout)
+        remote_response.raise_for_status()
+        remote_status = remote_response.json()
+        remote_height = int(
+            remote_status.get("effective_latest_block_height")
+            or remote_status.get("latest_block_height")
+            or 0
+        )
+    except requests.RequestException:
+        remote_height = int(
+            local_status.get("effective_latest_block_height")
+            or local_status.get("latest_block_height")
+            or 0
+        )
+
+    effective_height = int(
+        local_status.get("effective_latest_block_height")
+        or local_status.get("latest_block_height")
+        or 0
+    )
+    local_height = int(local_status.get("local_block_height") or local_status.get("latest_block_height") or 0)
+    advertised_address = (
+        VALIDATOR_NODE_ADDRESS
+        or str(local_status.get("peer_address") or "").strip().rstrip("/")
+        or node_server
+    )
+    payload = {
+        "validator_id": identity["validator_id"],
+        "node_id": local_status.get("node_id") or identity.get("node_id") or identity["validator_id"],
+        "public_key": identity["public_key"],
+        "address": advertised_address,
+        "local_height": local_height,
+        "effective_height": effective_height,
+        "latest_block_hash": local_status.get("effective_latest_block_hash") or local_status.get("latest_block_hash"),
+        "pending_replay_blocks": int(local_status.get("pending_replay_blocks") or 0),
+        "sync_lag": max(0, remote_height - effective_height),
+        "version": local_status.get("protocol_version") or "0.18",
+    }
+    payload["signature"] = sign_payload(identity["private_key"], payload)
+    response = requests.post(f"{coordinator}/validators/heartbeat", json=payload, timeout=timeout)
+    response.raise_for_status()
     return response.json()
 
 
@@ -185,6 +245,22 @@ def command_validate(args: argparse.Namespace) -> int:
     completed = 0
 
     for index in range(args.loops):
+        heartbeat = send_validator_heartbeat(
+            server_url,
+            identity,
+            node_server_url=args.node_server.rstrip("/"),
+            timeout=args.node_timeout,
+        )
+        if heartbeat.get("eligible") is False:
+            print(
+                f"Validator node heartbeat accepted but not eligible: "
+                f"{heartbeat.get('reason_if_not_eligible') or heartbeat.get('sync_status') or heartbeat.get('online_status')}"
+            )
+            if args.once:
+                return 0
+            time.sleep(args.sleep)
+            continue
+
         job = get_job(server_url, identity)
         if job is None:
             print("No validation jobs available.")
@@ -226,6 +302,8 @@ def parse_args() -> argparse.Namespace:
     validate_parser.add_argument("--once", action="store_true", help="Validate at most one job")
     validate_parser.add_argument("--loops", type=int, default=1, help="Number of polling attempts")
     validate_parser.add_argument("--sleep", type=float, default=1.0, help="Seconds between polls")
+    validate_parser.add_argument("--node-server", default=DEFAULT_NODE_SERVER, help="Local Picoin node API used for signed validator liveness")
+    validate_parser.add_argument("--node-timeout", type=float, default=10.0, help="Seconds to wait for the local node heartbeat probe")
     validate_parser.set_defaults(func=command_validate)
 
     return parser.parse_args()

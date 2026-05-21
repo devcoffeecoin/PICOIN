@@ -64,7 +64,9 @@ def test_validator_liveness_transitions_online_stale_offline(tmp_path, monkeypat
 
 def test_offline_validator_is_excluded_from_quorum_eligibility(tmp_path, monkeypatch) -> None:
     _use_db(tmp_path, monkeypatch, "eligibility.sqlite3")
-    validator = register_validator("eligible-now", generate_keypair()["public_key"])
+    keys = generate_keypair()
+    validator = register_validator("eligible-now", keys["public_key"])
+    record_validator_heartbeat(_signed_validator_heartbeat(keys, validator["validator_id"]))
     assert validator["validator_id"] in {item["validator_id"] for item in get_validators(eligible_only=True)}
 
     with get_connection() as connection:
@@ -75,6 +77,18 @@ def test_offline_validator_is_excluded_from_quorum_eligibility(tmp_path, monkeyp
     refresh_participant_liveness()
 
     assert validator["validator_id"] not in {item["validator_id"] for item in get_validators(eligible_only=True)}
+
+
+def test_validator_without_active_node_heartbeat_cannot_get_job(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "validator-node-required.sqlite3")
+    keys = generate_keypair()
+    validator = register_validator("no-node-validator", keys["public_key"])
+
+    with pytest.raises(MiningError) as exc:
+        get_validation_job(validator["validator_id"])
+
+    assert exc.value.status_code == 403
+    assert "node heartbeat" in exc.value.detail
 
 
 def test_invalid_heartbeat_signature_does_not_write_validator(tmp_path, monkeypatch) -> None:
@@ -109,8 +123,12 @@ def test_duplicate_validator_public_key_is_disabled(tmp_path, monkeypatch) -> No
 def test_validation_job_reassigned_after_assignment_timeout(tmp_path, monkeypatch) -> None:
     _use_db(tmp_path, monkeypatch, "reassign.sqlite3")
     miner = register_miner("job-miner", generate_keypair()["public_key"])
-    first = register_validator("validator-one", generate_keypair()["public_key"])
-    second = register_validator("validator-two", generate_keypair()["public_key"])
+    first_keys = generate_keypair()
+    second_keys = generate_keypair()
+    first = register_validator("validator-one", first_keys["public_key"])
+    second = register_validator("validator-two", second_keys["public_key"])
+    record_validator_heartbeat(_signed_validator_heartbeat(first_keys, first["validator_id"], node_id="node-one"))
+    record_validator_heartbeat(_signed_validator_heartbeat(second_keys, second["validator_id"], node_id="node-two", address="http://127.0.0.2:8000"))
 
     old_assigned_at = (datetime.now(timezone.utc) - timedelta(seconds=120)).isoformat()
     now = datetime.now(timezone.utc).isoformat()
@@ -152,8 +170,12 @@ def test_validation_job_reassigned_after_assignment_timeout(tmp_path, monkeypatc
 def test_validation_job_is_visible_to_parallel_eligible_validators(tmp_path, monkeypatch) -> None:
     _use_db(tmp_path, monkeypatch, "parallel-validation.sqlite3")
     miner = register_miner("parallel-miner", generate_keypair()["public_key"])
-    first = register_validator("parallel-validator-one", generate_keypair()["public_key"])
-    second = register_validator("parallel-validator-two", generate_keypair()["public_key"])
+    first_keys = generate_keypair()
+    second_keys = generate_keypair()
+    first = register_validator("parallel-validator-one", first_keys["public_key"])
+    second = register_validator("parallel-validator-two", second_keys["public_key"])
+    record_validator_heartbeat(_signed_validator_heartbeat(first_keys, first["validator_id"], node_id="node-one"))
+    record_validator_heartbeat(_signed_validator_heartbeat(second_keys, second["validator_id"], node_id="node-two", address="http://127.0.0.2:8000"))
 
     now = datetime.now(timezone.utc).isoformat()
     with get_connection() as connection:

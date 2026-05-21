@@ -1,8 +1,8 @@
 from datetime import datetime, timezone
 
-from app.core.signatures import generate_keypair
+from app.core.signatures import generate_keypair, sign_payload
 from app.db.database import get_connection, init_db
-from app.services.mining import get_validation_job, get_validators, register_miner, register_validator
+from app.services.mining import get_validation_job, get_validators, record_validator_heartbeat, register_miner, register_validator
 
 
 def test_weighted_validator_selection_excludes_lowest_rank_when_pool_is_full(tmp_path, monkeypatch) -> None:
@@ -58,7 +58,22 @@ def _register_miner(name: str) -> dict:
 
 def _register_validator(name: str) -> dict:
     keypair = generate_keypair()
-    return register_validator(name, keypair["public_key"])
+    validator = register_validator(name, keypair["public_key"])
+    payload = {
+        "validator_id": validator["validator_id"],
+        "node_id": f"{name}-node",
+        "public_key": keypair["public_key"],
+        "address": f"http://{name}.node:8000",
+        "local_height": 100,
+        "effective_height": 100,
+        "latest_block_hash": "a" * 64,
+        "pending_replay_blocks": 0,
+        "sync_lag": 0,
+        "version": "0.18",
+    }
+    payload["signature"] = sign_payload(keypair["private_key"], payload)
+    record_validator_heartbeat(payload)
+    return validator
 
 
 def _insert_pending_job(connection, miner_id: str, suffix: str = "1") -> None:

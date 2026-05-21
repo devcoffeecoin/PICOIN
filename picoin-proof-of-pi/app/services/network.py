@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -26,6 +27,9 @@ from app.core.settings import (
     NODE_ID,
     NODE_PUBLIC_ADDRESS,
     NODE_TYPE,
+    PEER_DISCOVERY_ENABLED,
+    PEER_DISCOVERY_INTERVAL_SECONDS,
+    PEER_DISCOVERY_MAX_PEERS,
     PEER_NETWORK_ID_TOLERANCE,
     PEER_TIMEOUT_SECONDS,
     PROJECT_NAME,
@@ -54,6 +58,7 @@ class NetworkError(Exception):
 ALLOWED_NODE_TYPES = {"full", "miner", "validator", "auditor", "bootstrap"}
 ALLOWED_TX_TYPES = {"transfer", "stake", "unstake", "science_job_create", "governance_action", "treasury_claim", "faucet"}
 TERMINAL_TX_STATUSES = {"confirmed", "rejected", "failed", "expired"}
+_PEER_DISCOVERY_TASK: asyncio.Task | None = None
 
 
 def _now() -> str:
@@ -169,17 +174,6 @@ def register_peer(
     timestamp = _now()
     peer_id = sha256_text(f"{chain_id}:{peer_address}")[:32]
     with get_connection() as connection:
-        total_pending = connection.execute(
-            "SELECT COUNT(*) AS count FROM mempool_transactions WHERE status IN ('pending', 'selected', 'released')"
-        ).fetchone()
-        if int(total_pending["count"] if total_pending else 0) >= MAX_MEMPOOL_TXS:
-            raise NetworkError(429, "mempool is full")
-        account_pending = connection.execute(
-            "SELECT COUNT(*) AS count FROM mempool_transactions WHERE sender = ? AND status IN ('pending', 'selected', 'released')",
-            (tx["sender"],),
-        ).fetchone()
-        if int(account_pending["count"] if account_pending else 0) >= MAX_MEMPOOL_TXS_PER_ACCOUNT:
-            raise NetworkError(429, "sender has too many mempool transactions")
         connection.execute(
             """
             INSERT INTO network_peers (
@@ -217,6 +211,106 @@ def register_peer(
         _record_sync_event(connection, peer_id, "peer_registered", "inbound", "accepted", {"peer_address": peer_address})
         peer = row_to_dict(connection.execute("SELECT * FROM network_peers WHERE peer_id = ?", (peer_id,)).fetchone())
     return _decode_peer(peer)
+
+
+def discover_peers(seed_peers: list[str] | None = None, *, limit: int | None = None) -> dict[str, Any]:
+    """Discover one-hop peers from configured seeds and already connected peers."""
+
+    max_peers = max(1, int(limit or PEER_DISCOVERY_MAX_PEERS))
+    seeds: list[str] = []
+    seeds.extend(peer.rstrip("/") for peer in (seed_peers or []) if peer)
+    seeds.extend(peer.rstrip("/") for peer in BOOTSTRAP_PEERS if peer)
+    try:
+        seeds.extend(peer["peer_address"].rstrip("/") for peer in list_peers(include_stale=False))
+    except Exception:
+        pass
+    local_address = NODE_PUBLIC_ADDRESS.rstrip("/")
+    queue = list(dict.fromkeys(peer for peer in seeds if peer and peer != local_address))
+    result = {
+        "status": "ok",
+        "attempted": 0,
+        "registered": 0,
+        "peers_seen": 0,
+        "errors": [],
+        "checked_at": _now(),
+    }
+    for peer_address in queue[:max_peers]:
+        result["attempted"] += 1
+        try:
+            identity_response = requests.get(f"{peer_address}/node/identity", timeout=GOSSIP_TIMEOUT_SECONDS)
+            identity_response.raise_for_status()
+            identity = identity_response.json()
+            register_peer(
+                node_id=identity["node_id"],
+                peer_address=identity["peer_address"],
+                peer_type=identity["peer_type"],
+                protocol_version=identity["protocol_version"],
+                network_id=identity["network_id"],
+                chain_id=identity["chain_id"],
+                genesis_hash=identity["genesis_hash"],
+                metadata={"source": "peer_discovery", "seed": peer_address},
+            )
+            result["registered"] += 1
+        except Exception as exc:
+            result["errors"].append(f"identity {peer_address}: {exc}")
+            continue
+
+        try:
+            peers_response = requests.get(f"{peer_address}/node/peers", timeout=GOSSIP_TIMEOUT_SECONDS)
+            peers_response.raise_for_status()
+            for peer in peers_response.json():
+                result["peers_seen"] += 1
+                discovered_address = str(peer.get("peer_address") or "").rstrip("/")
+                if not discovered_address or discovered_address == local_address:
+                    continue
+                try:
+                    register_peer(
+                        node_id=peer["node_id"],
+                        peer_address=discovered_address,
+                        peer_type=peer["peer_type"],
+                        protocol_version=peer["protocol_version"],
+                        network_id=peer["network_id"],
+                        chain_id=peer["chain_id"],
+                        genesis_hash=peer["genesis_hash"],
+                        metadata={"source": "peer_discovery", "via": peer_address},
+                    )
+                    result["registered"] += 1
+                except Exception as exc:
+                    result["errors"].append(f"peer {discovered_address}: {exc}")
+        except Exception as exc:
+            result["errors"].append(f"peers {peer_address}: {exc}")
+    if result["errors"]:
+        result["status"] = "partial" if result["registered"] else "error"
+    return result
+
+
+async def start_peer_discovery_worker() -> None:
+    global _PEER_DISCOVERY_TASK
+    if not PEER_DISCOVERY_ENABLED or _PEER_DISCOVERY_TASK is not None:
+        return
+    _PEER_DISCOVERY_TASK = asyncio.create_task(_peer_discovery_loop())
+
+
+async def stop_peer_discovery_worker() -> None:
+    global _PEER_DISCOVERY_TASK
+    task = _PEER_DISCOVERY_TASK
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except asyncio.CancelledError:
+        pass
+    _PEER_DISCOVERY_TASK = None
+
+
+async def _peer_discovery_loop() -> None:
+    while True:
+        try:
+            discover_peers()
+        except Exception:
+            pass
+        await asyncio.sleep(max(30.0, float(PEER_DISCOVERY_INTERVAL_SECONDS)))
 
 
 def list_peers(include_stale: bool = True) -> list[dict[str, Any]]:

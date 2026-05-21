@@ -241,9 +241,9 @@ def register_validator(name: str, public_key: str, reward_address: str | None = 
                 last_seen_at, last_heartbeat_at, online_status, sync_status,
                 protocol_version, enabled
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, 'online', 'synced', ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, 'offline', 'unknown', ?, 1)
             """,
-            (validator_id, name, public_key, reward_address, timestamp, timestamp, timestamp, PROTOCOL_VERSION),
+            (validator_id, name, public_key, reward_address, timestamp, timestamp, PROTOCOL_VERSION),
         )
         _ensure_balance_account(connection, validator_id, "validator")
         if reward_address:
@@ -268,6 +268,8 @@ def get_validators(limit: int = 100, eligible_only: bool = False) -> list[dict[s
         AND enabled = 1
         AND online_status = 'online'
         AND sync_status != 'out_of_sync'
+        AND COALESCE(node_id, '') != ''
+        AND COALESCE(advertised_address, '') != ''
         AND protocol_version = ?
         AND stake_locked >= ?
         AND trust_score >= ?
@@ -427,6 +429,8 @@ def _validator_row_is_eligible(validator: dict[str, Any]) -> bool:
         and float(validator.get("trust_score") or 0) >= VALIDATOR_MIN_TRUST_SCORE
         and str(validator.get("online_status") or "") == "online"
         and str(validator.get("sync_status") or "") != "out_of_sync"
+        and bool(str(validator.get("node_id") or "").strip())
+        and bool(str(validator.get("advertised_address") or "").strip())
         and str(validator.get("protocol_version") or PROTOCOL_VERSION) == PROTOCOL_VERSION
     )
 
@@ -468,6 +472,8 @@ def refresh_participant_liveness(now: datetime | None = None) -> dict[str, Any]:
                 reason = "validator banned"
             elif online_status != "online":
                 reason = f"validator {online_status}"
+            elif not str(validator.get("node_id") or "").strip() or not str(validator.get("advertised_address") or "").strip():
+                reason = "validator node heartbeat required"
             elif sync_status == "out_of_sync":
                 reason = "validator out of sync"
             elif str(validator.get("protocol_version") or PROTOCOL_VERSION) != PROTOCOL_VERSION:
@@ -511,6 +517,10 @@ def record_validator_heartbeat(payload: dict[str, Any], client_host: str | None 
     validator_id = str(payload.get("validator_id") or "").strip()
     if not validator_id:
         raise MiningError(400, "validator_id is required")
+    node_id = str(payload.get("node_id") or "").strip()
+    advertised_address = str(payload.get("address") or "").strip().rstrip("/")
+    if not node_id or not advertised_address:
+        raise MiningError(400, "validator heartbeat requires active node_id and address")
     timestamp = utc_now()
     sync_lag = max(0, int(payload.get("sync_lag") or 0))
     pending_replay = max(0, int(payload.get("pending_replay_blocks") or 0))
@@ -555,8 +565,8 @@ def record_validator_heartbeat(payload: dict[str, Any], client_host: str | None 
                     timestamp,
                     timestamp,
                     "duplicate public key identity detected",
-                    payload.get("node_id"),
-                    payload.get("address"),
+                    node_id,
+                    advertised_address,
                     client_host,
                     int(payload.get("effective_height") or payload.get("local_height") or 0),
                     sync_lag,
@@ -605,8 +615,8 @@ def record_validator_heartbeat(payload: dict[str, Any], client_host: str | None 
                     timestamp,
                     sync_status,
                     out_of_sync_since,
-                    payload.get("node_id"),
-                    payload.get("address"),
+                    node_id,
+                    advertised_address,
                     client_host,
                     int(payload.get("effective_height") or payload.get("local_height") or 0),
                     sync_lag,
@@ -616,6 +626,22 @@ def record_validator_heartbeat(payload: dict[str, Any], client_host: str | None 
             )
             _ensure_balance_account(connection, validator_id, "validator")
         row = connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone()
+    try:
+        from app.core.settings import GENESIS_HASH as SETTINGS_GENESIS_HASH
+        from app.services.network import register_peer
+
+        register_peer(
+            node_id=node_id,
+            peer_address=advertised_address,
+            peer_type="validator",
+            protocol_version=str(payload.get("version") or PROTOCOL_VERSION),
+            network_id=NETWORK_ID,
+            chain_id=CHAIN_ID,
+            genesis_hash=SETTINGS_GENESIS_HASH,
+            metadata={"source": "validator_heartbeat", "validator_id": validator_id},
+        )
+    except Exception as exc:
+        logger.warning("validator heartbeat peer registration failed validator_id=%s error=%s", validator_id, exc)
     refresh_participant_liveness()
     return enrich_validator(row_to_dict(row))
 
@@ -1075,21 +1101,15 @@ def _restore_validator_identity(
             validator_id, name, public_key, reward_address, registered_at,
             last_seen_at, last_heartbeat_at, online_status, sync_status, protocol_version, enabled
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'online', 'synced', ?, 1)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, 'offline', 'unknown', ?, 1)
         ON CONFLICT(validator_id) DO UPDATE SET
             name = COALESCE(NULLIF(excluded.name, ''), validators.name),
             public_key = COALESCE(validators.public_key, excluded.public_key),
             reward_address = COALESCE(excluded.reward_address, validators.reward_address),
             last_seen_at = excluded.last_seen_at,
-            last_heartbeat_at = excluded.last_heartbeat_at,
-            online_status = 'online',
-            sync_status = CASE
-                WHEN validators.sync_status = 'out_of_sync' THEN validators.sync_status
-                ELSE 'synced'
-            END,
             protocol_version = excluded.protocol_version
         """,
-        (validator_id, (name or validator_id)[:80], public_key, reward_address, timestamp, timestamp, timestamp, PROTOCOL_VERSION),
+        (validator_id, (name or validator_id)[:80], public_key, reward_address, timestamp, timestamp, PROTOCOL_VERSION),
     )
     _ensure_balance_account(connection, validator_id, "validator")
     if reward_address:
@@ -1939,15 +1959,19 @@ def get_validation_job(
             raise MiningError(403, "validator stake is below the minimum required")
         if float(validator["trust_score"]) < VALIDATOR_MIN_TRUST_SCORE:
             raise MiningError(403, "validator trust score is below the minimum required")
+        if not str(validator.get("node_id") or "").strip() or not str(validator.get("advertised_address") or "").strip():
+            raise MiningError(403, "validator node heartbeat required")
         connection.execute(
             """
             UPDATE validators
-            SET last_seen_at = ?, last_heartbeat_at = ?, online_status = 'online'
+            SET last_seen_at = ?
             WHERE validator_id = ?
             """,
-            (utc_now(), utc_now(), validator_id),
+            (utc_now(), validator_id),
         )
         validator = row_to_dict(connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone())
+        if str(validator.get("online_status") or "") != "online":
+            raise MiningError(403, validator.get("reason_if_not_eligible") or "validator node heartbeat required")
         if str(validator.get("sync_status") or "unknown") == "out_of_sync":
             raise MiningError(403, "validator is out_of_sync")
         if str(validator.get("protocol_version") or PROTOCOL_VERSION) != PROTOCOL_VERSION:
@@ -3836,6 +3860,8 @@ def _eligible_validator_rows(connection: Any) -> list[dict[str, Any]]:
         AND enabled = 1
         AND online_status = 'online'
         AND sync_status != 'out_of_sync'
+        AND COALESCE(node_id, '') != ''
+        AND COALESCE(advertised_address, '') != ''
         AND protocol_version = ?
         AND stake_locked >= ?
         AND trust_score >= ?
