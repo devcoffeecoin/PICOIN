@@ -37,20 +37,23 @@ class DifficultyService:
     RETARGET_WINDOW = RETARGET_WINDOW_BLOCKS
     RETARGET_INTERVAL = RETARGET_WINDOW_BLOCKS
 
-    DEADBAND_LOW = 50_000
-    DEADBAND_HIGH = 70_000
+    DEADBAND_LOW = 45_000
+    DEADBAND_HIGH = 75_000
 
     MAX_SEGMENT_SIZE = RETARGET_MAX_SEGMENT_SIZE
     MIN_SEGMENT_SIZE = RETARGET_MIN_SEGMENT_SIZE
     MAX_SAMPLE_COUNT = RETARGET_MAX_SAMPLE_COUNT
     MIN_SAMPLE_COUNT = RETARGET_MIN_SAMPLE_COUNT
 
-    MAX_DECREASE = 0.70
-    MAX_INCREASE = 1.25
+    MAX_DECREASE = 0.85
+    MAX_INCREASE = 1.15
+    MAX_SEGMENT_STEP = 2
+    PI_PIVOT_POS = 10_000
+    PI_GUARDRAIL_START = 1_000_000
     EMERGENCY_THRESHOLD = 3
     MIN_DIFFICULTY = RETARGET_MIN_DIFFICULTY
     MAX_DIFFICULTY = RETARGET_MAX_DIFFICULTY
-    MAX_DIFFICULTY_ADJUSTMENT = RETARGET_MAX_ADJUSTMENT_FACTOR
+    MAX_DIFFICULTY_ADJUSTMENT = min(RETARGET_MAX_ADJUSTMENT_FACTOR, MAX_INCREASE)
 
     @staticmethod
     def calculate_next_target_difficulty(
@@ -86,6 +89,13 @@ class DifficultyService:
         if pos < 5 * base:
             return f"{int(2.5 * base)}-{5 * base}"
         return f"{5 * base}-{10 * base}"
+
+    @classmethod
+    def _calculate_bbp_cost_factor(cls, position: int) -> float:
+        """Relative BBP cost using n*ln(n), enabled as a guardrail for deep Pi ranges."""
+        safe_position = max(10, int(position or 10))
+        pivot = max(10, int(cls.PI_PIVOT_POS))
+        return (safe_position * math.log(safe_position)) / (pivot * math.log(pivot))
 
     @staticmethod
     def calculate_next_difficulty(
@@ -133,12 +143,18 @@ class DifficultyService:
         raw_factor = target / max(Decimal("1"), stats["avg_total_block_ms"])
         total_factor = DifficultyService._clamp_adjustment(raw_factor)
         old_difficulty = DifficultyService._current_difficulty(current_params)
-        current_segment = int(new_params.get("segment_size") or current_params.get("segment_size") or 64)
+        current_segment = int(current_params.get("segment_size") or 64)
+        cold_target_segment = int(new_params["segment_size"]) if new_params.get("segment_size") != current_params.get("segment_size") else None
         current_samples = int(new_params.get("sample_count") or current_params.get("sample_count") or 8)
         difficulty_factor = Decimal("1")
         sample_factor = Decimal("1")
         reasons: list[str] = []
 
+        within_deadband = (
+            Decimal(str(DifficultyService.DEADBAND_LOW))
+            <= stats["avg_total_block_ms"]
+            <= Decimal(str(DifficultyService.DEADBAND_HIGH))
+        )
         too_slow = stats["avg_total_block_ms"] > target
         too_fast = stats["avg_total_block_ms"] < target
         emergency = stats["avg_task_ms"] > target * Decimal(str(DifficultyService.EMERGENCY_THRESHOLD))
@@ -146,7 +162,9 @@ class DifficultyService:
         validation_dominates = stats["validation_ratio"] > Decimal("0.40")
         validation_cheap = stats["validation_ratio"] < Decimal("0.20")
 
-        if too_slow and mining_dominates:
+        if within_deadband:
+            reasons.append("Within hysteresis band")
+        elif too_slow and mining_dominates:
             difficulty_factor = total_factor
             reasons.append("mining bottleneck")
         elif too_slow and not validation_dominates:
@@ -156,7 +174,9 @@ class DifficultyService:
             difficulty_factor = total_factor
             reasons.append("blocks below target")
 
-        if too_slow and validation_dominates:
+        if within_deadband:
+            sample_factor = Decimal("1")
+        elif too_slow and validation_dominates:
             sample_factor = total_factor
             reasons.append("validation bottleneck")
         elif too_fast and validation_cheap:
@@ -168,8 +188,24 @@ class DifficultyService:
             reasons.append("Emergency")
 
         new_difficulty = DifficultyService._clamp_difficulty(old_difficulty * difficulty_factor)
+        target_segment = int(
+            (Decimal(current_segment) * (new_difficulty / max(old_difficulty, Decimal("0.000001")))).to_integral_value(
+                rounding=ROUND_HALF_UP
+            )
+        )
+        if cold_target_segment is not None:
+            target_segment = min(target_segment, cold_target_segment)
+        guardrail_meta = DifficultyService._bbp_position_guardrail(
+            bucket_history,
+            current_segment,
+            target_segment,
+            next_range_start,
+        )
+        if guardrail_meta["active"]:
+            reasons.append("BBP position guardrail")
+        target_segment = int(guardrail_meta["target_segment"])
         new_segment = DifficultyService._clamp_int(
-            int((Decimal(current_segment) * (new_difficulty / max(old_difficulty, Decimal("0.000001")))).to_integral_value(rounding=ROUND_HALF_UP)),
+            DifficultyService._limit_segment_step(current_segment, target_segment),
             DifficultyService.MIN_SEGMENT_SIZE,
             DifficultyService.MAX_SEGMENT_SIZE,
         )
@@ -198,6 +234,11 @@ class DifficultyService:
         if emergency:
             legacy_adjustment_ratio = Decimal("2.0")
         new_difficulty_value = DifficultyService._quantize(new_difficulty)
+        cold_details = {
+            key: value
+            for key, value in cold_meta.items()
+            if key not in {"action", "reason", "adjustment_factor", "adjustment_ratio"}
+        }
 
         return new_params, {
             "action": action,
@@ -218,6 +259,12 @@ class DifficultyService:
             "adjustment_ratio": DifficultyService._float(legacy_adjustment_ratio),
             "difficulty_factor": DifficultyService._float(difficulty_factor),
             "sample_factor": DifficultyService._float(sample_factor),
+            "within_hysteresis": within_deadband,
+            "bbp_guardrail_active": guardrail_meta["active"],
+            "bbp_guardrail_start": DifficultyService.PI_GUARDRAIL_START,
+            "next_position_cost_factor": guardrail_meta["next_position_cost_factor"],
+            "predicted_next_task_ms": guardrail_meta["predicted_next_task_ms"],
+            "desired_segment_size": guardrail_meta["desired_segment_size"],
             "old_difficulty": DifficultyService._float(old_difficulty),
             "new_difficulty": new_difficulty_value,
             "old_segment_size": current_segment,
@@ -225,7 +272,7 @@ class DifficultyService:
             "old_sample_count": current_samples,
             "new_sample_count": new_samples,
             "observed_median_ms": int(statistics.median(float(block.get("total_task_ms") or 0) for block in bucket_history)),
-            **cold_meta,
+            **cold_details,
         }
 
     @staticmethod
@@ -303,7 +350,7 @@ class DifficultyService:
     @staticmethod
     def _clamp_adjustment(value: Decimal) -> Decimal:
         max_factor = Decimal(str(DifficultyService.MAX_DIFFICULTY_ADJUSTMENT))
-        min_factor = Decimal("2") - max_factor
+        min_factor = Decimal(str(DifficultyService.MAX_DECREASE))
         return max(min_factor, min(max_factor, value))
 
     @staticmethod
@@ -313,6 +360,72 @@ class DifficultyService:
     @staticmethod
     def _clamp_int(value: int, minimum: int, maximum: int) -> int:
         return max(minimum, min(maximum, value))
+
+    @staticmethod
+    def _limit_segment_step(current: int, target: int) -> int:
+        if target > current:
+            return min(target, current + DifficultyService.MAX_SEGMENT_STEP)
+        if target < current:
+            return max(target, current - DifficultyService.MAX_SEGMENT_STEP)
+        return current
+
+    @staticmethod
+    def _bbp_position_guardrail(
+        history: list[dict[str, Any]],
+        current_segment: int,
+        proposed_segment: int,
+        next_range_start: int,
+    ) -> dict[str, Any]:
+        inactive = {
+            "active": False,
+            "target_segment": proposed_segment,
+            "desired_segment_size": None,
+            "next_position_cost_factor": None,
+            "predicted_next_task_ms": None,
+        }
+        if int(next_range_start or 0) <= DifficultyService.PI_GUARDRAIL_START:
+            return inactive
+
+        costs: list[float] = []
+        for block in history[-DifficultyService.RETARGET_WINDOW :]:
+            task_ms = float(block.get("total_task_ms") or block.get("total_block_ms") or 0)
+            segment = int(block.get("segment_size") or (int(block["range_end"]) - int(block["range_start"]) + 1) or 1)
+            if task_ms <= 0 or segment <= 0:
+                continue
+            factor = DifficultyService._calculate_bbp_cost_factor(int(block["range_start"]))
+            costs.append(task_ms / max(1, segment) / max(0.000001, factor))
+
+        if not costs:
+            return inactive
+
+        cost_per_segment_unit = statistics.median(costs)
+        next_factor = DifficultyService._calculate_bbp_cost_factor(int(next_range_start))
+        predicted_ms = cost_per_segment_unit * max(1, proposed_segment) * next_factor
+        if predicted_ms <= DifficultyService.DEADBAND_HIGH:
+            return {
+                **inactive,
+                "next_position_cost_factor": round(next_factor, 6),
+                "predicted_next_task_ms": round(predicted_ms, 2),
+            }
+
+        desired_segment = int(
+            max(
+                DifficultyService.MIN_SEGMENT_SIZE,
+                min(
+                    DifficultyService.MAX_SEGMENT_SIZE,
+                    round(DifficultyService.TARGET_MINER_MS / max(0.000001, cost_per_segment_unit * next_factor)),
+                ),
+            )
+        )
+        guarded_segment = min(proposed_segment, desired_segment, current_segment - 1)
+        guarded_segment = max(DifficultyService.MIN_SEGMENT_SIZE, guarded_segment)
+        return {
+            "active": guarded_segment < proposed_segment,
+            "target_segment": guarded_segment if guarded_segment < proposed_segment else proposed_segment,
+            "desired_segment_size": desired_segment,
+            "next_position_cost_factor": round(next_factor, 6),
+            "predicted_next_task_ms": round(predicted_ms, 2),
+        }
 
     @staticmethod
     def _current_difficulty(params: dict[str, Any]) -> Decimal:
