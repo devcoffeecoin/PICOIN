@@ -10,11 +10,12 @@ from typing import Any
 import requests
 
 from app.core.merkle import verify_merkle_proof
+from app.core.money import canonical_amount, to_units
 from app.core.pi import calculate_pi_segment
 from app.core.signatures import build_validation_result_signature_payload, generate_keypair, sign_payload, verify_payload_signature
 from app.core.settings import CHAIN_ID, NETWORK_ID
 from app.services.transactions import selected_tx_hashes_hash, transaction_commitment
-from app.services.wallet import transaction_hash
+from app.services.wallet import transaction_hash, unsigned_transaction_payload
 
 
 DEFAULT_IDENTITY_PATH = Path("validator_identity.json")
@@ -108,18 +109,20 @@ def validate_job(job: dict[str, Any]) -> tuple[bool, str]:
         if actual_hashes != tx_hashes:
             return False, "invalid_tx_order"
         for tx in transactions:
-            unsigned = {
-                "amount": tx.get("amount", 0),
-                "chain_id": tx.get("chain_id"),
-                "fee": tx.get("fee", 0),
-                "network_id": tx.get("network_id"),
-                "nonce": int(tx.get("nonce") or 0),
-                "payload": tx.get("payload") or {},
-                "recipient": tx.get("recipient"),
-                "sender": tx.get("sender"),
-                "timestamp": tx.get("timestamp"),
-                "tx_type": tx.get("tx_type"),
-            }
+            amount_units = int(tx.get("amount_units") if tx.get("amount_units") is not None else to_units(tx.get("amount", 0)))
+            fee_units = int(tx.get("fee_units") if tx.get("fee_units") is not None else to_units(tx.get("fee", 0)))
+            unsigned = unsigned_transaction_payload(
+                tx_type=tx.get("tx_type"),
+                sender=tx.get("sender"),
+                recipient=tx.get("recipient"),
+                amount=canonical_amount(amount_units),
+                nonce=int(tx.get("nonce") or 0),
+                fee=canonical_amount(fee_units),
+                payload=tx.get("payload") or {},
+                timestamp=tx.get("timestamp"),
+                network_id=tx.get("network_id"),
+                chain_id=tx.get("chain_id"),
+            )
             if unsigned["chain_id"] != CHAIN_ID or unsigned["network_id"] != NETWORK_ID:
                 return False, "invalid_tx_payload"
             if transaction_hash(unsigned, tx.get("public_key", "")) != tx.get("tx_hash"):

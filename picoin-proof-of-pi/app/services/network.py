@@ -7,7 +7,7 @@ from typing import Any
 import requests
 
 from app.core.crypto import sha256_text
-from app.core.money import to_units
+from app.core.money import canonical_amount, to_units, units_to_float
 from app.core.settings import (
     AUTO_RECOVERY_ENABLED,
     BOOTSTRAP_PEERS,
@@ -544,11 +544,11 @@ def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str
                 tx["tx_type"],
                 tx["sender"],
                 tx.get("recipient"),
-                float(tx.get("amount", 0)),
-                to_units(tx.get("amount", 0)),
+                units_to_float(_tx_amount_units(tx)),
+                _tx_amount_units(tx),
                 int(tx["nonce"]),
-                float(tx.get("fee", 0)),
-                to_units(tx.get("fee", 0)),
+                units_to_float(_tx_fee_units(tx)),
+                _tx_fee_units(tx),
                 payload_json,
                 tx["public_key"],
                 tx["signature"],
@@ -879,11 +879,11 @@ def _validate_signed_transaction(tx: dict[str, Any]) -> None:
         raise NetworkError(422, "unsupported transaction type")
     if int(tx["nonce"]) < 1:
         raise NetworkError(422, "nonce must be >= 1")
-    if float(tx.get("fee", 0)) < 0 or float(tx.get("fee", 0)) > MEMPOOL_MAX_FEE:
+    if _tx_fee_units(tx) < 0 or units_to_float(_tx_fee_units(tx)) > MEMPOOL_MAX_FEE:
         raise NetworkError(422, "invalid fee")
-    if to_units(tx.get("fee", 0)) < MIN_TX_FEE_UNITS:
+    if _tx_fee_units(tx) < MIN_TX_FEE_UNITS:
         raise NetworkError(422, "transaction fee below minimum")
-    if float(tx.get("amount", 0)) < 0:
+    if _tx_amount_units(tx) < 0:
         raise NetworkError(422, "amount must be >= 0")
     if tx["tx_type"] == "transfer" and not is_valid_address(tx.get("recipient")):
         raise NetworkError(422, "transfer transaction requires a valid PI recipient")
@@ -903,14 +903,26 @@ def _unsigned_from_tx(tx: dict[str, Any]) -> dict[str, Any]:
         tx_type=tx["tx_type"],
         sender=tx["sender"],
         recipient=tx.get("recipient"),
-        amount=float(tx.get("amount", 0)),
+        amount=canonical_amount(_tx_amount_units(tx)),
         nonce=int(tx["nonce"]),
-        fee=float(tx.get("fee", 0)),
+        fee=canonical_amount(_tx_fee_units(tx)),
         payload=tx.get("payload") or {},
         timestamp=tx["timestamp"],
         network_id=tx.get("network_id", NETWORK_ID),
         chain_id=tx.get("chain_id", CHAIN_ID),
     )
+
+
+def _tx_amount_units(tx: dict[str, Any]) -> int:
+    if tx.get("amount_units") is not None:
+        return int(tx.get("amount_units") or 0)
+    return to_units(tx.get("amount", 0))
+
+
+def _tx_fee_units(tx: dict[str, Any]) -> int:
+    if tx.get("fee_units") is not None:
+        return int(tx.get("fee_units") or 0)
+    return to_units(tx.get("fee", 0))
 
 
 def _decode_peer(row: dict[str, Any] | None) -> dict[str, Any]:

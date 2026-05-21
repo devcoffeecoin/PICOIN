@@ -570,8 +570,10 @@ class SignedTransactionRequest(BaseModel):
     sender: str = Field(..., min_length=3, max_length=80)
     recipient: str | None = Field(default=None, max_length=80)
     amount: float = Field(default=0, ge=0)
+    amount_units: int | None = Field(default=None, ge=0)
     nonce: int = Field(..., ge=1)
     fee: float = Field(default=0, ge=0)
+    fee_units: int | None = Field(default=None, ge=0)
     payload: dict[str, Any] = Field(default_factory=dict)
     timestamp: str
     network_id: str

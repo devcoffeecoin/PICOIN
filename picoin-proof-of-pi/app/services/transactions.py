@@ -5,7 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.core.crypto import canonical_json, sha256_text
-from app.core.money import to_units, units_from_db, units_to_float
+from app.core.money import canonical_amount, to_units, units_from_db, units_to_float
 from app.core.settings import (
     CHAIN_ID,
     FAUCET_ALLOWED_NETWORKS,
@@ -103,15 +103,7 @@ def select_transactions_for_task(connection: Any, max_count: int, chain_height: 
             sender = tx["sender"]
             expected_nonce = expected_nonce_by_sender.get(sender)
             if expected_nonce is None:
-                confirmed = connection.execute(
-                    """
-                    SELECT COALESCE(MAX(nonce), 0) AS nonce
-                    FROM mempool_transactions
-                    WHERE sender = ? AND status = 'confirmed'
-                    """,
-                    (sender,),
-                ).fetchone()
-                expected_nonce = int(confirmed["nonce"]) + 1
+                expected_nonce = _confirmed_nonce(connection, sender) + 1
             tx_nonce = int(tx["nonce"])
             if tx_nonce < expected_nonce:
                 _fail_transaction(connection, tx["tx_hash"], f"invalid nonce, expected {expected_nonce}")
@@ -123,7 +115,7 @@ def select_transactions_for_task(connection: Any, max_count: int, chain_height: 
             if semantic_reason:
                 _fail_transaction(connection, tx["tx_hash"], semantic_reason)
                 continue
-            debit_units = int(tx.get("amount_units") or to_units(tx.get("amount", 0))) + int(tx.get("fee_units") or to_units(tx.get("fee", 0)))
+            debit_units = _tx_amount_units(tx) + _tx_fee_units(tx)
             if _balance_units(connection, sender) < reserved_units_by_sender.get(sender, 0) + debit_units:
                 continue
             selected.append(tx)
@@ -136,7 +128,7 @@ def select_transactions_for_task(connection: Any, max_count: int, chain_height: 
 
 def transaction_commitment(transactions: list[dict[str, Any]]) -> dict[str, Any]:
     tx_hashes = [tx["tx_hash"] for tx in transactions]
-    fee_units = sum(int(tx.get("fee_units") or to_units(tx.get("fee", 0))) for tx in transactions)
+    fee_units = sum(_tx_fee_units(tx) for tx in transactions)
     return {
         "tx_count": len(tx_hashes),
         "tx_hashes": tx_hashes,
@@ -357,6 +349,7 @@ def apply_block_transactions(
             """,
             (block_height, timestamp, timestamp, tx["tx_hash"]),
         )
+        _record_confirmed_nonce(connection, tx["sender"], int(tx["nonce"]), timestamp)
         expected_nonce_by_sender[tx["sender"]] = int(tx["nonce"]) + 1
         applied.append(tx["tx_hash"])
 
@@ -389,11 +382,11 @@ def ensure_block_transactions_in_mempool(connection: Any, transactions: list[dic
                 tx["tx_type"],
                 tx["sender"],
                 tx.get("recipient"),
-                float(tx.get("amount", 0)),
-                to_units(tx.get("amount", 0)),
+                units_to_float(_tx_amount_units(tx)),
+                _tx_amount_units(tx),
                 int(tx["nonce"]),
-                float(tx.get("fee", 0)),
-                to_units(tx.get("fee", 0)),
+                units_to_float(_tx_fee_units(tx)),
+                _tx_fee_units(tx),
                 json.dumps(unsigned_payload, sort_keys=True),
                 tx["public_key"],
                 tx["signature"],
@@ -411,8 +404,10 @@ def decode_mempool_transaction(row: dict[str, Any] | None) -> dict[str, Any]:
     return {
         **row,
         **unsigned_payload,
-        "amount": round(float(unsigned_payload.get("amount", row.get("amount", 0))), 8),
-        "fee": round(float(unsigned_payload.get("fee", row.get("fee", 0))), 8),
+        "amount": units_to_float(_tx_amount_units({**row, **unsigned_payload})),
+        "amount_units": _tx_amount_units({**row, **unsigned_payload}),
+        "fee": units_to_float(_tx_fee_units({**row, **unsigned_payload})),
+        "fee_units": _tx_fee_units({**row, **unsigned_payload}),
         "nonce": int(unsigned_payload.get("nonce", row.get("nonce", 0))),
         "payload": unsigned_payload.get("payload", {}),
         "propagated": bool(row.get("propagated")),
@@ -423,15 +418,14 @@ def get_wallet_nonce_status(connection: Any, address: str) -> dict[str, Any]:
     row = connection.execute(
         """
         SELECT
-            COALESCE(MAX(CASE WHEN status = 'confirmed' THEN nonce ELSE 0 END), 0) AS confirmed_nonce,
-            COALESCE(MAX(CASE WHEN status IN ('pending', 'propagated') THEN nonce ELSE 0 END), 0) AS pending_nonce,
-            COALESCE(SUM(CASE WHEN status IN ('pending', 'propagated') THEN 1 ELSE 0 END), 0) AS pending_count
+            COALESCE(MAX(CASE WHEN status IN ('pending', 'propagated', 'selected', 'released') THEN nonce ELSE 0 END), 0) AS pending_nonce,
+            COALESCE(SUM(CASE WHEN status IN ('pending', 'propagated', 'selected', 'released') THEN 1 ELSE 0 END), 0) AS pending_count
         FROM mempool_transactions
         WHERE sender = ?
         """,
         (address,),
     ).fetchone()
-    confirmed_nonce = int(row["confirmed_nonce"] if row else 0)
+    confirmed_nonce = _confirmed_nonce(connection, address)
     pending_nonce = int(row["pending_nonce"] if row else 0)
     return {
         "address": address,
@@ -469,9 +463,9 @@ def _basic_transaction_rejection_reason(tx: dict[str, Any]) -> str | None:
         return "invalid transaction signature"
     if tx.get("network_id") != NETWORK_ID or tx.get("chain_id") != CHAIN_ID:
         return "transaction network or chain mismatch"
-    if int(tx.get("fee_units") or to_units(tx.get("fee", 0))) < MIN_TX_FEE_UNITS:
+    if _tx_fee_units(tx) < MIN_TX_FEE_UNITS:
         return "transaction fee below minimum"
-    if int(tx.get("amount_units") or to_units(tx.get("amount", 0))) < 0:
+    if _tx_amount_units(tx) < 0:
         return "amount must be non-negative"
     return None
 
@@ -479,6 +473,49 @@ def _basic_transaction_rejection_reason(tx: dict[str, Any]) -> str | None:
 def _balance_units(connection: Any, account_id: str) -> int:
     row = connection.execute("SELECT balance_units FROM balances WHERE account_id = ?", (account_id,)).fetchone()
     return int(row["balance_units"] if row else 0)
+
+
+def _confirmed_nonce(connection: Any, account_id: str) -> int:
+    nonce_row = connection.execute(
+        "SELECT nonce FROM account_nonces WHERE account_id = ?",
+        (account_id,),
+    ).fetchone()
+    stored_nonce = int(nonce_row["nonce"]) if nonce_row is not None else 0
+    confirmed_row = connection.execute(
+        """
+        SELECT COALESCE(MAX(nonce), 0) AS nonce
+        FROM mempool_transactions
+        WHERE sender = ? AND status = 'confirmed'
+        """,
+        (account_id,),
+    ).fetchone()
+    mempool_nonce = int(confirmed_row["nonce"] if confirmed_row else 0)
+    return max(stored_nonce, mempool_nonce)
+
+
+def _record_confirmed_nonce(connection: Any, account_id: str, nonce: int, timestamp: str) -> None:
+    connection.execute(
+        """
+        INSERT INTO account_nonces (account_id, nonce, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(account_id) DO UPDATE SET
+            nonce = CASE WHEN excluded.nonce > account_nonces.nonce THEN excluded.nonce ELSE account_nonces.nonce END,
+            updated_at = excluded.updated_at
+        """,
+        (account_id, int(nonce), timestamp),
+    )
+
+
+def _tx_amount_units(tx: dict[str, Any]) -> int:
+    if tx.get("amount_units") is not None:
+        return int(tx.get("amount_units") or 0)
+    return to_units(tx.get("amount", 0))
+
+
+def _tx_fee_units(tx: dict[str, Any]) -> int:
+    if tx.get("fee_units") is not None:
+        return int(tx.get("fee_units") or 0)
+    return to_units(tx.get("fee", 0))
 
 
 def _fail_transaction(connection: Any, tx_hash: str, reason: str) -> None:
@@ -504,20 +541,12 @@ def _transaction_rejection_reason(
         return "unsupported transaction type for block execution"
     if not _is_signature_valid(tx):
         return "invalid transaction signature"
-    if float(tx.get("fee", 0)) < 0:
+    if _tx_fee_units(tx) < 0:
         return "fee must be non-negative"
     sender = tx["sender"]
     expected_nonce = expected_nonce_by_sender.get(sender)
     if expected_nonce is None:
-        confirmed = connection.execute(
-            """
-            SELECT COALESCE(MAX(nonce), 0) AS nonce
-            FROM mempool_transactions
-            WHERE sender = ? AND status = 'confirmed'
-            """,
-            (sender,),
-        ).fetchone()
-        expected_nonce = int(confirmed["nonce"]) + 1
+        expected_nonce = _confirmed_nonce(connection, sender) + 1
     if int(tx["nonce"]) != expected_nonce:
         return f"invalid nonce, expected {expected_nonce}"
     balance = _balance(connection, sender)
@@ -542,7 +571,7 @@ def _transaction_rejection_reason(
 
 
 def _transfer_rejection_reason(tx: dict[str, Any]) -> str | None:
-    if float(tx.get("amount", 0)) <= 0:
+    if _tx_amount_units(tx) <= 0:
         return "transfer amount must be positive"
     if not is_valid_address(tx.get("recipient")):
         return "transfer transaction requires a valid PI recipient"
@@ -1009,13 +1038,11 @@ def _apply_fee_reward(
 
 
 def _total_debit(tx: dict[str, Any]) -> float:
-    amount = round(float(tx.get("amount", 0)), 8)
-    fee = round(float(tx.get("fee", 0)), 8)
     if tx["tx_type"] in {"transfer", "stake"}:
-        return round(amount + fee, 8)
+        return units_to_float(_tx_amount_units(tx) + _tx_fee_units(tx))
     if tx["tx_type"] == "faucet":
         return 0.0
-    return fee
+    return units_to_float(_tx_fee_units(tx))
 
 
 def _science_job_budget_from_payload(payload: dict[str, Any]) -> tuple[float, float, float]:
@@ -1231,9 +1258,9 @@ def _unsigned_from_tx(tx: dict[str, Any]) -> dict[str, Any]:
         tx_type=tx["tx_type"],
         sender=tx["sender"],
         recipient=tx.get("recipient"),
-        amount=float(tx.get("amount", 0)),
+        amount=canonical_amount(_tx_amount_units(tx)),
         nonce=int(tx["nonce"]),
-        fee=float(tx.get("fee", 0)),
+        fee=canonical_amount(_tx_fee_units(tx)),
         payload=tx.get("payload") or {},
         timestamp=tx["timestamp"],
         network_id=tx.get("network_id", NETWORK_ID),

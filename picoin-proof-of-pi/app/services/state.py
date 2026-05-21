@@ -33,6 +33,18 @@ def balance_snapshot(connection: Any, block_height: int, block_timestamp: str | 
     ]
 
 
+def account_nonce_snapshot(connection: Any) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT account_id, nonce
+        FROM account_nonces
+        WHERE nonce > 0
+        ORDER BY account_id ASC
+        """
+    ).fetchall()
+    return [{"account_id": str(row["account_id"]), "nonce": int(row["nonce"])} for row in rows]
+
+
 def canonical_balance_snapshot(connection: Any, block_height: int, block_timestamp: str | None = None) -> list[dict[str, Any]]:
     if block_height < 0:
         raise ValueError("block_height must be >= 0")
@@ -132,6 +144,8 @@ def create_canonical_checkpoint_in_connection(
     state_root = block.get("state_root") or update_block_state_root(connection, height, block.get("timestamp"))
     balances = balance_snapshot(connection, height, block.get("timestamp"))
     balances_hash = sha256_text(canonical_json({"height": height, "balances": balances}))
+    nonces = account_nonce_snapshot(connection)
+    nonces_hash = sha256_text(canonical_json({"height": height, "nonces": nonces}))
     ledger_entries_count = int(
         connection.execute(
             """
@@ -156,6 +170,8 @@ def create_canonical_checkpoint_in_connection(
         "state_root": state_root,
         "balances_hash": balances_hash,
         "balances_count": len(balances),
+        "nonces_hash": nonces_hash,
+        "nonces_count": len(nonces),
         "ledger_entries_count": ledger_entries_count,
         "total_balance": total_balance,
         "total_balance_units": total_balance_units,
@@ -336,7 +352,7 @@ def export_canonical_snapshot(height: int | None = None) -> dict[str, Any]:
             latest = connection.execute("SELECT COALESCE(MAX(height), 0) AS height FROM blocks").fetchone()
             height = int(latest["height"] if latest else 0)
         checkpoint = get_checkpoint_in_connection(connection, int(height))
-        if checkpoint is None:
+        if checkpoint is None or not (checkpoint.get("payload") or {}).get("nonces_hash"):
             checkpoint = create_canonical_checkpoint_in_connection(
                 connection,
                 int(height),
@@ -349,6 +365,7 @@ def export_canonical_snapshot(height: int | None = None) -> dict[str, Any]:
         if block is None:
             raise StateError(404, "block not found for snapshot export")
         balances = balance_snapshot(connection, int(height), block["timestamp"])
+        nonces = account_nonce_snapshot(connection)
         account_types = {
             row["account_id"]: row["account_type"]
             for row in connection.execute("SELECT account_id, account_type FROM balances").fetchall()
@@ -366,6 +383,7 @@ def export_canonical_snapshot(height: int | None = None) -> dict[str, Any]:
         "exported_at": _now(),
         "checkpoint": _checkpoint_public_payload(checkpoint),
         "balances": export_balances,
+        "nonces": nonces,
     }
     validation = validate_snapshot_document(document)
     document["valid"] = validation["valid"]
@@ -425,9 +443,13 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
         issues.append("unsupported snapshot version")
     checkpoint = dict(document.get("checkpoint") or {})
     balances = document.get("balances") or []
+    nonces = document.get("nonces") or []
     if not isinstance(balances, list):
         balances = []
         issues.append("balances must be a list")
+    if not isinstance(nonces, list):
+        nonces = []
+        issues.append("nonces must be a list")
     required = {
         "chain_id",
         "network_id",
@@ -458,7 +480,13 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
     except ValueError as exc:
         normalized_balances = []
         issues.append(str(exc))
+    try:
+        normalized_nonces = _normalize_snapshot_nonces(nonces)
+    except ValueError as exc:
+        normalized_nonces = []
+        issues.append(str(exc))
     balances_hash = sha256_text(canonical_json({"height": height, "balances": normalized_balances}))
+    nonces_hash = sha256_text(canonical_json({"height": height, "nonces": normalized_nonces}))
     total_balance_units = sum(int(item["balance_units"]) for item in normalized_balances)
     total_balance = units_to_float(total_balance_units)
     payload = {
@@ -476,6 +504,9 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
         "total_balance": total_balance,
         "total_balance_units": total_balance_units,
     }
+    if checkpoint.get("nonces_hash") or normalized_nonces:
+        payload["nonces_hash"] = nonces_hash
+        payload["nonces_count"] = len(normalized_nonces)
     snapshot_hash = sha256_text(canonical_json(payload))
     if checkpoint.get("balances_hash") != balances_hash:
         issues.append("balances_hash mismatch")
@@ -483,6 +514,10 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
         issues.append("state_root mismatch")
     if int(checkpoint.get("balances_count") or -1) != len(normalized_balances):
         issues.append("balances_count mismatch")
+    if checkpoint.get("nonces_hash") and checkpoint.get("nonces_hash") != nonces_hash:
+        issues.append("nonces_hash mismatch")
+    if checkpoint.get("nonces_hash") and int(checkpoint.get("nonces_count") or -1) != len(normalized_nonces):
+        issues.append("nonces_count mismatch")
     if int(checkpoint.get("total_balance_units") or to_units(checkpoint.get("total_balance") or 0)) != total_balance_units:
         issues.append("total_balance mismatch")
     if checkpoint.get("snapshot_hash") != snapshot_hash:
@@ -496,6 +531,8 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
             "balances_count": len(normalized_balances),
             "total_balance": total_balance,
             "total_balance_units": total_balance_units,
+            "nonces_hash": checkpoint.get("nonces_hash") or (nonces_hash if normalized_nonces else None),
+            "nonces_count": int(checkpoint.get("nonces_count") or len(normalized_nonces)),
         },
         "computed": {
             "balances_hash": balances_hash,
@@ -504,6 +541,8 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
             "balances_count": len(normalized_balances),
             "total_balance": total_balance,
             "total_balance_units": total_balance_units,
+            "nonces_hash": nonces_hash if normalized_nonces else None,
+            "nonces_count": len(normalized_nonces),
         },
     }
 
@@ -546,11 +585,13 @@ def apply_imported_snapshot_state(snapshot_hash: str, *, replace_existing: bool 
         if not validation["valid"]:
             raise StateError(422, f"invalid imported snapshot: {', '.join(validation['issues'])}")
         balances = _normalize_snapshot_balances_with_type(document.get("balances") or [])
+        nonces = _normalize_snapshot_nonces(document.get("nonces") or [])
         checkpoint = validation["checkpoint"]
 
         cleared = _clear_local_chain_state_for_snapshot_restore(connection) if replace_existing else {}
         connection.execute("DELETE FROM ledger_entries")
         connection.execute("DELETE FROM balances")
+        connection.execute("DELETE FROM account_nonces")
         for item in balances:
             balance_units = int(item["balance_units"])
             balance = units_to_float(balance_units)
@@ -581,6 +622,14 @@ def apply_imported_snapshot_state(snapshot_hash: str, *, replace_existing: bool 
                     timestamp,
                 ),
             )
+        for item in nonces:
+            connection.execute(
+                """
+                INSERT INTO account_nonces (account_id, nonce, updated_at)
+                VALUES (?, ?, ?)
+                """,
+                (item["account_id"], int(item["nonce"]), timestamp),
+            )
         connection.execute("UPDATE canonical_snapshot_imports SET active = 0")
         connection.execute(
             """
@@ -600,6 +649,7 @@ def apply_imported_snapshot_state(snapshot_hash: str, *, replace_existing: bool 
         "height": checkpoint["height"],
         "snapshot_hash": snapshot_hash,
         "balances_applied": len(balances),
+        "nonces_applied": len(nonces),
         "cleared": cleared,
         "snapshot": applied,
     }
@@ -665,6 +715,7 @@ def _clear_local_chain_state_for_snapshot_restore(connection: Any) -> dict[str, 
             "network_block_headers",
             "canonical_checkpoints",
             "mempool_transactions",
+            "account_nonces",
             "retroactive_audits",
             "validation_votes",
             "validation_jobs",
@@ -727,6 +778,24 @@ def _normalize_snapshot_balances(balances: list[dict[str, Any]]) -> list[dict[st
         for (account_id, account_type), balance_units in sorted(merged.items(), key=lambda item: (item[0][0], item[0][1]))
         if balance_units != 0
     ]
+
+
+def _normalize_snapshot_nonces(nonces: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    merged: dict[str, int] = {}
+    for item in nonces:
+        account_id = str(item.get("account_id") or "").strip()
+        if not account_id:
+            continue
+        try:
+            nonce = int(item.get("nonce") or 0)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"invalid nonce for {account_id}") from exc
+        if nonce < 0:
+            raise ValueError(f"negative nonce for {account_id}")
+        if nonce == 0:
+            continue
+        merged[account_id] = max(merged.get(account_id, 0), nonce)
+    return [{"account_id": account_id, "nonce": nonce} for account_id, nonce in sorted(merged.items())]
 
 
 def _normalize_snapshot_balances_with_type(balances: list[dict[str, Any]]) -> list[dict[str, Any]]:
