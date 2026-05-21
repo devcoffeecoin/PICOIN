@@ -262,9 +262,13 @@ PICOIN_NODE_ID=local-node
 PICOIN_NODE_TYPE=full
 PICOIN_NODE_ADDRESS=http://127.0.0.1:8000
 PICOIN_BOOTSTRAP_PEERS=
+PICOIN_BOOTSTRAP_PEER=
 PICOIN_HOST=127.0.0.1
 PICOIN_PORT=8000
 PICOIN_SERVER=http://127.0.0.1:8000
+PICOIN_PEER_DISCOVERY_ENABLED=1
+PICOIN_PEER_DISCOVERY_INTERVAL_SECONDS=300
+PICOIN_PEER_DISCOVERY_MAX_PEERS=32
 ```
 
 ## Public Testnet Deployment Kit v0.18
@@ -302,12 +306,36 @@ cd /opt/picoin/picoin-proof-of-pi
 .venv/bin/python -m picoin node sync-status
 ```
 
-To connect a second droplet, configura `PICOIN_BOOTSTRAP_PEERS=http://BOOTSTRAP_PUBLIC_IP:8000`, uses a `PICOIN_NODE_ID` unico, restart the service and run `python -m picoin node reconcile` on both nodes.
+For the current public testnet, use the full deployment guide in
+`deploy/README-public-testnet.md`. External validator droplets should point at
+the public bootstrap API and advertise their own reachable node address:
+
+```bash
+PICOIN_NODE_TYPE=validator
+PICOIN_NODE_ADDRESS=https://validator.example.com
+PICOIN_BOOTSTRAP_PEER=https://api.picoin.science
+PICOIN_BOOTSTRAP_PEERS=https://api.picoin.science
+PICOIN_PEER_DISCOVERY_ENABLED=1
+PICOIN_PEER_DISCOVERY_INTERVAL_SECONDS=300
+PICOIN_PEER_DISCOVERY_MAX_PEERS=32
+PICOIN_VALIDATOR_NODE_SERVER=http://127.0.0.1:8000
+PICOIN_VALIDATOR_NODE_ADDRESS=https://validator.example.com
+```
+
+After editing `/etc/picoin/picoin.env`, restart the node and refresh peers:
+
+```bash
+sudo systemctl restart picoin-node picoin-validator
+python -m picoin node discover-peers --server http://127.0.0.1:8000
+curl -s http://127.0.0.1:8000/node/peers; echo
+```
 
 To synchronize a lagging node in a single operation:
 
 ```bash
-python -m picoin node catch-up --peer http://BOOTSTRAP_PUBLIC_IP:8000
+python -m picoin node catch-up \
+  --server http://127.0.0.1:8000 \
+  --peer https://api.picoin.science
 ```
 
 `node catch-up` runs rounds of reconcile, consensus replay, sync-status and audit. If se pasa `--peer`, it also compares `network_id`, `chain_id`, `genesis_hash`, height and latest block hash against the peer. Termina with `status=ok` when there are not pending blocks, the economic audit is valid and the node matches the peer.
@@ -315,7 +343,7 @@ python -m picoin node catch-up --peer http://BOOTSTRAP_PUBLIC_IP:8000
 For a pass/fail report without modifying state:
 
 ```bash
-python -m picoin node report --peer http://BOOTSTRAP_PUBLIC_IP:8000
+python -m picoin node report --peer https://api.picoin.science
 ```
 
 `node report` checks health, audit, replay backlog, consensus, reserve/treasury, and comparison against peer.
@@ -323,7 +351,7 @@ python -m picoin node report --peer http://BOOTSTRAP_PUBLIC_IP:8000
 To automate the public check of a node:
 
 ```bash
-PICOIN_BOOTSTRAP_PEER=http://BOOTSTRAP_PUBLIC_IP:8000 deploy/scripts/public-testnet-smoke.sh
+PICOIN_BOOTSTRAP_PEER=https://api.picoin.science deploy/scripts/public-testnet-smoke.sh
 ```
 
 The smoke test runs `node catch-up`, `node report` and `node audit`, leaves the JSON files in `data/testnet/smoke` and termina with `PICOIN_SMOKE_STATUS=ok` only when the node is synchronized, the audit es valid and matches the configured peer.
@@ -1609,7 +1637,7 @@ Fork diagnostics:
 
 ```bash
 python -m picoin consensus status
-python -m picoin node report --peer http://BOOTSTRAP_PUBLIC_IP:8000
+python -m picoin node report --peer https://api.picoin.science
 ```
 
 `/consensus/status` expone `fork_choice_rule`, `fork_group_count`, `competing_proposal_count`, `fork_groups` and `fork_choices`. `node report` marca `fork_choice` as warning if there are open competing proposals.

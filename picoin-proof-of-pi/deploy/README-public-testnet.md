@@ -101,16 +101,28 @@ Copy a role template:
 
 ```bash
 cd /opt/picoin/picoin-proof-of-pi
-sudo cp .env.public-testnet.example /etc/picoin/picoin.env
+sudo cp deploy/public-testnet.env.example /etc/picoin/picoin.env
 sudo nano /etc/picoin/picoin.env
 ```
 
-Role-specific templates are available:
+For systemd droplets, use the deployment template:
+
+- `deploy/public-testnet.env.example`
+
+Edit `PICOIN_NODE_TYPE`, `PICOIN_NODE_ID`, `PICOIN_NODE_ADDRESS`,
+`PICOIN_BOOTSTRAP_PEER(S)`, and the worker variables for the role running on
+that host.
+
+The repo root also includes role-specific examples for quick reference:
 
 - `.env.node.example`
 - `.env.miner.example`
 - `.env.validator.example`
 - `.env.public-testnet.example`
+
+Those root examples are kept aligned with the same peer discovery and validator
+heartbeat variables, but `deploy/public-testnet.env.example` is the canonical
+copy source for `/etc/picoin/picoin.env` on production-like droplets.
 
 Runtime state is intentionally separated from code:
 
@@ -133,6 +145,11 @@ PICOIN_REPLAY_STALL_FAILURES=3
 PICOIN_MIN_QUORUM_PEERS=1
 PICOIN_AUTO_RECOVERY_ENABLED=0
 PICOIN_LIVENESS_INTERVAL_SECONDS=30
+PICOIN_PEER_DISCOVERY_ENABLED=1
+PICOIN_PEER_DISCOVERY_INTERVAL_SECONDS=300
+PICOIN_PEER_DISCOVERY_MAX_PEERS=32
+PICOIN_VALIDATOR_NODE_SERVER=http://127.0.0.1:8000
+PICOIN_VALIDATOR_NODE_ADDRESS=https://validator.example.com
 PICOIN_WALLET_PATH=/var/lib/picoin/data/wallets/default.json
 PICOIN_MINER_REWARD_ADDRESS=PI...
 PICOIN_VALIDATOR_REWARD_ADDRESS=PI...
@@ -179,6 +196,7 @@ Administrative CLI:
 
 ```bash
 python -m picoin node discover-peers --server http://127.0.0.1:8000
+python -m picoin validator validate --help
 python -m picoin validators list --server https://api.picoin.science
 python -m picoin miners list --server https://api.picoin.science
 python -m picoin validators disable validator_xxx --server http://127.0.0.1:8000
@@ -216,6 +234,7 @@ PICOIN_BOOTSTRAP_PEER=https://api.picoin.science
 PICOIN_BOOTSTRAP_PEERS=https://api.picoin.science
 PICOIN_PEER_DISCOVERY_ENABLED=1
 PICOIN_PEER_DISCOVERY_INTERVAL_SECONDS=300
+PICOIN_PEER_DISCOVERY_MAX_PEERS=32
 PICOIN_VALIDATOR_NODE_SERVER=http://127.0.0.1:8000
 PICOIN_VALIDATOR_NODE_ADDRESS=https://validador.picoin.science
 ```
@@ -226,6 +245,8 @@ Manual node commands:
 cd /opt/picoin/picoin-proof-of-pi
 .venv/bin/python -m picoin node doctor --server http://127.0.0.1:8000
 .venv/bin/python -m picoin node sync-status --server http://127.0.0.1:8000
+.venv/bin/python -m picoin node discover-peers --server http://127.0.0.1:8000
+curl -s http://127.0.0.1:8000/node/peers; echo
 .venv/bin/python -m picoin node catch-up \
   --server http://127.0.0.1:8000 \
   --peer https://api.picoin.science
@@ -673,6 +694,26 @@ On a validator host cloned under `/root/PICOIN/PICOIN`, use:
 cd /root/PICOIN/PICOIN
 git pull
 SOURCE_DIR="$PWD/picoin-proof-of-pi"
+
+sudo PICOIN_SOURCE_DIR="$SOURCE_DIR" \
+  PICOIN_REPO_DIR=/opt/picoin/picoin-proof-of-pi \
+  PICOIN_DATA_DIR=/var/lib/picoin/data \
+  bash "$SOURCE_DIR/deploy/scripts/refresh-code.sh"
+
+sudo systemctl daemon-reload
+sudo systemctl restart picoin-node picoin-validator picoin-miner picoin-reconciler
+```
+
+After refresh, verify that the installed runtime has the current peer and
+validator heartbeat features:
+
+```bash
+cd /opt/picoin/picoin-proof-of-pi
+source .venv/bin/activate
+grep -n "discover-peers" picoin/cli.py
+grep -n "node-server" picoin/cli.py validator/client.py deploy/scripts/picoin-worker-loop.sh
+python -m picoin node discover-peers --server http://127.0.0.1:8000
+python -m picoin validator validate --help
 ```
 
 ## Troubleshooting
@@ -688,6 +729,9 @@ SOURCE_DIR="$PWD/picoin-proof-of-pi"
 - On bootstrap, keep `PICOIN_SMOKE_SKIP_CATCH_UP=1` and `PICOIN_SMOKE_WARN_ONLY=1` if the auditor is enabled, because bootstrap has no upstream peer.
 - If a validator auto-registers the wrong identity, check `PICOIN_VALIDATOR_IDENTITY`, `PICOIN_VALIDATOR_NAME`, and the JSON identity path.
 - If a service uses the wrong script, run `sudo systemctl cat picoin-validator`.
+- If `python -m picoin node discover-peers` says `invalid choice`, the source repo may be current but the installed runtime at `/opt/picoin/picoin-proof-of-pi` is stale. Run the safe refresh helper above instead of only `git pull` in a side clone.
+- If `python -m picoin validator validate --help` does not show `--node-server`, refresh the installed runtime and restart `picoin-validator`; validator heartbeat signing depends on that option.
+- If peer discovery returns `attempted=0` on bootstrap, there are no fresh peer seeds to check yet. Start the validator local node and validator worker, confirm it sends signed heartbeat with `PICOIN_VALIDATOR_NODE_ADDRESS`, then run `curl -s https://api.picoin.science/validators/status`.
 - If a local node shows height `0` on a validator droplet, the bootstrap is the source of public chain state unless the local node is fully synced. Run `node catch-up` against `https://api.picoin.science`.
 - If `node catch-up` reports a state root mismatch after replay, stop writer services and restore a verified peer snapshot from `https://api.picoin.science`.
 - If audit reports missing reward rows on an older node, run `node repair-rewards` and then `node audit`.
