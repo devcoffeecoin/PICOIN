@@ -1,7 +1,20 @@
 import logging
 import math
 import statistics
+from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
+
+from app.core.settings import (
+    RETARGET_MAX_ADJUSTMENT_FACTOR,
+    RETARGET_MAX_DIFFICULTY,
+    RETARGET_MAX_SAMPLE_COUNT,
+    RETARGET_MAX_SEGMENT_SIZE,
+    RETARGET_MIN_DIFFICULTY,
+    RETARGET_MIN_SAMPLE_COUNT,
+    RETARGET_MIN_SEGMENT_SIZE,
+    RETARGET_TARGET_BLOCK_MS,
+    RETARGET_WINDOW_BLOCKS,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -15,26 +28,52 @@ class DifficultyService:
     deeper BBP range without local history.
     """
 
-    TARGET_BLOCK_MS = 60_000
+    TARGET_BLOCK_MS = RETARGET_TARGET_BLOCK_MS
     MINER_RATIO = 0.65
     VALIDATOR_RATIO = 0.25
     CONSENSUS_RATIO = 0.10
     TARGET_MINER_MS = TARGET_BLOCK_MS * MINER_RATIO
 
-    RETARGET_WINDOW = 20
-    RETARGET_INTERVAL = 10
+    RETARGET_WINDOW = RETARGET_WINDOW_BLOCKS
+    RETARGET_INTERVAL = RETARGET_WINDOW_BLOCKS
 
     DEADBAND_LOW = 50_000
     DEADBAND_HIGH = 70_000
 
-    MAX_SEGMENT_SIZE = 1024
-    MIN_SEGMENT_SIZE = 8
-    MAX_SAMPLE_COUNT = 128
-    MIN_SAMPLE_COUNT = 8
+    MAX_SEGMENT_SIZE = RETARGET_MAX_SEGMENT_SIZE
+    MIN_SEGMENT_SIZE = RETARGET_MIN_SEGMENT_SIZE
+    MAX_SAMPLE_COUNT = RETARGET_MAX_SAMPLE_COUNT
+    MIN_SAMPLE_COUNT = RETARGET_MIN_SAMPLE_COUNT
 
     MAX_DECREASE = 0.70
     MAX_INCREASE = 1.25
     EMERGENCY_THRESHOLD = 3
+    MIN_DIFFICULTY = RETARGET_MIN_DIFFICULTY
+    MAX_DIFFICULTY = RETARGET_MAX_DIFFICULTY
+    MAX_DIFFICULTY_ADJUSTMENT = RETARGET_MAX_ADJUSTMENT_FACTOR
+
+    @staticmethod
+    def calculate_next_target_difficulty(
+        *,
+        old_difficulty: float,
+        average_block_ms: float,
+    ) -> tuple[float, dict[str, Any]]:
+        params = {"difficulty": old_difficulty, "segment_size": 64, "sample_count": 8, "max_pi_position": 10_000}
+        history = [
+            {
+                "range_start": 1,
+                "range_end": 64,
+                "segment_size": 64,
+                "sample_count": 8,
+                "difficulty": old_difficulty,
+                "total_task_ms": average_block_ms,
+                "validation_ms": 0,
+                "total_block_ms": average_block_ms,
+            }
+            for _ in range(DifficultyService.RETARGET_WINDOW)
+        ]
+        next_params, meta = DifficultyService.calculate_next_difficulty(history, params, 1)
+        return float(next_params["difficulty"]), meta
 
     @staticmethod
     def get_position_bucket(pos: int) -> str:
@@ -54,68 +93,242 @@ class DifficultyService:
         current_params: dict[str, Any],
         next_range_start: int,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        return DifficultyService.calculate_next_protocol_params(history, current_params, next_range_start)
+
+    @staticmethod
+    def calculate_next_protocol_params(
+        history: list[dict[str, Any]],
+        current_params: dict[str, Any],
+        next_range_start: int,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
         new_params = dict(current_params)
         target_bucket = DifficultyService.get_position_bucket(next_range_start)
-        bucket_history = [
+        valid_history = [
             block
             for block in history[-DifficultyService.RETARGET_WINDOW :]
-            if DifficultyService.get_position_bucket(int(block["range_start"])) == target_bucket
+            if DifficultyService._decimal(block.get("total_block_ms") or 0) > 0
         ]
 
-        if not bucket_history:
-            return DifficultyService._handle_cold_start(history, current_params, next_range_start)
-
-        median_miner_ms = statistics.median(float(block.get("total_task_ms") or 0) for block in bucket_history)
-        median_segment = statistics.median(
-            float(int(block["range_end"]) - int(block["range_start"]) + 1) for block in bucket_history
-        )
-        median_total_block_ms = statistics.median(
-            float(block.get("total_block_ms") or block.get("total_task_ms") or 0) for block in bucket_history
-        )
-        ms_per_digit = median_miner_ms / max(1.0, median_segment)
-
-        if DifficultyService.DEADBAND_LOW <= median_total_block_ms <= DifficultyService.DEADBAND_HIGH:
-            return new_params, {
-                "action": "keep",
-                "reason": f"Within deadband ({int(median_total_block_ms)}ms)",
+        if not valid_history:
+            return dict(current_params), {
+                "action": "wait",
+                "reason": "No valid timing history available",
                 "bucket": target_bucket,
-                "observed_median_ms": int(median_miner_ms),
-                "adjustment_ratio": 1.0,
                 "adjustment_factor": 1.0,
-                "ms_per_digit": round(ms_per_digit, 2),
+                "difficulty_factor": 1.0,
+                "sample_factor": 1.0,
             }
 
-        adjustment_ratio = median_miner_ms / DifficultyService.TARGET_MINER_MS
-        adjustment_ratio = max(DifficultyService.MAX_DECREASE, min(DifficultyService.MAX_INCREASE, adjustment_ratio))
+        bucket_history = [
+            block for block in valid_history if DifficultyService.get_position_bucket(int(block["range_start"])) == target_bucket
+        ]
+        if not bucket_history:
+            new_params, cold_meta = DifficultyService._handle_cold_start(valid_history, current_params, next_range_start)
+            bucket_history = valid_history
+        else:
+            cold_meta = {}
 
-        is_emergency = median_miner_ms > DifficultyService.TARGET_BLOCK_MS * DifficultyService.EMERGENCY_THRESHOLD
-        if is_emergency:
-            adjustment_ratio = 2.0
-            logger.warning("EMERGENCY_DECREASE triggered: observed %.2fms", median_miner_ms)
+        stats = DifficultyService._window_stats(bucket_history, target_bucket)
+        target = Decimal(str(DifficultyService.TARGET_BLOCK_MS))
+        raw_factor = target / max(Decimal("1"), stats["avg_total_block_ms"])
+        total_factor = DifficultyService._clamp_adjustment(raw_factor)
+        old_difficulty = DifficultyService._current_difficulty(current_params)
+        current_segment = int(new_params.get("segment_size") or current_params.get("segment_size") or 64)
+        current_samples = int(new_params.get("sample_count") or current_params.get("sample_count") or 8)
+        difficulty_factor = Decimal("1")
+        sample_factor = Decimal("1")
+        reasons: list[str] = []
 
-        current_segment = int(current_params["segment_size"])
-        current_samples = int(current_params["sample_count"])
-        proposed_segment = int(current_segment / adjustment_ratio)
-        new_params["segment_size"] = max(
+        too_slow = stats["avg_total_block_ms"] > target
+        too_fast = stats["avg_total_block_ms"] < target
+        emergency = stats["avg_task_ms"] > target * Decimal(str(DifficultyService.EMERGENCY_THRESHOLD))
+        mining_dominates = stats["mining_ratio"] > Decimal("0.60")
+        validation_dominates = stats["validation_ratio"] > Decimal("0.40")
+        validation_cheap = stats["validation_ratio"] < Decimal("0.20")
+
+        if too_slow and mining_dominates:
+            difficulty_factor = total_factor
+            reasons.append("mining bottleneck")
+        elif too_slow and not validation_dominates:
+            difficulty_factor = total_factor
+            reasons.append("total block time high")
+        elif too_fast:
+            difficulty_factor = total_factor
+            reasons.append("blocks below target")
+
+        if too_slow and validation_dominates:
+            sample_factor = total_factor
+            reasons.append("validation bottleneck")
+        elif too_fast and validation_cheap:
+            sample_factor = total_factor
+            reasons.append("validation cheap")
+        if cold_meta.get("reason"):
+            reasons.append(str(cold_meta["reason"]))
+        if emergency:
+            reasons.append("Emergency")
+
+        new_difficulty = DifficultyService._clamp_difficulty(old_difficulty * difficulty_factor)
+        new_segment = DifficultyService._clamp_int(
+            int((Decimal(current_segment) * (new_difficulty / max(old_difficulty, Decimal("0.000001")))).to_integral_value(rounding=ROUND_HALF_UP)),
             DifficultyService.MIN_SEGMENT_SIZE,
-            min(DifficultyService.MAX_SEGMENT_SIZE, proposed_segment),
+            DifficultyService.MAX_SEGMENT_SIZE,
         )
+        new_samples = DifficultyService._clamp_int(
+            int((Decimal(current_samples) * sample_factor).to_integral_value(rounding=ROUND_HALF_UP)),
+            DifficultyService.MIN_SAMPLE_COUNT,
+            DifficultyService.MAX_SAMPLE_COUNT,
+        )
+        new_params["difficulty"] = DifficultyService._quantize(new_difficulty)
+        new_params["segment_size"] = new_segment
+        new_params["sample_count"] = new_samples
 
-        if new_params["segment_size"] == DifficultyService.MAX_SEGMENT_SIZE and adjustment_ratio < 1.0:
-            new_params["sample_count"] = min(DifficultyService.MAX_SAMPLE_COUNT, max(current_samples + 1, int(current_samples * 1.1)))
-        elif new_params["segment_size"] == DifficultyService.MIN_SEGMENT_SIZE and adjustment_ratio > 1.0:
-            new_params["sample_count"] = max(DifficultyService.MIN_SAMPLE_COUNT, min(current_samples - 1, int(current_samples * 0.9)))
+        action = "keep"
+        if Decimal(str(new_params["difficulty"])) > old_difficulty or new_segment > current_segment or new_samples > current_samples:
+            action = "increase"
+        if Decimal(str(new_params["difficulty"])) < old_difficulty or new_segment < current_segment or new_samples < current_samples:
+            action = "decrease" if action == "keep" else "mixed"
 
-        action = "increase" if adjustment_ratio < 0.95 else "decrease" if adjustment_ratio > 1.05 else "keep"
+        if action == "keep":
+            reasons.append("Within deadband / target envelope")
+            if current_params.get("difficulty") is None:
+                new_params.pop("difficulty", None)
+
+        legacy_adjustment_ratio = stats["avg_task_ms"] / max(Decimal("1"), Decimal(str(DifficultyService.TARGET_MINER_MS)))
+        legacy_adjustment_ratio = max(Decimal("0.000001"), legacy_adjustment_ratio)
+        if emergency:
+            legacy_adjustment_ratio = Decimal("2.0")
+        new_difficulty_value = DifficultyService._quantize(new_difficulty)
+
         return new_params, {
             "action": action,
-            "reason": "Emergency" if is_emergency else "Standard retarget",
+            "reason": "; ".join(reasons),
             "bucket": target_bucket,
-            "observed_median_ms": int(median_miner_ms),
-            "adjustment_ratio": round(adjustment_ratio, 4),
-            "adjustment_factor": round(adjustment_ratio, 4),
-            "ms_per_digit": round(ms_per_digit, 2),
+            "bucket_history_used": len(bucket_history),
+            "source_window": len(valid_history),
+            "avg_total_block_ms": DifficultyService._float(stats["avg_total_block_ms"]),
+            "avg_task_ms": DifficultyService._float(stats["avg_task_ms"]),
+            "avg_validation_ms": DifficultyService._float(stats["avg_validation_ms"]),
+            "avg_segment_size": DifficultyService._float(stats["avg_segment_size"]),
+            "avg_sample_count": DifficultyService._float(stats["avg_sample_count"]),
+            "avg_difficulty": DifficultyService._float(stats["avg_difficulty"]),
+            "mining_ratio": DifficultyService._float(stats["mining_ratio"]),
+            "validation_ratio": DifficultyService._float(stats["validation_ratio"]),
+            "raw_adjustment_factor": DifficultyService._float(raw_factor),
+            "adjustment_factor": DifficultyService._float(total_factor),
+            "adjustment_ratio": DifficultyService._float(legacy_adjustment_ratio),
+            "difficulty_factor": DifficultyService._float(difficulty_factor),
+            "sample_factor": DifficultyService._float(sample_factor),
+            "old_difficulty": DifficultyService._float(old_difficulty),
+            "new_difficulty": new_difficulty_value,
+            "old_segment_size": current_segment,
+            "new_segment_size": new_segment,
+            "old_sample_count": current_samples,
+            "new_sample_count": new_samples,
+            "observed_median_ms": int(statistics.median(float(block.get("total_task_ms") or 0) for block in bucket_history)),
+            **cold_meta,
         }
+
+    @staticmethod
+    def bucket_metrics(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        buckets: dict[str, list[dict[str, Any]]] = {}
+        for block in history:
+            if DifficultyService._decimal(block.get("total_block_ms") or 0) <= 0:
+                continue
+            bucket_id = DifficultyService.get_position_bucket(int(block["range_start"]))
+            buckets.setdefault(bucket_id, []).append(block)
+        metrics: list[dict[str, Any]] = []
+        for bucket_id in sorted(buckets):
+            stats = DifficultyService._window_stats(buckets[bucket_id], bucket_id)
+            start, end = DifficultyService._bucket_bounds(bucket_id)
+            metrics.append(
+                {
+                    "bucket_id": bucket_id,
+                    "range_start_min": start,
+                    "range_start_max": end,
+                    "avg_task_ms": DifficultyService._float(stats["avg_task_ms"]),
+                    "avg_validation_ms": DifficultyService._float(stats["avg_validation_ms"]),
+                    "avg_total_block_ms": DifficultyService._float(stats["avg_total_block_ms"]),
+                    "avg_segment_size": DifficultyService._float(stats["avg_segment_size"]),
+                    "avg_sample_count": DifficultyService._float(stats["avg_sample_count"]),
+                    "avg_difficulty": DifficultyService._float(stats["avg_difficulty"]),
+                    "samples_seen": len(buckets[bucket_id]),
+                }
+            )
+        return metrics
+
+    @staticmethod
+    def _window_stats(history: list[dict[str, Any]], bucket_id: str) -> dict[str, Decimal]:
+        total_values = [DifficultyService._decimal(block.get("total_block_ms") or 0) for block in history]
+        task_values = [DifficultyService._decimal(block.get("total_task_ms") or block.get("total_block_ms") or 0) for block in history]
+        validation_values = [DifficultyService._decimal(block.get("validation_ms") or 0) for block in history]
+        segment_values = [
+            DifficultyService._decimal(block.get("segment_size") or (int(block["range_end"]) - int(block["range_start"]) + 1))
+            for block in history
+        ]
+        sample_values = [DifficultyService._decimal(block.get("sample_count") or 8) for block in history]
+        difficulty_values = [DifficultyService._decimal(block.get("difficulty") or 0) for block in history]
+        avg_total = DifficultyService._avg(total_values)
+        avg_task = DifficultyService._avg(task_values)
+        avg_validation = DifficultyService._avg(validation_values)
+        return {
+            "bucket_id": Decimal(0),
+            "avg_total_block_ms": avg_total,
+            "avg_task_ms": avg_task,
+            "avg_validation_ms": avg_validation,
+            "avg_segment_size": DifficultyService._avg(segment_values),
+            "avg_sample_count": DifficultyService._avg(sample_values),
+            "avg_difficulty": DifficultyService._avg(difficulty_values),
+            "mining_ratio": avg_task / max(Decimal("1"), avg_total),
+            "validation_ratio": avg_validation / max(Decimal("1"), avg_total),
+        }
+
+    @staticmethod
+    def _avg(values: list[Decimal]) -> Decimal:
+        if not values:
+            return Decimal("0")
+        return sum(values, Decimal("0")) / Decimal(len(values))
+
+    @staticmethod
+    def _decimal(value: Any) -> Decimal:
+        return Decimal(str(value or 0))
+
+    @staticmethod
+    def _float(value: Decimal) -> float:
+        return float(value.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP))
+
+    @staticmethod
+    def _quantize(value: Decimal) -> float:
+        return float(value.quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP))
+
+    @staticmethod
+    def _clamp_adjustment(value: Decimal) -> Decimal:
+        max_factor = Decimal(str(DifficultyService.MAX_DIFFICULTY_ADJUSTMENT))
+        min_factor = Decimal("2") - max_factor
+        return max(min_factor, min(max_factor, value))
+
+    @staticmethod
+    def _clamp_difficulty(value: Decimal) -> Decimal:
+        return max(Decimal(str(DifficultyService.MIN_DIFFICULTY)), min(Decimal(str(DifficultyService.MAX_DIFFICULTY)), value))
+
+    @staticmethod
+    def _clamp_int(value: int, minimum: int, maximum: int) -> int:
+        return max(minimum, min(maximum, value))
+
+    @staticmethod
+    def _current_difficulty(params: dict[str, Any]) -> Decimal:
+        configured = params.get("difficulty")
+        if configured is not None:
+            return Decimal(str(configured))
+        segment = Decimal(int(params.get("segment_size", 64) or 64)) / Decimal(64)
+        samples = Decimal(int(params.get("sample_count", 8) or 8)) / Decimal(8)
+        max_pos = max(100, int(params.get("max_pi_position", 10_000) or 10_000))
+        position = Decimal(str(math.log10(max_pos))) / Decimal(4)
+        return (segment * samples * position).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
+
+    @staticmethod
+    def _bucket_bounds(bucket_id: str) -> tuple[int, int]:
+        start, end = bucket_id.split("-", 1)
+        return int(start), int(end)
 
     @staticmethod
     def _handle_cold_start(

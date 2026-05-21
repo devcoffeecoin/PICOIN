@@ -4,6 +4,10 @@ from typing import Any
 
 def calculate_difficulty(params: dict[str, Any]) -> float:
     """Visual workload metric normalized to segment=64, samples=8, position=10000."""
+    configured = params.get("difficulty")
+    if configured is not None:
+        return round(max(0.001, float(configured)), 6)
+
     segment_size = int(params.get("segment_size", 64) or 64)
     sample_count = int(params.get("sample_count", 8) or 8)
     max_pos = int(params.get("max_pi_position", 10_000) or 10_000)
