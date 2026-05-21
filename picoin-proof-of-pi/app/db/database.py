@@ -29,10 +29,12 @@ from app.core.settings import (
     SCIENCE_RESERVE_AUTHORIZED_SIGNERS,
     SCIENCE_RESERVE_LOCKED_STATUS,
     RETARGET_TARGET_BLOCK_MS,
+    RETARGET_WINDOW_BLOCKS,
     TASK_EXPIRATION_SECONDS,
     TASK_SEGMENT_SIZE,
     VALIDATION_MODE,
 )
+from app.core.difficulty import calculate_difficulty
 from app.core.money import to_units
 from app.services.genesis import load_genesis_allocations
 
@@ -166,7 +168,8 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 difficulty REAL,
                 target_block_time_ms INTEGER,
                 retarget_reason TEXT,
-                retarget_source_window TEXT,
+                retarget_source_window INTEGER,
+                retarget_source_details TEXT,
                 previous_protocol_params_id INTEGER,
                 active INTEGER NOT NULL DEFAULT 1,
                 created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -774,8 +777,10 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "protocol_params", "difficulty", "REAL")
         _ensure_column(connection, "protocol_params", "target_block_time_ms", "INTEGER")
         _ensure_column(connection, "protocol_params", "retarget_reason", "TEXT")
-        _ensure_column(connection, "protocol_params", "retarget_source_window", "TEXT")
+        _ensure_column(connection, "protocol_params", "retarget_source_window", "INTEGER")
+        _ensure_column(connection, "protocol_params", "retarget_source_details", "TEXT")
         _ensure_column(connection, "protocol_params", "previous_protocol_params_id", "INTEGER")
+        _backfill_protocol_difficulty_fields(connection)
         _ensure_tasks_range_constraints(connection)
         _ensure_column(connection, "blocks", "merkle_root", "TEXT")
         _ensure_column(connection, "blocks", "tx_merkle_root", "TEXT")
@@ -882,6 +887,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "validation_votes", "submit_result_latency_ms", "INTEGER")
         connection.execute("UPDATE validation_jobs SET job_created_at = created_at WHERE job_created_at IS NULL")
         _ensure_default_protocol_params(connection)
+        _backfill_protocol_difficulty_fields(connection)
         _ensure_genesis_balance(connection)
         _ensure_existing_validator_stake_balances(connection)
         _backfill_money_units(connection)
@@ -895,6 +901,55 @@ def _ensure_column(connection: sqlite3.Connection, table_name: str, column_name:
     }
     if column_name not in columns:
         connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+
+def _backfill_protocol_difficulty_fields(connection: sqlite3.Connection) -> None:
+    rows = connection.execute(
+        """
+        SELECT id, retarget_source_window, retarget_source_details
+        FROM protocol_params
+        """
+    ).fetchall()
+    for row in rows:
+        raw_window = row["retarget_source_window"]
+        details = row["retarget_source_details"]
+        window_value = RETARGET_WINDOW_BLOCKS
+        if raw_window is not None:
+            try:
+                window_value = int(raw_window)
+            except (TypeError, ValueError):
+                raw_text = str(raw_window)
+                if not details:
+                    details = raw_text
+                try:
+                    parsed = json.loads(raw_text)
+                    window_value = int(parsed.get("epoch_block_count") or RETARGET_WINDOW_BLOCKS)
+                except (TypeError, ValueError, json.JSONDecodeError, AttributeError):
+                    window_value = RETARGET_WINDOW_BLOCKS
+        connection.execute(
+            """
+            UPDATE protocol_params
+            SET retarget_source_window = ?,
+                retarget_source_details = COALESCE(retarget_source_details, ?)
+            WHERE id = ?
+            """,
+            (window_value, details, row["id"]),
+        )
+    connection.execute(
+        """
+        UPDATE protocol_params
+        SET target_block_time_ms = ?
+        WHERE target_block_time_ms IS NULL
+        """,
+        (RETARGET_TARGET_BLOCK_MS,),
+    )
+    rows = connection.execute("SELECT * FROM protocol_params WHERE difficulty IS NULL").fetchall()
+    for row in rows:
+        params = dict(row)
+        connection.execute(
+            "UPDATE protocol_params SET difficulty = ? WHERE id = ?",
+            (calculate_difficulty(params), row["id"]),
+        )
 
 
 def _backfill_money_units(connection: sqlite3.Connection) -> None:
@@ -1089,9 +1144,10 @@ def _ensure_default_protocol_params(connection: sqlite3.Connection) -> None:
             protocol_version, algorithm, validation_mode, required_validator_approvals,
             range_assignment_mode, max_pi_position, range_assignment_max_attempts,
             segment_size, sample_count, task_expiration_seconds,
-            max_active_tasks_per_miner, base_reward, difficulty, target_block_time_ms, active
+            max_active_tasks_per_miner, base_reward, difficulty, target_block_time_ms,
+            retarget_source_window, active
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 1)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 1)
         """,
         (
             PROTOCOL_VERSION,
@@ -1107,6 +1163,7 @@ def _ensure_default_protocol_params(connection: sqlite3.Connection) -> None:
             MAX_ACTIVE_TASKS_PER_MINER,
             DEFAULT_REWARD,
             RETARGET_TARGET_BLOCK_MS,
+            RETARGET_WINDOW_BLOCKS,
         ),
     )
 

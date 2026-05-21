@@ -41,7 +41,6 @@ from app.services.wallet import address_matches_public_key, is_valid_address, tr
 
 
 SUPPORTED_BLOCK_TX_TYPES = {"transfer", "stake", "unstake", "science_job_create", "governance_action", "treasury_claim", "faucet"}
-EMPTY_TX_MERKLE_ROOT = ""
 SCIENCE_RESERVE_GOVERNANCE_ACTIONS = {
     "propose_activation",
     "approve_activation",
@@ -49,6 +48,7 @@ SCIENCE_RESERVE_GOVERNANCE_ACTIONS = {
     "pause",
     "unpause",
 }
+EMPTY_TX_MERKLE_ROOT = sha256_text(canonical_json([]))
 
 
 class TransactionExecutionError(Exception):
@@ -63,8 +63,22 @@ def select_block_transactions(connection: Any, limit: int = MAX_TRANSACTIONS_PER
     return select_transactions_for_task(connection, limit, _latest_height(connection))
 
 
-def selected_tx_hashes_hash(tx_hashes: list[str]) -> str:
-    return sha256_text(canonical_json(list(tx_hashes)))
+def canonical_tx_hashes(tx_hashes: list[str] | tuple[str, ...] | None) -> list[str]:
+    if not tx_hashes:
+        return []
+    return [str(tx_hash) for tx_hash in tx_hashes]
+
+
+def canonical_empty_tx_merkle_root() -> str:
+    return EMPTY_TX_MERKLE_ROOT
+
+
+def selected_tx_hashes_hash(tx_hashes: list[str] | tuple[str, ...] | None) -> str:
+    return sha256_text(canonical_json(canonical_tx_hashes(tx_hashes)))
+
+
+def canonical_selected_tx_hashes_hash(tx_hashes: list[str] | tuple[str, ...] | None) -> str:
+    return selected_tx_hashes_hash(tx_hashes)
 
 
 def select_transactions_for_task(connection: Any, max_count: int, chain_height: int) -> list[dict[str, Any]]:
@@ -127,7 +141,7 @@ def select_transactions_for_task(connection: Any, max_count: int, chain_height: 
 
 
 def transaction_commitment(transactions: list[dict[str, Any]]) -> dict[str, Any]:
-    tx_hashes = [tx["tx_hash"] for tx in transactions]
+    tx_hashes = canonical_tx_hashes([tx["tx_hash"] for tx in transactions])
     fee_units = sum(_tx_fee_units(tx) for tx in transactions)
     return {
         "tx_count": len(tx_hashes),
@@ -137,6 +151,10 @@ def transaction_commitment(transactions: list[dict[str, Any]]) -> dict[str, Any]
         "tx_fee_total_units": fee_units,
         "fee_reward": units_to_float(fee_units),
     }
+
+
+def canonical_tx_commitment(transactions: list[dict[str, Any]]) -> dict[str, Any]:
+    return transaction_commitment(transactions)
 
 
 def freeze_transactions_for_task(
@@ -438,9 +456,9 @@ def get_wallet_nonce_status(connection: Any, address: str) -> dict[str, Any]:
 
 
 def merkle_root(tx_hashes: list[str]) -> str:
-    if not tx_hashes:
-        return ""
-    level = list(tx_hashes)
+    level = canonical_tx_hashes(tx_hashes)
+    if not level:
+        return canonical_empty_tx_merkle_root()
     while len(level) > 1:
         if len(level) % 2 == 1:
             level.append(level[-1])
