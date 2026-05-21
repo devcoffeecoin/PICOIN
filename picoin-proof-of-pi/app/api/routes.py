@@ -1059,6 +1059,8 @@ def submit_task_endpoint(payload: TaskSubmitRequest) -> dict:
 
 @router.post("/tasks/commit", response_model=TaskCommitResponse)
 def commit_task_endpoint(payload: TaskCommitRequest) -> dict:
+    # Debug logging for received commit payload as requested by user
+    print(f"DEBUG: /tasks/commit received payload from miner: {payload.model_dump_json()}")
     return commit_task(
         task_id=payload.task_id,
         miner_id=payload.miner_id,
@@ -1077,6 +1079,8 @@ def commit_task_endpoint(payload: TaskCommitRequest) -> dict:
 
 @router.post("/tasks/reveal", response_model=TaskSubmitResponse)
 def reveal_task_endpoint(payload: TaskRevealRequest) -> dict:
+    # Debug logging for received reveal payload as requested by user
+    print(f"DEBUG: /tasks/reveal received payload from miner: {payload.model_dump_json()}")
     response = reveal_task(
         task_id=payload.task_id,
         miner_id=payload.miner_id,
