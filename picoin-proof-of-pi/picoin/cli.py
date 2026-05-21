@@ -1592,6 +1592,17 @@ def add_validator_parser(subparsers: argparse._SubParsersAction) -> None:
     validate_parser.add_argument("--once", action="store_true")
     validate_parser.add_argument("--loops", type=int, default=1)
     validate_parser.add_argument("--sleep", type=float, default=1.0)
+    validate_parser.add_argument(
+        "--node-server",
+        default=os.getenv("PICOIN_VALIDATOR_NODE_SERVER", os.getenv("PICOIN_NODE_SERVER", "http://127.0.0.1:8000")),
+        help="Local Picoin node API used for signed validator liveness",
+    )
+    validate_parser.add_argument(
+        "--node-timeout",
+        type=float,
+        default=10.0,
+        help="Seconds to wait for the local node heartbeat probe",
+    )
     validate_parser.set_defaults(func=command_validate)
 
 
