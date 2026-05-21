@@ -1,7 +1,8 @@
 from app.core.settings import CHAIN_ID, NETWORK_ID
-from app.core.signatures import build_commit_signature_payload, generate_keypair, sign_payload
+from app.core.pi import calculate_pi_segment
+from app.core.signatures import build_commit_signature_payload, build_reveal_signature_payload, generate_keypair, sign_payload
 from app.db.database import get_connection, init_db
-from app.services.mining import commit_task, create_next_task, get_balance, register_miner, request_faucet
+from app.services.mining import commit_task, create_next_task, get_balance, register_miner, request_faucet, reveal_task
 from app.services.transactions import (
     canonical_empty_tx_merkle_root,
     canonical_selected_tx_hashes_hash,
@@ -11,6 +12,7 @@ from app.services.transactions import (
     release_selected_transactions,
     select_transactions_for_task,
 )
+from app.core.merkle import merkle_proof
 from app.services.wallet import create_wallet, sign_transaction
 from app.services.network import submit_transaction
 from miner.client import commit_result
@@ -82,6 +84,19 @@ def test_task_snapshot_freezes_current_mempool_only(tmp_path, monkeypatch) -> No
     assert first_row["selected_task_id"] == "task_freeze"
     assert second_row["status"] == "pending"
     assert second_row["selected_task_id"] is None
+
+
+def test_create_next_task_returns_decoded_selected_tx_hashes(tmp_path, monkeypatch) -> None:
+    _setup_db(tmp_path, monkeypatch, "task-snapshot-selected-hashes")
+    source = _funded_wallet(2.0)
+    recipient = create_wallet("recipient")
+    first = _submit_transfer(source, recipient["address"], 0.25, 1)
+    miner_keypair = generate_keypair()
+    miner = register_miner("selected-hashes-miner", miner_keypair["public_key"])
+    task = create_next_task(miner["miner_id"])
+
+    assert isinstance(task["selected_tx_hashes"], list)
+    assert task["selected_tx_hashes"] == [first["tx_hash"]]
 
 
 def test_double_spend_selects_only_affordable_transactions(tmp_path, monkeypatch) -> None:
@@ -237,6 +252,89 @@ def test_empty_mempool_task_commits_successfully(tmp_path, monkeypatch) -> None:
 
     assert result["accepted"] is True
     assert result["status"] == "committed"
+
+
+def test_reveal_accepts_zero_tx_commitment(tmp_path, monkeypatch) -> None:
+    _setup_db(tmp_path, monkeypatch, "task-snapshot-empty-reveal")
+    miner_keypair = generate_keypair()
+    miner = register_miner("empty-reveal-miner", miner_keypair["public_key"])
+    task = create_next_task(miner["miner_id"])
+
+    signed_at = "2026-05-20T00:00:00+00:00"
+    payload = build_commit_signature_payload(
+        task_id=task["task_id"],
+        miner_id=miner["miner_id"],
+        range_start=task["range_start"],
+        range_end=task["range_end"],
+        algorithm=task["algorithm"],
+        result_hash="a" * 64,
+        merkle_root="b" * 64,
+        signed_at=signed_at,
+        tx_merkle_root=task["tx_merkle_root"],
+        mempool_snapshot_id=task["mempool_snapshot_id"],
+        selected_tx_hashes_hash=task["selected_tx_hashes_hash"],
+        tx_count=0,
+        tx_fee_total_units=0,
+        chain_id=CHAIN_ID,
+        network_id=NETWORK_ID,
+    )
+    signature = sign_payload(miner_keypair["private_key"], payload)
+
+    challenge = commit_task(
+        task_id=task["task_id"],
+        miner_id=miner["miner_id"],
+        result_hash="a" * 64,
+        merkle_root="b" * 64,
+        signature=signature,
+        signed_at=signed_at,
+        tx_merkle_root=task["tx_merkle_root"],
+        mempool_snapshot_id=task["mempool_snapshot_id"],
+        selected_tx_hashes_hash=task["selected_tx_hashes_hash"],
+        tx_count=0,
+        tx_fee_total_units=0,
+    )
+    assert challenge["accepted"] is True
+
+    segment = calculate_pi_segment(task["range_start"], task["range_end"], task["algorithm"])
+    revealed_samples = [
+        {
+            "position": sample["position"],
+            "digit": segment[sample["position"] - task["range_start"]],
+            "proof": merkle_proof(segment, task["range_start"], sample["position"]),
+        }
+        for sample in challenge["samples"]
+    ]
+
+    reveal_signed_at = "2026-05-20T00:00:01+00:00"
+    reveal_signature = sign_payload(
+        miner_keypair["private_key"],
+        build_reveal_signature_payload(
+            task_id=task["task_id"],
+            miner_id=miner["miner_id"],
+            merkle_root="b" * 64,
+            challenge_seed=challenge["challenge_seed"],
+            signed_at=reveal_signed_at,
+            tx_merkle_root=task["tx_merkle_root"],
+            mempool_snapshot_id=task["mempool_snapshot_id"],
+            selected_tx_hashes_hash=task["selected_tx_hashes_hash"],
+        ),
+    )
+
+    result = reveal_task(
+        task_id=task["task_id"],
+        miner_id=miner["miner_id"],
+        revealed_samples=revealed_samples,
+        signature=reveal_signature,
+        signed_at=reveal_signed_at,
+        tx_merkle_root=task["tx_merkle_root"],
+        mempool_snapshot_id=task["mempool_snapshot_id"],
+        selected_tx_hashes_hash=task["selected_tx_hashes_hash"],
+        tx_count=0,
+        tx_fee_total_units=0,
+    )
+
+    assert result["accepted"] is True
+    assert result["status"] == "validation_pending"
 
 
 def test_commit_accepts_zero_tx_snapshot(tmp_path, monkeypatch) -> None:

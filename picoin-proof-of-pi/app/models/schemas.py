@@ -891,7 +891,7 @@ class ProtocolResponse(BaseModel):
     difficulty: float
     target_block_time_ms: int | None = None
     retarget_reason: str | None = None
-    retarget_source_window: int | None = None
+    retarget_source_window: int | None = Field(default=None, ge=0)
     retarget_source_details: str | None = None
     previous_protocol_params_id: int | None = None
     reward_per_block: float
@@ -945,7 +945,7 @@ class ProtocolParamsResponse(BaseModel):
     difficulty: float
     target_block_time_ms: int | None = None
     retarget_reason: str | None = None
-    retarget_source_window: int | None = None
+    retarget_source_window: int | None = Field(default=None, ge=0)
     retarget_source_details: str | None = None
     previous_protocol_params_id: int | None = None
     reward_per_block: float
