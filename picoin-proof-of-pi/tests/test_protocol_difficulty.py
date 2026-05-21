@@ -246,7 +246,8 @@ def test_retarget_persists_protocol_metadata_and_bucket_metrics(tmp_path, monkey
         protocol = connection.execute(
             """
             SELECT difficulty, segment_size, sample_count, target_block_time_ms,
-                   retarget_reason, retarget_source_window, previous_protocol_params_id
+                   retarget_reason, retarget_source_window, retarget_source_details,
+                   previous_protocol_params_id
             FROM protocol_params
             WHERE active = 1
             """
@@ -254,7 +255,8 @@ def test_retarget_persists_protocol_metadata_and_bucket_metrics(tmp_path, monkey
         metric = connection.execute("SELECT * FROM difficulty_bucket_metrics ORDER BY samples_seen DESC LIMIT 1").fetchone()
     assert protocol["target_block_time_ms"] == 60_000
     assert protocol["retarget_reason"]
-    assert protocol["retarget_source_window"]
+    assert protocol["retarget_source_window"] == 20
+    assert protocol["retarget_source_details"]
     assert protocol["previous_protocol_params_id"] is not None
     assert metric is not None
     assert metric["samples_seen"] > 0

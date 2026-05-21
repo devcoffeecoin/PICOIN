@@ -3379,7 +3379,8 @@ def _protocol_payload(params: dict[str, Any]) -> dict[str, Any]:
         "difficulty": calculate_difficulty(params),
         "target_block_time_ms": params.get("target_block_time_ms") or RETARGET_TARGET_BLOCK_MS,
         "retarget_reason": params.get("retarget_reason"),
-        "retarget_source_window": params.get("retarget_source_window"),
+        "retarget_source_window": _retarget_source_window(params),
+        "retarget_source_details": params.get("retarget_source_details"),
         "previous_protocol_params_id": params.get("previous_protocol_params_id"),
         "reward_per_block": calculate_reward(params),
         "proof_of_pi_reward_per_block": calculate_miner_reward(params),
@@ -3425,8 +3426,23 @@ def _protocol_params_payload(params: dict[str, Any]) -> dict[str, Any]:
     payload["active"] = bool(payload["active"])
     payload["difficulty"] = calculate_difficulty(payload)
     payload["target_block_time_ms"] = payload.get("target_block_time_ms") or RETARGET_TARGET_BLOCK_MS
+    payload["retarget_source_window"] = _retarget_source_window(payload)
     payload["reward_per_block"] = calculate_reward(payload)
     return payload
+
+
+def _retarget_source_window(params: dict[str, Any]) -> int | None:
+    value = params.get("retarget_source_window")
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        try:
+            parsed = json.loads(str(value))
+            return int(parsed.get("epoch_block_count") or RETARGET_WINDOW_BLOCKS)
+        except (TypeError, ValueError, json.JSONDecodeError, AttributeError):
+            return RETARGET_WINDOW_BLOCKS
 
 
 def verify_chain() -> dict[str, Any]:
@@ -5274,9 +5290,9 @@ def _maybe_retarget_after_block(connection: Any, current_height: int, force: boo
                 segment_size, sample_count, task_expiration_seconds,
                 max_active_tasks_per_miner, base_reward, difficulty,
                 target_block_time_ms, retarget_reason, retarget_source_window,
-                previous_protocol_params_id, active
+                retarget_source_details, previous_protocol_params_id, active
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 PROTOCOL_VERSION,
@@ -5294,6 +5310,7 @@ def _maybe_retarget_after_block(connection: Any, current_height: int, force: boo
                 next_params["difficulty"],
                 RETARGET_TARGET_BLOCK_MS,
                 meta["reason"],
+                len(epoch_rows),
                 source_window,
                 previous_params_id,
             ),
