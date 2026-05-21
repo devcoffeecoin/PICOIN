@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Picoin Transaction</title>
+    <meta name="description" content="Picoin transaction detail view." />
+    <link rel="icon" href="./assets/picoin-logo.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body class="explorer-page transaction-page">
+    <header class="site-header">
+      <a class="brand" href="./index.html" aria-label="Picoin home">
+        <img src="./assets/picoin-logo.png" alt="Picoin logo" />
+        <span>Picoin</span>
+      </a>
+      <nav aria-label="Transaction navigation">
+        <a href="./index.html">Home</a>
+        <a href="./explorer.html">Explorer</a>
+        <a href="./wallet.html">Web Wallet</a>
+        <a href="https://solvency.gitbook.io/picoin" target="_blank" rel="noreferrer">Docs</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="explorer-hero section">
+        <div class="section-heading">
+          <p class="eyebrow">Transaction</p>
+          <h1>Transaction Details</h1>
+          <span id="txStatusBadge" class="status-pill warn">Loading</span>
+        </div>
+        <div class="explorer-search" role="search">
+          <input id="txHashInput" type="search" placeholder="Transaction hash" autocomplete="off" />
+          <button id="txLookupButton" type="button">Open</button>
+        </div>
+        <div id="txError" class="api-errors" aria-live="polite"></div>
+      </section>
+
+      <section class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Canonical Data</p>
+          <h2 id="txTitle">Waiting for transaction</h2>
+        </div>
+        <div id="txDetail" class="tx-detail-layout">
+          <div class="empty">Enter or open a transaction hash.</div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>Picoin Explorer</span>
+      <span>Transaction Detail</span>
+    </footer>
+
+    <script src="./explorer-config.js"></script>
+    <script src="./transaction.js"></script>
+  </body>
+</html>
