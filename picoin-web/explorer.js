@@ -22,6 +22,9 @@ const state = {
   protocol: null,
   reserve: null,
   treasury: null,
+  validatorsStatus: null,
+  minersStatus: null,
+  mempoolStatus: null,
   blocks: [],
   retroAudits: [],
   validators: [],
@@ -41,6 +44,15 @@ function fmt(value, digits = 4) {
 function shortHash(value) {
   if (!value) return "-";
   return `${value.slice(0, 10)}...${value.slice(-8)}`;
+}
+
+function txDetailHref(hash) {
+  return hash ? `./transaction.html?hash=${encodeURIComponent(hash)}` : "./transaction.html";
+}
+
+function linkedTx(hash, label = null) {
+  if (!hash) return "-";
+  return `<a class="hash-link" href="${txDetailHref(hash)}" title="${escapeHtml(hash)}">${escapeHtml(label || shortHash(hash))}</a>`;
 }
 
 function escapeHtml(value) {
@@ -181,11 +193,14 @@ async function loadExplorer() {
     loadEndpoint("protocol", "/protocol", null),
     loadEndpoint("reserve", "/reserve/status", null),
     loadEndpoint("treasury", "/treasury/status", null),
+    loadEndpoint("validatorsStatus", "/validators/status", null),
+    loadEndpoint("minersStatus", "/miners/status", null),
+    loadEndpoint("mempoolStatus", "/mempool/status", null),
     loadEndpoint("blocks", "/blocks", []),
     loadEndpoint("retroAudits", "/audit/retroactive?limit=100", []),
     loadEndpoint("validators", "/validators?limit=100", []),
     loadEndpoint("events", "/events?limit=16", []),
-    loadEndpoint("transactions", "/mempool?limit=40", []),
+    loadEndpoint("transactions", "/mempool?limit=20", []),
   ]);
   state.nodeStates = await Promise.all(nodes.map(loadNodeState));
   render();
@@ -248,7 +263,10 @@ function renderStatus() {
   if (chainEl) chainEl.textContent = state.sync?.network_id || state.health?.network_id || "-";
   
   setMetric("metricSupply", state.audit?.supply?.actual_total_balances ?? state.stats?.circulating_supply, 5);
-  setMetric("metricValidators", state.health?.database?.eligible_validators, 0);
+  setMetric("metricValidators", state.validatorsStatus?.counts?.total ?? state.health?.database?.validators, 0);
+  setMetric("metricActiveMiners", state.minersStatus?.counts?.online ?? state.health?.database?.miners, 0);
+  setMetric("metricActiveValidators", state.validatorsStatus?.counts?.online, 0);
+  setMetric("metricEligibleValidators", state.validatorsStatus?.eligible_validators ?? state.health?.database?.eligible_validators, 0);
   
   const resEl = $("metricReserve");
   if (resEl) resEl.textContent = state.reserve?.status || fmt(state.stats?.total_science_reserve_rewards, 5);
@@ -283,7 +301,7 @@ function renderNetwork() {
     </article>
     <article>
       <span>Pending Txs</span>
-      <strong>${fmt(asArray(state.transactions, ["transactions", "items", "results"]).filter((tx) => tx.status === "pending").length, 0)}</strong>
+      <strong>${fmt(state.mempoolStatus?.pending_count ?? asArray(state.transactions, ["transactions", "items", "results"]).filter((tx) => tx.status === "pending").length, 0)}</strong>
     </article>
     <article>
       <span>Fork Groups</span>
@@ -349,7 +367,7 @@ function renderBlocks() {
 }
 
 function renderTransactions() {
-  const txs = asArray(state.transactions, ["transactions", "items", "results", "mempool"]).slice(0, 40);
+  const txs = asArray(state.transactions, ["transactions", "items", "results", "mempool"]).slice(0, 20);
   const table = $("transactionsTable");
   if (!table) return;
   if (!txs.length) {
@@ -361,7 +379,7 @@ function renderTransactions() {
       (tx) => `
         <tr>
           <td><span class="status-pill ${tx.status === "confirmed" ? "ok" : tx.status === "rejected" ? "bad" : "warn"}">${escapeHtml(tx.status)}</span></td>
-          <td class="hash" title="${escapeHtml(tx.tx_hash)}">${escapeHtml(shortHash(tx.tx_hash))}</td>
+          <td class="hash">${linkedTx(tx.tx_hash)}</td>
           <td>${escapeHtml(tx.tx_type)}</td>
           <td>${fmt(tx.amount, 5)}</td>
           <td>${fmt(tx.fee, 5)}</td>
@@ -377,32 +395,42 @@ function renderTransactions() {
 function renderValidators() {
   const grid = $("validatorsGrid");
   if (!grid) return;
-  const validatorRows = asArray(state.validators, ["validators", "items", "results"]);
-  if (!validatorRows.length) {
+  const validatorCounts = state.validatorsStatus?.counts || {};
+  const minerCounts = state.minersStatus?.counts || {};
+  if (!state.validatorsStatus && !state.minersStatus) {
     grid.innerHTML = `<div class="empty">Waiting for validators</div>`;
     return;
   }
-  const validators = validatorRows.sort((a, b) => Number(b.selection_score || 0) - Number(a.selection_score || 0));
-  grid.innerHTML = validators
-    .slice(0, 100)
-    .map((validator) => {
-      const status = validator.is_banned ? "Banned" : Number(validator.stake_locked || 0) > 0 ? "Eligible" : "Inactive";
-      return `
-        <article class="validator-card">
-          <header>
-            <strong class="mono">${escapeHtml(validator.validator_id)}</strong>
-            <span>${status}</span>
-          </header>
-          <dl>
-            <div><dt>Score</dt><dd>${fmt(validator.selection_score, 4)}</dd></div>
-            <div><dt>Trust</dt><dd>${fmt(validator.trust_score, 4)}</dd></div>
-            <div><dt>Stake</dt><dd>${fmt(validator.stake_locked, 5)}</dd></div>
-            <div><dt>Rewards</dt><dd>${fmt(validator.total_rewards, 5)}</dd></div>
-          </dl>
-        </article>
-      `;
-    })
-    .join("");
+  const required = state.validatorsStatus?.required_validator_approvals ?? state.consensus?.required_validator_approvals;
+  grid.innerHTML = `
+    <article class="validator-card summary-card">
+      <header><strong>Miners</strong><span>live</span></header>
+      <dl>
+        <div><dt>Active</dt><dd>${fmt(minerCounts.online, 0)}</dd></div>
+        <div><dt>Stale</dt><dd>${fmt(minerCounts.stale, 0)}</dd></div>
+        <div><dt>Offline</dt><dd>${fmt(minerCounts.offline, 0)}</dd></div>
+        <div><dt>Total</dt><dd>${fmt(minerCounts.total, 0)}</dd></div>
+      </dl>
+    </article>
+    <article class="validator-card summary-card">
+      <header><strong>Validators</strong><span>live</span></header>
+      <dl>
+        <div><dt>Active</dt><dd>${fmt(validatorCounts.online, 0)}</dd></div>
+        <div><dt>Eligible</dt><dd>${fmt(state.validatorsStatus?.eligible_validators, 0)}</dd></div>
+        <div><dt>Stale</dt><dd>${fmt(validatorCounts.stale, 0)}</dd></div>
+        <div><dt>Offline</dt><dd>${fmt(validatorCounts.offline, 0)}</dd></div>
+      </dl>
+    </article>
+    <article class="validator-card summary-card">
+      <header><strong>Quorum</strong><span>${state.validatorsStatus?.eligible_validators >= required ? "ready" : "waiting"}</span></header>
+      <dl>
+        <div><dt>Required</dt><dd>${fmt(required, 0)}</dd></div>
+        <div><dt>Out of sync</dt><dd>${fmt(validatorCounts.out_of_sync, 0)}</dd></div>
+        <div><dt>Disabled</dt><dd>${fmt(validatorCounts.disabled, 0)}</dd></div>
+        <div><dt>Total</dt><dd>${fmt(validatorCounts.total, 0)}</dd></div>
+      </dl>
+    </article>
+  `;
 }
 
 function renderEvents() {
@@ -475,7 +503,7 @@ async function runLookup() {
       result.innerHTML = `
         <article class="lookup-card">
           <span>${escapeHtml(tx.status)} transaction</span>
-          <strong class="hash">${escapeHtml(tx.tx_hash)}</strong>
+          <strong class="hash">${linkedTx(tx.tx_hash, tx.tx_hash)}</strong>
           <p>${escapeHtml(tx.sender)} -> ${escapeHtml(tx.recipient || "-")} - ${fmt(tx.amount, 5)} PI - fee ${fmt(tx.fee, 5)}</p>
         </article>
       `;

@@ -9,6 +9,14 @@
       "destination": "/explorer.html"
     },
     {
+      "source": "/transaction",
+      "destination": "/transaction.html"
+    },
+    {
+      "source": "/tx/:hash",
+      "destination": "/transaction.html?hash=:hash"
+    },
+    {
       "source": "/picoin-api/:path*",
       "destination": "https://api.picoin.science/:path*"
     },
