@@ -135,6 +135,11 @@ def command_node_peers(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_node_discover_peers(args: argparse.Namespace) -> int:
+    print_json(post_json(args.server, f"/node/peers/discover?limit={int(args.limit)}"))
+    return 0
+
+
 def command_node_sync_status(args: argparse.Namespace) -> int:
     print_json(get_json(args.server, "/node/sync-status"))
     return 0
@@ -1305,6 +1310,11 @@ def add_node_parser(subparsers: argparse._SubParsersAction) -> None:
     peers_parser.add_argument("--include-stale", action="store_true", default=True)
     peers_parser.add_argument("--connected-only", action="store_false", dest="include_stale")
     peers_parser.set_defaults(func=command_node_peers)
+
+    discover_peers_parser = node_subparsers.add_parser("discover-peers", help="Discover peers from bootstrap and connected peers")
+    discover_peers_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    discover_peers_parser.add_argument("--limit", type=int, default=32)
+    discover_peers_parser.set_defaults(func=command_node_discover_peers)
 
     sync_parser = node_subparsers.add_parser("sync-status", help="Show distributed sync and mempool status")
     sync_parser.add_argument("--server", default=DEFAULT_SERVER_URL)

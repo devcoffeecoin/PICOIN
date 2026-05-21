@@ -2,10 +2,33 @@ import sqlite3
 
 import pytest
 
-from app.core.signatures import generate_keypair
+from app.core.signatures import generate_keypair, sign_payload
 from app.db.database import get_connection
 from app.db.database import init_db
-from app.services.mining import MiningError, create_next_task, get_validation_job, register_miner
+from app.services.mining import MiningError, create_next_task, get_validation_job, record_validator_heartbeat, register_miner
+
+
+def _heartbeat_validator(
+    keys: dict[str, str],
+    validator_id: str,
+    node_id: str = "assignment-node",
+    name: str | None = None,
+) -> None:
+    payload = {
+        "validator_id": validator_id,
+        "name": name or validator_id,
+        "node_id": node_id,
+        "public_key": keys["public_key"],
+        "address": f"http://{node_id}:8000",
+        "local_height": 100,
+        "effective_height": 100,
+        "latest_block_hash": "a" * 64,
+        "pending_replay_blocks": 0,
+        "sync_lag": 0,
+        "version": "0.18",
+    }
+    payload["signature"] = sign_payload(keys["private_key"], payload)
+    record_validator_heartbeat(payload)
 
 
 def test_pseudo_random_assignment_returns_non_sequential_ranges(tmp_path, monkeypatch) -> None:
@@ -301,8 +324,9 @@ def test_validation_job_restores_known_validator_identity_after_db_restore(tmp_p
                 "[]",
                 "2026-05-18T00:00:00Z",
             ),
-        )
+            )
 
+    _heartbeat_validator(validator_keys, "validator_restored_identity", name="restored-validator")
     job = get_validation_job(
         "validator_restored_identity",
         public_key=validator_keys["public_key"],
@@ -358,8 +382,9 @@ def test_validation_job_falls_back_to_global_pending_job(tmp_path, monkeypatch) 
                 "[]",
                 "2026-05-18T00:00:00Z",
             ),
-        )
+            )
 
+    _heartbeat_validator(validator_keys, "validator_fallback_identity", node_id="fallback-node")
     job = get_validation_job("validator_fallback_identity")
 
     assert job is not None

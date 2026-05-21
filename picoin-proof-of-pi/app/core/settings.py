@@ -76,6 +76,13 @@ MAX_TX_SIZE_BYTES = int(os.getenv("PICOIN_MAX_TX_SIZE_BYTES", "16384"))
 GOSSIP_ENABLED = os.getenv("PICOIN_GOSSIP_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
 GOSSIP_TIMEOUT_SECONDS = float(os.getenv("PICOIN_GOSSIP_TIMEOUT_SECONDS", "2.0"))
 GOSSIP_MAX_PEERS = int(os.getenv("PICOIN_GOSSIP_MAX_PEERS", "16"))
+PEER_DISCOVERY_ENABLED = os.getenv("PICOIN_PEER_DISCOVERY_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+}
+PEER_DISCOVERY_INTERVAL_SECONDS = float(os.getenv("PICOIN_PEER_DISCOVERY_INTERVAL_SECONDS", "300"))
+PEER_DISCOVERY_MAX_PEERS = int(os.getenv("PICOIN_PEER_DISCOVERY_MAX_PEERS", "32"))
 PEER_NETWORK_ID_TOLERANCE = os.getenv("PICOIN_PEER_NETWORK_ID_TOLERANCE", "1").strip().lower() not in {
     "0",
     "false",

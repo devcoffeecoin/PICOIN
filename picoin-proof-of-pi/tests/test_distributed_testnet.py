@@ -34,6 +34,7 @@ from app.services.network import (
     heartbeat_peer,
     list_mempool,
     list_peers,
+    discover_peers,
     receive_block_header,
     reconcile_peer,
     register_peer,
@@ -143,6 +144,63 @@ def test_peer_registry_and_heartbeat(tmp_path, monkeypatch) -> None:
     assert peer["status"] == "connected"
     assert heartbeat["peer_id"] == peer["peer_id"]
     assert peers[0]["peer_type"] == "validator"
+
+
+def test_peer_discovery_registers_seed_and_one_hop_peer(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "peer-discovery.sqlite3")
+
+    class Response:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, timeout=0):
+        if url == "http://seed:8000/node/identity":
+            return Response(
+                {
+                    "node_id": "seed-node",
+                    "peer_address": "http://seed:8000",
+                    "peer_type": "bootstrap",
+                    "protocol_version": PROTOCOL_VERSION,
+                    "network_id": NETWORK_ID,
+                    "chain_id": CHAIN_ID,
+                    "genesis_hash": GENESIS_HASH,
+                    "bootstrap_peers": [],
+                }
+            )
+        if url == "http://seed:8000/node/peers":
+            return Response(
+                [
+                    {
+                        "node_id": "validator-node",
+                        "peer_address": "http://validator:8000",
+                        "peer_type": "validator",
+                        "protocol_version": PROTOCOL_VERSION,
+                        "network_id": NETWORK_ID,
+                        "chain_id": CHAIN_ID,
+                        "genesis_hash": GENESIS_HASH,
+                        "connected_at": "2026-05-21T00:00:00+00:00",
+                        "last_seen": "2026-05-21T00:00:00+00:00",
+                        "status": "connected",
+                        "metadata": {},
+                    }
+                ]
+            )
+        raise AssertionError(url)
+
+    monkeypatch.setattr("app.services.network.requests.get", fake_get)
+
+    result = discover_peers(["http://seed:8000"])
+    peers = list_peers()
+
+    assert result["status"] == "ok"
+    assert result["registered"] == 2
+    assert {peer["peer_address"] for peer in peers} == {"http://seed:8000", "http://validator:8000"}
 
 
 def test_receive_block_header_queues_tip_mismatch_for_ancestor_sync(tmp_path, monkeypatch) -> None:

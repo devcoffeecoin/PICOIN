@@ -9,6 +9,7 @@ from app.db.database import init_db
 from app.services.consensus_queue import start_consensus_queue, stop_consensus_queue
 from app.services.consensus import start_replay_worker, stop_replay_worker
 from app.services.mining import start_participant_liveness_worker, stop_participant_liveness_worker
+from app.services.network import start_peer_discovery_worker, stop_peer_discovery_worker
 
 WEB_DIR = BASE_DIR / "app" / "web"
 STATIC_DIR = WEB_DIR / "static"
@@ -34,11 +35,13 @@ async def on_startup() -> None:
     await start_consensus_queue()
     await start_replay_worker()
     await start_participant_liveness_worker()
+    await start_peer_discovery_worker()
 
 
 @app.on_event("shutdown")
 async def on_shutdown() -> None:
     await stop_participant_liveness_worker()
+    await stop_peer_discovery_worker()
     await stop_replay_worker()
     await stop_consensus_queue()
 
