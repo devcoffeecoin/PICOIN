@@ -147,3 +147,45 @@ def test_validation_job_reassigned_after_assignment_timeout(tmp_path, monkeypatc
     with get_connection() as connection:
         row = connection.execute("SELECT assignment_failures FROM validation_jobs WHERE job_id = 'job_reassign'").fetchone()
     assert row["assignment_failures"] == 1
+
+
+def test_validation_job_is_visible_to_parallel_eligible_validators(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "parallel-validation.sqlite3")
+    miner = register_miner("parallel-miner", generate_keypair()["public_key"])
+    first = register_validator("parallel-validator-one", generate_keypair()["public_key"])
+    second = register_validator("parallel-validator-two", generate_keypair()["public_key"])
+
+    now = datetime.now(timezone.utc).isoformat()
+    with get_connection() as connection:
+        protocol_params_id = connection.execute(
+            "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at
+            )
+            VALUES ('task_parallel', ?, 1000, 1063, 'bbp_hex_v1', 'revealed', ?, ?)
+            """,
+            (miner["miner_id"], protocol_params_id, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO validation_jobs (
+                job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                samples, status, assigned_validator_id, assigned_at, created_at
+            )
+            VALUES ('job_parallel', 'task_parallel', ?, ?, ?, ?, '[]', 'pending', ?, ?, ?)
+            """,
+            (miner["miner_id"], "a" * 64, "b" * 64, "c" * 64, first["validator_id"], now, now),
+        )
+
+    job = get_validation_job(second["validator_id"])
+
+    assert job is not None
+    assert job["job_id"] == "job_parallel"
+    assert job["assigned_validator_id"] == second["validator_id"]
+    with get_connection() as connection:
+        row = connection.execute("SELECT assignment_failures FROM validation_jobs WHERE job_id = 'job_parallel'").fetchone()
+    assert row["assignment_failures"] == 0

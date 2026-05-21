@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import random
 import uuid
@@ -112,6 +113,7 @@ from app.services.wallet import is_valid_address
 from validator.proof import validate_submission
 
 
+logger = logging.getLogger(__name__)
 GENESIS_HASH = "0" * 64
 ECONOMIC_AUDIT_TOLERANCE = 0.000001
 PARTICIPANT_ONLINE_SECONDS = 120
@@ -152,6 +154,17 @@ def parse_iso(value: str | None) -> datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=timezone.utc)
     return parsed
+
+
+def _elapsed_iso_ms(start_iso: str | None, end_iso: str | None) -> int | None:
+    try:
+        start = parse_iso(start_iso)
+        end = parse_iso(end_iso)
+    except (TypeError, ValueError):
+        return None
+    if start is None or end is None:
+        return None
+    return max(0, int((end - start).total_seconds() * 1000))
 
 
 NODE_STARTED_AT = utc_now_dt()
@@ -1795,6 +1808,7 @@ def reveal_task(
         existing_job = row_to_dict(connection.execute("SELECT * FROM validation_jobs WHERE task_id = ?", (task_id,)).fetchone())
         if existing_job is None:
             job_id = f"job_{uuid.uuid4().hex[:16]}"
+            job_created_at = utc_now()
             snapshot_transactions = load_snapshot_transactions(connection, task_id)
             tx_hashes = snapshot["selected_tx_hashes"]
             connection.execute(
@@ -1803,9 +1817,9 @@ def reveal_task(
                     job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
                     samples, tx_merkle_root, mempool_snapshot_id, selected_tx_hashes_hash,
                     tx_count, tx_fee_total_units, tx_hashes_json, transactions_json,
-                    status, created_at
+                    status, job_created_at, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)
                 """,
                 (
                     job_id,
@@ -1822,8 +1836,18 @@ def reveal_task(
                     expected_fee_units,
                     json.dumps(tx_hashes, sort_keys=True),
                     json.dumps(snapshot_transactions, sort_keys=True),
-                    utc_now(),
+                    job_created_at,
+                    job_created_at,
                 ),
+            )
+            logger.info(
+                "validation job created task_id=%s job_id=%s tx_count=%s tx_merkle_root=%s mempool_snapshot_id=%s tx_fee_total_units=%s",
+                task_id,
+                job_id,
+                expected_count,
+                expected_root,
+                expected_snapshot_id,
+                expected_fee_units,
             )
             connection.execute("UPDATE tasks SET status = 'revealed' WHERE task_id = ?", (task_id,))
         else:
@@ -1891,29 +1915,31 @@ def get_validation_job(
             """
             SELECT validation_jobs.*, tasks.range_start, tasks.range_end, tasks.algorithm
                  , tasks.protocol_params_id
+                 , (
+                    SELECT COUNT(*)
+                    FROM validation_votes
+                    WHERE validation_votes.job_id = validation_jobs.job_id
+                    AND validation_votes.approved = 1
+                 ) AS approval_count
+                 , (
+                    SELECT COUNT(*)
+                    FROM validation_votes
+                    WHERE validation_votes.job_id = validation_jobs.job_id
+                 ) AS vote_count
             FROM validation_jobs
             JOIN tasks ON tasks.task_id = validation_jobs.task_id
             WHERE validation_jobs.status = 'pending'
-            AND (
-                validation_jobs.assigned_validator_id IS NULL
-                OR validation_jobs.assigned_validator_id = ?
-                OR validation_jobs.assigned_at IS NULL
-                OR validation_jobs.assigned_at < ?
-            )
+            AND tasks.status = 'revealed'
             AND NOT EXISTS (
                 SELECT 1
                 FROM validation_votes
                 WHERE validation_votes.job_id = validation_jobs.job_id
                 AND validation_votes.validator_id = ?
             )
-            ORDER BY (
-                SELECT COUNT(*)
-                FROM validation_votes
-                WHERE validation_votes.job_id = validation_jobs.job_id
-            ) ASC, validation_jobs.created_at ASC
+            ORDER BY approval_count DESC, vote_count DESC, validation_jobs.created_at ASC
             LIMIT 20
             """,
-            (validator_id, iso_ago(VALIDATION_JOB_ASSIGNMENT_TIMEOUT_SECONDS), validator_id),
+            (validator_id,),
         ).fetchall()
 
         job = None
@@ -1953,6 +1979,14 @@ def get_validation_job(
         counts = _validation_vote_counts(connection, job["job_id"])
         params = _protocol_params_for_task(connection, job)
         required = _effective_required_validator_approvals(connection, params)
+        logger.info(
+            "validation job visible to validator job_id=%s task_id=%s validator_id=%s approvals=%s/%s",
+            job["job_id"],
+            job["task_id"],
+            validator_id,
+            counts["approvals"],
+            required,
+        )
 
     job["samples"] = json.loads(job["samples"])
     job["selected_tx_hashes"] = json.loads(job.get("tx_hashes_json") or "[]")
@@ -1981,6 +2015,83 @@ def _release_timed_out_validation_assignments(connection: Any) -> int:
         (threshold,),
     )
     return max(0, cursor.rowcount)
+
+
+def _refresh_validation_job_timing(
+    connection: Any,
+    *,
+    job_id: str,
+    counts: dict[str, int],
+    required: int,
+    received_at: str,
+) -> None:
+    job = row_to_dict(connection.execute("SELECT * FROM validation_jobs WHERE job_id = ?", (job_id,)).fetchone())
+    if job is None:
+        return
+    created_at = job.get("job_created_at") or job.get("created_at")
+    total_votes = counts["approvals"] + counts["rejections"]
+
+    updates: dict[str, Any] = {}
+    if total_votes >= 1 and not job.get("first_vote_at"):
+        first_vote = connection.execute(
+            """
+            SELECT created_at
+            FROM validation_votes
+            WHERE job_id = ?
+            ORDER BY created_at ASC, id ASC
+            LIMIT 1
+            """,
+            (job_id,),
+        ).fetchone()
+        first_vote_at = first_vote["created_at"] if first_vote else received_at
+        updates["first_vote_at"] = first_vote_at
+        updates["waiting_for_first_vote_ms"] = _elapsed_iso_ms(created_at, first_vote_at)
+
+    if total_votes >= 2 and not job.get("second_vote_at"):
+        second_vote = connection.execute(
+            """
+            SELECT created_at
+            FROM validation_votes
+            WHERE job_id = ?
+            ORDER BY created_at ASC, id ASC
+            LIMIT 1 OFFSET 1
+            """,
+            (job_id,),
+        ).fetchone()
+        second_vote_at = second_vote["created_at"] if second_vote else received_at
+        updates["second_vote_at"] = second_vote_at
+
+    quorum_reached = counts["approvals"] >= required or counts["rejections"] >= required
+    if quorum_reached and not job.get("quorum_reached_at"):
+        updates["quorum_reached_at"] = received_at
+        updates["waiting_for_quorum_ms"] = _elapsed_iso_ms(created_at, received_at)
+
+    if not updates:
+        return
+    assignments = ", ".join(f"{column} = ?" for column in updates)
+    connection.execute(
+        f"UPDATE validation_jobs SET {assignments} WHERE job_id = ?",
+        (*updates.values(), job_id),
+    )
+
+
+def _mark_validation_job_finalized(
+    connection: Any,
+    *,
+    job_id: str,
+    finalized_at: str,
+) -> None:
+    job = row_to_dict(connection.execute("SELECT * FROM validation_jobs WHERE job_id = ?", (job_id,)).fetchone())
+    quorum_reached_at = (job or {}).get("quorum_reached_at") or finalized_at
+    connection.execute(
+        """
+        UPDATE validation_jobs
+        SET finalized_at = ?,
+            finalization_ms = ?
+        WHERE job_id = ?
+        """,
+        (finalized_at, _elapsed_iso_ms(quorum_reached_at, finalized_at), job_id),
+    )
 
 
 def submit_validation_result(
@@ -2068,14 +2179,16 @@ def submit_validation_result(
         task = row_to_dict(connection.execute("SELECT * FROM tasks WHERE task_id = ?", (job["task_id"],)).fetchone())
         samples = json.loads(job["samples"])
         validation_ms = elapsed_ms(started)
+        received_at = utc_now()
+        submit_result_latency_ms = _elapsed_iso_ms(signed_at, received_at)
         params = _protocol_params_for_task(connection, task)
         connection.execute(
             """
             INSERT INTO validation_votes (
                 job_id, task_id, validator_id, approved, reason, signature,
-                signed_at, validation_ms, created_at
+                signed_at, validation_ms, submit_result_latency_ms, created_at
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 job_id,
@@ -2086,14 +2199,41 @@ def submit_validation_result(
                 signature,
                 signed_at,
                 validation_ms,
-                utc_now(),
+                submit_result_latency_ms,
+                received_at,
             ),
         )
         _record_validator_completed_vote(connection, validator_id, approved, validation_ms)
         counts = _validation_vote_counts(connection, job_id)
         required = _effective_required_validator_approvals(connection, params)
+        _refresh_validation_job_timing(
+            connection,
+            job_id=job_id,
+            counts=counts,
+            required=required,
+            received_at=received_at,
+        )
+        logger.info(
+            "validation vote received job_id=%s task_id=%s validator_id=%s approved=%s approvals=%s/%s rejections=%s/%s",
+            job_id,
+            job["task_id"],
+            validator_id,
+            approved,
+            counts["approvals"],
+            required,
+            counts["rejections"],
+            required,
+        )
 
         if approved and counts["approvals"] >= required:
+            quorum_at = utc_now()
+            logger.info(
+                "validation quorum reached job_id=%s task_id=%s approvals=%s/%s",
+                job_id,
+                job["task_id"],
+                counts["approvals"],
+                required,
+            )
             block = _accept_block_in_connection(
                 connection=connection,
                 task=task,
@@ -2107,6 +2247,8 @@ def submit_validation_result(
                 params=params,
                 validation_job_id=job_id,
             )
+            finalized_at = utc_now()
+            _mark_validation_job_finalized(connection, job_id=job_id, finalized_at=finalized_at)
             connection.execute(
                 """
                 UPDATE validation_jobs
@@ -2114,7 +2256,14 @@ def submit_validation_result(
                     validator_signature = ?, validation_ms = ?, completed_at = ?
                 WHERE job_id = ?
                 """,
-                (validator_id, reason, signature, validation_ms, utc_now(), job_id),
+                (validator_id, reason, signature, validation_ms, finalized_at, job_id),
+            )
+            logger.info(
+                "validation task finalized job_id=%s task_id=%s block_height=%s finalization_ms=%s",
+                job_id,
+                job["task_id"],
+                block.get("height") if isinstance(block, dict) else None,
+                _elapsed_iso_ms(quorum_at, finalized_at),
             )
             return {
                 "accepted": True,
@@ -2128,10 +2277,12 @@ def submit_validation_result(
             }
 
         if not approved and counts["rejections"] >= required:
+            finalized_at = utc_now()
             connection.execute(
                 "UPDATE tasks SET status = 'rejected', submitted_at = ? WHERE task_id = ?",
-                (utc_now(), job["task_id"]),
+                (finalized_at, job["task_id"]),
             )
+            _mark_validation_job_finalized(connection, job_id=job_id, finalized_at=finalized_at)
             connection.execute(
                 """
                 UPDATE validation_jobs
@@ -2139,7 +2290,7 @@ def submit_validation_result(
                     validator_signature = ?, validation_ms = ?, completed_at = ?
                 WHERE job_id = ?
                 """,
-                (validator_id, reason, signature, validation_ms, utc_now(), job_id),
+                (validator_id, reason, signature, validation_ms, finalized_at, job_id),
             )
             _apply_penalty(connection, job["miner_id"], job["task_id"], PENALTY_INVALID_RESULT, reason)
             return {

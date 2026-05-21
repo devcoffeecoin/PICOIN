@@ -1584,6 +1584,18 @@ def consensus_status() -> dict[str, Any]:
         finalizations = connection.execute("SELECT COUNT(*) AS count FROM consensus_finalizations").fetchone()
         eligible_count = _eligible_validator_count_for_quorum(connection)
         required_approvals = _required_validator_approvals_for_quorum(connection)
+        validation_timing = connection.execute(
+            """
+            SELECT
+                COUNT(*) AS jobs_total,
+                COALESCE(SUM(CASE WHEN status = 'pending' THEN 1 ELSE 0 END), 0) AS jobs_pending,
+                COALESCE(SUM(CASE WHEN status = 'pending' AND first_vote_at IS NOT NULL THEN 1 ELSE 0 END), 0) AS pending_with_votes,
+                COALESCE(AVG(waiting_for_first_vote_ms), 0) AS avg_waiting_for_first_vote_ms,
+                COALESCE(AVG(waiting_for_quorum_ms), 0) AS avg_waiting_for_quorum_ms,
+                COALESCE(AVG(finalization_ms), 0) AS avg_finalization_ms
+            FROM validation_jobs
+            """
+        ).fetchone()
         missing_ancestor_rows = connection.execute(
             """
             SELECT *
@@ -1626,6 +1638,14 @@ def consensus_status() -> dict[str, Any]:
         "competing_proposal_count": competing_proposals,
         "fork_groups": fork_groups,
         "fork_choices": [group["winner"] for group in fork_groups if group.get("winner") is not None],
+        "validation_timing": {
+            "jobs_total": int(validation_timing["jobs_total"] if validation_timing else 0),
+            "jobs_pending": int(validation_timing["jobs_pending"] if validation_timing else 0),
+            "pending_with_votes": int(validation_timing["pending_with_votes"] if validation_timing else 0),
+            "avg_waiting_for_first_vote_ms": round(float(validation_timing["avg_waiting_for_first_vote_ms"] if validation_timing else 0), 2),
+            "avg_waiting_for_quorum_ms": round(float(validation_timing["avg_waiting_for_quorum_ms"] if validation_timing else 0), 2),
+            "avg_finalization_ms": round(float(validation_timing["avg_finalization_ms"] if validation_timing else 0), 2),
+        },
         "checked_at": utc_now(),
     }
 

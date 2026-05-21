@@ -772,6 +772,7 @@ class ConsensusStatusResponse(BaseModel):
     competing_proposal_count: int = 0
     fork_groups: list[dict[str, Any]] = Field(default_factory=list)
     fork_choices: list[dict[str, Any]] = Field(default_factory=list)
+    validation_timing: dict[str, Any] = Field(default_factory=dict)
     checked_at: datetime
 
 
