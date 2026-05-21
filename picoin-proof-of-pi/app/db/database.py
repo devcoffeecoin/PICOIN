@@ -28,6 +28,7 @@ from app.core.settings import (
     SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET,
     SCIENCE_RESERVE_AUTHORIZED_SIGNERS,
     SCIENCE_RESERVE_LOCKED_STATUS,
+    RETARGET_TARGET_BLOCK_MS,
     TASK_EXPIRATION_SECONDS,
     TASK_SEGMENT_SIZE,
     VALIDATION_MODE,
@@ -162,8 +163,28 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 task_expiration_seconds INTEGER NOT NULL,
                 max_active_tasks_per_miner INTEGER NOT NULL,
                 base_reward REAL NOT NULL,
+                difficulty REAL,
+                target_block_time_ms INTEGER,
+                retarget_reason TEXT,
+                retarget_source_window TEXT,
+                previous_protocol_params_id INTEGER,
                 active INTEGER NOT NULL DEFAULT 1,
-                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY(previous_protocol_params_id) REFERENCES protocol_params(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS difficulty_bucket_metrics (
+                bucket_id TEXT PRIMARY KEY,
+                range_start_min INTEGER NOT NULL,
+                range_start_max INTEGER NOT NULL,
+                avg_task_ms REAL NOT NULL,
+                avg_validation_ms REAL NOT NULL,
+                avg_total_block_ms REAL NOT NULL,
+                avg_segment_size REAL NOT NULL,
+                avg_sample_count REAL NOT NULL,
+                avg_difficulty REAL NOT NULL,
+                samples_seen INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
             );
 
             CREATE TABLE IF NOT EXISTS retarget_events (
@@ -750,6 +771,11 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "tasks", "assignment_ms", "INTEGER")
         _ensure_column(connection, "tasks", "compute_ms", "INTEGER")
         _ensure_column(connection, "tasks", "protocol_params_id", "INTEGER")
+        _ensure_column(connection, "protocol_params", "difficulty", "REAL")
+        _ensure_column(connection, "protocol_params", "target_block_time_ms", "INTEGER")
+        _ensure_column(connection, "protocol_params", "retarget_reason", "TEXT")
+        _ensure_column(connection, "protocol_params", "retarget_source_window", "TEXT")
+        _ensure_column(connection, "protocol_params", "previous_protocol_params_id", "INTEGER")
         _ensure_tasks_range_constraints(connection)
         _ensure_column(connection, "blocks", "merkle_root", "TEXT")
         _ensure_column(connection, "blocks", "tx_merkle_root", "TEXT")
@@ -1048,42 +1074,24 @@ def _rebuild_tasks_without_global_range_unique(connection: sqlite3.Connection) -
 def _ensure_default_protocol_params(connection: sqlite3.Connection) -> None:
     active = connection.execute(
         """
-        SELECT protocol_version, algorithm, validation_mode, required_validator_approvals,
-               range_assignment_mode, max_pi_position, range_assignment_max_attempts,
-               segment_size, sample_count, task_expiration_seconds,
-               max_active_tasks_per_miner, base_reward
+        SELECT 1
         FROM protocol_params
         WHERE active = 1
         ORDER BY id DESC
         LIMIT 1
         """
     ).fetchone()
-    defaults = (
-        PROTOCOL_VERSION,
-        PI_ALGORITHM,
-        VALIDATION_MODE,
-        REQUIRED_VALIDATOR_APPROVALS,
-        RANGE_ASSIGNMENT_MODE,
-        MAX_PI_POSITION,
-        RANGE_ASSIGNMENT_MAX_ATTEMPTS,
-        TASK_SEGMENT_SIZE,
-        SAMPLE_COUNT,
-        TASK_EXPIRATION_SECONDS,
-        MAX_ACTIVE_TASKS_PER_MINER,
-        DEFAULT_REWARD,
-    )
-    if active is not None and tuple(active) == defaults:
+    if active is not None:
         return
-    connection.execute("UPDATE protocol_params SET active = 0 WHERE active = 1")
     connection.execute(
         """
         INSERT INTO protocol_params (
             protocol_version, algorithm, validation_mode, required_validator_approvals,
             range_assignment_mode, max_pi_position, range_assignment_max_attempts,
             segment_size, sample_count, task_expiration_seconds,
-            max_active_tasks_per_miner, base_reward, active
+            max_active_tasks_per_miner, base_reward, difficulty, target_block_time_ms, active
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, 1)
         """,
         (
             PROTOCOL_VERSION,
@@ -1098,6 +1106,7 @@ def _ensure_default_protocol_params(connection: sqlite3.Connection) -> None:
             TASK_EXPIRATION_SECONDS,
             MAX_ACTIVE_TASKS_PER_MINER,
             DEFAULT_REWARD,
+            RETARGET_TARGET_BLOCK_MS,
         ),
     )
 

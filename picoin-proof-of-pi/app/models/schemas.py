@@ -889,6 +889,10 @@ class ProtocolResponse(BaseModel):
     max_active_tasks_per_miner: int
     base_reward: float
     difficulty: float
+    target_block_time_ms: int | None = None
+    retarget_reason: str | None = None
+    retarget_source_window: str | None = None
+    previous_protocol_params_id: int | None = None
     reward_per_block: float
     proof_of_pi_reward_per_block: float
     proof_of_pi_reward_percent: float
@@ -938,6 +942,10 @@ class ProtocolParamsResponse(BaseModel):
     active: bool
     created_at: datetime
     difficulty: float
+    target_block_time_ms: int | None = None
+    retarget_reason: str | None = None
+    retarget_source_window: str | None = None
+    previous_protocol_params_id: int | None = None
     reward_per_block: float
 
 
@@ -945,6 +953,7 @@ class RetargetStatusResponse(BaseModel):
     enabled: bool
     epoch_blocks: int
     epoch_blocks_required: int | None = None
+    retarget_window_blocks: int | None = None
     target_block_ms: int
     tolerance: float
     current_height: int
@@ -955,6 +964,8 @@ class RetargetStatusResponse(BaseModel):
     blocks_until_ready: int | None = None
     blocks_until_next_epoch: int
     active_difficulty: float
+    min_difficulty: float | None = None
+    max_difficulty: float | None = None
     active_reward_per_block: float
     configured_max_pi_position: int | None = None
     effective_max_pi_position: int | None = None

@@ -57,8 +57,13 @@ from app.core.settings import (
     RETROACTIVE_AUDIT_REWARD_PERCENT_OF_BLOCK,
     RETROACTIVE_AUDIT_SAMPLE_MULTIPLIER,
     RETARGET_EPOCH_BLOCKS,
+    RETARGET_MAX_DIFFICULTY,
+    RETARGET_MIN_DIFFICULTY,
     RETARGET_TARGET_BLOCK_MS,
     RETARGET_TOLERANCE,
+    RETARGET_WINDOW_BLOCKS,
+    RETARGET_MIN_SEGMENT_SIZE,
+    RETARGET_MAX_SEGMENT_SIZE,
     SCIENCE_BASE_MONTHLY_QUOTA_UNITS,
     SCIENCE_COMPUTE_REWARD_PERCENT_OF_BLOCK,
     SCIENCE_RESERVE_ACCOUNT_ID,
@@ -3287,12 +3292,13 @@ def get_difficulty_status() -> dict[str, Any]:
 
     blocks_since_retarget = max(0, current_height - last_retarget_height)
     average_ms = _average_epoch_ms(epoch_rows) if epoch_rows else None
-    required_epoch_blocks = max(RETARGET_EPOCH_BLOCKS, DifficultyService.RETARGET_INTERVAL)
+    required_epoch_blocks = max(RETARGET_EPOCH_BLOCKS, RETARGET_WINDOW_BLOCKS)
     blocks_until_ready = max(0, required_epoch_blocks - len(epoch_rows))
     return {
         "enabled": True,
         "epoch_blocks": RETARGET_EPOCH_BLOCKS,
         "epoch_blocks_required": required_epoch_blocks,
+        "retarget_window_blocks": RETARGET_WINDOW_BLOCKS,
         "target_block_ms": RETARGET_TARGET_BLOCK_MS,
         "tolerance": RETARGET_TOLERANCE,
         "current_height": current_height,
@@ -3303,6 +3309,8 @@ def get_difficulty_status() -> dict[str, Any]:
         "blocks_until_ready": blocks_until_ready,
         "blocks_until_next_epoch": blocks_until_ready,
         "active_difficulty": calculate_difficulty(params),
+        "min_difficulty": RETARGET_MIN_DIFFICULTY,
+        "max_difficulty": RETARGET_MAX_DIFFICULTY,
         "active_reward_per_block": calculate_reward(params),
         "configured_max_pi_position": params["max_pi_position"],
         "effective_max_pi_position": assignment_window["effective_max_pi_position"],
@@ -3369,6 +3377,10 @@ def _protocol_payload(params: dict[str, Any]) -> dict[str, Any]:
         "max_active_tasks_per_miner": params["max_active_tasks_per_miner"],
         "base_reward": params["base_reward"],
         "difficulty": calculate_difficulty(params),
+        "target_block_time_ms": params.get("target_block_time_ms") or RETARGET_TARGET_BLOCK_MS,
+        "retarget_reason": params.get("retarget_reason"),
+        "retarget_source_window": params.get("retarget_source_window"),
+        "previous_protocol_params_id": params.get("previous_protocol_params_id"),
         "reward_per_block": calculate_reward(params),
         "proof_of_pi_reward_per_block": calculate_miner_reward(params),
         "proof_of_pi_reward_percent": PROOF_OF_PI_REWARD_PERCENT,
@@ -3412,6 +3424,7 @@ def _protocol_params_payload(params: dict[str, Any]) -> dict[str, Any]:
     payload = dict(params)
     payload["active"] = bool(payload["active"])
     payload["difficulty"] = calculate_difficulty(payload)
+    payload["target_block_time_ms"] = payload.get("target_block_time_ms") or RETARGET_TARGET_BLOCK_MS
     payload["reward_per_block"] = calculate_reward(payload)
     return payload
 
@@ -5071,28 +5084,84 @@ def _build_challenge_samples(
 def _retarget_epoch_rows(connection: Any, last_height: int) -> list[Any]:
     return connection.execute(
         """
+        SELECT *
+        FROM (
         SELECT
-            height,
-            range_start,
-            range_end,
-            COALESCE(total_task_ms, total_block_ms, ?) AS total_task_ms,
-            COALESCE(total_block_ms, total_task_ms, ?) AS total_block_ms
+            blocks.height,
+            blocks.range_start,
+            blocks.range_end,
+            COALESCE(blocks.total_task_ms, blocks.total_block_ms, ?) AS total_task_ms,
+            COALESCE(blocks.validation_ms, 0) AS validation_ms,
+            COALESCE(blocks.total_block_ms, blocks.total_task_ms, ?) AS total_block_ms,
+            COALESCE(blocks.difficulty, protocol_params.difficulty, 0) AS difficulty,
+            COALESCE(protocol_params.segment_size, blocks.range_end - blocks.range_start + 1) AS segment_size,
+            COALESCE(protocol_params.sample_count, 8) AS sample_count
         FROM blocks
-        WHERE height > ?
-        ORDER BY height ASC
+        LEFT JOIN protocol_params ON protocol_params.id = blocks.protocol_params_id
+        WHERE blocks.height > ?
+          AND COALESCE(blocks.total_block_ms, blocks.total_task_ms, 0) > 0
+        ORDER BY blocks.height DESC
         LIMIT ?
+        )
+        ORDER BY height ASC
         """,
         (
             RETARGET_TARGET_BLOCK_MS,
             RETARGET_TARGET_BLOCK_MS,
             last_height,
-            DifficultyService.RETARGET_WINDOW,
+            RETARGET_WINDOW_BLOCKS,
         ),
     ).fetchall()
 
 
 def _average_epoch_ms(epoch_rows: list[Any]) -> float:
-    return round(sum(float(row["total_task_ms"]) for row in epoch_rows) / len(epoch_rows), 2)
+    return round(sum(float(row["total_block_ms"]) for row in epoch_rows) / len(epoch_rows), 2)
+
+
+def _retarget_protocol_params_from_history(
+    params: dict[str, Any],
+    history: list[dict[str, Any]],
+    next_range_start: int,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    return DifficultyService.calculate_next_protocol_params(history, params, next_range_start)
+
+
+def _upsert_difficulty_bucket_metrics(connection: Any, history: list[dict[str, Any]], updated_at: str) -> None:
+    for metric in DifficultyService.bucket_metrics(history):
+        connection.execute(
+            """
+            INSERT INTO difficulty_bucket_metrics (
+                bucket_id, range_start_min, range_start_max, avg_task_ms,
+                avg_validation_ms, avg_total_block_ms, avg_segment_size,
+                avg_sample_count, avg_difficulty, samples_seen, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(bucket_id) DO UPDATE SET
+                range_start_min = excluded.range_start_min,
+                range_start_max = excluded.range_start_max,
+                avg_task_ms = excluded.avg_task_ms,
+                avg_validation_ms = excluded.avg_validation_ms,
+                avg_total_block_ms = excluded.avg_total_block_ms,
+                avg_segment_size = excluded.avg_segment_size,
+                avg_sample_count = excluded.avg_sample_count,
+                avg_difficulty = excluded.avg_difficulty,
+                samples_seen = excluded.samples_seen,
+                updated_at = excluded.updated_at
+            """,
+            (
+                metric["bucket_id"],
+                metric["range_start_min"],
+                metric["range_start_max"],
+                metric["avg_task_ms"],
+                metric["avg_validation_ms"],
+                metric["avg_total_block_ms"],
+                metric["avg_segment_size"],
+                metric["avg_sample_count"],
+                metric["avg_difficulty"],
+                metric["samples_seen"],
+                updated_at,
+            ),
+        )
 
 
 def _retarget_preview(connection: Any, force: bool = False) -> dict[str, Any]:
@@ -5102,7 +5171,7 @@ def _retarget_preview(connection: Any, force: bool = False) -> dict[str, Any]:
     epoch_rows = _retarget_epoch_rows(connection, last_height)
     epoch_count = len(epoch_rows)
     average_block_ms = _average_epoch_ms(epoch_rows) if epoch_rows else None
-    required_epoch_blocks = max(RETARGET_EPOCH_BLOCKS, DifficultyService.RETARGET_INTERVAL)
+    required_epoch_blocks = max(RETARGET_EPOCH_BLOCKS, RETARGET_WINDOW_BLOCKS)
     ready = bool(epoch_rows) and (force or epoch_count >= required_epoch_blocks)
     next_params = dict(params)
     meta = {
@@ -5115,7 +5184,7 @@ def _retarget_preview(connection: Any, force: bool = False) -> dict[str, Any]:
         history = [row_to_dict(row) for row in epoch_rows]
         assignment_window = _range_assignment_window(connection, params)
         next_range_start_for_preview = int(assignment_window["frontier"]) + 1
-        next_params, meta = DifficultyService.calculate_next_difficulty(history, params, next_range_start_for_preview)
+        next_params, meta = _retarget_protocol_params_from_history(params, history, next_range_start_for_preview)
 
     status = "ready" if ready else "waiting"
     if not epoch_rows:
@@ -5135,9 +5204,15 @@ def _retarget_preview(connection: Any, force: bool = False) -> dict[str, Any]:
         "average_block_ms": average_block_ms,
         "target_block_ms": RETARGET_TARGET_BLOCK_MS,
         "tolerance": RETARGET_TOLERANCE,
+        "min_difficulty": RETARGET_MIN_DIFFICULTY,
+        "max_difficulty": RETARGET_MAX_DIFFICULTY,
         "action": meta["action"],
         "reason": meta["reason"],
         "adjustment_factor": meta["adjustment_factor"],
+        "avg_task_ms": meta.get("avg_task_ms"),
+        "avg_validation_ms": meta.get("avg_validation_ms"),
+        "mining_ratio": meta.get("mining_ratio"),
+        "validation_ratio": meta.get("validation_ratio"),
         "old_difficulty": calculate_difficulty(params),
         "new_difficulty": calculate_difficulty(next_params),
         "current_protocol": _protocol_payload(params),
@@ -5161,6 +5236,7 @@ def _maybe_retarget_after_block(connection: Any, current_height: int, force: boo
         return None
 
     epoch_rows = _retarget_epoch_rows(connection, preview["last_retarget_height"])
+    history = [row_to_dict(row) for row in epoch_rows]
     params = preview["_current_params"]
     next_params = preview["_proposed_params"]
     meta = preview["_meta"]
@@ -5171,18 +5247,36 @@ def _maybe_retarget_after_block(connection: Any, current_height: int, force: boo
     new_difficulty = calculate_difficulty(next_params)
     previous_params_id = params["id"]
     new_params_id = previous_params_id
+    created_at = utc_now()
+    _upsert_difficulty_bucket_metrics(connection, history, created_at)
 
     if meta["action"] != "keep":
         connection.execute("UPDATE protocol_params SET active = 0 WHERE active = 1")
+        source_window = json.dumps(
+            {
+                "epoch_start_height": int(epoch_rows[0]["height"]),
+                "epoch_end_height": int(epoch_rows[-1]["height"]),
+                "epoch_block_count": len(epoch_rows),
+                "bucket": meta.get("bucket"),
+                "avg_total_block_ms": meta.get("avg_total_block_ms"),
+                "avg_task_ms": meta.get("avg_task_ms"),
+                "avg_validation_ms": meta.get("avg_validation_ms"),
+                "mining_ratio": meta.get("mining_ratio"),
+                "validation_ratio": meta.get("validation_ratio"),
+            },
+            sort_keys=True,
+        )
         cursor = connection.execute(
             """
             INSERT INTO protocol_params (
                 protocol_version, algorithm, validation_mode, required_validator_approvals,
                 range_assignment_mode, max_pi_position, range_assignment_max_attempts,
                 segment_size, sample_count, task_expiration_seconds,
-                max_active_tasks_per_miner, base_reward, active
+                max_active_tasks_per_miner, base_reward, difficulty,
+                target_block_time_ms, retarget_reason, retarget_source_window,
+                previous_protocol_params_id, active
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 PROTOCOL_VERSION,
@@ -5197,6 +5291,11 @@ def _maybe_retarget_after_block(connection: Any, current_height: int, force: boo
                 next_params["task_expiration_seconds"],
                 next_params["max_active_tasks_per_miner"],
                 next_params["base_reward"],
+                next_params["difficulty"],
+                RETARGET_TARGET_BLOCK_MS,
+                meta["reason"],
+                source_window,
+                previous_params_id,
             ),
         )
         new_params_id = cursor.lastrowid
@@ -5225,8 +5324,25 @@ def _maybe_retarget_after_block(connection: Any, current_height: int, force: boo
             meta["adjustment_factor"],
             meta["action"],
             meta["reason"],
-            utc_now(),
+            created_at,
         ),
+    )
+    logger.info(
+        "difficulty retarget action=%s old_difficulty=%s new_difficulty=%s old_segment_size=%s new_segment_size=%s old_sample_count=%s new_sample_count=%s avg_total_block_ms=%s avg_task_ms=%s avg_validation_ms=%s mining_ratio=%s validation_ratio=%s bucket=%s reason=%s",
+        meta["action"],
+        old_difficulty,
+        new_difficulty,
+        meta.get("old_segment_size"),
+        meta.get("new_segment_size"),
+        meta.get("old_sample_count"),
+        meta.get("new_sample_count"),
+        meta.get("avg_total_block_ms"),
+        meta.get("avg_task_ms"),
+        meta.get("avg_validation_ms"),
+        meta.get("mining_ratio"),
+        meta.get("validation_ratio"),
+        meta.get("bucket"),
+        meta.get("reason"),
     )
     return row_to_dict(connection.execute("SELECT * FROM retarget_events WHERE id = ?", (cursor.lastrowid,)).fetchone())
 

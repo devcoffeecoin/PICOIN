@@ -13,6 +13,7 @@ from app.services.mining import (
     run_retarget,
     submit_task,
 )
+from app.services.difficulty_service import DifficultyService
 
 
 def test_protocol_exposes_dynamic_difficulty_and_rewards(tmp_path, monkeypatch) -> None:
@@ -86,7 +87,7 @@ def test_retarget_increases_difficulty_after_fast_epoch(tmp_path, monkeypatch) -
 
     keypair = generate_keypair()
     miner = register_miner("retarget-miner", keypair["public_key"])
-    _insert_epoch_blocks(miner["miner_id"], total_task_ms=1_000, count=10)
+    _insert_epoch_blocks(miner["miner_id"], total_task_ms=1_000, total_block_ms=30_000, count=20)
 
     before = get_protocol()
     result = run_retarget()
@@ -98,8 +99,8 @@ def test_retarget_increases_difficulty_after_fast_epoch(tmp_path, monkeypatch) -
     assert result["event"]["action"] == "increase"
     assert after["difficulty"] > before["difficulty"]
     assert after["segment_size"] > before["segment_size"]
-    assert history[0]["epoch_block_count"] == 10
-    assert status["last_retarget_height"] == 10
+    assert history[0]["epoch_block_count"] == 20
+    assert status["last_retarget_height"] == 20
 
 
 def test_retarget_preview_does_not_mutate_protocol_or_history(tmp_path, monkeypatch) -> None:
@@ -110,7 +111,7 @@ def test_retarget_preview_does_not_mutate_protocol_or_history(tmp_path, monkeypa
 
     keypair = generate_keypair()
     miner = register_miner("preview-miner", keypair["public_key"])
-    _insert_epoch_blocks(miner["miner_id"], total_task_ms=1_000, count=10)
+    _insert_epoch_blocks(miner["miner_id"], total_task_ms=1_000, total_block_ms=30_000, count=20)
 
     before = get_protocol()
     preview = preview_retarget()
@@ -131,7 +132,7 @@ def test_retarget_waits_until_epoch_is_complete(tmp_path, monkeypatch) -> None:
 
     keypair = generate_keypair()
     miner = register_miner("waiting-miner", keypair["public_key"])
-    _insert_epoch_blocks(miner["miner_id"], total_task_ms=1_000, count=9)
+    _insert_epoch_blocks(miner["miner_id"], total_task_ms=1_000, total_block_ms=30_000, count=19)
 
     result = run_retarget()
     preview = preview_retarget()
@@ -140,7 +141,7 @@ def test_retarget_waits_until_epoch_is_complete(tmp_path, monkeypatch) -> None:
     assert result["retargeted"] is False
     assert preview["ready"] is False
     assert preview["blocks_until_ready"] == 1
-    assert status["epoch_blocks_required"] == 10
+    assert status["epoch_blocks_required"] == 20
     assert status["blocks_until_ready"] == 1
     assert status["blocks_until_next_epoch"] == 1
     assert get_protocol()["difficulty"] == 4.0
@@ -154,7 +155,7 @@ def test_retarget_decreases_difficulty_after_slow_epoch(tmp_path, monkeypatch) -
 
     keypair = generate_keypair()
     miner = register_miner("slow-miner", keypair["public_key"])
-    _insert_epoch_blocks(miner["miner_id"], total_task_ms=100_000, count=10)
+    _insert_epoch_blocks(miner["miner_id"], total_task_ms=100_000, total_block_ms=120_000, count=20)
 
     before = get_protocol()
     result = run_retarget()
@@ -166,7 +167,181 @@ def test_retarget_decreases_difficulty_after_slow_epoch(tmp_path, monkeypatch) -
     assert after["segment_size"] < before["segment_size"]
 
 
-def _insert_epoch_blocks(miner_id: str, total_task_ms: int, count: int = 5) -> None:
+def test_retarget_decreases_sample_count_when_validation_dominates(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "retarget-validation-slow.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    keypair = generate_keypair()
+    miner = register_miner("validation-slow-miner", keypair["public_key"])
+    _insert_epoch_blocks(miner["miner_id"], total_task_ms=10_000, validation_ms=85_000, total_block_ms=100_000, count=20)
+
+    before = get_protocol()
+    result = run_retarget()
+    after = get_protocol()
+
+    assert result["retargeted"] is True
+    assert "validation bottleneck" in result["event"]["reason"]
+    assert after["sample_count"] < before["sample_count"]
+    assert after["difficulty"] == before["difficulty"]
+    assert after["segment_size"] == before["segment_size"]
+
+
+def test_retarget_increases_sample_count_when_blocks_fast_and_validation_cheap(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "retarget-validation-cheap.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    keypair = generate_keypair()
+    miner = register_miner("validation-cheap-miner", keypair["public_key"])
+    _insert_epoch_blocks(miner["miner_id"], total_task_ms=25_000, validation_ms=1_000, total_block_ms=30_000, count=20)
+
+    before = get_protocol()
+    result = run_retarget()
+    after = get_protocol()
+
+    assert result["retargeted"] is True
+    assert "validation cheap" in result["event"]["reason"]
+    assert after["sample_count"] > before["sample_count"]
+    assert after["difficulty"] > before["difficulty"]
+    assert after["segment_size"] > before["segment_size"]
+
+
+def test_retarget_clamps_adjustment_and_uses_total_block_time(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "retarget-clamp.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    keypair = generate_keypair()
+    miner = register_miner("clamp-miner", keypair["public_key"])
+    _insert_epoch_blocks(miner["miner_id"], total_task_ms=10_000, total_block_ms=117_470, count=20)
+
+    before = get_protocol()
+    result = run_retarget()
+    after = get_protocol()
+
+    assert result["retargeted"] is True
+    assert result["event"]["action"] == "decrease"
+    assert result["event"]["adjustment_factor"] == 0.75
+    assert after["difficulty"] == round(before["difficulty"] * 0.75, 6)
+
+
+def test_retarget_persists_protocol_metadata_and_bucket_metrics(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "retarget-persistence.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    keypair = generate_keypair()
+    miner = register_miner("persist-miner", keypair["public_key"])
+    _insert_epoch_blocks(miner["miner_id"], total_task_ms=100_000, validation_ms=5_000, total_block_ms=120_000, count=20)
+
+    result = run_retarget()
+
+    assert result["retargeted"] is True
+    with get_connection() as connection:
+        protocol = connection.execute(
+            """
+            SELECT difficulty, segment_size, sample_count, target_block_time_ms,
+                   retarget_reason, retarget_source_window, previous_protocol_params_id
+            FROM protocol_params
+            WHERE active = 1
+            """
+        ).fetchone()
+        metric = connection.execute("SELECT * FROM difficulty_bucket_metrics ORDER BY samples_seen DESC LIMIT 1").fetchone()
+    assert protocol["target_block_time_ms"] == 60_000
+    assert protocol["retarget_reason"]
+    assert protocol["retarget_source_window"]
+    assert protocol["previous_protocol_params_id"] is not None
+    assert metric is not None
+    assert metric["samples_seen"] > 0
+
+
+def test_difficulty_service_is_deterministic_for_same_history() -> None:
+    params = {"difficulty": 0.125, "segment_size": 64, "sample_count": 32, "max_pi_position": 10000}
+    history = [
+        {
+            "range_start": 1000,
+            "range_end": 1063,
+            "segment_size": 64,
+            "sample_count": 32,
+            "difficulty": 0.125,
+            "total_task_ms": 100_000,
+            "validation_ms": 5_000,
+            "total_block_ms": 117_470,
+        }
+        for _ in range(20)
+    ]
+
+    first = DifficultyService.calculate_next_protocol_params(history, params, 1000)
+    second = DifficultyService.calculate_next_protocol_params(history, params, 1000)
+
+    assert first == second
+    assert first[0]["difficulty"] == 0.09375
+
+
+def test_bucket_history_drives_target_range_retarget() -> None:
+    params = {"difficulty": 0.125, "segment_size": 64, "sample_count": 32, "max_pi_position": 10000}
+    history = []
+    for _ in range(10):
+        history.append(
+            {
+                "range_start": 1000,
+                "range_end": 1063,
+                "segment_size": 64,
+                "sample_count": 32,
+                "difficulty": 0.125,
+                "total_task_ms": 100_000,
+                "validation_ms": 1_000,
+                "total_block_ms": 120_000,
+            }
+        )
+        history.append(
+            {
+                "range_start": 100000,
+                "range_end": 100063,
+                "segment_size": 64,
+                "sample_count": 32,
+                "difficulty": 0.125,
+                "total_task_ms": 10_000,
+                "validation_ms": 1_000,
+                "total_block_ms": 30_000,
+            }
+        )
+
+    next_params, meta = DifficultyService.calculate_next_protocol_params(history, params, 1000)
+
+    assert meta["bucket"] == "1000-2500"
+    assert meta["avg_total_block_ms"] == 120000.0
+    assert next_params["difficulty"] < params["difficulty"]
+
+
+def test_retarget_ignores_blocks_without_safe_total_timing(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "retarget-invalid-timing.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    keypair = generate_keypair()
+    miner = register_miner("invalid-timing-miner", keypair["public_key"])
+    _insert_epoch_blocks(miner["miner_id"], total_task_ms=0, validation_ms=0, total_block_ms=0, count=20)
+
+    result = run_retarget(force=True)
+
+    assert result["retargeted"] is False
+
+
+def _insert_epoch_blocks(
+    miner_id: str,
+    total_task_ms: int,
+    total_block_ms: int | None = None,
+    validation_ms: int = 1,
+    count: int = 5,
+) -> None:
+    total_block_ms = total_task_ms if total_block_ms is None else total_block_ms
     with get_connection() as connection:
         protocol_params_id = connection.execute(
             "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
@@ -200,9 +375,9 @@ def _insert_epoch_blocks(miner_id: str, total_task_ms: int, count: int = 5) -> N
                 INSERT INTO blocks (
                     height, previous_hash, miner_id, range_start, range_end, algorithm,
                     result_hash, samples, timestamp, block_hash, reward, difficulty,
-                    task_id, protocol_params_id, protocol_version, validation_mode, total_task_ms, validation_ms
+                    task_id, protocol_params_id, protocol_version, validation_mode, total_task_ms, total_block_ms, validation_ms
                 )
-                VALUES (?, ?, ?, ?, ?, 'bbp_hex_v1', ?, '[]', ?, ?, 3.14159, 1.0, ?, ?, '0.9', 'external_commit_reveal', ?, 1)
+                VALUES (?, ?, ?, ?, ?, 'bbp_hex_v1', ?, '[]', ?, ?, 3.14159, 1.0, ?, ?, '0.9', 'external_commit_reveal', ?, ?, ?)
                 """,
                 (
                     height,
@@ -216,6 +391,8 @@ def _insert_epoch_blocks(miner_id: str, total_task_ms: int, count: int = 5) -> N
                     task_id,
                     protocol_params_id,
                     total_task_ms,
+                    total_block_ms,
+                    validation_ms,
                 ),
             )
             previous_hash = block_hash
