@@ -1543,6 +1543,22 @@ def commit_task(
             or int(tx_count or 0) != expected_count
             or int(tx_fee_total_units or 0) != expected_fee_units
         ):
+            # Log the exact fields that mismatch to debug the invalid_tx_commitment error
+            mismatches = []
+            if (tx_merkle_root or "") != expected_root: mismatches.append("tx_merkle_root")
+            if (mempool_snapshot_id or "") != expected_snapshot_id: mismatches.append("mempool_snapshot_id")
+            if (selected_tx_hashes_hash or "") != expected_hash: mismatches.append("selected_tx_hashes_hash")
+            if int(tx_count or 0) != expected_count: mismatches.append("tx_count")
+            if int(tx_fee_total_units or 0) != expected_fee_units: mismatches.append("tx_fee_total_units")
+
+            logger.warning(
+                "invalid_tx_commitment details in commit_task: task_id=%s miner_id=%s mismatches=%s\n"
+                "expected: root=%s, snapshot_id=%s, hashes_hash=%s, count=%s, fee_units=%s\n"
+                "received: root=%s, snapshot_id=%s, hashes_hash=%s, count=%s, fee_units=%s",
+                task_id, miner_id, mismatches,
+                expected_root, expected_snapshot_id, expected_hash, expected_count, expected_fee_units,
+                tx_merkle_root, mempool_snapshot_id, selected_tx_hashes_hash, tx_count, tx_fee_total_units
+            )
             return _commit_rejected("invalid_tx_commitment")
 
         expires_at = parse_iso(task["expires_at"])
@@ -1739,6 +1755,21 @@ def reveal_task(
             or int(tx_count or 0) != expected_count
             or int(tx_fee_total_units or 0) != expected_fee_units
         ):
+            mismatches = []
+            if (tx_merkle_root or "") != expected_root: mismatches.append("tx_merkle_root")
+            if (mempool_snapshot_id or "") != expected_snapshot_id: mismatches.append("mempool_snapshot_id")
+            if (selected_tx_hashes_hash or "") != expected_hash: mismatches.append("selected_tx_hashes_hash")
+            if int(tx_count or 0) != expected_count: mismatches.append("tx_count")
+            if int(tx_fee_total_units or 0) != expected_fee_units: mismatches.append("tx_fee_total_units")
+
+            logger.warning(
+                "invalid_tx_commitment details in reveal_task: task_id=%s miner_id=%s mismatches=%s\n"
+                "expected: root=%s, snapshot_id=%s, hashes_hash=%s, count=%s, fee_units=%s\n"
+                "received: root=%s, snapshot_id=%s, hashes_hash=%s, count=%s, fee_units=%s",
+                task_id, miner_id, mismatches,
+                expected_root, expected_snapshot_id, expected_hash, expected_count, expected_fee_units,
+                tx_merkle_root, mempool_snapshot_id, selected_tx_hashes_hash, tx_count, tx_fee_total_units
+            )
             return _reject_in_connection(
                 connection,
                 "invalid_tx_commitment",
