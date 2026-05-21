@@ -344,6 +344,12 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 updated_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS account_nonces (
+                account_id TEXT PRIMARY KEY,
+                nonce INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS ledger_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 account_id TEXT NOT NULL,
@@ -821,6 +827,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "canonical_snapshot_imports", "activated_at", "TEXT")
         _ensure_column(connection, "canonical_snapshot_imports", "state_applied", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "canonical_snapshot_imports", "state_applied_at", "TEXT")
+        _ensure_account_nonces(connection)
         _ensure_science_reserve_governance(connection)
         _ensure_scientific_development_treasury(connection)
         _ensure_network_genesis(connection)
@@ -833,6 +840,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_genesis_balance(connection)
         _ensure_existing_validator_stake_balances(connection)
         _backfill_money_units(connection)
+        _backfill_account_nonces(connection)
 
 
 def _ensure_column(connection: sqlite3.Connection, table_name: str, column_name: str, definition: str) -> None:
@@ -903,6 +911,53 @@ def _backfill_money_units(connection: sqlite3.Connection) -> None:
 
 def _quoted_identifier(identifier: str) -> str:
     return '"' + identifier.replace('"', '""') + '"'
+
+
+def _ensure_account_nonces(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        CREATE TABLE IF NOT EXISTS account_nonces (
+            account_id TEXT PRIMARY KEY,
+            nonce INTEGER NOT NULL DEFAULT 0,
+            updated_at TEXT NOT NULL
+        )
+        """
+    )
+
+
+def _backfill_account_nonces(connection: sqlite3.Connection) -> None:
+    try:
+        rows = connection.execute(
+            """
+            SELECT sender AS account_id, MAX(nonce) AS nonce, MAX(updated_at) AS updated_at
+            FROM mempool_transactions
+            WHERE status = 'confirmed'
+            GROUP BY sender
+            """
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return
+    timestamp = datetime.now(timezone.utc).isoformat()
+    for row in rows:
+        account_id = str(row["account_id"] or "").strip()
+        if not account_id:
+            continue
+        try:
+            nonce = int(row["nonce"] or 0)
+        except (TypeError, ValueError):
+            continue
+        if nonce <= 0:
+            continue
+        connection.execute(
+            """
+            INSERT INTO account_nonces (account_id, nonce, updated_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(account_id) DO UPDATE SET
+                nonce = CASE WHEN excluded.nonce > account_nonces.nonce THEN excluded.nonce ELSE account_nonces.nonce END,
+                updated_at = excluded.updated_at
+            """,
+            (account_id, nonce, row["updated_at"] or timestamp),
+        )
 
 
 def _tasks_have_global_range_unique(connection: sqlite3.Connection) -> bool:
