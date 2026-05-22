@@ -183,18 +183,30 @@ async function loadNodeState(node) {
   }
 }
 
-async function fetchJsonWithFallback(paths, fallback) {
-  let lastError = null;
-  for (const path of paths) {
+async function fetchTransactions() {
+  const endpoints = ["/mempool?limit=50", "/transactions/recent?limit=50"];
+  let allTxs = [];
+  
+  for (const path of endpoints) {
     try {
-      return await fetchJson(path);
+      const data = await fetchJson(path);
+      const extracted = asArray(data, ["transactions", "items", "results", "mempool"]);
+      if (extracted.length > 0) {
+        allTxs = allTxs.concat(extracted);
+      }
     } catch (error) {
-      console.warn(`Fallback info: Failed to fetch from ${path}`, error.message);
-      lastError = error;
+      console.warn(`Explorer: Skip ${path} - ${error.message}`);
     }
   }
-  state.errors.push({ path: paths[paths.length - 1], message: lastError?.message || "Failed to load data" });
-  return fallback;
+
+  // Eliminar duplicados por hash si la misma tx aparece en ambos endpoints
+  const seen = new Set();
+  return allTxs.filter(tx => {
+    const id = tx.tx_hash || tx.hash || tx.id;
+    if (!id || seen.has(id)) return false;
+    seen.add(id);
+    return true;
+  });
 }
 
 async function loadExplorer() {
@@ -215,12 +227,7 @@ async function loadExplorer() {
     loadEndpoint("retroAudits", "/audit/retroactive?limit=100", []),
     loadEndpoint("validators", "/validators?limit=100", []),
     loadEndpoint("events", "/events?limit=16", []),
-    (async () => {
-      state.transactions = await fetchJsonWithFallback(
-        ["/mempool?limit=50", "/transactions/recent?limit=50"],
-        []
-      );
-    })(),
+    (async () => { state.transactions = await fetchTransactions(); })(),
   ]);
   state.nodeStates = await Promise.all(nodes.map(loadNodeState));
   render();
