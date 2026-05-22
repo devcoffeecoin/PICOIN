@@ -721,14 +721,21 @@ def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str
         except Exception:
             succeeded = 0
         if succeeded > 0:
-            with get_connection() as conn2:
-                conn2.execute(
-                    "UPDATE mempool_transactions SET propagated = 1, updated_at = ? WHERE tx_hash = ?",
-                    (timestamp, tx_hash),
-                )
-            logger.info(f"[TX_SUBMIT] Marked transaction {tx_hash} propagated after gossip to {succeeded} peers")
-    
-    logger.info(f"[TX_SUBMIT] Transaction {tx_hash} submitted successfully: status={accepted.get('status', 'unknown')}")
+            try:
+                with get_connection() as conn2:
+                    result = conn2.execute(
+                        "UPDATE mempool_transactions SET propagated = 1, updated_at = ? WHERE tx_hash = ?",
+                        (timestamp, tx_hash),
+                    )
+                    if result.rowcount:
+                        logger.info(f"[TX_PROPAGATED_DB_UPDATED] Marked transaction {tx_hash} propagated after gossip to {succeeded} peers")
+                    else:
+                        logger.warning(f"[TX_PROPAGATED_DB_FAILED] No matching mempool row found for {tx_hash} while marking propagated")
+            except Exception as exc:
+                logger.error(f"[TX_PROPAGATED_COMMIT_FAILED] Failed to persist propagated flag for {tx_hash}: {exc}")
+        else:
+            logger.debug(f"[TX_PROPAGATED] Transaction {tx_hash} gossip sent but no peers accepted it yet")
+
     return accepted
 
 

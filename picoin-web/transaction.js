@@ -4,7 +4,7 @@ function cleanUrl(value) {
   return String(value || "").replace(/\/$/, "");
 }
 
-const apiBaseUrl = cleanUrl(explorerConfig.apiBaseUrl || window.location.origin);
+const apiBaseUrl = cleanUrl(explorerConfig.apiBaseUrl || "https://api.picoin.science");
 const $ = (id) => document.getElementById(id);
 
 function escapeHtml(value) {
@@ -123,6 +123,7 @@ function renderTx(tx) {
         ${field("Snapshot", tx.mempool_snapshot_id || "-", { mono: true })}
         ${field("Selected block", tx.selected_block_height ?? "-")}
         ${field("Confirmed at", tx.confirmed_at, { date: true })}
+        ${field("Confirmations", tx.confirmations ?? "-")}
         ${field("Released at", tx.released_at, { date: true })}
         ${field("Failure reason", tx.failure_reason || tx.rejection_reason || "-")}
       </dl>

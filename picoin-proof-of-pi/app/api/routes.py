@@ -1,6 +1,6 @@
 import asyncio
 
-from fastapi import APIRouter, Body, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Body, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 
 from app.core.settings import ALLOW_DIRECT_SCIENCE_GOVERNANCE, ALLOW_DIRECT_TREASURY_CLAIM, CHAIN_ID, GENESIS_HASH, NETWORK_ID, NODE_ID, PROTOCOL_VERSION, REPLAY_BATCH_SIZE
 from app.models.schemas import (
@@ -552,12 +552,16 @@ def replay_status() -> dict:
 
 
 @router.get("/mempool", response_model=list[MempoolTransactionResponse])
-def mempool(status: str | None = Query(None), limit: int = Query(100, ge=1, le=500)) -> list[dict]:
+def mempool(status: str | None = Query(None), limit: int = Query(100, ge=1, le=500), response: Response = None) -> list[dict]:
+    if response is not None:
+        response.headers["Cache-Control"] = "no-store"
     return list_mempool(status, limit)
 
 
 @router.get("/mempool/status")
-def mempool_status() -> dict:
+def mempool_status(response: Response = None) -> dict:
+    if response is not None:
+        response.headers["Cache-Control"] = "no-store"
     with get_connection() as connection:
         counts = {
             row["status"]: int(row["count"])
@@ -635,7 +639,9 @@ def mempool_task(task_id: str) -> dict:
 
 
 @router.get("/tx/{tx_hash}", response_model=MempoolTransactionResponse)
-def tx_status(tx_hash: str) -> dict:
+def tx_status(tx_hash: str, response: Response = None) -> dict:
+    if response is not None:
+        response.headers["Cache-Control"] = "no-store"
     tx = get_transaction(tx_hash)
     if tx is None:
         raise HTTPException(status_code=404, detail="transaction not found")
