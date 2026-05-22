@@ -367,7 +367,16 @@ function renderBlocks() {
 }
 
 function renderTransactions() {
-  const txs = asArray(state.transactions, ["transactions", "items", "results", "mempool"]).slice(0, 20);
+  let txs = asArray(state.transactions, ["transactions", "items", "results", "mempool"]);
+  // Ensure newest transactions appear first: sort by created_at/timestamp if available
+  txs = txs
+    .slice()
+    .sort((a, b) => {
+      const ta = new Date(a.created_at || a.timestamp || a.received_at || a.inserted_at || 0).getTime() || 0;
+      const tb = new Date(b.created_at || b.timestamp || b.received_at || b.inserted_at || 0).getTime() || 0;
+      return tb - ta;
+    })
+    .slice(0, 20);
   const table = $("transactionsTable");
   if (!table) return;
   if (!txs.length) {
