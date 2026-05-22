@@ -31,6 +31,7 @@ from app.services.network import (
     get_blocks_since,
     get_transaction,
     get_sync_status,
+    gossip_json,
     heartbeat_peer,
     list_mempool,
     list_peers,
@@ -201,6 +202,160 @@ def test_peer_discovery_registers_seed_and_one_hop_peer(tmp_path, monkeypatch) -
     assert result["status"] == "ok"
     assert result["registered"] == 2
     assert {peer["peer_address"] for peer in peers} == {"http://seed:8000", "http://validator:8000"}
+
+
+def test_register_peer_normalizes_duplicate_scheme(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "peer-normalize.sqlite3")
+
+    peer = register_peer(
+        node_id="validator-1",
+        peer_address="http://http://validator-1:8000",
+        peer_type="validator",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+
+    assert peer["peer_address"] == "http://validator-1:8000"
+    assert peer["status"] == "connected"
+
+
+def test_discover_peers_skips_invalid_discovered_peer_address(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "peer-discovery-invalid.sqlite3")
+    monkeypatch.setattr("app.services.network.BOOTSTRAP_PEERS", [], raising=False)
+
+    class Response:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, timeout=0):
+        if url == "http://seed:8000/node/identity":
+            return Response(
+                {
+                    "node_id": "seed-node",
+                    "peer_address": "http://seed:8000",
+                    "peer_type": "bootstrap",
+                    "protocol_version": PROTOCOL_VERSION,
+                    "network_id": NETWORK_ID,
+                    "chain_id": CHAIN_ID,
+                    "genesis_hash": GENESIS_HASH,
+                    "bootstrap_peers": [],
+                }
+            )
+        if url == "http://seed:8000/node/peers":
+            return Response(
+                [
+                    {
+                        "node_id": "validator-node",
+                        "peer_address": "http://http://validator:8000",
+                        "peer_type": "validator",
+                        "protocol_version": PROTOCOL_VERSION,
+                        "network_id": NETWORK_ID,
+                        "chain_id": CHAIN_ID,
+                        "genesis_hash": GENESIS_HASH,
+                        "connected_at": "2026-05-21T00:00:00+00:00",
+                        "last_seen": "2026-05-21T00:00:00+00:00",
+                        "status": "connected",
+                        "metadata": {},
+                    }
+                ]
+            )
+        raise AssertionError(url)
+
+    monkeypatch.setattr("app.services.network.requests.get", fake_get)
+
+    result = discover_peers(["http://seed:8000"])
+    peers = list_peers()
+
+    assert result["registered"] == 2
+    assert result["status"] == "ok"
+    assert not result["errors"]
+    assert {peer["peer_address"] for peer in peers} == {"http://seed:8000", "http://validator:8000"}
+
+
+def test_gossip_json_skips_invalid_stored_peer_address(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "gossip-invalid-peer.sqlite3")
+
+    peer = register_peer(
+        node_id="validator-1",
+        peer_address="http://validator-1:8000",
+        peer_type="validator",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE network_peers SET peer_address = ? WHERE peer_id = ?",
+            ("http://", peer["peer_id"]),
+        )
+
+    def fake_post(url, json=None, timeout=0):
+        raise AssertionError("requests.post should not be called for invalid peer address")
+
+    monkeypatch.setattr("app.services.network.requests.post", fake_post)
+
+    result = gossip_json("/tx/receive", {"dummy": "payload"}, "tx_gossip")
+
+    assert result["attempted"] == 1
+    assert result["succeeded"] == 0
+    assert result["failed"] == 1
+    assert result["peers"][0]["error"] == "invalid peer_address"
+
+
+def test_submit_transaction_marks_propagated_after_gossip_success(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "submit-gossip.sqlite3")
+    monkeypatch.setattr("app.services.network._validate_signed_transaction", lambda tx: None)
+
+    register_peer(
+        node_id="validator-1",
+        peer_address="http://validator-1:8000",
+        peer_type="validator",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+
+    class Response:
+        status_code = 200
+
+    def fake_post(url, json=None, timeout=0):
+        return Response()
+
+    monkeypatch.setattr("app.services.network.requests.post", fake_post)
+
+    tx = {
+        "tx_hash": "a" * 64,
+        "tx_type": "transfer",
+        "sender": "PI00000000000000000000000000000000000000",
+        "recipient": "PI11111111111111111111111111111111111111",
+        "amount": 0,
+        "amount_units": 0,
+        "nonce": 1,
+        "fee": 1,
+        "fee_units": 1,
+        "payload": {},
+        "public_key": "pubkey",
+        "signature": "signature",
+        "timestamp": "2026-05-22T14:00:00+00:00",
+        "network_id": NETWORK_ID,
+        "chain_id": CHAIN_ID,
+    }
+
+    submit_transaction(tx)
+
+    stored = get_transaction(tx["tx_hash"])
+    assert stored["propagated"] is True
 
 
 def test_receive_block_header_queues_tip_mismatch_for_ancestor_sync(tmp_path, monkeypatch) -> None:
@@ -1683,3 +1838,5 @@ def _mine_legacy_block(miner_id: str, private_key: str) -> None:
     signature = sign_payload(private_key, payload)
     response = submit_task(task["task_id"], miner_id, result_hash, segment, signature, signed_at)
     assert response["accepted"] is True
+
+

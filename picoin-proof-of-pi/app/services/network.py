@@ -5,6 +5,7 @@ import json
 import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from urllib.parse import urlparse
 
 import requests
 
@@ -76,6 +77,25 @@ def _decode_json(value: str | None, default: Any) -> Any:
         return json.loads(value)
     except json.JSONDecodeError:
         return default
+
+
+def _normalize_peer_address(peer_address: str | None) -> str:
+    address = str(peer_address or "").strip()
+    if not address:
+        return ""
+    lower = address.lower()
+    while lower.startswith("http://http://") or lower.startswith("https://https://"):
+        if lower.startswith("http://http://"):
+            address = address[len("http://") :]
+        elif lower.startswith("https://https://"):
+            address = address[len("https://") :]
+        address = address.lstrip()
+        lower = address.lower()
+    address = address.rstrip("/")
+    parsed = urlparse(address)
+    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}"
 
 
 def recover_from_peer_snapshot(
@@ -171,7 +191,7 @@ def register_peer(
         raise NetworkError(409, "peer chain_id mismatch")
     if genesis_hash != GENESIS_HASH:
         raise NetworkError(409, "peer genesis_hash mismatch")
-    peer_address = peer_address.rstrip("/")
+    peer_address = _normalize_peer_address(peer_address)
     if not node_id.strip() or not peer_address:
         raise NetworkError(422, "node_id and peer_address are required")
 
@@ -222,10 +242,18 @@ def discover_peers(seed_peers: list[str] | None = None, *, limit: int | None = N
 
     max_peers = max(1, int(limit or PEER_DISCOVERY_MAX_PEERS))
     seeds: list[str] = []
-    seeds.extend(peer.rstrip("/") for peer in (seed_peers or []) if peer)
-    seeds.extend(peer.rstrip("/") for peer in BOOTSTRAP_PEERS if peer)
+    for peer in (seed_peers or []):
+        normalized = _normalize_peer_address(peer)
+        if normalized:
+            seeds.append(normalized)
+    for peer in BOOTSTRAP_PEERS:
+        normalized = _normalize_peer_address(peer)
+        if normalized:
+            seeds.append(normalized)
     try:
-        seeds.extend(peer["peer_address"].rstrip("/") for peer in list_peers(include_stale=False))
+        seeds.extend(
+            _normalize_peer_address(peer["peer_address"]) for peer in list_peers(include_stale=False) if _normalize_peer_address(peer["peer_address"])
+        )
     except Exception:
         pass
     local_address = NODE_PUBLIC_ADDRESS.rstrip("/")
@@ -264,7 +292,7 @@ def discover_peers(seed_peers: list[str] | None = None, *, limit: int | None = N
             peers_response.raise_for_status()
             for peer in peers_response.json():
                 result["peers_seen"] += 1
-                discovered_address = str(peer.get("peer_address") or "").rstrip("/")
+                discovered_address = _normalize_peer_address(str(peer.get("peer_address") or ""))
                 if not discovered_address or discovered_address == local_address:
                     continue
                 try:
@@ -687,7 +715,18 @@ def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str
     accepted = get_transaction(tx["tx_hash"]) or {}
     if inserted and not propagated:
         logger.debug(f"[TX_SUBMIT] Gossiping transaction {tx_hash} to peers")
-        gossip_json("/tx/receive", tx, "tx_gossip")
+        gossip_result = gossip_json("/tx/receive", tx, "tx_gossip")
+        try:
+            succeeded = int(gossip_result.get("succeeded", 0))
+        except Exception:
+            succeeded = 0
+        if succeeded > 0:
+            with get_connection() as conn2:
+                conn2.execute(
+                    "UPDATE mempool_transactions SET propagated = 1, updated_at = ? WHERE tx_hash = ?",
+                    (timestamp, tx_hash),
+                )
+            logger.info(f"[TX_SUBMIT] Marked transaction {tx_hash} propagated after gossip to {succeeded} peers")
     
     logger.info(f"[TX_SUBMIT] Transaction {tx_hash} submitted successfully: status={accepted.get('status', 'unknown')}")
     return accepted
@@ -709,7 +748,16 @@ def gossip_json(
     results: list[dict[str, Any]] = []
     for peer in peers:
         attempted += 1
-        url = f"{peer['peer_address'].rstrip('/')}{path}"
+        peer_address = _normalize_peer_address(peer.get("peer_address"))
+        if not peer_address:
+            failed += 1
+            status = "failed"
+            detail = {"url": peer.get("peer_address"), "error": "invalid peer_address"}
+            results.append({"peer_id": peer["peer_id"], **detail})
+            with get_connection() as connection:
+                _record_sync_event(connection, peer["peer_id"], event_type, "outbound", status, detail)
+            continue
+        url = f"{peer_address}{path}"
         try:
             response = requests.post(url, json=payload, timeout=GOSSIP_TIMEOUT_SECONDS)
             ok = 200 <= response.status_code < 300
