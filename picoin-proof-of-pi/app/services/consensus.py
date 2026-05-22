@@ -12,6 +12,11 @@ from typing import Any
 import requests
 
 from app.core.crypto import canonical_json, hash_block, sha256_text
+from app.core.economics import (
+    reward_units_to_float,
+    total_units_from_miner_reward_units,
+    validator_reward_pool_units,
+)
 from app.core.money import to_units, units_from_db, units_to_float
 from app.core.settings import (
     AUTO_RECOVERY_ENABLED,
@@ -20,7 +25,6 @@ from app.core.settings import (
     MIN_QUORUM_PEERS,
     MIN_VALIDATOR_STAKE,
     NODE_ID,
-    PROOF_OF_PI_REWARD_PERCENT,
     PROTOCOL_VERSION,
     REPLAY_BATCH_SIZE,
     REPLAY_STALL_FAILURES,
@@ -29,7 +33,6 @@ from app.core.settings import (
     REQUIRED_VALIDATOR_APPROVALS,
     VALIDATION_MODE,
     VALIDATOR_MIN_TRUST_SCORE,
-    VALIDATOR_REWARD_PERCENT_OF_BLOCK,
 )
 from app.core.signatures import verify_payload_signature
 from app.db.database import get_connection, row_to_dict
@@ -1747,10 +1750,11 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
             transactions=transactions,
             timestamp=timestamp,
         )
-    total_block_reward = round(float(block["reward"]) / PROOF_OF_PI_REWARD_PERCENT, 8)
+    total_block_reward_units = total_units_from_miner_reward_units(to_units(block["reward"]))
+    total_block_reward = reward_units_to_float(total_block_reward_units)
     record_science_reserve_for_block(connection, block["height"], total_block_reward)
     record_scientific_development_treasury_for_block(connection, block["height"], total_block_reward)
-    _apply_distributed_validator_rewards(connection, block, proposal_id, total_block_reward, timestamp)
+    _apply_distributed_validator_rewards(connection, block, proposal_id, total_block_reward_units, timestamp)
     from app.services.mining import _maybe_run_scheduled_retroactive_audit
 
     _maybe_run_scheduled_retroactive_audit(connection, block["height"])
@@ -1779,7 +1783,7 @@ def _apply_distributed_validator_rewards(
     connection: Any,
     block: dict[str, Any],
     proposal_id: str,
-    total_block_reward: float,
+    total_block_reward_units: int,
     timestamp: str,
 ) -> None:
     block_height = int(block["height"])
@@ -1799,21 +1803,26 @@ def _apply_distributed_validator_rewards(
         validator_ids = [row["validator_id"] for row in validator_rows]
     if not validator_ids:
         return
-    pool = round(float(payload_reward.get("pool") or 0), 8)
-    if pool <= 0:
-        pool = round(total_block_reward * VALIDATOR_REWARD_PERCENT_OF_BLOCK, 8)
-    per_validator = round(float(payload_reward.get("per_validator") or 0), 8)
-    if per_validator <= 0:
-        per_validator = round(pool / len(validator_ids), 8)
+    pool_units = to_units(payload_reward.get("pool") or 0)
+    if pool_units <= 0:
+        pool_units = validator_reward_pool_units({"base_reward": reward_units_to_float(total_block_reward_units)})
+    per_validator_units = to_units(payload_reward.get("per_validator") or 0)
+    if per_validator_units <= 0:
+        per_validator_units = pool_units // len(validator_ids)
     reward_addresses = payload_reward.get("reward_addresses") if isinstance(payload_reward.get("reward_addresses"), dict) else {}
-    for validator_id in validator_ids:
+    distributed_units = 0
+    for index, validator_id in enumerate(validator_ids, start=1):
+        amount_units = per_validator_units
+        if index == len(validator_ids):
+            amount_units = pool_units - distributed_units
+        distributed_units += amount_units
         _ensure_validator(connection, validator_id, timestamp)
         reward_address = reward_addresses.get(validator_id)
         _apply_account_delta(
             connection,
             reward_address or validator_id,
             "wallet" if reward_address else "validator",
-            per_validator,
+            reward_units_to_float(amount_units),
             "validator_reward",
             block_height,
             proposal_id,

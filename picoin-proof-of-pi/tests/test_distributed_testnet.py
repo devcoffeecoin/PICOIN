@@ -1603,7 +1603,7 @@ def test_scientific_development_treasury_claim_is_canonical_transaction(tmp_path
     rejected = get_transaction(duplicate["tx_hash"])
 
     assert rejected is not None
-    assert rejected["status"] == "rejected"
+    assert rejected["status"] == "failed"
     assert "already exists" in rejected["rejection_reason"]
 
 

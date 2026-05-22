@@ -128,6 +128,14 @@ SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET = os.getenv(
     "picoin_governance_multisig",
 ).strip()
 SCIENTIFIC_DEVELOPMENT_UNLOCK_INTERVAL_DAYS = 90
+ALLOW_DIRECT_SCIENCE_GOVERNANCE = (
+    NETWORK_PROFILE.name != "mainnet"
+    and os.getenv("PICOIN_ALLOW_DIRECT_SCIENCE_GOVERNANCE", "1").strip().lower() not in {"0", "false", "no"}
+)
+ALLOW_DIRECT_TREASURY_CLAIM = (
+    NETWORK_PROFILE.name != "mainnet"
+    and os.getenv("PICOIN_ALLOW_DIRECT_TREASURY_CLAIM", "1").strip().lower() not in {"0", "false", "no"}
+)
 SCIENCE_BASE_MONTHLY_QUOTA_UNITS = 100
 SCIENCE_ALLOW_SELF_WORK = False
 SCIENCE_RESERVE_LOCKED_STATUS = "RESERVE_LOCKED"

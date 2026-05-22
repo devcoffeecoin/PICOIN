@@ -2,7 +2,7 @@ import asyncio
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
-from app.core.settings import REPLAY_BATCH_SIZE
+from app.core.settings import ALLOW_DIRECT_SCIENCE_GOVERNANCE, ALLOW_DIRECT_TREASURY_CLAIM, REPLAY_BATCH_SIZE
 from app.models.schemas import (
     AuditSummaryResponse,
     AuditFullResponse,
@@ -845,6 +845,8 @@ def reserve_status(epoch: str | None = Query(None)) -> dict:
 
 @router.post("/reserve/pause", response_model=ScienceReserveGovernanceResponse)
 def reserve_pause(payload: ScienceReserveGovernanceRequest) -> dict:
+    if not ALLOW_DIRECT_SCIENCE_GOVERNANCE:
+        raise HTTPException(status_code=403, detail="submit a signed governance_action transaction for reserve changes")
     try:
         return pause_science_reserve(payload.signer)
     except ScienceError as exc:
@@ -853,6 +855,8 @@ def reserve_pause(payload: ScienceReserveGovernanceRequest) -> dict:
 
 @router.post("/reserve/unpause", response_model=ScienceReserveGovernanceResponse)
 def reserve_unpause(payload: ScienceReserveGovernanceRequest) -> dict:
+    if not ALLOW_DIRECT_SCIENCE_GOVERNANCE:
+        raise HTTPException(status_code=403, detail="submit a signed governance_action transaction for reserve changes")
     try:
         return unpause_science_reserve(payload.signer)
     except ScienceError as exc:
@@ -866,6 +870,8 @@ def science_reserve_governance() -> dict:
 
 @router.post("/science/reserve/governance/propose-activation", response_model=ScienceReserveGovernanceResponse)
 def science_reserve_propose_activation(payload: ScienceReserveGovernanceRequest) -> dict:
+    if not ALLOW_DIRECT_SCIENCE_GOVERNANCE:
+        raise HTTPException(status_code=403, detail="submit a signed governance_action transaction for reserve changes")
     try:
         return propose_science_reserve_activation(payload.signer)
     except ScienceError as exc:
@@ -874,6 +880,8 @@ def science_reserve_propose_activation(payload: ScienceReserveGovernanceRequest)
 
 @router.post("/science/reserve/governance/approve-activation", response_model=ScienceReserveGovernanceResponse)
 def science_reserve_approve_activation(payload: ScienceReserveGovernanceRequest) -> dict:
+    if not ALLOW_DIRECT_SCIENCE_GOVERNANCE:
+        raise HTTPException(status_code=403, detail="submit a signed governance_action transaction for reserve changes")
     try:
         return approve_science_reserve_activation(payload.signer)
     except ScienceError as exc:
@@ -882,6 +890,8 @@ def science_reserve_approve_activation(payload: ScienceReserveGovernanceRequest)
 
 @router.post("/science/reserve/governance/execute-activation", response_model=ScienceReserveGovernanceResponse)
 def science_reserve_execute_activation() -> dict:
+    if not ALLOW_DIRECT_SCIENCE_GOVERNANCE:
+        raise HTTPException(status_code=403, detail="submit a signed governance_action transaction for reserve changes")
     try:
         return execute_science_reserve_activation()
     except ScienceError as exc:
@@ -900,6 +910,8 @@ def treasury_status() -> dict:
 
 @router.post("/treasury/claim", response_model=ScientificDevelopmentTreasuryResponse)
 def treasury_claim(payload: TreasuryClaimRequest | None = None) -> dict:
+    if not ALLOW_DIRECT_TREASURY_CLAIM:
+        raise HTTPException(status_code=403, detail="submit a signed treasury_claim transaction")
     payload = payload or TreasuryClaimRequest()
     try:
         return claim_scientific_development_treasury(payload.requested_by, payload.claim_to)

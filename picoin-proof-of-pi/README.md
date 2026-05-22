@@ -121,7 +121,7 @@ The path toward mainnet already includes basic accounting for signed transaction
 
 For now these are executed inside the block `transfer`, `stake`, `unstake`, `science_job_create`, `governance_action` and `treasury_claim`.
 
-`treasury_claim` moves funds from the Scientific Development Treasury only if the signing wallet is the configured governance/owner wallet, the destination is the configured treasury wallet, the timelock has already unlocked funds and the `claim_id` was not used before.
+`treasury_claim` moves funds from the Scientific Development Treasury only if the signing wallet is the configured governance/owner wallet, the destination is the configured treasury wallet, the timelock has already unlocked funds and the `claim_id` was not used before. For mainnet, reserve governance and treasury claims must be signed block transactions; direct HTTP mutation endpoints are frozen off by code.
 
 Automatic retarget:
 
@@ -269,6 +269,8 @@ PICOIN_SERVER=http://127.0.0.1:8000
 PICOIN_PEER_DISCOVERY_ENABLED=1
 PICOIN_PEER_DISCOVERY_INTERVAL_SECONDS=300
 PICOIN_PEER_DISCOVERY_MAX_PEERS=32
+PICOIN_ALLOW_DIRECT_SCIENCE_GOVERNANCE=1
+PICOIN_ALLOW_DIRECT_TREASURY_CLAIM=1
 ```
 
 ## Public Testnet Deployment Kit v0.18
