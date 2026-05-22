@@ -1025,6 +1025,25 @@ def list_mempool(status: str | None = None, limit: int = 100) -> list[dict[str, 
         return [_decode_tx(row_to_dict(row)) for row in connection.execute(query, params).fetchall()]
 
 
+def list_recent_transactions(status: str | None = None, address: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
+    expire_mempool_transactions()
+    query = "SELECT * FROM mempool_transactions"
+    filters: list[str] = []
+    params: list[Any] = []
+    if status:
+        filters.append("status = ?")
+        params.append(status)
+    if address:
+        filters.append("(sender = ? OR recipient = ?)")
+        params.extend([address, address])
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY COALESCE(confirmed_at, selected_at, created_at) DESC LIMIT ?"
+    params.append(limit)
+    with get_connection() as connection:
+        return [_decode_tx(row_to_dict(row)) for row in connection.execute(query, tuple(params)).fetchall()]
+
+
 def expire_mempool_transactions() -> int:
     timestamp = _now()
     with get_connection() as connection:
