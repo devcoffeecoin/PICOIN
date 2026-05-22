@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app.api.routes import router
-from app.core.crypto import canonical_json, sha256_text
+from app.core.crypto import canonical_json
 from app.core.money import canonical_amount, to_units
 from app.core.settings import NETWORK_ID, CHAIN_ID, MIN_TX_FEE_UNITS
 from app.core.signatures import generate_keypair
@@ -150,7 +150,7 @@ def test_transaction_submit_and_retrieval_with_correct_network_chain(tmp_path, m
     )
     
     signature = sign_payload(keypair["private_key"], unsigned_payload)
-    tx_hash = sha256_text(json.dumps({"public_key": keypair["public_key"], "tx": unsigned_payload}, sort_keys=True))
+    tx_hash = transaction_hash(unsigned_payload, keypair["public_key"])
     
     tx_payload = {
         **unsigned_payload,
@@ -203,7 +203,7 @@ def test_duplicate_nonce_is_rejected(tmp_path, monkeypatch) -> None:
     )
     
     signature_1 = sign_payload(keypair["private_key"], unsigned_payload_1)
-    tx_hash_1 = sha256_text(json.dumps({"public_key": keypair["public_key"], "tx": unsigned_payload_1}, sort_keys=True))
+    tx_hash_1 = transaction_hash(unsigned_payload_1, keypair["public_key"])
     
     tx_payload_1 = {
         **unsigned_payload_1,
@@ -231,7 +231,7 @@ def test_duplicate_nonce_is_rejected(tmp_path, monkeypatch) -> None:
     )
     
     signature_2 = sign_payload(keypair["private_key"], unsigned_payload_2)
-    tx_hash_2 = sha256_text(json.dumps({"public_key": keypair["public_key"], "tx": unsigned_payload_2}, sort_keys=True))
+    tx_hash_2 = transaction_hash(unsigned_payload_2, keypair["public_key"])
     
     tx_payload_2 = {
         **unsigned_payload_2,
@@ -273,7 +273,7 @@ def test_mempool_status_shows_pending_transactions(tmp_path, monkeypatch) -> Non
     )
     
     signature = sign_payload(keypair["private_key"], unsigned_payload)
-    tx_hash = sha256_text(json.dumps({"public_key": keypair["public_key"], "tx": unsigned_payload}, sort_keys=True))
+    tx_hash = transaction_hash(unsigned_payload, keypair["public_key"])
     
     tx_payload = {
         **unsigned_payload,
