@@ -11,6 +11,7 @@ from app.core.money import canonical_amount, to_units
 from app.core.settings import NETWORK_ID, CHAIN_ID, MIN_TX_FEE_UNITS
 from app.core.signatures import generate_keypair
 from app.db.database import get_connection, init_db
+from app.services.network import register_peer
 from app.services.wallet import address_from_public_key, transaction_hash, unsigned_transaction_payload
 from app.core.signatures import sign_payload, verify_payload_signature
 
@@ -293,3 +294,73 @@ def test_mempool_status_shows_pending_transactions(tmp_path, monkeypatch) -> Non
     # Check mempool status
     status_after = client.get("/mempool/status").json()
     assert status_after["pending_count"] == 1
+
+
+def test_transaction_submit_marks_origin_tx_propagated_after_peer_accept(tmp_path, monkeypatch) -> None:
+    """Origin node should persist propagated=1 after at least one peer accepts the transaction."""
+    client = _build_test_client(tmp_path, monkeypatch)
+
+    # Register a peer so gossip_json has a target to send to.
+    register_peer(
+        node_id="peer-node-1",
+        peer_address="https://peer1.example.com",
+        peer_type="full",
+        protocol_version="1.0",
+    )
+
+    keypair = generate_keypair()
+    sender = address_from_public_key(keypair["public_key"])
+    recipient = sender
+    nonce = 1
+    amount_units = to_units("1.0")
+    fee_units = to_units("0.001") or MIN_TX_FEE_UNITS
+
+    unsigned_payload = unsigned_transaction_payload(
+        tx_type="transfer",
+        sender=sender,
+        recipient=recipient,
+        amount=canonical_amount(amount_units),
+        nonce=nonce,
+        fee=canonical_amount(fee_units),
+        payload={},
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+    )
+    signature = sign_payload(keypair["private_key"], unsigned_payload)
+    tx_hash = transaction_hash(unsigned_payload, keypair["public_key"])
+
+    tx_payload = {
+        **unsigned_payload,
+        "public_key": keypair["public_key"],
+        "signature": signature,
+        "tx_hash": tx_hash,
+    }
+
+    class DummyResponse:
+        status_code = 200
+        ok = True
+
+        def json(self):
+            return {"accepted": True}
+
+        def raise_for_status(self):
+            return None
+
+    def fake_post(url, json=None, timeout=None):
+        return DummyResponse()
+
+    monkeypatch.setattr("app.services.network.requests.post", fake_post)
+
+    response = client.post("/tx/submit", json=tx_payload)
+    assert response.status_code == 201
+    assert response.json()["tx_hash"] == tx_hash
+
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT propagated, status FROM mempool_transactions WHERE tx_hash = ?",
+            (tx_hash,),
+        ).fetchone()
+    assert row is not None
+    assert int(row["propagated"]) == 1
+    assert row["status"] == "pending"
