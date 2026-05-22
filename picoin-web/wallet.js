@@ -3,7 +3,7 @@ const PICOIN_UNIT = 1_000_000n;
 const PICOIN_DECIMALS = 6;
 const CHAIN_ID = "picoin-public-testnet-v018";
 const NETWORKS = {
-  "public-testnet": "/picoin-api",
+  "public-testnet": "/api/bootstrap",
   localhost: "http://127.0.0.1:8000",
 };
 const NETWORK_LABELS = {
