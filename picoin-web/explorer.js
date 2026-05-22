@@ -182,6 +182,19 @@ async function loadNodeState(node) {
   }
 }
 
+async function fetchJsonWithFallback(paths, fallback) {
+  let lastError = null;
+  for (const path of paths) {
+    try {
+      return await fetchJson(path);
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  state.errors.push({ path: paths[paths.length - 1], message: lastError?.message || "Failed to load data" });
+  return fallback;
+}
+
 async function loadExplorer() {
   state.errors = [];
   await Promise.all([
@@ -200,7 +213,12 @@ async function loadExplorer() {
     loadEndpoint("retroAudits", "/audit/retroactive?limit=100", []),
     loadEndpoint("validators", "/validators?limit=100", []),
     loadEndpoint("events", "/events?limit=16", []),
-    loadEndpoint("transactions", "/transactions/recent?limit=50", []),
+    (async () => {
+      state.transactions = await fetchJsonWithFallback(
+        ["/transactions/recent?limit=50", "/mempool?limit=50"],
+        []
+      );
+    })(),
   ]);
   state.nodeStates = await Promise.all(nodes.map(loadNodeState));
   render();
