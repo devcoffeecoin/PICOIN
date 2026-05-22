@@ -1011,7 +1011,8 @@ def list_mempool(status: str | None = None, limit: int = 100) -> list[dict[str, 
         params = (status,)
     else:
         params = ()
-    query += " ORDER BY created_at ASC LIMIT ?"
+    # Return newest transactions first so explorers show recent activity
+    query += " ORDER BY created_at DESC LIMIT ?"
     params = (*params, limit)
     with get_connection() as connection:
         return [_decode_tx(row_to_dict(row)) for row in connection.execute(query, params).fetchall()]
