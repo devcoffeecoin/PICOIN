@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -46,6 +47,9 @@ from app.services.state import (
     restore_imported_snapshot_state,
 )
 from app.services.wallet import address_matches_public_key, is_valid_address, transaction_hash, unsigned_transaction_payload
+
+
+logger = logging.getLogger(__name__)
 
 
 class NetworkError(Exception):
@@ -593,7 +597,26 @@ def receive_block_header(block: dict[str, Any], source_peer_id: str | None = Non
 
 
 def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str, Any]:
-    _validate_signed_transaction(tx)
+    tx_hash = tx.get("tx_hash", "unknown")
+    sender = tx.get("sender", "unknown")
+    nonce = tx.get("nonce", "unknown")
+    recipient = tx.get("recipient", "unknown")
+    network_id = tx.get("network_id", "unknown")
+    chain_id = tx.get("chain_id", "unknown")
+    
+    logger.info(
+        f"[TX_SUBMIT] Received transaction: tx_hash={tx_hash}, sender={sender}, "
+        f"recipient={recipient}, nonce={nonce}, network_id={network_id}, chain_id={chain_id}, "
+        f"propagated={propagated}"
+    )
+    
+    try:
+        _validate_signed_transaction(tx)
+        logger.debug(f"[TX_SUBMIT] Validation passed for tx {tx_hash}")
+    except NetworkError as ve:
+        logger.warning(f"[TX_SUBMIT] Validation failed for tx {tx_hash}: {ve.detail} (code={ve.status_code})")
+        raise
+    
     timestamp = _now()
     expires_at = (datetime.now(timezone.utc) + timedelta(seconds=MEMPOOL_TX_TTL_SECONDS)).isoformat()
     payload_json = json.dumps(_unsigned_from_tx(tx), sort_keys=True)
@@ -605,8 +628,11 @@ def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str
         ).fetchone()
         if existing is not None:
             if existing["status"] in TERMINAL_TX_STATUSES:
+                logger.info(f"[TX_SUBMIT] Duplicate tx {tx_hash}: already {existing['status']}")
                 raise NetworkError(409, f"transaction already {existing['status']}")
+            logger.debug(f"[TX_SUBMIT] Tx {tx_hash} already pending, returning existing")
             return get_transaction(tx["tx_hash"]) or {}
+        
         nonce_conflict = connection.execute(
             """
             SELECT tx_hash
@@ -616,7 +642,9 @@ def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str
             (tx["sender"], int(tx["nonce"]), tx["tx_hash"]),
         ).fetchone()
         if nonce_conflict is not None:
+            logger.warning(f"[TX_SUBMIT] Nonce conflict for {sender} nonce {nonce}: existing tx {nonce_conflict['tx_hash']}")
             raise NetworkError(409, "duplicate sender nonce")
+        
         connection.execute(
             """
             DELETE FROM mempool_transactions
@@ -653,10 +681,15 @@ def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str
             ),
         )
         inserted = True
+        logger.info(f"[TX_SUBMIT] Transaction {tx_hash} inserted into mempool (propagated={propagated})")
         _record_sync_event(connection, None, "transaction_received", "inbound", "accepted", {"tx_hash": tx["tx_hash"]})
+    
     accepted = get_transaction(tx["tx_hash"]) or {}
     if inserted and not propagated:
+        logger.debug(f"[TX_SUBMIT] Gossiping transaction {tx_hash} to peers")
         gossip_json("/tx/receive", tx, "tx_gossip")
+    
+    logger.info(f"[TX_SUBMIT] Transaction {tx_hash} submitted successfully: status={accepted.get('status', 'unknown')}")
     return accepted
 
 
@@ -967,27 +1000,44 @@ def _validate_signed_transaction(tx: dict[str, Any]) -> None:
     missing = sorted(required - set(tx))
     if missing:
         raise NetworkError(422, f"missing transaction fields: {', '.join(missing)}")
+    
     if len(json.dumps(tx, sort_keys=True, separators=(",", ":")).encode("utf-8")) > MAX_TX_SIZE_BYTES:
         raise NetworkError(413, "transaction payload too large")
+    
     if tx["tx_type"] not in ALLOWED_TX_TYPES:
         raise NetworkError(422, "unsupported transaction type")
+    
     if int(tx["nonce"]) < 1:
         raise NetworkError(422, "nonce must be >= 1")
+    
     if _tx_fee_units(tx) < 0 or units_to_float(_tx_fee_units(tx)) > MEMPOOL_MAX_FEE:
         raise NetworkError(422, "invalid fee")
+    
     if _tx_fee_units(tx) < MIN_TX_FEE_UNITS:
-        raise NetworkError(422, "transaction fee below minimum")
+        raise NetworkError(422, f"transaction fee below minimum ({MIN_TX_FEE_UNITS} units)")
+    
     if _tx_amount_units(tx) < 0:
         raise NetworkError(422, "amount must be >= 0")
+    
     if tx["tx_type"] == "transfer" and not is_valid_address(tx.get("recipient")):
         raise NetworkError(422, "transfer transaction requires a valid PI recipient")
+    
     if not address_matches_public_key(tx["sender"], tx["public_key"]):
         raise NetworkError(401, "sender address does not match public key")
-    unsigned_payload = _unsigned_from_tx(tx)
+    
+    # Most critical check: network/chain mismatch
     if tx["network_id"] != NETWORK_ID or tx["chain_id"] != CHAIN_ID:
-        raise NetworkError(409, "transaction network or chain mismatch")
+        logger.warning(
+            f"[TX_VALIDATE] Network/chain mismatch: "
+            f"tx network_id={tx['network_id']} (expected {NETWORK_ID}), "
+            f"tx chain_id={tx['chain_id']} (expected {CHAIN_ID})"
+        )
+        raise NetworkError(409, f"transaction network or chain mismatch (tx: {tx['network_id']}/{tx['chain_id']}, node: {NETWORK_ID}/{CHAIN_ID})")
+    
+    unsigned_payload = _unsigned_from_tx(tx)
     if transaction_hash(unsigned_payload, tx["public_key"]) != tx["tx_hash"]:
         raise NetworkError(401, "transaction hash mismatch")
+    
     if not verify_payload_signature(tx["public_key"], unsigned_payload, tx["signature"]):
         raise NetworkError(401, "invalid transaction signature")
 

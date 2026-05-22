@@ -2,7 +2,7 @@ import asyncio
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 
-from app.core.settings import ALLOW_DIRECT_SCIENCE_GOVERNANCE, ALLOW_DIRECT_TREASURY_CLAIM, REPLAY_BATCH_SIZE
+from app.core.settings import ALLOW_DIRECT_SCIENCE_GOVERNANCE, ALLOW_DIRECT_TREASURY_CLAIM, CHAIN_ID, GENESIS_HASH, NETWORK_ID, NODE_ID, PROTOCOL_VERSION, REPLAY_BATCH_SIZE
 from app.models.schemas import (
     AuditSummaryResponse,
     AuditFullResponse,
@@ -640,6 +640,19 @@ def tx_status(tx_hash: str) -> dict:
     if tx is None:
         raise HTTPException(status_code=404, detail="transaction not found")
     return tx
+
+
+@router.get("/network/config")
+def network_config() -> dict:
+    """Returns the network configuration expected by this node for transaction submission."""
+    return {
+        "network_id": NETWORK_ID,
+        "chain_id": CHAIN_ID,
+        "protocol_version": PROTOCOL_VERSION,
+        "node_id": NODE_ID,
+        "genesis_hash": GENESIS_HASH,
+        "message": "Transactions must have matching network_id and chain_id to be accepted"
+    }
 
 
 @router.post("/tx/submit", response_model=MempoolTransactionResponse, status_code=201)
