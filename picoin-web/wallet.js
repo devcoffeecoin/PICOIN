@@ -127,15 +127,16 @@ async function fetchJson(path, options = {}) {
 }
 
 async function fetchFirst(paths, options = {}) {
-  let lastError;
+  const errors = [];
   for (const path of paths) {
     try {
       return await fetchJson(path, options);
     } catch (error) {
-      lastError = error;
+      errors.push({ path, error: error.message });
     }
   }
-  throw lastError;
+  const errorDetails = errors.map(e => `${e.path}: ${e.error}`).join(" | ");
+  throw new Error(`All endpoints failed: ${errorDetails}`);
 }
 
 function getWallet() {
@@ -165,10 +166,29 @@ function renderWallet() {
 async function refreshNetwork() {
   els.apiDisplay.textContent = NETWORK_LABELS[els.networkSelect.value] || currentApi();
   updateBadge(els.networkBadge, "checking");
-  const [healthResult, syncResult] = await Promise.allSettled([fetchJson("/health"), fetchJson("/node/sync-status")]);
+  const [healthResult, syncResult, configResult] = await Promise.allSettled([
+    fetchJson("/health"),
+    fetchJson("/node/sync-status"),
+    fetchJson("/network/config"),
+  ]);
   const health = healthResult.status === "fulfilled" ? healthResult.value : null;
   const sync = syncResult.status === "fulfilled" ? syncResult.value : null;
+  const config = configResult.status === "fulfilled" ? configResult.value : null;
   const status = health?.status || (sync ? "ok" : null);
+  
+  // Check network configuration compatibility
+  if (config) {
+    const expectedNetwork = els.networkSelect.value;
+    const expectedChain = CHAIN_ID;
+    if (config.network_id !== expectedNetwork || config.chain_id !== expectedChain) {
+      console.warn("⚠️ Network mismatch detected:", {
+        expected: { network_id: expectedNetwork, chain_id: expectedChain },
+        actual: { network_id: config.network_id, chain_id: config.chain_id },
+      });
+    }
+    console.log("Server network config:", config);
+  }
+  
   if (status) {
     const mode = status === "ok" || status === "degraded" ? "ok" : "bad";
     updateBadge(els.networkBadge, status, mode);
@@ -240,6 +260,8 @@ async function submitTransaction(event) {
   event.preventDefault();
   const wallet = getWallet();
   if (!wallet) throw new Error("Create or import a wallet first.");
+  
+  // Build transaction payload
   const nonce = Number(els.walletNonce.textContent || 0) || (await fetchJson(`/wallet/${wallet.address}/nonce`)).next_nonce;
   const amountUnits = toUnits(els.txAmount.value);
   const feeUnits = toUnits(els.txFee.value || "0");
@@ -257,13 +279,90 @@ async function submitTransaction(event) {
     timestamp: new Date().toISOString(),
     tx_type: "transfer",
   };
+  
+  // Sign and calculate tx_hash
   const signature = await signPayload(wallet, unsignedPayload);
   const tx_hash = await transactionHash(unsignedPayload, wallet.public_key);
-  const body = JSON.stringify({ ...unsignedPayload, public_key: wallet.public_key, signature, tx_hash });
-  const submitted = await fetchFirst(["/tx/send", "/transactions/submit", "/tx/submit"], { method: "POST", body });
-  localStorage.setItem(`${STORE_KEY}:last_tx`, submitted.tx_hash || tx_hash);
-  els.lastTxHash.textContent = submitted.tx_hash || tx_hash;
-  els.txResult.textContent = JSON.stringify(submitted, null, 2);
+  const txPayload = { ...unsignedPayload, public_key: wallet.public_key, signature, tx_hash };
+  
+  // Log payload for debugging
+  console.log("Submitting transaction:", {
+    tx_hash,
+    network_id: unsignedPayload.network_id,
+    chain_id: unsignedPayload.chain_id,
+    sender: unsignedPayload.sender,
+    recipient: unsignedPayload.recipient,
+    amount: unsignedPayload.amount,
+    nonce: unsignedPayload.nonce,
+    api_url: currentApi(),
+  });
+  
+  // Submit transaction
+  let submitted = null;
+  let submitError = null;
+  const submitEndpoints = ["/tx/send", "/transactions/submit", "/tx/submit"];
+  
+  for (const endpoint of submitEndpoints) {
+    try {
+      submitted = await fetchJson(endpoint, { method: "POST", body: JSON.stringify(txPayload) });
+      console.log(`Success on ${endpoint}:`, submitted);
+      break;
+    } catch (error) {
+      console.warn(`Failed on ${endpoint}:`, error.message);
+      submitError = error;
+    }
+  }
+  
+  if (!submitted) {
+    throw submitError || new Error("Failed to submit transaction to all endpoints");
+  }
+  
+  // Verify transaction is in mempool
+  console.log("Verifying transaction in mempool...");
+  let verified = false;
+  let verificationError = null;
+  
+  for (let i = 0; i < 5; i++) {
+    try {
+      const txCheck = await fetchJson(`/tx/${tx_hash}`).catch(() => null);
+      if (txCheck && txCheck.status === "pending") {
+        verified = true;
+        console.log("Transaction verified in mempool:", txCheck);
+        break;
+      }
+    } catch (error) {
+      verificationError = error;
+    }
+    
+    if (i < 4) {
+      await new Promise(resolve => setTimeout(resolve, 500)); // Wait 500ms between checks
+    }
+  }
+  
+  // Store and display result
+  const result = {
+    success: submitted ? true : false,
+    verified_in_mempool: verified,
+    tx_hash,
+    status: submitted.status || "unknown",
+    message: verified 
+      ? "Transaction submitted and verified in mempool" 
+      : "Transaction was signed but may not have been accepted by mempool",
+    submit_response: submitted,
+    api_endpoint: currentApi(),
+    network_id: unsignedPayload.network_id,
+    chain_id: unsignedPayload.chain_id,
+  };
+  
+  localStorage.setItem(`${STORE_KEY}:last_tx`, tx_hash);
+  els.lastTxHash.textContent = tx_hash;
+  els.txResult.textContent = JSON.stringify(result, null, 2);
+  
+  if (!verified) {
+    console.warn("⚠️ Transaction not verified in mempool after submit!");
+    updateBadge(els.walletBadge, "Tx submitted but not in mempool", "bad");
+  }
+  
   await refreshWallet();
   await refreshHistory();
 }
