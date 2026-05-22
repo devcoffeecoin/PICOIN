@@ -322,31 +322,35 @@ async function submitTransaction(event) {
   let verified = false;
   let verificationError = null;
   
+  const ACCEPTABLE_TX_STATUSES = new Set(["pending", "selected", "confirmed"]);
+  let lastTxCheck = null;
   for (let i = 0; i < 5; i++) {
     try {
       const txCheck = await fetchJson(`/tx/${tx_hash}`).catch(() => null);
-      if (txCheck && txCheck.status === "pending") {
+      lastTxCheck = txCheck;
+      if (txCheck && ACCEPTABLE_TX_STATUSES.has(txCheck.status)) {
         verified = true;
-        console.log("Transaction verified in mempool:", txCheck);
+        console.log("Transaction verified in mempool/chain:", txCheck.status, txCheck);
         break;
       }
     } catch (error) {
       verificationError = error;
     }
-    
+
     if (i < 4) {
-      await new Promise(resolve => setTimeout(resolve, 500)); // Wait 500ms between checks
+      await new Promise((resolve) => setTimeout(resolve, 500)); // Wait 500ms between checks
     }
   }
   
   // Store and display result
+  let statusLabel = lastTxCheck && lastTxCheck.status ? lastTxCheck.status : submitted && submitted.status ? submitted.status : "unknown";
   const result = {
     success: submitted ? true : false,
     verified_in_mempool: verified,
     tx_hash,
-    status: submitted.status || "unknown",
-    message: verified 
-      ? "Transaction submitted and verified in mempool" 
+    status: statusLabel,
+    message: verified
+      ? `Transaction submitted and verified (status: ${statusLabel})`
       : "Transaction was signed but may not have been accepted by mempool",
     submit_response: submitted,
     api_endpoint: currentApi(),
