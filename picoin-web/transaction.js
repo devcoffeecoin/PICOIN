@@ -4,7 +4,7 @@ function cleanUrl(value) {
   return String(value || "").replace(/\/$/, "");
 }
 
-const apiBaseUrl = cleanUrl(explorerConfig.apiBaseUrl || "https://api.picoin.science");
+const apiBaseUrl = cleanUrl(explorerConfig.apiBaseUrl || window.location.origin);
 const $ = (id) => document.getElementById(id);
 
 function escapeHtml(value) {
