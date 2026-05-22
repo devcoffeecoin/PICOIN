@@ -144,6 +144,8 @@ PICOIN_REPLAY_BACKLOG_THRESHOLD=25
 PICOIN_REPLAY_STALL_FAILURES=3
 PICOIN_MIN_QUORUM_PEERS=1
 PICOIN_AUTO_RECOVERY_ENABLED=0
+PICOIN_ALLOW_DIRECT_SCIENCE_GOVERNANCE=1
+PICOIN_ALLOW_DIRECT_TREASURY_CLAIM=1
 PICOIN_LIVENESS_INTERVAL_SECONDS=30
 PICOIN_PEER_DISCOVERY_ENABLED=1
 PICOIN_PEER_DISCOVERY_INTERVAL_SECONDS=300
@@ -418,6 +420,21 @@ Configure validator rewards:
 
 ```bash
 PICOIN_VALIDATOR_REWARD_ADDRESS=PI...
+```
+
+For mainnet, direct reserve governance and treasury claim endpoints are frozen
+off by code. Use signed block transactions instead:
+
+```bash
+python -m picoin tx send --wallet data/signer-one.json --type governance_action --fee 0.01 --payload '{"scope":"science_reserve","action":"propose_activation"}'
+python -m picoin tx send --wallet data/owner.json --type treasury_claim --fee 0.01 --payload '{"claim_to":"PI_TREASURY_WALLET"}'
+```
+
+On public testnet the direct endpoints can remain enabled for operator drills:
+
+```bash
+PICOIN_ALLOW_DIRECT_SCIENCE_GOVERNANCE=1
+PICOIN_ALLOW_DIRECT_TREASURY_CLAIM=1
 ```
 
 You can also store `reward_address` in the identity JSON:

@@ -9,6 +9,14 @@ from typing import Any
 
 from app.core.crypto import canonical_json, hash_block, hash_result, sha256_text
 from app.core.difficulty import calculate_difficulty, calculate_reward
+from app.core.economics import (
+    miner_reward_units,
+    reward_units_to_float,
+    science_reserve_units_from_total,
+    scientific_development_units_from_total,
+    total_block_reward_units,
+    validator_reward_pool_units,
+)
 from app.services.difficulty_service import DifficultyService
 from app.core.merkle import verify_merkle_proof
 from app.core.money import to_units, units_from_db, units_to_float
@@ -3447,9 +3455,8 @@ def _protocol_payload(params: dict[str, Any]) -> dict[str, Any]:
         "proof_of_pi_reward_per_block": calculate_miner_reward(params),
         "proof_of_pi_reward_percent": PROOF_OF_PI_REWARD_PERCENT,
         "science_compute_reward_percent": SCIENCE_COMPUTE_REWARD_PERCENT_OF_BLOCK,
-        "science_compute_reserve_per_block": round(
-            calculate_reward(params) * SCIENCE_COMPUTE_REWARD_PERCENT_OF_BLOCK,
-            8,
+        "science_compute_reserve_per_block": reward_units_to_float(
+            science_reserve_units_from_total(total_block_reward_units(params))
         ),
         "science_reserve_account_id": SCIENCE_RESERVE_ACCOUNT_ID,
         "science_base_monthly_quota_units": SCIENCE_BASE_MONTHLY_QUOTA_UNITS,
@@ -3714,15 +3721,15 @@ def _record_submission(
 
 
 def calculate_validator_reward_pool(params: dict[str, Any]) -> float:
-    return round(calculate_reward(params) * VALIDATOR_REWARD_PERCENT_OF_BLOCK, 8)
+    return reward_units_to_float(validator_reward_pool_units(params))
 
 
 def calculate_miner_reward(params: dict[str, Any]) -> float:
-    return round(calculate_reward(params) * PROOF_OF_PI_REWARD_PERCENT, 8)
+    return reward_units_to_float(miner_reward_units(params))
 
 
 def calculate_scientific_development_treasury_reward(params: dict[str, Any]) -> float:
-    return round(calculate_reward(params) * SCIENTIFIC_DEVELOPMENT_REWARD_PERCENT_OF_BLOCK, 8)
+    return reward_units_to_float(scientific_development_units_from_total(total_block_reward_units(params)))
 
 
 def _validator_reward_total(account_ids: list[str | None]) -> float:
@@ -3765,18 +3772,20 @@ def _apply_validator_rewards(
     params: dict[str, Any],
 ) -> dict[str, Any]:
     validator_ids = _approved_validator_ids_for_job(connection, job_id)
-    pool = calculate_validator_reward_pool(params)
-    if not validator_ids or pool <= 0:
+    pool_units = validator_reward_pool_units(params)
+    pool = reward_units_to_float(pool_units)
+    if not validator_ids or pool_units <= 0:
         return {"pool": 0.0, "per_validator": 0.0, "validator_ids": []}
 
-    per_validator = round(pool / len(validator_ids), 8)
-    distributed = 0.0
+    per_validator_units = pool_units // len(validator_ids)
+    distributed_units = 0
     reward_addresses: dict[str, str] = {}
     for index, validator_id in enumerate(validator_ids, start=1):
-        amount = per_validator
+        amount_units = per_validator_units
         if index == len(validator_ids):
-            amount = round(pool - distributed, 8)
-        distributed = round(distributed + amount, 8)
+            amount_units = pool_units - distributed_units
+        distributed_units += amount_units
+        amount = reward_units_to_float(amount_units)
         reward_account, reward_account_type = _reward_account_for_validator(connection, validator_id)
         if reward_account_type == "wallet":
             reward_addresses[validator_id] = reward_account
@@ -3793,7 +3802,7 @@ def _apply_validator_rewards(
 
     return {
         "pool": pool,
-        "per_validator": per_validator,
+        "per_validator": reward_units_to_float(per_validator_units),
         "validator_ids": validator_ids,
         "reward_addresses": reward_addresses,
     }

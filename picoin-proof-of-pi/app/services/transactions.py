@@ -489,8 +489,13 @@ def _basic_transaction_rejection_reason(tx: dict[str, Any]) -> str | None:
 
 
 def _balance_units(connection: Any, account_id: str) -> int:
-    row = connection.execute("SELECT balance_units FROM balances WHERE account_id = ?", (account_id,)).fetchone()
-    return int(row["balance_units"] if row else 0)
+    row = connection.execute(
+        "SELECT balance, balance_units FROM balances WHERE account_id = ?",
+        (account_id,),
+    ).fetchone()
+    if row is None:
+        return 0
+    return units_from_db(row["balance"], row["balance_units"])
 
 
 def _confirmed_nonce(connection: Any, account_id: str) -> int:

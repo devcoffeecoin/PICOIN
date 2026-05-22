@@ -3,6 +3,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from app.core.economics import reward_units_to_float, scientific_development_units_from_total
 from app.core.money import to_units, units_from_db, units_to_float
 from app.core.settings import (
     SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET,
@@ -33,7 +34,7 @@ def utc_now() -> str:
 
 
 def scientific_development_amount(block_reward: float) -> float:
-    return round(float(block_reward) * SCIENTIFIC_DEVELOPMENT_REWARD_PERCENT_OF_BLOCK, 8)
+    return reward_units_to_float(scientific_development_units_from_total(to_units(block_reward)))
 
 
 def get_scientific_development_treasury() -> dict[str, Any]:
@@ -160,10 +161,11 @@ def record_scientific_development_treasury_for_block(
     block_height: int,
     block_reward: float,
 ) -> float:
-    amount = scientific_development_amount(block_reward)
-    if amount <= 0:
+    amount_units = scientific_development_units_from_total(to_units(block_reward))
+    amount = reward_units_to_float(amount_units)
+    if amount_units <= 0:
         return 0.0
-    if amount < 0:
+    if amount_units < 0:
         raise TreasuryError(400, "treasury accrual cannot be negative")
 
     epoch = _current_quarter_epoch()

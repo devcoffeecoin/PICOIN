@@ -3,11 +3,11 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from app.core.economics import reward_units_to_float, science_reserve_units_from_total
 from app.core.money import to_units, units_from_db, units_to_float
 from app.core.settings import (
     SCIENCE_ALLOW_SELF_WORK,
     SCIENCE_BASE_MONTHLY_QUOTA_UNITS,
-    SCIENCE_COMPUTE_REWARD_PERCENT_OF_BLOCK,
     SCIENCE_MAX_PAYOUT_PER_EPOCH,
     SCIENCE_MAX_PENDING_PER_REQUESTER,
     SCIENCE_MAX_REWARD_PER_JOB,
@@ -734,8 +734,9 @@ def get_science_reserve_governance() -> dict[str, Any]:
 
 
 def record_science_reserve_for_block(connection: Any, block_height: int, block_reward: float) -> float:
-    amount = round(float(block_reward) * SCIENCE_COMPUTE_REWARD_PERCENT_OF_BLOCK, 8)
-    if amount <= 0:
+    amount_units = science_reserve_units_from_total(to_units(block_reward))
+    amount = reward_units_to_float(amount_units)
+    if amount_units <= 0:
         return 0.0
     epoch = current_epoch()
     _ensure_reserve_epoch(connection, epoch)
