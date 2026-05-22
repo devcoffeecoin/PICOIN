@@ -135,7 +135,8 @@ function formatBlockReward(block) {
 
 async function fetchJsonFrom(baseUrl, path) {
   try {
-    const url = `${cleanUrl(baseUrl)}${path}`;
+    const safePath = path.startsWith('/') ? path : `/${path}`;
+    const url = `${cleanUrl(baseUrl)}${safePath}`;
     const response = await fetch(url, { 
       headers: { Accept: "application/json" },
       mode: 'cors'
@@ -188,6 +189,7 @@ async function fetchJsonWithFallback(paths, fallback) {
     try {
       return await fetchJson(path);
     } catch (error) {
+      console.warn(`Fallback info: Failed to fetch from ${path}`, error.message);
       lastError = error;
     }
   }
@@ -215,7 +217,7 @@ async function loadExplorer() {
     loadEndpoint("events", "/events?limit=16", []),
     (async () => {
       state.transactions = await fetchJsonWithFallback(
-        ["/transactions/recent?limit=50", "/mempool?limit=50"],
+        ["/mempool?limit=50", "/transactions/recent?limit=50"],
         []
       );
     })(),
@@ -390,8 +392,12 @@ function renderTransactions() {
   txs = txs
     .slice()
     .sort((a, b) => {
-      const ta = new Date(a.created_at || a.timestamp || a.received_at || a.inserted_at || 0).getTime() || 0;
-      const tb = new Date(b.created_at || b.timestamp || b.received_at || b.inserted_at || 0).getTime() || 0;
+      const getTs = (tx) => {
+        const val = tx.created_at || tx.timestamp || tx.received_at || tx.inserted_at || 0;
+        return val ? new Date(val).getTime() : 0;
+      };
+      const ta = getTs(a);
+      const tb = getTs(b);
       return tb - ta;
     })
     .slice(0, 20);
