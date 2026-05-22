@@ -101,6 +101,7 @@ from app.services.network import (
     discover_peers,
     list_mempool,
     list_peers,
+    list_recent_transactions,
     node_identity,
     receive_block_header,
     reconcile_connected_peers,
@@ -556,6 +557,18 @@ def mempool(status: str | None = Query(None), limit: int = Query(100, ge=1, le=5
     if response is not None:
         response.headers["Cache-Control"] = "no-store"
     return list_mempool(status, limit)
+
+
+@router.get("/transactions/recent", response_model=list[MempoolTransactionResponse])
+def recent_transactions(
+    status: str | None = Query(None),
+    address: str | None = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    response: Response = None,
+) -> list[dict]:
+    if response is not None:
+        response.headers["Cache-Control"] = "no-store"
+    return list_recent_transactions(status=status, address=address, limit=limit)
 
 
 @router.get("/mempool/status")

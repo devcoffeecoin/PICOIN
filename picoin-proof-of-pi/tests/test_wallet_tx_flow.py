@@ -296,6 +296,60 @@ def test_mempool_status_shows_pending_transactions(tmp_path, monkeypatch) -> Non
     assert status_after["pending_count"] == 1
 
 
+def test_recent_transactions_endpoint_returns_recent_activity(tmp_path, monkeypatch) -> None:
+    """ /transactions/recent should return recent transactions ordered by latest activity. """
+    client = _build_test_client(tmp_path, monkeypatch)
+
+    keypair = generate_keypair()
+    sender = address_from_public_key(keypair["public_key"])
+    recipient = sender
+    nonce = 1
+    amount_units = to_units("1.0")
+    fee_units = to_units("0.001") or MIN_TX_FEE_UNITS
+
+    unsigned_payload = unsigned_transaction_payload(
+        tx_type="transfer",
+        sender=sender,
+        recipient=recipient,
+        amount=canonical_amount(amount_units),
+        nonce=nonce,
+        fee=canonical_amount(fee_units),
+        payload={},
+        timestamp=datetime.now(timezone.utc).isoformat(),
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+    )
+    signature = sign_payload(keypair["private_key"], unsigned_payload)
+    tx_hash = transaction_hash(unsigned_payload, keypair["public_key"])
+
+    tx_payload = {
+        **unsigned_payload,
+        "public_key": keypair["public_key"],
+        "signature": signature,
+        "tx_hash": tx_hash,
+    }
+
+    submit_response = client.post("/tx/submit", json=tx_payload)
+    assert submit_response.status_code == 201
+
+    recent_response = client.get("/transactions/recent?limit=5")
+    assert recent_response.status_code == 200
+    recent = recent_response.json()
+    assert isinstance(recent, list)
+    assert any(tx["tx_hash"] == tx_hash for tx in recent)
+    assert recent[0]["tx_hash"] == tx_hash
+
+    filtered_response = client.get(f"/transactions/recent?address={sender}&limit=5")
+    assert filtered_response.status_code == 200
+    filtered = filtered_response.json()
+    assert any(tx["tx_hash"] == tx_hash for tx in filtered)
+
+    status_response = client.get("/transactions/recent?status=pending&limit=5")
+    assert status_response.status_code == 200
+    status_list = status_response.json()
+    assert all(tx["status"] == "pending" for tx in status_list)
+
+
 def test_transaction_submit_marks_origin_tx_propagated_after_peer_accept(tmp_path, monkeypatch) -> None:
     """Origin node should persist propagated=1 after at least one peer accepts the transaction."""
     client = _build_test_client(tmp_path, monkeypatch)

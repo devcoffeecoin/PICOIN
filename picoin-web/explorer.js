@@ -200,7 +200,7 @@ async function loadExplorer() {
     loadEndpoint("retroAudits", "/audit/retroactive?limit=100", []),
     loadEndpoint("validators", "/validators?limit=100", []),
     loadEndpoint("events", "/events?limit=16", []),
-    loadEndpoint("transactions", "/mempool?limit=20", []),
+    loadEndpoint("transactions", "/transactions/recent?limit=50", []),
   ]);
   state.nodeStates = await Promise.all(nodes.map(loadNodeState));
   render();
