@@ -46,6 +46,16 @@ async function fetchJson(path) {
   return payload;
 }
 
+async function fetchTransaction(hash) {
+  const encoded = encodeURIComponent(hash);
+  try {
+    return await fetchJson(`/tx/${encoded}`);
+  } catch (error) {
+    if (!/not found|404/i.test(error.message)) throw error;
+    return fetchJson(`/transactions/${encoded}`);
+  }
+}
+
 function readHashFromUrl() {
   const params = new URLSearchParams(window.location.search);
   return (params.get("hash") || params.get("tx") || "").trim();
@@ -155,7 +165,7 @@ async function openTransaction(hash) {
   $("txStatusBadge").className = "status-pill warn";
   $("txHashInput").value = txHash;
   updateUrl(txHash);
-  const tx = await fetchJson(`/tx/${encodeURIComponent(txHash)}`);
+  const tx = await fetchTransaction(txHash);
   renderTx(tx);
 }
 

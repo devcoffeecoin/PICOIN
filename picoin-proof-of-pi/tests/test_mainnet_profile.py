@@ -66,6 +66,7 @@ print(json.dumps(payload, sort_keys=True))
     assert payload["protocol"]["protocol_version"] == "1.0"
     assert payload["protocol"]["faucet_enabled"] is False
     assert payload["protocol"]["required_validator_approvals"] == 3
+    assert payload["protocol"]["RETARGET_MAX_PI_POSITION"] == 10**15
     assert payload["protocol"]["reward_per_block"] == 3.1416
     assert payload["faucet_error"]["status_code"] == 403
 
@@ -122,6 +123,19 @@ def test_mainnet_rejects_validator_quorum_override() -> None:
     assert "mainnet validator quorum is frozen" in result.stderr
 
 
+def test_mainnet_rejects_RETARGET_MAX_PI_POSITION_override() -> None:
+    result = _run_isolated(
+        "import app.core.settings",
+        {
+            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_RETARGET_MAX_PI_POSITION": "1000000",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "mainnet RETARGET_MAX_PI_POSITION is frozen" in result.stderr
+
+
 def test_public_testnet_defaults_to_two_validator_approvals(tmp_path) -> None:
     db_path = tmp_path / "public-profile.sqlite3"
     code = """
@@ -133,7 +147,9 @@ from app.services.mining import get_protocol
 init_db()
 print(json.dumps({
     "required_validator_approvals": settings.REQUIRED_VALIDATOR_APPROVALS,
+    "RETARGET_MAX_PI_POSITION": settings.RETARGET_MAX_PI_POSITION,
     "protocol_required_validator_approvals": get_protocol()["required_validator_approvals"],
+    "protocol_RETARGET_MAX_PI_POSITION": get_protocol()["RETARGET_MAX_PI_POSITION"],
 }))
 """
     result = _run_isolated(
@@ -148,7 +164,9 @@ print(json.dumps({
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
     assert payload["required_validator_approvals"] == 2
+    assert payload["RETARGET_MAX_PI_POSITION"] == 1_000_000
     assert payload["protocol_required_validator_approvals"] == 2
+    assert payload["protocol_RETARGET_MAX_PI_POSITION"] == 1_000_000
 
 
 def test_public_testnet_allows_validator_quorum_override(tmp_path) -> None:
