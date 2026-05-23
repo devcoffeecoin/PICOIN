@@ -1,6 +1,8 @@
 import math
 from typing import Any
 
+from app.core.settings import RETARGET_MAX_PI_POSITION
+
 
 def calculate_difficulty(params: dict[str, Any]) -> float:
     """Visual workload metric normalized to segment=64, samples=8, position=10000."""
@@ -11,6 +13,12 @@ def calculate_difficulty(params: dict[str, Any]) -> float:
     segment_size = int(params.get("segment_size", 64) or 64)
     sample_count = int(params.get("sample_count", 8) or 8)
     max_pos = int(params.get("max_pi_position", 10_000) or 10_000)
+    retarget_max = int(
+        params.get("RETARGET_MAX_PI_POSITION")
+        or params.get("retarget_max_pi_position")
+        or RETARGET_MAX_PI_POSITION
+    )
+    max_pos = min(max_pos, max(1, retarget_max))
 
     segment_factor = segment_size / 64
     sample_factor = sample_count / 8

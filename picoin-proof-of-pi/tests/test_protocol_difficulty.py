@@ -36,8 +36,11 @@ def test_protocol_exposes_dynamic_difficulty_and_rewards(tmp_path, monkeypatch) 
     assert protocol["scientific_development_reward_percent"] == 0.03
     assert protocol["proof_of_pi_reward_per_block"] == 2.104872
     assert protocol["scientific_development_treasury_per_block"] == 0.094248
+    assert protocol["RETARGET_MAX_PI_POSITION"] == 1_000_000
+    assert protocol["retarget_max_pi_position"] == 1_000_000
     assert history[0]["active"] is True
     assert history[0]["difficulty"] == protocol["difficulty"]
+    assert history[0]["retarget_max_pi_position"] == 1_000_000
 
 
 def test_accepted_block_records_protocol_difficulty(tmp_path, monkeypatch) -> None:
@@ -101,6 +104,30 @@ def test_retarget_increases_difficulty_after_fast_epoch(tmp_path, monkeypatch) -
     assert after["segment_size"] > before["segment_size"]
     assert history[0]["epoch_block_count"] == 20
     assert status["last_retarget_height"] == 20
+
+
+def test_retarget_preserves_RETARGET_MAX_PI_POSITION(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "retarget-preserves-max-pi-position.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    keypair = generate_keypair()
+    miner = register_miner("retarget-cap-preserve-miner", keypair["public_key"])
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE protocol_params SET retarget_max_pi_position = 123456 WHERE active = 1"
+        )
+    _insert_epoch_blocks(miner["miner_id"], total_task_ms=1_000, total_block_ms=30_000, count=20)
+
+    result = run_retarget()
+    protocol = get_protocol()
+    history = get_protocol_history()
+
+    assert result["retargeted"] is True
+    assert protocol["RETARGET_MAX_PI_POSITION"] == 123_456
+    assert protocol["retarget_max_pi_position"] == 123_456
+    assert history[0]["retarget_max_pi_position"] == 123_456
 
 
 def test_retarget_preview_does_not_mutate_protocol_or_history(tmp_path, monkeypatch) -> None:

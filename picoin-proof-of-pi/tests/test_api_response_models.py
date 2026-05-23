@@ -33,6 +33,9 @@ def test_protocol_params_response_accepts_integer_retarget_source_window(tmp_pat
     protocol = ProtocolResponse.model_validate(get_protocol())
     params = ProtocolParamsResponse.model_validate(get_protocol_history()[0])
 
+    assert protocol.RETARGET_MAX_PI_POSITION == 1_000_000
+    assert protocol.retarget_max_pi_position == 1_000_000
+    assert params.retarget_max_pi_position == 1_000_000
     assert protocol.retarget_source_window == 20
     assert params.retarget_source_window == 20
     assert params.retarget_source_details == '{"epoch_block_count":20}'

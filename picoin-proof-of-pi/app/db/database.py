@@ -16,6 +16,7 @@ from app.core.settings import (
     MAX_ACTIVE_TASKS_PER_MINER,
     MAX_PI_POSITION,
     NETWORK_ID,
+    RETARGET_MAX_PI_POSITION,
     MIN_VALIDATOR_STAKE,
     PI_ALGORITHM,
     PROTOCOL_VERSION,
@@ -779,7 +780,6 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "protocol_params", "target_block_time_ms", "INTEGER")
         _ensure_column(connection, "protocol_params", "retarget_reason", "TEXT")
         _ensure_column(connection, "protocol_params", "retarget_max_pi_position", "INTEGER")
-        _ensure_column(connection, "protocol_params", "retarget_max_pi_position", "INTEGER")
         _ensure_column(connection, "protocol_params", "retarget_source_window", "INTEGER")
         _ensure_column(connection, "protocol_params", "retarget_source_details", "TEXT")
         _ensure_column(connection, "protocol_params", "previous_protocol_params_id", "INTEGER")
@@ -894,15 +894,16 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_genesis_balance(connection)
         _ensure_existing_validator_stake_balances(connection)
         _backfill_money_units(connection)
+        _backfill_protocol_retarget_limits(connection)
         _backfill_account_nonces(connection)
 
 
 def _ensure_column(connection: sqlite3.Connection, table_name: str, column_name: str, definition: str) -> None:
     columns = {
-        row[1]
+        str(row[1]).lower()
         for row in connection.execute(f"PRAGMA table_info({table_name})").fetchall()
     }
-    if column_name not in columns:
+    if column_name.lower() not in columns:
         connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
 
 
@@ -1010,6 +1011,19 @@ def _backfill_money_units(connection: sqlite3.Connection) -> None:
                     )
                 except (TypeError, ValueError, sqlite3.Error):
                     continue
+
+
+def _backfill_protocol_retarget_limits(connection: sqlite3.Connection) -> None:
+    """Ensure existing protocol rows have the configured retarget limits."""
+    connection.execute(
+        """
+        UPDATE protocol_params
+        SET retarget_max_pi_position = ?
+        WHERE retarget_max_pi_position IS NULL
+           OR retarget_max_pi_position <= 0
+        """,
+        (RETARGET_MAX_PI_POSITION,),
+    )
 
 
 def _quoted_identifier(identifier: str) -> str:

@@ -113,7 +113,18 @@ class DifficultyService:
         next_range_start: int,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         new_params = dict(current_params)
-        target_bucket = DifficultyService.get_position_bucket(next_range_start)
+        try:
+            RETARGET_MAX_PI_POSITION_value = int(
+                current_params.get("RETARGET_MAX_PI_POSITION")
+                or current_params.get("retarget_max_pi_position")
+                or RETARGET_MAX_PI_POSITION
+            )
+        except (TypeError, ValueError):
+            RETARGET_MAX_PI_POSITION_value = RETARGET_MAX_PI_POSITION
+        RETARGET_MAX_PI_POSITION_value = max(1, RETARGET_MAX_PI_POSITION_value)
+        new_params["retarget_max_pi_position"] = RETARGET_MAX_PI_POSITION_value
+        capped_next_range_start = min(max(1, int(next_range_start or 1)), RETARGET_MAX_PI_POSITION_value)
+        target_bucket = DifficultyService.get_position_bucket(capped_next_range_start)
         valid_history = [
             block
             for block in history[-DifficultyService.RETARGET_WINDOW :]
@@ -121,7 +132,7 @@ class DifficultyService:
         ]
 
         if not valid_history:
-            return dict(current_params), {
+            return new_params, {
                 "action": "wait",
                 "reason": "No valid timing history available",
                 "bucket": target_bucket,
@@ -134,7 +145,7 @@ class DifficultyService:
             block for block in valid_history if DifficultyService.get_position_bucket(int(block["range_start"])) == target_bucket
         ]
         if not bucket_history:
-            new_params, cold_meta = DifficultyService._handle_cold_start(valid_history, current_params, next_range_start)
+            new_params, cold_meta = DifficultyService._handle_cold_start(valid_history, new_params, capped_next_range_start)
             bucket_history = valid_history
         else:
             cold_meta = {}
@@ -200,7 +211,7 @@ class DifficultyService:
             bucket_history,
             current_segment,
             target_segment,
-            next_range_start,
+            capped_next_range_start,
         )
         if guardrail_meta["active"]:
             reasons.append("BBP position guardrail")

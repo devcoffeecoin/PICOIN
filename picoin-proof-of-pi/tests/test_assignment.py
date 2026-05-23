@@ -5,6 +5,7 @@ import pytest
 from app.core.signatures import generate_keypair, sign_payload
 from app.db.database import get_connection
 from app.db.database import init_db
+from app.services import mining as mining_service
 from app.services.mining import MiningError, create_next_task, get_validation_job, record_validator_heartbeat, register_miner
 
 
@@ -163,6 +164,148 @@ def test_active_ranges_still_block_overlapping_assignment(tmp_path, monkeypatch)
 
     with pytest.raises(MiningError, match="could not assign a non-overlapping range"):
         create_next_task(second_miner["miner_id"])
+
+
+def test_RETARGET_MAX_PI_POSITION_caps_task_assignment_range_end(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-retarget-max-pi-position.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.services.mining.RANGE_START_WINDOW_SIZE", 1_200_000)
+    monkeypatch.setattr("app.services.mining.RANGE_WINDOW_LOOKAHEAD_MULTIPLIER", 1)
+    init_db(db_path)
+
+    keypair = generate_keypair()
+    miner = register_miner("retarget-cap-miner", keypair["public_key"])
+    with get_connection() as connection:
+        protocol_id = connection.execute(
+            "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        connection.execute(
+            """
+            UPDATE protocol_params
+            SET max_pi_position = 2000000,
+                retarget_max_pi_position = 1000000,
+                segment_size = 64,
+                range_assignment_max_attempts = 5
+            WHERE id = ?
+            """,
+            (protocol_id,),
+        )
+
+    task = create_next_task(miner["miner_id"])
+
+    assert task["range_end"] <= 1_000_000
+
+
+def test_RETARGET_MAX_PI_POSITION_retry_skips_out_of_cap_candidate(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-retarget-cap-retry.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    monkeypatch.setattr(
+        mining_service,
+        "_range_assignment_window",
+        lambda connection, params: {
+            "RETARGET_MAX_PI_POSITION": 16,
+            "effective_max_pi_position": 40,
+            "frontier": 0,
+            "lookahead_window": 40,
+            "max_start": 40,
+            "min_start": 1,
+            "window_index": 0,
+            "window_size": 40,
+        },
+    )
+    monkeypatch.setattr(mining_service, "sha256_text", lambda value: "13")
+    monkeypatch.setattr(mining_service, "_range_is_assignable", lambda connection, start, end, algorithm: True)
+
+    with get_connection() as connection:
+        assignment = mining_service._assign_pseudo_random_range(
+            connection,
+            "miner_retry_cap",
+            "task_retry_cap",
+            {
+                "algorithm": "bbp_hex_v1",
+                "range_assignment_max_attempts": 1,
+                "segment_size": 8,
+            },
+        )
+
+    assert assignment["range_start"] == 1
+    assert assignment["range_end"] == 8
+
+
+def test_RETARGET_MAX_PI_POSITION_uppercase_param_caps_assignment_window(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-retarget-cap-uppercase.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.services.mining.RANGE_START_WINDOW_SIZE", 100)
+    monkeypatch.setattr("app.services.mining.RANGE_WINDOW_LOOKAHEAD_MULTIPLIER", 1)
+    init_db(db_path)
+
+    with get_connection() as connection:
+        window = mining_service._range_assignment_window(
+            connection,
+            {
+                "algorithm": "bbp_hex_v1",
+                "max_pi_position": 1_000_000,
+                "segment_size": 8,
+                "RETARGET_MAX_PI_POSITION": 16,
+            },
+        )
+
+    assert window["RETARGET_MAX_PI_POSITION"] == 16
+    assert window["effective_max_pi_position"] == 16
+    assert window["max_start"] == 9
+
+
+def test_RETARGET_MAX_PI_POSITION_reports_when_no_range_available(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-retarget-cap-exhausted.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.services.mining.RANGE_START_WINDOW_SIZE", 8)
+    monkeypatch.setattr("app.services.mining.RANGE_WINDOW_LOOKAHEAD_MULTIPLIER", 1)
+    init_db(db_path)
+
+    owner_keys = generate_keypair()
+    candidate_keys = generate_keypair()
+    owner = register_miner("retarget-cap-owner", owner_keys["public_key"])
+    candidate = register_miner("retarget-cap-candidate", candidate_keys["public_key"])
+
+    with get_connection() as connection:
+        protocol_id = connection.execute(
+            "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        connection.execute(
+            """
+            UPDATE protocol_params
+            SET max_pi_position = 8,
+                retarget_max_pi_position = 8,
+                segment_size = 8,
+                range_assignment_max_attempts = 1
+            WHERE id = ?
+            """,
+            (protocol_id,),
+        )
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at, expires_at
+            )
+            VALUES ('retarget_cap_full', ?, 1, 8, 'bbp_hex_v1', 'assigned', ?, ?, ?)
+            """,
+            (
+                owner["miner_id"],
+                protocol_id,
+                "2026-05-18T00:00:00Z",
+                "2099-01-01T00:00:00Z",
+            ),
+        )
+
+    with pytest.raises(MiningError, match="RETARGET_MAX_PI_POSITION=8"):
+        create_next_task(candidate["miner_id"])
 
 
 def test_assignment_retires_saturated_start_window(tmp_path, monkeypatch) -> None:
