@@ -14,7 +14,11 @@ def calculate_difficulty(params: dict[str, Any]) -> float:
 
     segment_factor = segment_size / 64
     sample_factor = sample_count / 8
-    position_factor = math.log10(max(100, max_pos)) / 4.0
+    if max_pos > 1_000_000:
+        # Escalado más agresivo después de 1M para compensar el costo de BBP
+        position_factor = (6 / 4.0) * (max_pos / 1_000_000)
+    else:
+        position_factor = math.log10(max(100, max_pos)) / 4.0
     return round(max(0.001, segment_factor * sample_factor * position_factor), 6)
 
 
