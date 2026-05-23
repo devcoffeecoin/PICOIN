@@ -3459,7 +3459,6 @@ def _protocol_payload(params: dict[str, Any]) -> dict[str, Any]:
         "difficulty": calculate_difficulty(params),
         "target_block_time_ms": params.get("target_block_time_ms") or RETARGET_TARGET_BLOCK_MS,
         "RETARGET_MAX_PI_POSITION": RETARGET_MAX_PI_POSITION_value,
-        "retarget_max_pi_position": RETARGET_MAX_PI_POSITION_value,
         "retarget_reason": params.get("retarget_reason"),
         "retarget_source_window": _retarget_source_window(params),
         "retarget_source_details": params.get("retarget_source_details"),
@@ -3503,11 +3502,15 @@ def _protocol_payload(params: dict[str, Any]) -> dict[str, Any]:
 
 
 def _protocol_params_payload(params: dict[str, Any]) -> dict[str, Any]:
-    payload = dict(params)
+    payload = {
+        key: value
+        for key, value in params.items()
+        if str(key).upper() != "RETARGET_MAX_PI_POSITION"
+    }
+    payload["RETARGET_MAX_PI_POSITION"] = _resolve_RETARGET_MAX_PI_POSITION(params)
     payload["active"] = bool(payload["active"])
     payload["difficulty"] = calculate_difficulty(payload)
     payload["target_block_time_ms"] = payload.get("target_block_time_ms") or RETARGET_TARGET_BLOCK_MS
-    payload["retarget_max_pi_position"] = _resolve_RETARGET_MAX_PI_POSITION(payload)
     payload["retarget_source_window"] = _retarget_source_window(payload)
     payload["reward_per_block"] = calculate_reward(payload)
     return payload
@@ -4940,7 +4943,7 @@ def _active_protocol_params(connection: Any) -> dict[str, Any]:
     if params is None:
         raise MiningError(500, "active protocol params not found")
     params["active"] = bool(params["active"])
-    params["retarget_max_pi_position"] = _resolve_RETARGET_MAX_PI_POSITION(params)
+    params["RETARGET_MAX_PI_POSITION"] = _resolve_RETARGET_MAX_PI_POSITION(params)
     return params
 
 
@@ -4953,17 +4956,18 @@ def _protocol_params_by_id(connection: Any, protocol_params_id: int) -> dict[str
     )
     if params is not None:
         params["active"] = bool(params["active"])
-        params["retarget_max_pi_position"] = _resolve_RETARGET_MAX_PI_POSITION(params)
+        params["RETARGET_MAX_PI_POSITION"] = _resolve_RETARGET_MAX_PI_POSITION(params)
     return params
 
 
 def _resolve_RETARGET_MAX_PI_POSITION(params: dict[str, Any]) -> int:
+    configured_value = None
+    for key, value in params.items():
+        if str(key).upper() == "RETARGET_MAX_PI_POSITION":
+            configured_value = value
+            break
     try:
-        value = int(
-            params.get("RETARGET_MAX_PI_POSITION")
-            or params.get("retarget_max_pi_position")
-            or RETARGET_MAX_PI_POSITION
-        )
+        value = int(configured_value or RETARGET_MAX_PI_POSITION)
     except (TypeError, ValueError):
         value = RETARGET_MAX_PI_POSITION
     return max(1, value)
@@ -5405,7 +5409,7 @@ def _maybe_retarget_after_block(connection: Any, current_height: int, force: boo
                 range_assignment_mode, max_pi_position, range_assignment_max_attempts,
                 segment_size, sample_count, task_expiration_seconds,
                 max_active_tasks_per_miner, base_reward, difficulty,
-                target_block_time_ms, retarget_max_pi_position,
+                target_block_time_ms, RETARGET_MAX_PI_POSITION,
                 retarget_reason, retarget_source_window,
                 retarget_source_details, previous_protocol_params_id, active
             )
@@ -5426,7 +5430,7 @@ def _maybe_retarget_after_block(connection: Any, current_height: int, force: boo
                 next_params["base_reward"],
                 next_params["difficulty"],
                 RETARGET_TARGET_BLOCK_MS,
-                next_params.get("retarget_max_pi_position") or RETARGET_MAX_PI_POSITION,
+                next_params.get("RETARGET_MAX_PI_POSITION") or RETARGET_MAX_PI_POSITION,
                 meta["reason"],
                 len(epoch_rows),
                 source_window,

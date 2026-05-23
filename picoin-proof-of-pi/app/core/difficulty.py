@@ -13,11 +13,12 @@ def calculate_difficulty(params: dict[str, Any]) -> float:
     segment_size = int(params.get("segment_size", 64) or 64)
     sample_count = int(params.get("sample_count", 8) or 8)
     max_pos = int(params.get("max_pi_position", 10_000) or 10_000)
-    retarget_max = int(
-        params.get("RETARGET_MAX_PI_POSITION")
-        or params.get("retarget_max_pi_position")
-        or RETARGET_MAX_PI_POSITION
-    )
+    configured_RETARGET_MAX_PI_POSITION = None
+    for key, value in params.items():
+        if str(key).upper() == "RETARGET_MAX_PI_POSITION":
+            configured_RETARGET_MAX_PI_POSITION = value
+            break
+    retarget_max = int(configured_RETARGET_MAX_PI_POSITION or RETARGET_MAX_PI_POSITION)
     max_pos = min(max_pos, max(1, retarget_max))
 
     segment_factor = segment_size / 64
