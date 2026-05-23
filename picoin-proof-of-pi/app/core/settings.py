@@ -105,7 +105,18 @@ RANGE_WINDOW_MAX_AGE_BLOCKS = int(os.getenv("PICOIN_RANGE_WINDOW_MAX_AGE_BLOCKS"
 RANGE_WINDOW_LOOKAHEAD_MULTIPLIER = int(os.getenv("PICOIN_RANGE_WINDOW_LOOKAHEAD_MULTIPLIER", "314"))
 TASK_SEGMENT_SIZE = 64
 TASK_START_OFFSET = 1
-TASK_EXPIRATION_SECONDS = 10 * 60
+RETARGET_TARGET_BLOCK_MS = 60_000
+def get_dynamic_expiration(max_pi_position: int) -> int:
+    # Aumenta el tiempo de expiración base (600s) según la profundidad de Pi
+    # Añadiendo un margen extra por cada orden de magnitud sobre 1M
+    base_timeout = 600
+    if max_pi_position <= 1_000_000:
+        return base_timeout
+    import math
+    scale_factor = math.log10(max_pi_position) / 6.0
+    return int(base_timeout * scale_factor)
+
+TASK_EXPIRATION_SECONDS = 600 # Valor base, el coordinador debería usar get_dynamic_expiration
 MAX_ACTIVE_TASKS_PER_MINER = 1
 SAMPLE_COUNT = 32
 DEFAULT_REWARD = NETWORK_PROFILE.base_reward
@@ -190,12 +201,14 @@ RETARGET_MAX_ADJUSTMENT_FACTOR = float(os.getenv("PICOIN_RETARGET_MAX_ADJUSTMENT
 RETARGET_WINDOW_BLOCKS = int(os.getenv("PICOIN_RETARGET_WINDOW_BLOCKS", "20"))
 RETARGET_MIN_DIFFICULTY = float(os.getenv("PICOIN_RETARGET_MIN_DIFFICULTY", "0.03125"))
 RETARGET_MAX_DIFFICULTY = float(os.getenv("PICOIN_RETARGET_MAX_DIFFICULTY", "1024"))
-RETARGET_MIN_SEGMENT_SIZE = int(os.getenv("PICOIN_RETARGET_MIN_SEGMENT_SIZE", "8"))
+
+RETARGET_MIN_SAMPLE_COUNT = 8  # Seguridad mínima: 16^8 combinaciones
+RETARGET_MIN_SEGMENT_SIZE = max(8, RETARGET_MIN_SAMPLE_COUNT) # El segmento debe contener al menos las muestras
+
 RETARGET_MAX_SEGMENT_SIZE = int(os.getenv("PICOIN_RETARGET_MAX_SEGMENT_SIZE", "256"))
-RETARGET_MIN_SAMPLE_COUNT = 8
 RETARGET_MAX_SAMPLE_COUNT = 64
 RETARGET_MIN_PI_POSITION = 10_000
-RETARGET_MAX_PI_POSITION = 100_000
+RETARGET_MAX_PI_POSITION = 1_000_000
 
 REPLAY_BATCH_SIZE = int(os.getenv("PICOIN_REPLAY_BATCH_SIZE", "10"))
 REPLAY_BACKLOG_THRESHOLD = int(os.getenv("PICOIN_REPLAY_BACKLOG_THRESHOLD", "25"))
