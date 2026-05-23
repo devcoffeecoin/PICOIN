@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from app.core.crypto import hash_result
 from app.core.pi import calculate_pi_segment
 from app.core.signatures import build_submission_signature_payload, generate_keypair, sign_payload
@@ -14,6 +16,16 @@ from app.services.mining import (
     submit_task,
 )
 from app.services.difficulty_service import DifficultyService
+
+
+def test_services_wire_RETARGET_MAX_PI_POSITION_name() -> None:
+    service_sources = (
+        Path("app/services/mining.py").read_text(),
+        Path("app/services/difficulty_service.py").read_text(),
+    )
+
+    assert all("RETARGET_MAX_PI_POSITION" in source for source in service_sources)
+    assert all("retarget_max_pi_position" not in source for source in service_sources)
 
 
 def test_protocol_exposes_dynamic_difficulty_and_rewards(tmp_path, monkeypatch) -> None:
@@ -37,10 +49,9 @@ def test_protocol_exposes_dynamic_difficulty_and_rewards(tmp_path, monkeypatch) 
     assert protocol["proof_of_pi_reward_per_block"] == 2.104872
     assert protocol["scientific_development_treasury_per_block"] == 0.094248
     assert protocol["RETARGET_MAX_PI_POSITION"] == 1_000_000
-    assert protocol["retarget_max_pi_position"] == 1_000_000
     assert history[0]["active"] is True
     assert history[0]["difficulty"] == protocol["difficulty"]
-    assert history[0]["retarget_max_pi_position"] == 1_000_000
+    assert history[0]["RETARGET_MAX_PI_POSITION"] == 1_000_000
 
 
 def test_accepted_block_records_protocol_difficulty(tmp_path, monkeypatch) -> None:
@@ -116,7 +127,7 @@ def test_retarget_preserves_RETARGET_MAX_PI_POSITION(tmp_path, monkeypatch) -> N
     miner = register_miner("retarget-cap-preserve-miner", keypair["public_key"])
     with get_connection() as connection:
         connection.execute(
-            "UPDATE protocol_params SET retarget_max_pi_position = 123456 WHERE active = 1"
+            "UPDATE protocol_params SET RETARGET_MAX_PI_POSITION = 123456 WHERE active = 1"
         )
     _insert_epoch_blocks(miner["miner_id"], total_task_ms=1_000, total_block_ms=30_000, count=20)
 
@@ -126,8 +137,7 @@ def test_retarget_preserves_RETARGET_MAX_PI_POSITION(tmp_path, monkeypatch) -> N
 
     assert result["retargeted"] is True
     assert protocol["RETARGET_MAX_PI_POSITION"] == 123_456
-    assert protocol["retarget_max_pi_position"] == 123_456
-    assert history[0]["retarget_max_pi_position"] == 123_456
+    assert history[0]["RETARGET_MAX_PI_POSITION"] == 123_456
 
 
 def test_retarget_preview_does_not_mutate_protocol_or_history(tmp_path, monkeypatch) -> None:

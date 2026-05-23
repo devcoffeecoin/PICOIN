@@ -167,7 +167,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 max_active_tasks_per_miner INTEGER NOT NULL,
                 base_reward REAL NOT NULL,
                 difficulty REAL,
-                retarget_max_pi_position INTEGER,
+                RETARGET_MAX_PI_POSITION INTEGER,
                 target_block_time_ms INTEGER,
                 retarget_reason TEXT,
                 retarget_source_window INTEGER,
@@ -779,7 +779,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "protocol_params", "difficulty", "REAL")
         _ensure_column(connection, "protocol_params", "target_block_time_ms", "INTEGER")
         _ensure_column(connection, "protocol_params", "retarget_reason", "TEXT")
-        _ensure_column(connection, "protocol_params", "retarget_max_pi_position", "INTEGER")
+        _ensure_column(connection, "protocol_params", "RETARGET_MAX_PI_POSITION", "INTEGER")
         _ensure_column(connection, "protocol_params", "retarget_source_window", "INTEGER")
         _ensure_column(connection, "protocol_params", "retarget_source_details", "TEXT")
         _ensure_column(connection, "protocol_params", "previous_protocol_params_id", "INTEGER")
@@ -1018,9 +1018,9 @@ def _backfill_protocol_retarget_limits(connection: sqlite3.Connection) -> None:
     connection.execute(
         """
         UPDATE protocol_params
-        SET retarget_max_pi_position = ?
-        WHERE retarget_max_pi_position IS NULL
-           OR retarget_max_pi_position <= 0
+        SET RETARGET_MAX_PI_POSITION = ?
+        WHERE RETARGET_MAX_PI_POSITION IS NULL
+           OR RETARGET_MAX_PI_POSITION <= 0
         """,
         (RETARGET_MAX_PI_POSITION,),
     )
@@ -1162,7 +1162,7 @@ def _ensure_default_protocol_params(connection: sqlite3.Connection) -> None:
             range_assignment_mode, max_pi_position, range_assignment_max_attempts,
             segment_size, sample_count, task_expiration_seconds,
             max_active_tasks_per_miner, base_reward, difficulty, target_block_time_ms,
-            retarget_max_pi_position, retarget_source_window, active
+            RETARGET_MAX_PI_POSITION, retarget_source_window, active
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 1)
         """,

@@ -184,7 +184,7 @@ def test_RETARGET_MAX_PI_POSITION_caps_task_assignment_range_end(tmp_path, monke
             """
             UPDATE protocol_params
             SET max_pi_position = 2000000,
-                retarget_max_pi_position = 1000000,
+                RETARGET_MAX_PI_POSITION = 1000000,
                 segment_size = 64,
                 range_assignment_max_attempts = 5
             WHERE id = ?
@@ -281,7 +281,7 @@ def test_RETARGET_MAX_PI_POSITION_reports_when_no_range_available(tmp_path, monk
             """
             UPDATE protocol_params
             SET max_pi_position = 8,
-                retarget_max_pi_position = 8,
+                RETARGET_MAX_PI_POSITION = 8,
                 segment_size = 8,
                 range_assignment_max_attempts = 1
             WHERE id = ?

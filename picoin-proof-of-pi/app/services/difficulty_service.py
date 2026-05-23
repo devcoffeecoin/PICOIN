@@ -113,16 +113,17 @@ class DifficultyService:
         next_range_start: int,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         new_params = dict(current_params)
+        configured_RETARGET_MAX_PI_POSITION = None
+        for key, value in current_params.items():
+            if str(key).upper() == "RETARGET_MAX_PI_POSITION":
+                configured_RETARGET_MAX_PI_POSITION = value
+                break
         try:
-            RETARGET_MAX_PI_POSITION_value = int(
-                current_params.get("RETARGET_MAX_PI_POSITION")
-                or current_params.get("retarget_max_pi_position")
-                or RETARGET_MAX_PI_POSITION
-            )
+            RETARGET_MAX_PI_POSITION_value = int(configured_RETARGET_MAX_PI_POSITION or RETARGET_MAX_PI_POSITION)
         except (TypeError, ValueError):
             RETARGET_MAX_PI_POSITION_value = RETARGET_MAX_PI_POSITION
         RETARGET_MAX_PI_POSITION_value = max(1, RETARGET_MAX_PI_POSITION_value)
-        new_params["retarget_max_pi_position"] = RETARGET_MAX_PI_POSITION_value
+        new_params["RETARGET_MAX_PI_POSITION"] = RETARGET_MAX_PI_POSITION_value
         capped_next_range_start = min(max(1, int(next_range_start or 1)), RETARGET_MAX_PI_POSITION_value)
         target_bucket = DifficultyService.get_position_bucket(capped_next_range_start)
         valid_history = [
