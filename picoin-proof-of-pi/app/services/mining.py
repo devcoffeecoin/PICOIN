@@ -66,6 +66,7 @@ from app.core.settings import (
     RETROACTIVE_AUDIT_SAMPLE_MULTIPLIER,
     RETARGET_EPOCH_BLOCKS,
     RETARGET_MAX_DIFFICULTY,
+    RETARGET_MAX_PI_POSITION,
     RETARGET_MIN_DIFFICULTY,
     RETARGET_TARGET_BLOCK_MS,
     RETARGET_TOLERANCE,
@@ -943,6 +944,7 @@ def create_next_task(
         if cooldown_until is not None and cooldown_until > utc_now_dt():
             raise MiningError(429, f"miner is in cooldown until {miner['cooldown_until']}")
 
+        params = _active_protocol_params(connection)
         active_task = connection.execute(
             """
             SELECT * FROM tasks
@@ -953,9 +955,15 @@ def create_next_task(
             (miner_id,),
         ).fetchone()
         if active_task is not None:
-            return row_to_dict(active_task)
+            task = row_to_dict(active_task)
+            RETARGET_MAX_PI_POSITION_value = _resolve_RETARGET_MAX_PI_POSITION(params)
+            if int(task["range_end"]) > RETARGET_MAX_PI_POSITION_value:
+                raise MiningError(
+                    409,
+                    f"active task exceeds RETARGET_MAX_PI_POSITION={RETARGET_MAX_PI_POSITION_value}",
+                )
+            return task
 
-        params = _active_protocol_params(connection)
         recent_assignments = connection.execute(
             """
             SELECT COUNT(*) AS count
@@ -1139,12 +1147,14 @@ def _claim_global_task_for_miner(
     params: dict[str, Any],
 ) -> dict[str, Any] | None:
     timestamp = utc_now()
+    RETARGET_MAX_PI_POSITION_value = _resolve_RETARGET_MAX_PI_POSITION(params)
     row = connection.execute(
         """
         SELECT *
         FROM tasks
         WHERE status IN ('pending', 'queued', 'available')
           AND COALESCE(NULLIF(algorithm, ''), ?) = ?
+          AND range_end <= ?
           AND (expires_at IS NULL OR expires_at > ?)
           AND (
               miner_id = ?
@@ -1155,7 +1165,7 @@ def _claim_global_task_for_miner(
         ORDER BY created_at ASC
         LIMIT 1
         """,
-        (params["algorithm"], params["algorithm"], timestamp, miner_id),
+        (params["algorithm"], params["algorithm"], RETARGET_MAX_PI_POSITION_value, timestamp, miner_id),
     ).fetchone()
     if row is None:
         return None
@@ -3425,6 +3435,7 @@ def run_retarget(force: bool = False) -> dict[str, Any]:
 
 
 def _protocol_payload(params: dict[str, Any]) -> dict[str, Any]:
+    RETARGET_MAX_PI_POSITION_value = _resolve_RETARGET_MAX_PI_POSITION(params)
     return {
         "project": PROJECT_NAME,
         "protocol_version": params["protocol_version"],
@@ -3447,6 +3458,8 @@ def _protocol_payload(params: dict[str, Any]) -> dict[str, Any]:
         "base_reward": params["base_reward"],
         "difficulty": calculate_difficulty(params),
         "target_block_time_ms": params.get("target_block_time_ms") or RETARGET_TARGET_BLOCK_MS,
+        "RETARGET_MAX_PI_POSITION": RETARGET_MAX_PI_POSITION_value,
+        "retarget_max_pi_position": RETARGET_MAX_PI_POSITION_value,
         "retarget_reason": params.get("retarget_reason"),
         "retarget_source_window": _retarget_source_window(params),
         "retarget_source_details": params.get("retarget_source_details"),
@@ -3494,6 +3507,7 @@ def _protocol_params_payload(params: dict[str, Any]) -> dict[str, Any]:
     payload["active"] = bool(payload["active"])
     payload["difficulty"] = calculate_difficulty(payload)
     payload["target_block_time_ms"] = payload.get("target_block_time_ms") or RETARGET_TARGET_BLOCK_MS
+    payload["retarget_max_pi_position"] = _resolve_RETARGET_MAX_PI_POSITION(payload)
     payload["retarget_source_window"] = _retarget_source_window(payload)
     payload["reward_per_block"] = calculate_reward(payload)
     return payload
@@ -4926,6 +4940,7 @@ def _active_protocol_params(connection: Any) -> dict[str, Any]:
     if params is None:
         raise MiningError(500, "active protocol params not found")
     params["active"] = bool(params["active"])
+    params["retarget_max_pi_position"] = _resolve_RETARGET_MAX_PI_POSITION(params)
     return params
 
 
@@ -4938,7 +4953,20 @@ def _protocol_params_by_id(connection: Any, protocol_params_id: int) -> dict[str
     )
     if params is not None:
         params["active"] = bool(params["active"])
+        params["retarget_max_pi_position"] = _resolve_RETARGET_MAX_PI_POSITION(params)
     return params
+
+
+def _resolve_RETARGET_MAX_PI_POSITION(params: dict[str, Any]) -> int:
+    try:
+        value = int(
+            params.get("RETARGET_MAX_PI_POSITION")
+            or params.get("retarget_max_pi_position")
+            or RETARGET_MAX_PI_POSITION
+        )
+    except (TypeError, ValueError):
+        value = RETARGET_MAX_PI_POSITION
+    return max(1, value)
 
 
 def _protocol_params_for_task(connection: Any, task: dict[str, Any]) -> dict[str, Any]:
@@ -4968,8 +4996,12 @@ def _assign_pseudo_random_range(
     window = _range_assignment_window(connection, params)
     min_start = window["min_start"]
     max_start = window["max_start"]
+    RETARGET_MAX_PI_POSITION_value = window["RETARGET_MAX_PI_POSITION"]
     if max_start < min_start:
-        raise MiningError(500, "assignment window must include at least one range start")
+        raise MiningError(
+            503,
+            f"no assignable range available below RETARGET_MAX_PI_POSITION={RETARGET_MAX_PI_POSITION_value}",
+        )
 
     previous_hash = _latest_block_hash(connection)
     task_counter = connection.execute("SELECT COUNT(*) AS count FROM tasks").fetchone()["count"] + 1
@@ -4993,6 +5025,8 @@ def _assign_pseudo_random_range(
         )
         range_start = min_start + (int(assignment_seed, 16) % candidate_count)
         range_end = range_start + params["segment_size"] - 1
+        if range_end > RETARGET_MAX_PI_POSITION_value:
+            continue
         if _range_is_assignable(connection, range_start, range_end, params["algorithm"]):
             return {
                 "range_start": range_start,
@@ -5017,6 +5051,8 @@ def _assign_pseudo_random_range(
     )
     for range_start in range(min_start, max_start + 1):
         range_end = range_start + params["segment_size"] - 1
+        if range_end > RETARGET_MAX_PI_POSITION_value:
+            continue
         if _range_is_assignable(connection, range_start, range_end, params["algorithm"]):
             return {
                 "range_start": range_start,
@@ -5024,12 +5060,16 @@ def _assign_pseudo_random_range(
                 "assignment_seed": fallback_seed,
             }
 
-    raise MiningError(503, "could not assign a non-overlapping range")
+    raise MiningError(
+        503,
+        f"could not assign a non-overlapping range below RETARGET_MAX_PI_POSITION={RETARGET_MAX_PI_POSITION_value}",
+    )
 
 
 def _range_assignment_window(connection: Any, params: dict[str, Any]) -> dict[str, int]:
     segment_size = int(params["segment_size"])
     configured_limit = max(int(params["max_pi_position"]), segment_size)
+    RETARGET_MAX_PI_POSITION_value = _resolve_RETARGET_MAX_PI_POSITION(params)
     window_size = max(int(RANGE_START_WINDOW_SIZE), segment_size)
     lookahead_window = max(window_size, segment_size * int(RANGE_WINDOW_LOOKAHEAD_MULTIPLIER))
     frontier = _accepted_range_frontier(connection, params["algorithm"])
@@ -5044,12 +5084,13 @@ def _range_assignment_window(connection: Any, params: dict[str, Any]) -> dict[st
     )
     min_start = first_window_index * window_size + 1
     current_window_end = (first_window_index + 1) * window_size
-    effective_max_pi_position = max(configured_limit, current_window_end, frontier + lookahead_window)
+    effective_max_pi_position = min(
+        RETARGET_MAX_PI_POSITION_value,
+        max(configured_limit, current_window_end, frontier + lookahead_window),
+    )
     max_start = effective_max_pi_position - segment_size + 1
-    if max_start < min_start:
-        effective_max_pi_position = min_start + segment_size - 1
-        max_start = min_start
     return {
+        "RETARGET_MAX_PI_POSITION": int(RETARGET_MAX_PI_POSITION_value),
         "effective_max_pi_position": int(effective_max_pi_position),
         "frontier": int(frontier),
         "lookahead_window": int(lookahead_window),
@@ -5271,7 +5312,10 @@ def _retarget_preview(connection: Any, force: bool = False) -> dict[str, Any]:
     if ready:
         history = [row_to_dict(row) for row in epoch_rows]
         assignment_window = _range_assignment_window(connection, params)
-        next_range_start_for_preview = int(assignment_window["frontier"]) + 1
+        next_range_start_for_preview = min(
+            int(assignment_window["frontier"]) + 1,
+            int(assignment_window["RETARGET_MAX_PI_POSITION"]),
+        )
         next_params, meta = _retarget_protocol_params_from_history(params, history, next_range_start_for_preview)
 
     status = "ready" if ready else "waiting"

@@ -890,6 +890,8 @@ class ProtocolResponse(BaseModel):
     base_reward: float
     difficulty: float
     target_block_time_ms: int | None = None
+    RETARGET_MAX_PI_POSITION: int | None = None
+    retarget_max_pi_position: int | None = None
     retarget_reason: str | None = None
     retarget_source_window: int | None = Field(default=None, ge=0)
     retarget_source_details: str | None = None
@@ -944,6 +946,7 @@ class ProtocolParamsResponse(BaseModel):
     created_at: datetime
     difficulty: float
     target_block_time_ms: int | None = None
+    retarget_max_pi_position: int | None = None
     retarget_reason: str | None = None
     retarget_source_window: int | None = Field(default=None, ge=0)
     retarget_source_details: str | None = None
