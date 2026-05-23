@@ -779,6 +779,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "protocol_params", "target_block_time_ms", "INTEGER")
         _ensure_column(connection, "protocol_params", "retarget_reason", "TEXT")
         _ensure_column(connection, "protocol_params", "retarget_max_pi_position", "INTEGER")
+        _ensure_column(connection, "protocol_params", "retarget_max_pi_position", "INTEGER")
         _ensure_column(connection, "protocol_params", "retarget_source_window", "INTEGER")
         _ensure_column(connection, "protocol_params", "retarget_source_details", "TEXT")
         _ensure_column(connection, "protocol_params", "previous_protocol_params_id", "INTEGER")
