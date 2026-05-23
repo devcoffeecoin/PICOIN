@@ -7,6 +7,7 @@ from typing import Any
 from app.core.settings import (
     RETARGET_MAX_ADJUSTMENT_FACTOR,
     RETARGET_MAX_DIFFICULTY,
+    RETARGET_MAX_PI_POSITION,
     RETARGET_MAX_SAMPLE_COUNT,
     RETARGET_MAX_SEGMENT_SIZE,
     RETARGET_MIN_DIFFICULTY,
@@ -435,7 +436,12 @@ class DifficultyService:
         segment = Decimal(int(params.get("segment_size", 64) or 64)) / Decimal(64)
         samples = Decimal(int(params.get("sample_count", 8) or 8)) / Decimal(8)
         max_pos = max(100, int(params.get("max_pi_position", 10_000) or 10_000))
-        position = Decimal(str(math.log10(max_pos))) / Decimal(4)
+
+        if max_pos > 1_000_000:
+            position = (Decimal("6") / Decimal("4")) * (Decimal(max_pos) / Decimal("1000000"))
+        else:
+            position = Decimal(str(math.log10(max_pos))) / Decimal("4")
+            
         return (segment * samples * position).quantize(Decimal("0.000001"), rounding=ROUND_HALF_UP)
 
     @staticmethod

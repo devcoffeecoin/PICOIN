@@ -166,6 +166,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 max_active_tasks_per_miner INTEGER NOT NULL,
                 base_reward REAL NOT NULL,
                 difficulty REAL,
+                retarget_max_pi_position INTEGER,
                 target_block_time_ms INTEGER,
                 retarget_reason TEXT,
                 retarget_source_window INTEGER,
@@ -777,6 +778,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "protocol_params", "difficulty", "REAL")
         _ensure_column(connection, "protocol_params", "target_block_time_ms", "INTEGER")
         _ensure_column(connection, "protocol_params", "retarget_reason", "TEXT")
+        _ensure_column(connection, "protocol_params", "retarget_max_pi_position", "INTEGER")
         _ensure_column(connection, "protocol_params", "retarget_source_window", "INTEGER")
         _ensure_column(connection, "protocol_params", "retarget_source_details", "TEXT")
         _ensure_column(connection, "protocol_params", "previous_protocol_params_id", "INTEGER")
@@ -1145,9 +1147,9 @@ def _ensure_default_protocol_params(connection: sqlite3.Connection) -> None:
             range_assignment_mode, max_pi_position, range_assignment_max_attempts,
             segment_size, sample_count, task_expiration_seconds,
             max_active_tasks_per_miner, base_reward, difficulty, target_block_time_ms,
-            retarget_source_window, active
+            retarget_max_pi_position, retarget_source_window, active
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, 1)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, 1)
         """,
         (
             PROTOCOL_VERSION,
@@ -1163,6 +1165,7 @@ def _ensure_default_protocol_params(connection: sqlite3.Connection) -> None:
             MAX_ACTIVE_TASKS_PER_MINER,
             DEFAULT_REWARD,
             RETARGET_TARGET_BLOCK_MS,
+            RETARGET_MAX_PI_POSITION,
             RETARGET_WINDOW_BLOCKS,
         ),
     )
