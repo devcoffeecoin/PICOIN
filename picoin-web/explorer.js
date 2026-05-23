@@ -12,6 +12,7 @@ const nodes = (configuredNodes.length ? configuredNodes : [{ label: "Primary", u
 }));
 const apiBaseUrl = cleanUrl(explorerConfig.apiBaseUrl || nodes[0]?.url || fallbackApiBaseUrl);
 const refreshMs = Number(explorerConfig.refreshMs || 30000);
+const transactionLimit = 20;
 
 const state = {
   health: null,
@@ -53,6 +54,32 @@ function txDetailHref(hash) {
 function linkedTx(hash, label = null) {
   if (!hash) return "-";
   return `<a class="hash-link" href="${txDetailHref(hash)}" title="${escapeHtml(hash)}">${escapeHtml(label || shortHash(hash))}</a>`;
+}
+
+function txId(tx) {
+  return tx?.tx_hash || tx?.hash || tx?.id || "";
+}
+
+function txTimestamp(tx) {
+  const value = tx?.confirmed_at || tx?.selected_at || tx?.created_at || tx?.timestamp || tx?.received_at || tx?.inserted_at || "";
+  const time = value ? new Date(value).getTime() : 0;
+  return Number.isNaN(time) ? 0 : time;
+}
+
+function txStatusClass(status) {
+  if (status === "confirmed") return "ok";
+  if (["rejected", "failed", "expired"].includes(status)) return "bad";
+  return "warn";
+}
+
+function normalizeTransaction(tx) {
+  const hash = txId(tx);
+  return {
+    ...tx,
+    tx_hash: hash,
+    status: tx.status || "unknown",
+    tx_type: tx.tx_type || tx.type || "-",
+  };
 }
 
 function escapeHtml(value) {
@@ -184,8 +211,16 @@ async function loadNodeState(node) {
 }
 
 async function fetchTransactions() {
-  const endpoints = ["/mempool?limit=50", "/transactions/recent?limit=50"];
+  const endpoints = [
+    `/transactions/recent?limit=${transactionLimit}`,
+    `/mempool?limit=${transactionLimit}`,
+    `/mempool?status=pending&limit=${transactionLimit}`,
+    `/mempool?status=selected&limit=${transactionLimit}`,
+    `/mempool?status=confirmed&limit=${transactionLimit}`,
+    `/mempool?status=released&limit=${transactionLimit}`,
+  ];
   let allTxs = [];
+  const errors = [];
   
   for (const path of endpoints) {
     try {
@@ -195,18 +230,27 @@ async function fetchTransactions() {
         allTxs = allTxs.concat(extracted);
       }
     } catch (error) {
+      errors.push({ path, message: error.message });
       console.warn(`Explorer: Skip ${path} - ${error.message}`);
     }
   }
 
-  // Eliminar duplicados por hash si la misma tx aparece en ambos endpoints
   const seen = new Set();
-  return allTxs.filter(tx => {
-    const id = tx.tx_hash || tx.hash || tx.id;
-    if (!id || seen.has(id)) return false;
-    seen.add(id);
-    return true;
-  });
+  const transactions = allTxs
+    .map(normalizeTransaction)
+    .filter((tx) => {
+      const id = txId(tx);
+      if (!id || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    })
+    .sort((a, b) => txTimestamp(b) - txTimestamp(a))
+    .slice(0, transactionLimit);
+
+  if (!transactions.length && errors.length) {
+    state.errors.push({ path: "transactions", message: errors.map((error) => `${error.path}: ${error.message}`).join("; ") });
+  }
+  return transactions;
 }
 
 async function loadExplorer() {
@@ -227,7 +271,14 @@ async function loadExplorer() {
     loadEndpoint("retroAudits", "/audit/retroactive?limit=100", []),
     loadEndpoint("validators", "/validators?limit=100", []),
     loadEndpoint("events", "/events?limit=16", []),
-    (async () => { state.transactions = await fetchTransactions(); })(),
+    (async () => {
+      try {
+        state.transactions = await fetchTransactions();
+      } catch (error) {
+        state.transactions = [];
+        state.errors.push({ path: "transactions", message: error.message });
+      }
+    })(),
   ]);
   state.nodeStates = await Promise.all(nodes.map(loadNodeState));
   render();
@@ -395,19 +446,10 @@ function renderBlocks() {
 
 function renderTransactions() {
   let txs = asArray(state.transactions, ["transactions", "items", "results", "mempool"]);
-  // Ensure newest transactions appear first: sort by created_at/timestamp if available
   txs = txs
-    .slice()
-    .sort((a, b) => {
-      const getTs = (tx) => {
-        const val = tx.created_at || tx.timestamp || tx.received_at || tx.inserted_at || 0;
-        return val ? new Date(val).getTime() : 0;
-      };
-      const ta = getTs(a);
-      const tb = getTs(b);
-      return tb - ta;
-    })
-    .slice(0, 20);
+    .map(normalizeTransaction)
+    .sort((a, b) => txTimestamp(b) - txTimestamp(a))
+    .slice(0, transactionLimit);
   const table = $("transactionsTable");
   if (!table) return;
   if (!txs.length) {
@@ -418,7 +460,7 @@ function renderTransactions() {
     .map(
       (tx) => `
         <tr>
-          <td><span class="status-pill ${tx.status === "confirmed" ? "ok" : tx.status === "rejected" ? "bad" : "warn"}">${escapeHtml(tx.status)}</span></td>
+          <td><span class="status-pill ${txStatusClass(tx.status)}">${escapeHtml(tx.status)}</span></td>
           <td class="hash">${linkedTx(tx.tx_hash)}</td>
           <td>${escapeHtml(tx.tx_type)}</td>
           <td>${fmt(tx.amount, 5)}</td>
