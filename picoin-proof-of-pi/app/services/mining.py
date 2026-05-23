@@ -5361,10 +5361,11 @@ def _maybe_retarget_after_block(connection: Any, current_height: int, force: boo
                 range_assignment_mode, max_pi_position, range_assignment_max_attempts,
                 segment_size, sample_count, task_expiration_seconds,
                 max_active_tasks_per_miner, base_reward, difficulty,
-                target_block_time_ms, retarget_reason, retarget_source_window,
+                target_block_time_ms, retarget_max_pi_position,
+                retarget_reason, retarget_source_window,
                 retarget_source_details, previous_protocol_params_id, active
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
             """,
             (
                 PROTOCOL_VERSION,
@@ -5381,6 +5382,7 @@ def _maybe_retarget_after_block(connection: Any, current_height: int, force: boo
                 next_params["base_reward"],
                 next_params["difficulty"],
                 RETARGET_TARGET_BLOCK_MS,
+                next_params.get("retarget_max_pi_position") or RETARGET_MAX_PI_POSITION,
                 meta["reason"],
                 len(epoch_rows),
                 source_window,
