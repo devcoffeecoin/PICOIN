@@ -2795,13 +2795,14 @@ def get_full_economic_audit() -> dict[str, Any]:
             SELECT
                 COUNT(*) AS count,
                 COALESCE(SUM(stake_locked), 0) AS stake_locked,
-                COALESCE(SUM(CASE WHEN COALESCE(stake_owner_address, '') = '' THEN stake_locked ELSE 0 END), 0) AS legacy_stake_locked,
+                COALESCE(SUM(wallet_stake_locked), 0) AS wallet_stake_locked,
                 COALESCE(SUM(slashed_amount), 0) AS slashed_amount
             FROM validators
             """
         ).fetchone()
         validator_stake_locked = round(float(validators["stake_locked"]), 8)
-        legacy_validator_stake_locked = round(float(validators["legacy_stake_locked"]), 8)
+        validator_wallet_stake_locked = round(float(validators["wallet_stake_locked"]), 8)
+        legacy_validator_stake_locked = round(max(0.0, validator_stake_locked - validator_wallet_stake_locked), 8)
         validator_slashed_amount = round(float(validators["slashed_amount"]), 8)
         ledger_validator_stake_locks = _sum_query(
             connection,
@@ -2845,13 +2846,11 @@ def get_full_economic_audit() -> dict[str, Any]:
         8,
     )
     expected_ledger_total = expected_total_balances
-    expected_validator_stake_locked = round(
-        legacy_validator_stake_locked
-        + ledger_validator_stake_locks
-        + ledger_validator_stake_unlocks
-        + ledger_validator_slashes,
+    expected_validator_wallet_stake_locked = round(
+        ledger_validator_stake_locks + ledger_validator_stake_unlocks + ledger_validator_slashes,
         8,
     )
+    expected_validator_stake_locked = round(legacy_validator_stake_locked + expected_validator_wallet_stake_locked, 8)
 
     _audit_equal(
         issues,
@@ -2887,6 +2886,13 @@ def get_full_economic_audit() -> dict[str, Any]:
         message="validator stake_locked must equal stake locks minus validator-side slashes",
         expected=expected_validator_stake_locked,
         actual=validator_stake_locked,
+    )
+    _audit_equal(
+        issues,
+        code="validator_wallet_stake_mismatch",
+        message="validator wallet_stake_locked must equal wallet stake locks minus unlocks and slashes",
+        expected=expected_validator_wallet_stake_locked,
+        actual=validator_wallet_stake_locked,
     )
     _audit_equal(
         issues,
@@ -2972,6 +2978,8 @@ def get_full_economic_audit() -> dict[str, Any]:
             "validator_count": int(validators["count"]),
             "stake_locked": validator_stake_locked,
             "expected_stake_locked": expected_validator_stake_locked,
+            "wallet_stake_locked": validator_wallet_stake_locked,
+            "expected_wallet_stake_locked": expected_validator_wallet_stake_locked,
             "legacy_unbacked_stake_locked": legacy_validator_stake_locked,
             "ledger_validator_stake_locks": ledger_validator_stake_locks,
             "ledger_validator_stake_unlocks": ledger_validator_stake_unlocks,
@@ -4636,22 +4644,25 @@ def _refresh_trust_score(connection: Any, miner_id: str) -> None:
 
 def _apply_validator_penalty(connection: Any, validator_id: str, reason: str) -> None:
     validator = connection.execute(
-        "SELECT stake_locked FROM validators WHERE validator_id = ?",
+        "SELECT stake_locked, wallet_stake_locked FROM validators WHERE validator_id = ?",
         (validator_id,),
     ).fetchone()
     slash_amount = 0.0
+    wallet_slash_amount = 0.0
     if validator is not None:
         slash_amount = min(float(validator["stake_locked"]), VALIDATOR_SLASH_INVALID_SIGNATURE)
+        wallet_slash_amount = min(float(validator["wallet_stake_locked"] or 0), slash_amount)
     connection.execute(
         """
         UPDATE validators
         SET invalid_results = invalid_results + 1,
             stake_locked = MAX(0, stake_locked - ?),
+            wallet_stake_locked = MAX(0, wallet_stake_locked - ?),
             slashed_amount = slashed_amount + ?,
             last_seen_at = ?
         WHERE validator_id = ?
         """,
-        (slash_amount, slash_amount, utc_now(), validator_id),
+        (slash_amount, wallet_slash_amount, slash_amount, utc_now(), validator_id),
     )
     row = connection.execute(
         "SELECT invalid_results FROM validators WHERE validator_id = ?",
@@ -4957,17 +4968,20 @@ def _apply_fraud_penalties(connection: Any, block: dict[str, Any], reason: str) 
 
 def _apply_validator_fraud_penalty(connection: Any, validator_id: str, reason: str) -> None:
     validator = connection.execute(
-        "SELECT stake_locked FROM validators WHERE validator_id = ?",
+        "SELECT stake_locked, wallet_stake_locked FROM validators WHERE validator_id = ?",
         (validator_id,),
     ).fetchone()
     slash_amount = 0.0
+    wallet_slash_amount = 0.0
     if validator is not None:
         slash_amount = min(float(validator["stake_locked"]), VALIDATOR_SLASH_INVALID_SIGNATURE)
+        wallet_slash_amount = min(float(validator["wallet_stake_locked"] or 0), slash_amount)
     connection.execute(
         """
         UPDATE validators
         SET invalid_results = invalid_results + ?,
             stake_locked = MAX(0, stake_locked - ?),
+            wallet_stake_locked = MAX(0, wallet_stake_locked - ?),
             slashed_amount = slashed_amount + ?,
             cooldown_until = ?,
             last_seen_at = ?
@@ -4976,6 +4990,7 @@ def _apply_validator_fraud_penalty(connection: Any, validator_id: str, reason: s
         (
             FRAUD_VALIDATOR_INVALID_RESULTS,
             slash_amount,
+            wallet_slash_amount,
             slash_amount,
             iso_at(FRAUD_COOLDOWN_SECONDS),
             utc_now(),

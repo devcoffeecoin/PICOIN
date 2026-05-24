@@ -1656,7 +1656,7 @@ def test_validator_stake_transaction_locks_and_unlocks_wallet_collateral(tmp_pat
     _fund_wallet_from_genesis(wallet["address"], 40.0)
     with get_connection() as connection:
         connection.execute(
-            "UPDATE validators SET stake_locked = 0, stake_owner_address = NULL WHERE validator_id = ?",
+            "UPDATE validators SET stake_locked = 0, wallet_stake_locked = 0, stake_owner_address = NULL WHERE validator_id = ?",
             (validator["validator_id"],),
         )
 
@@ -1677,12 +1677,13 @@ def test_validator_stake_transaction_locks_and_unlocks_wallet_collateral(tmp_pat
     confirmed_stake = get_transaction(stake_tx["tx_hash"])
     with get_connection() as connection:
         staked = connection.execute(
-            "SELECT stake_locked, stake_owner_address FROM validators WHERE validator_id = ?",
+            "SELECT stake_locked, wallet_stake_locked, stake_owner_address FROM validators WHERE validator_id = ?",
             (validator["validator_id"],),
         ).fetchone()
     assert confirmed_stake is not None
     assert confirmed_stake["status"] == "confirmed"
     assert staked["stake_locked"] == pytest.approx(31.416)
+    assert staked["wallet_stake_locked"] == pytest.approx(31.416)
     assert staked["stake_owner_address"] == wallet["address"]
     assert get_balance_amount(validator["validator_id"]) == pytest.approx(31.416)
     assert get_balance_amount(wallet["address"]) == pytest.approx(8.574)
@@ -1706,7 +1707,7 @@ def test_validator_stake_transaction_locks_and_unlocks_wallet_collateral(tmp_pat
     confirmed_unstake = get_transaction(unstake_tx["tx_hash"])
     with get_connection() as connection:
         unstaked = connection.execute(
-            "SELECT stake_locked, stake_owner_address FROM validators WHERE validator_id = ?",
+            "SELECT stake_locked, wallet_stake_locked, stake_owner_address FROM validators WHERE validator_id = ?",
             (validator["validator_id"],),
         ).fetchone()
     audit = get_full_economic_audit()
@@ -1714,9 +1715,71 @@ def test_validator_stake_transaction_locks_and_unlocks_wallet_collateral(tmp_pat
     assert confirmed_unstake is not None
     assert confirmed_unstake["status"] == "confirmed"
     assert unstaked["stake_locked"] == pytest.approx(0)
+    assert unstaked["wallet_stake_locked"] == pytest.approx(0)
     assert unstaked["stake_owner_address"] is None
     assert get_balance_amount(validator["validator_id"]) == pytest.approx(0)
     assert get_balance_amount(wallet["address"]) == pytest.approx(39.98)
+    assert audit["valid"] is True
+
+
+def test_validator_wallet_stake_unstake_preserves_legacy_collateral(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "validator-wallet-stake-legacy-mix.sqlite3")
+
+    miner_key = generate_keypair()
+    validator_key = generate_keypair()
+    miner = register_miner("validator-legacy-stake-miner", miner_key["public_key"])
+    validator = register_validator("legacy-staked-validator", validator_key["public_key"])
+    wallet = create_wallet("legacy-validator-staker")
+    _fund_wallet_from_genesis(wallet["address"], 1.0)
+
+    stake_payload = {"stake_type": "validator", "validator_id": validator["validator_id"]}
+    stake_tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="stake",
+        sender=wallet["address"],
+        amount=0.5,
+        nonce=1,
+        fee=0.01,
+        payload=stake_payload,
+    )
+    submit_transaction(stake_tx)
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+
+    with get_connection() as connection:
+        staked = connection.execute(
+            "SELECT stake_locked, wallet_stake_locked, stake_owner_address FROM validators WHERE validator_id = ?",
+            (validator["validator_id"],),
+        ).fetchone()
+    assert staked["stake_locked"] == pytest.approx(31.916)
+    assert staked["wallet_stake_locked"] == pytest.approx(0.5)
+    assert staked["stake_owner_address"] == wallet["address"]
+
+    unstake_tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="unstake",
+        sender=wallet["address"],
+        amount=0,
+        nonce=2,
+        fee=0.01,
+        payload=stake_payload,
+    )
+    submit_transaction(unstake_tx)
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+
+    with get_connection() as connection:
+        unstaked = connection.execute(
+            "SELECT stake_locked, wallet_stake_locked, stake_owner_address FROM validators WHERE validator_id = ?",
+            (validator["validator_id"],),
+        ).fetchone()
+    audit = get_full_economic_audit()
+
+    assert unstaked["stake_locked"] == pytest.approx(31.416)
+    assert unstaked["wallet_stake_locked"] == pytest.approx(0)
+    assert unstaked["stake_owner_address"] is None
+    assert get_balance_amount(validator["validator_id"]) == pytest.approx(0)
+    assert get_balance_amount(wallet["address"]) == pytest.approx(0.98)
     assert audit["valid"] is True
 
 

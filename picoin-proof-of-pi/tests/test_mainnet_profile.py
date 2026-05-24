@@ -44,6 +44,7 @@ payload = {
     "faucet_allowed_networks": sorted(settings.FAUCET_ALLOWED_NETWORKS),
     "protocol": get_protocol(),
     "validator_registration_stake": validator["stake_locked"],
+    "validator_wallet_stake": validator["wallet_stake_locked"],
     "faucet_error": faucet_error,
 }
 print(json.dumps(payload, sort_keys=True))
@@ -73,6 +74,7 @@ print(json.dumps(payload, sort_keys=True))
     assert payload["protocol"]["RETARGET_MAX_PI_POSITION"] == 10**15
     assert payload["protocol"]["reward_per_block"] == 3.1416
     assert payload["validator_registration_stake"] == 0.0
+    assert payload["validator_wallet_stake"] == 0.0
     assert payload["faucet_error"]["status_code"] == 403
 
 
