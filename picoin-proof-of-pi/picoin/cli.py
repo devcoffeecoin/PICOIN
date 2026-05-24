@@ -54,7 +54,7 @@ from app.services.state import (
     restore_imported_snapshot_state,
     validate_snapshot_document,
 )
-from app.services.wallet import address_from_public_key, address_matches_public_key, create_wallet, sign_transaction
+from app.services.wallet import address_from_public_key, address_matches_public_key, create_wallet, is_valid_address, sign_transaction
 
 
 DEFAULT_SERVER_URL = os.getenv("PICOIN_SERVER", "http://127.0.0.1:8000")
@@ -579,6 +579,23 @@ def command_node_mainnet_preflight(args: argparse.Namespace) -> int:
             f"field={protocol.get('validator_eligibility_stake_field')}, "
             f"source={protocol.get('validator_eligibility_stake_source')}"
         ),
+    )
+    treasury_wallet = protocol.get("scientific_development_treasury_wallet")
+    governance_wallet = protocol.get("scientific_development_governance_wallet")
+    add_check(
+        "treasury_wallet_canonical",
+        is_valid_address(treasury_wallet),
+        f"treasury_wallet={treasury_wallet}",
+    )
+    add_check(
+        "governance_wallet_canonical",
+        is_valid_address(governance_wallet),
+        f"governance_wallet={governance_wallet}",
+    )
+    add_check(
+        "treasury_governance_wallets_distinct",
+        bool(treasury_wallet) and bool(governance_wallet) and treasury_wallet != governance_wallet,
+        f"treasury_wallet={treasury_wallet}, governance_wallet={governance_wallet}",
     )
 
     reward_checks = {

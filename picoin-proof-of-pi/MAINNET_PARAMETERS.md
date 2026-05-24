@@ -183,15 +183,21 @@ Mainnet rule:
 - Treasury accrues from block rewards.
 - Claims remain locked by the 90-day interval.
 - Governance wallet and treasury wallet must be finalized before genesis.
+- Mainnet startup fails unless both wallets are explicitly configured as
+  canonical checksummed Picoin wallet addresses.
+- The governance and treasury wallets must be distinct.
 
-Current placeholders:
+Generate the wallets offline before launch and copy only the addresses into the
+mainnet environment:
 
 ```text
-PICOIN_TREASURY_WALLET=picoin_scientific_development_wallet
-PICOIN_GOVERNANCE_WALLET=picoin_governance_multisig
+PICOIN_TREASURY_WALLET=PI...
+PICOIN_GOVERNANCE_WALLET=PI...
 ```
 
-These placeholders must be replaced with final mainnet wallet/account IDs before launch.
+Placeholder values such as `picoin_scientific_development_wallet`,
+`picoin_governance_multisig`, `PI_TREASURY...`, `PI_GOVERNANCE...`, or
+`CHANGE_ME...` are invalid on mainnet.
 
 ## Slashing And Penalties
 

@@ -4,6 +4,17 @@ import subprocess
 import sys
 
 
+MAINNET_TREASURY_WALLET = "PIEB149E99DCD64653088B68F92D6790068428462919DD96"
+MAINNET_GOVERNANCE_WALLET = "PI6D17B68D576E0543CD5814D39F09FB58E3D35CAD355BB1"
+
+
+def _mainnet_wallet_env() -> dict[str, str]:
+    return {
+        "PICOIN_TREASURY_WALLET": MAINNET_TREASURY_WALLET,
+        "PICOIN_GOVERNANCE_WALLET": MAINNET_GOVERNANCE_WALLET,
+    }
+
+
 def _run_isolated(code: str, env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     run_env = os.environ.copy()
     run_env.update(env)
@@ -108,6 +119,7 @@ print(json.dumps(payload, sort_keys=True))
             "PICOIN_NETWORK": "mainnet",
             "PICOIN_DB_PATH": str(db_path),
             "PICOIN_DATA_DIR": str(tmp_path),
+            **_mainnet_wallet_env(),
         },
     )
 
@@ -128,6 +140,8 @@ print(json.dumps(payload, sort_keys=True))
     assert payload["protocol"]["reward_per_block"] == 3.1416
     assert payload["protocol"]["validator_eligibility_stake_field"] == "wallet_stake_locked"
     assert payload["protocol"]["validator_eligibility_stake_source"] == "wallet"
+    assert payload["protocol"]["scientific_development_treasury_wallet"] == MAINNET_TREASURY_WALLET
+    assert payload["protocol"]["scientific_development_governance_wallet"] == MAINNET_GOVERNANCE_WALLET
     assert payload["validator_registration_stake"] == 0.0
     assert payload["validator_wallet_stake"] == 0.0
     assert payload["eligible_without_stake"] == 0
@@ -171,6 +185,7 @@ def test_mainnet_rejects_faucet_enablement() -> None:
         {
             "PICOIN_NETWORK": "mainnet",
             "PICOIN_FAUCET_ALLOWED_NETWORKS": "mainnet",
+            **_mainnet_wallet_env(),
         },
     )
 
@@ -197,11 +212,66 @@ def test_mainnet_rejects_RETARGET_MAX_PI_POSITION_override() -> None:
         {
             "PICOIN_NETWORK": "mainnet",
             "PICOIN_RETARGET_MAX_PI_POSITION": "1000000",
+            **_mainnet_wallet_env(),
         },
     )
 
     assert result.returncode != 0
     assert "mainnet RETARGET_MAX_PI_POSITION is frozen" in result.stderr
+
+
+def test_mainnet_requires_treasury_and_governance_wallets() -> None:
+    result = _run_isolated(
+        "import app.core.settings",
+        {
+            "PICOIN_NETWORK": "mainnet",
+        },
+    )
+
+    assert result.returncode != 0
+    assert "mainnet PICOIN_TREASURY_WALLET is required" in result.stderr
+
+
+def test_mainnet_rejects_treasury_governance_placeholders() -> None:
+    result = _run_isolated(
+        "import app.core.settings",
+        {
+            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_TREASURY_WALLET": "picoin_scientific_development_wallet",
+            "PICOIN_GOVERNANCE_WALLET": MAINNET_GOVERNANCE_WALLET,
+        },
+    )
+
+    assert result.returncode != 0
+    assert "mainnet PICOIN_TREASURY_WALLET must not use a placeholder" in result.stderr
+
+
+def test_mainnet_rejects_non_canonical_treasury_wallet() -> None:
+    result = _run_isolated(
+        "import app.core.settings",
+        {
+            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_TREASURY_WALLET": "PI123",
+            "PICOIN_GOVERNANCE_WALLET": MAINNET_GOVERNANCE_WALLET,
+        },
+    )
+
+    assert result.returncode != 0
+    assert "mainnet PICOIN_TREASURY_WALLET must be a canonical Picoin wallet address" in result.stderr
+
+
+def test_mainnet_rejects_same_treasury_and_governance_wallet() -> None:
+    result = _run_isolated(
+        "import app.core.settings",
+        {
+            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_TREASURY_WALLET": MAINNET_TREASURY_WALLET,
+            "PICOIN_GOVERNANCE_WALLET": MAINNET_TREASURY_WALLET,
+        },
+    )
+
+    assert result.returncode != 0
+    assert "mainnet treasury and governance wallets must be distinct" in result.stderr
 
 
 def test_public_testnet_defaults_to_two_validator_approvals(tmp_path) -> None:
