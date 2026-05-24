@@ -143,21 +143,8 @@ function blockBaseReward(block) {
   return minerReward;
 }
 
-function auditRewardForBlock(block) {
-  const blockHeight = Number(block?.height || 0);
-  return asArray(state.retroAudits, ["audits", "items", "results"])
-    .filter((audit) => Number(audit.block_height || 0) === blockHeight)
-    .reduce((sum, audit) => sum + Number(audit.reward || 0), 0);
-}
-
 function formatBlockReward(block) {
-  const base = blockBaseReward(block);
-  const audit = auditRewardForBlock(block);
-  const total = base + audit;
-  if (audit > 0) {
-    return `${fmt(total, 5)} (${fmt(base, 5)} + ${fmt(audit, 5)} audit)`;
-  }
-  return fmt(total, 5);
+  return fmt(blockBaseReward(block), 5);
 }
 
 async function fetchJsonFrom(baseUrl, path) {

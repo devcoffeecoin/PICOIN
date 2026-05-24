@@ -5,7 +5,6 @@ from app.db.database import init_db
 from app.db.database import get_connection
 from app.services.mining import (
     create_next_task,
-    get_balance,
     get_block,
     get_miner,
     get_recent_events,
@@ -45,7 +44,7 @@ def test_retroactive_audit_uses_double_protocol_samples(tmp_path, monkeypatch) -
     assert any(event["type"] == "retroactive_audit" for event in events)
 
 
-def test_scheduled_retroactive_audit_runs_every_interval_and_mints_reward(tmp_path, monkeypatch) -> None:
+def test_scheduled_retroactive_audit_runs_every_interval_without_extra_emission(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "scheduled-retroactive-audit.sqlite3"
     monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
     monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
@@ -58,17 +57,15 @@ def test_scheduled_retroactive_audit_runs_every_interval_and_mints_reward(tmp_pa
 
     audit = get_retroactive_audits()[0]
     stats = get_stats()
-    audit_balance = get_balance("audit_treasury")
 
     assert audit["automatic"] is True
     assert audit["sample_count"] == 64
-    assert audit["reward"] == 0.62832
-    assert audit["reward_account_id"] == "audit_treasury"
-    assert audit_balance["balance"] == 0.62832
-    assert stats["total_audit_rewards"] == 0.62832
+    assert audit["reward"] == 0.0
+    assert audit["reward_account_id"] is None
+    assert stats["total_audit_rewards"] == 0.0
 
 
-def test_replay_applies_scheduled_retroactive_audit_reward_deterministically(tmp_path, monkeypatch) -> None:
+def test_replay_applies_scheduled_retroactive_audit_event_deterministically(tmp_path, monkeypatch) -> None:
     source_db = tmp_path / "scheduled-retroactive-source.sqlite3"
     monkeypatch.setattr("app.db.database.DATABASE_PATH", source_db)
     monkeypatch.setattr("app.core.settings.DATABASE_PATH", source_db)
@@ -89,13 +86,12 @@ def test_replay_applies_scheduled_retroactive_audit_reward_deterministically(tmp
     receive_block_header(source_block, source_peer_id="peer-a")
     replay = replay_finalized_blocks()
     target_audit = get_retroactive_audits()[0]
-    audit_balance = get_balance("audit_treasury")
 
     assert replay["headers_imported"] == 1
     assert replay["errors"] == []
     assert target_audit["audit_seed"] == source_audit["audit_seed"]
-    assert target_audit["reward"] == 0.62832
-    assert audit_balance["balance"] == 0.62832
+    assert target_audit["reward"] == 0.0
+    assert target_audit["reward_account_id"] is None
     assert get_block(1)["state_root"] == source_block["state_root"]
 
 
