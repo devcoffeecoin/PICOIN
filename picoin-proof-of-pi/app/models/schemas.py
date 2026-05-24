@@ -88,6 +88,7 @@ class ValidatorResponse(BaseModel):
     name: str
     public_key: str
     reward_address: str | None = None
+    stake_owner_address: str | None = None
     registered_at: datetime
     accepted_jobs: int = 0
     rejected_jobs: int = 0

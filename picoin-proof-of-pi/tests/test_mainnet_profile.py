@@ -22,10 +22,13 @@ def test_mainnet_profile_freezes_launch_parameters(tmp_path) -> None:
     code = """
 import json
 from app.core import settings
+from app.core.signatures import generate_keypair
 from app.db.database import init_db
-from app.services.mining import MiningError, get_balance, get_protocol, request_faucet
+from app.services.mining import MiningError, get_balance, get_protocol, register_validator, request_faucet
 
 init_db()
+validator_keys = generate_keypair()
+validator = register_validator("mainnet-validator", validator_keys["public_key"])
 faucet_error = None
 try:
     request_faucet("PI_MAINNET_TEST", "wallet", 1.0)
@@ -40,6 +43,7 @@ payload = {
     "genesis_balance": get_balance("genesis")["balance"],
     "faucet_allowed_networks": sorted(settings.FAUCET_ALLOWED_NETWORKS),
     "protocol": get_protocol(),
+    "validator_registration_stake": validator["stake_locked"],
     "faucet_error": faucet_error,
 }
 print(json.dumps(payload, sort_keys=True))
@@ -68,6 +72,7 @@ print(json.dumps(payload, sort_keys=True))
     assert payload["protocol"]["required_validator_approvals"] == 3
     assert payload["protocol"]["RETARGET_MAX_PI_POSITION"] == 10**15
     assert payload["protocol"]["reward_per_block"] == 3.1416
+    assert payload["validator_registration_stake"] == 0.0
     assert payload["faucet_error"]["status_code"] == 403
 
 

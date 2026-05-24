@@ -285,6 +285,8 @@ def verify_checkpoint(height: int) -> dict[str, Any]:
             raise StateError(404, "checkpoint block not found")
         balances = balance_snapshot(connection, height, block["timestamp"])
         balances_hash = sha256_text(canonical_json({"height": height, "balances": balances}))
+        nonces = account_nonce_snapshot(connection)
+        nonces_hash = sha256_text(canonical_json({"height": height, "nonces": nonces}))
         state_root = calculate_state_root(connection, height, block["timestamp"])
         ledger_entries_count = int(
             connection.execute(
@@ -314,6 +316,10 @@ def verify_checkpoint(height: int) -> dict[str, Any]:
             "total_balance": total_balance,
             "total_balance_units": total_balance_units,
         }
+        checkpoint_payload = checkpoint.get("payload") or {}
+        if checkpoint_payload.get("nonces_hash"):
+            payload["nonces_hash"] = nonces_hash
+            payload["nonces_count"] = len(nonces)
         snapshot_hash = sha256_text(canonical_json(payload))
         issues = []
         if checkpoint["block_hash"] != block["block_hash"]:
@@ -330,6 +336,12 @@ def verify_checkpoint(height: int) -> dict[str, Any]:
             issues.append("ledger_entries_count mismatch")
         if int(checkpoint.get("total_balance_units") or to_units(checkpoint["total_balance"])) != total_balance_units:
             issues.append("total_balance mismatch")
+        if checkpoint_payload.get("nonces_hash") and checkpoint_payload.get("nonces_hash") != nonces_hash:
+            issues.append("nonces_hash mismatch")
+        if checkpoint_payload.get("nonces_hash"):
+            stored_nonces_count = checkpoint_payload.get("nonces_count")
+            if stored_nonces_count is None or int(stored_nonces_count) != len(nonces):
+                issues.append("nonces_count mismatch")
         if checkpoint["snapshot_hash"] != snapshot_hash:
             issues.append("snapshot_hash mismatch")
         if not issues:
@@ -342,7 +354,13 @@ def verify_checkpoint(height: int) -> dict[str, Any]:
         "height": height,
         "checkpoint": checkpoint,
         "issues": issues,
-        "computed": {"state_root": state_root, "balances_hash": balances_hash, "snapshot_hash": snapshot_hash},
+        "computed": {
+            "state_root": state_root,
+            "balances_hash": balances_hash,
+            "snapshot_hash": snapshot_hash,
+            "nonces_hash": nonces_hash if checkpoint_payload.get("nonces_hash") else None,
+            "nonces_count": len(nonces) if checkpoint_payload.get("nonces_hash") else None,
+        },
     }
 
 
@@ -516,8 +534,10 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
         issues.append("balances_count mismatch")
     if checkpoint.get("nonces_hash") and checkpoint.get("nonces_hash") != nonces_hash:
         issues.append("nonces_hash mismatch")
-    if checkpoint.get("nonces_hash") and int(checkpoint.get("nonces_count") or -1) != len(normalized_nonces):
-        issues.append("nonces_count mismatch")
+    if checkpoint.get("nonces_hash"):
+        stored_nonces_count = checkpoint.get("nonces_count")
+        if stored_nonces_count is None or int(stored_nonces_count) != len(normalized_nonces):
+            issues.append("nonces_count mismatch")
     if int(checkpoint.get("total_balance_units") or to_units(checkpoint.get("total_balance") or 0)) != total_balance_units:
         issues.append("total_balance mismatch")
     if checkpoint.get("snapshot_hash") != snapshot_hash:
@@ -532,7 +552,9 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
             "total_balance": total_balance,
             "total_balance_units": total_balance_units,
             "nonces_hash": checkpoint.get("nonces_hash") or (nonces_hash if normalized_nonces else None),
-            "nonces_count": int(checkpoint.get("nonces_count") or len(normalized_nonces)),
+            "nonces_count": int(
+                checkpoint["nonces_count"] if checkpoint.get("nonces_count") is not None else len(normalized_nonces)
+            ),
         },
         "computed": {
             "balances_hash": balances_hash,

@@ -891,6 +891,10 @@ def command_wallet_nonce(args: argparse.Namespace) -> int:
 def command_tx_send(args: argparse.Namespace) -> int:
     wallet = _load_wallet_file(args.wallet)
     payload = json.loads(args.payload) if args.payload else {}
+    if getattr(args, "stake_type", None):
+        payload = {**payload, "stake_type": args.stake_type}
+    if getattr(args, "validator_id", None):
+        payload = {**payload, "stake_type": "validator", "validator_id": args.validator_id}
     sender = args.sender or wallet["address"]
     nonce = args.nonce
     if nonce is None:
@@ -1505,6 +1509,8 @@ def add_tx_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     send_parser.add_argument("--sender")
     send_parser.add_argument("--payload", help="Optional JSON payload")
+    send_parser.add_argument("--stake-type", choices=["science", "validator"], help="Stake domain for stake/unstake transactions")
+    send_parser.add_argument("--validator-id", help="Validator id for validator stake/unstake transactions")
     send_parser.set_defaults(func=command_tx_send)
 
     status_parser = tx_subparsers.add_parser("status", help="Show transaction status by hash")

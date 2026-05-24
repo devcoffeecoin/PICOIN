@@ -147,6 +147,22 @@ def test_picoin_cli_parses_wallet_and_tx_commands() -> None:
     stake = parser.parse_args(
         ["tx", "send", "--wallet", "alice.json", "--type", "stake", "--amount", "3141.6", "--nonce", "2"]
     )
+    validator_stake = parser.parse_args(
+        [
+            "tx",
+            "send",
+            "--wallet",
+            "alice.json",
+            "--type",
+            "stake",
+            "--validator-id",
+            "validator_123",
+            "--amount",
+            "31.416",
+            "--nonce",
+            "4",
+        ]
+    )
     unstake = parser.parse_args(["tx", "send", "--wallet", "alice.json", "--type", "unstake", "--nonce", "3"])
     science_job = parser.parse_args(
         [
@@ -164,6 +180,8 @@ def test_picoin_cli_parses_wallet_and_tx_commands() -> None:
     )
     assert stake.to is None
     assert stake.amount == 3141.6
+    assert validator_stake.validator_id == "validator_123"
+    assert validator_stake.amount == 31.416
     assert unstake.amount == 0.0
     assert unstake.type == "unstake"
     assert science_job.amount == 0.0

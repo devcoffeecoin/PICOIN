@@ -22,6 +22,7 @@ from app.services.mining import (
     get_full_economic_audit,
     get_health_status,
     register_miner,
+    register_validator,
     repair_missing_block_rewards,
     submit_task,
     verify_chain,
@@ -1644,6 +1645,81 @@ def test_science_unstake_transaction_unlocks_when_no_jobs_are_active(tmp_path, m
     assert chain["valid"] is True
 
 
+def test_validator_stake_transaction_locks_and_unlocks_wallet_collateral(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "validator-wallet-stake-transaction.sqlite3")
+
+    miner_key = generate_keypair()
+    validator_key = generate_keypair()
+    miner = register_miner("validator-stake-miner", miner_key["public_key"])
+    validator = register_validator("wallet-staked-validator", validator_key["public_key"])
+    wallet = create_wallet("validator-staker")
+    _fund_wallet_from_genesis(wallet["address"], 40.0)
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE validators SET stake_locked = 0, stake_owner_address = NULL WHERE validator_id = ?",
+            (validator["validator_id"],),
+        )
+
+    stake_payload = {"stake_type": "validator", "validator_id": validator["validator_id"]}
+    stake_tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="stake",
+        sender=wallet["address"],
+        amount=31.416,
+        nonce=1,
+        fee=0.01,
+        payload=stake_payload,
+    )
+    submit_transaction(stake_tx)
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+
+    confirmed_stake = get_transaction(stake_tx["tx_hash"])
+    with get_connection() as connection:
+        staked = connection.execute(
+            "SELECT stake_locked, stake_owner_address FROM validators WHERE validator_id = ?",
+            (validator["validator_id"],),
+        ).fetchone()
+    assert confirmed_stake is not None
+    assert confirmed_stake["status"] == "confirmed"
+    assert staked["stake_locked"] == pytest.approx(31.416)
+    assert staked["stake_owner_address"] == wallet["address"]
+    assert get_balance_amount(validator["validator_id"]) == pytest.approx(31.416)
+    assert get_balance_amount(wallet["address"]) == pytest.approx(8.574)
+
+    with get_connection() as connection:
+        connection.execute("UPDATE validators SET enabled = 0 WHERE validator_id = ?", (validator["validator_id"],))
+
+    unstake_tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="unstake",
+        sender=wallet["address"],
+        amount=0,
+        nonce=2,
+        fee=0.01,
+        payload=stake_payload,
+    )
+    submit_transaction(unstake_tx)
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+
+    confirmed_unstake = get_transaction(unstake_tx["tx_hash"])
+    with get_connection() as connection:
+        unstaked = connection.execute(
+            "SELECT stake_locked, stake_owner_address FROM validators WHERE validator_id = ?",
+            (validator["validator_id"],),
+        ).fetchone()
+    audit = get_full_economic_audit()
+
+    assert confirmed_unstake is not None
+    assert confirmed_unstake["status"] == "confirmed"
+    assert unstaked["stake_locked"] == pytest.approx(0)
+    assert unstaked["stake_owner_address"] is None
+    assert get_balance_amount(validator["validator_id"]) == pytest.approx(0)
+    assert get_balance_amount(wallet["address"]) == pytest.approx(39.98)
+    assert audit["valid"] is True
+
+
 def test_science_reserve_governance_actions_are_canonical_transactions(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "science-governance-transactions.sqlite3")
     monkeypatch.setattr("app.services.science.SCIENCE_RESERVE_GOVERNANCE_TIMELOCK_SECONDS", 0)
@@ -1838,4 +1914,3 @@ def _mine_legacy_block(miner_id: str, private_key: str) -> None:
     signature = sign_payload(private_key, payload)
     response = submit_task(task["task_id"], miner_id, result_hash, segment, signature, signed_at)
     assert response["accepted"] is True
-
