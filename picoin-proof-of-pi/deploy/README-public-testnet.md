@@ -78,6 +78,10 @@ sudo -u picoin git clone https://github.com/devcoffeecoin/PICOIN.git /opt/picoin
 sudo -u picoin bash -lc 'cd /opt/picoin/PICOIN/picoin-proof-of-pi && python3 -m venv .venv && .venv/bin/pip install -r requirements.txt'
 ```
 
+The `requirements.txt` install includes the Ed25519 dependencies used by
+wallets, miners, validators, and transaction signing (`cryptography` and
+`PyNaCl`).
+
 The preferred installed path is:
 
 ```text
@@ -133,6 +137,9 @@ Runtime state is intentionally separated from code:
 Public testnet env additions used by the current deployment:
 
 ```bash
+PICOIN_NETWORK=public-testnet
+PICOIN_CHAIN_ID=picoin-public-testnet-v018
+PICOIN_PROTOCOL_VERSION=0.18
 PICOIN_REQUIRED_VALIDATOR_APPROVALS=2
 PICOIN_SMOKE_SKIP_CATCH_UP=1
 PICOIN_SMOKE_WARN_ONLY=1
@@ -266,6 +273,9 @@ sudo systemctl status picoin-node --no-pager
 Public miners should submit work to the HTTPS bootstrap API:
 
 ```bash
+PICOIN_NETWORK=public-testnet
+PICOIN_CHAIN_ID=picoin-public-testnet-v018
+PICOIN_PROTOCOL_VERSION=0.18
 PICOIN_WORKER_ROLE=miner
 PICOIN_MINER_SERVER=https://api.picoin.science
 PICOIN_MINER_NAME=miner-yourname
@@ -288,6 +298,16 @@ cd /opt/picoin/picoin-proof-of-pi
   --loops 1 \
   --sleep 5 \
   --workers 1
+```
+
+If commits are rejected with `invalid miner signature`, first confirm
+`PICOIN_NETWORK=public-testnet`, `PICOIN_CHAIN_ID=picoin-public-testnet-v018`,
+and `PICOIN_PROTOCOL_VERSION=0.18` are loaded in the same shell or systemd
+environment that runs the miner. If the virtualenv was created before this
+guide was updated, also refresh dependencies with:
+
+```bash
+.venv/bin/pip install -r requirements.txt
 ```
 
 Systemd:
