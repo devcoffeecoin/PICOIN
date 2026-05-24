@@ -752,6 +752,55 @@ def test_wallet_nonce_status_tracks_pending_and_confirmed_transactions(tmp_path,
     assert confirmed["pending_count"] == 0
 
 
+def test_expired_nonce_gap_does_not_block_next_pending_transaction(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "wallet-expired-nonce-gap.sqlite3")
+
+    sender = create_wallet("alice-expired-gap")
+    recipient = create_wallet("bob-expired-gap")
+    _fund_wallet_from_genesis(sender["address"], 3.0)
+
+    expired_tx = sign_transaction(
+        private_key=sender["private_key"],
+        public_key=sender["public_key"],
+        tx_type="transfer",
+        sender=sender["address"],
+        recipient=recipient["address"],
+        amount=0.1,
+        nonce=1,
+        fee=0.01,
+    )
+    next_tx = sign_transaction(
+        private_key=sender["private_key"],
+        public_key=sender["public_key"],
+        tx_type="transfer",
+        sender=sender["address"],
+        recipient=recipient["address"],
+        amount=0.2,
+        nonce=2,
+        fee=0.01,
+    )
+    submit_transaction(expired_tx)
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE mempool_transactions
+            SET status = 'expired', rejection_reason = 'ttl expired', updated_at = created_at
+            WHERE tx_hash = ?
+            """,
+            (expired_tx["tx_hash"],),
+        )
+    submit_transaction(next_tx)
+
+    with get_connection() as connection:
+        nonce_status = get_wallet_nonce_status(connection, sender["address"])
+        selected = select_block_transactions(connection, limit=1)
+
+    assert nonce_status["confirmed_nonce"] == 0
+    assert nonce_status["pending_nonce"] == 2
+    assert nonce_status["next_nonce"] == 3
+    assert selected[0]["tx_hash"] == next_tx["tx_hash"]
+
+
 def test_block_transaction_selection_prioritizes_fee_without_reordering_sender_nonce(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "fee-priority.sqlite3")
 

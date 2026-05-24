@@ -42,6 +42,8 @@ from app.services.wallet import address_matches_public_key, is_valid_address, tr
 
 
 SUPPORTED_BLOCK_TX_TYPES = {"transfer", "stake", "unstake", "science_job_create", "governance_action", "treasury_claim", "faucet"}
+ACTIVE_NONCE_STATUSES = {"pending", "propagated", "selected", "released"}
+CONSUMED_TERMINAL_NONCE_STATUSES = {"expired"}
 SCIENCE_RESERVE_GOVERNANCE_ACTIONS = {
     "propose_activation",
     "approve_activation",
@@ -119,7 +121,7 @@ def select_transactions_for_task(connection: Any, max_count: int, chain_height: 
             sender = tx["sender"]
             expected_nonce = expected_nonce_by_sender.get(sender)
             if expected_nonce is None:
-                expected_nonce = _confirmed_nonce(connection, sender) + 1
+                expected_nonce = _next_selectable_nonce(connection, sender)
             tx_nonce = int(tx["nonce"])
             if tx_nonce < expected_nonce:
                 _fail_transaction(connection, tx["tx_hash"], f"invalid nonce, expected {expected_nonce}")
@@ -141,7 +143,7 @@ def select_transactions_for_task(connection: Any, max_count: int, chain_height: 
                 continue
             selected.append(tx)
             selected_hashes.append(tx["tx_hash"])
-            expected_nonce_by_sender[sender] = tx_nonce + 1
+            expected_nonce_by_sender[sender] = _next_selectable_nonce(connection, sender, start_nonce=tx_nonce + 1)
             reserved_units_by_sender[sender] = reserved_units_by_sender.get(sender, 0) + debit_units
             if tx["tx_type"] == "faucet":
                 reserved_faucet_timestamps_by_sender.setdefault(sender, []).append(_tx_timestamp(tx))
@@ -460,11 +462,17 @@ def get_wallet_nonce_status(connection: Any, address: str) -> dict[str, Any]:
     ).fetchone()
     confirmed_nonce = _confirmed_nonce(connection, address)
     pending_nonce = int(row["pending_nonce"] if row else 0)
+    next_nonce = _next_nonce_after_statuses(
+        connection,
+        address,
+        confirmed_nonce + 1,
+        ACTIVE_NONCE_STATUSES | CONSUMED_TERMINAL_NONCE_STATUSES,
+    )
     return {
         "address": address,
         "confirmed_nonce": confirmed_nonce,
         "pending_nonce": pending_nonce,
-        "next_nonce": max(confirmed_nonce, pending_nonce) + 1,
+        "next_nonce": max(next_nonce, pending_nonce + 1 if pending_nonce else next_nonce),
         "pending_count": int(row["pending_count"] if row else 0),
         "checked_at": utc_now(),
     }
@@ -531,6 +539,45 @@ def _confirmed_nonce(connection: Any, account_id: str) -> int:
     return max(stored_nonce, mempool_nonce)
 
 
+def _next_selectable_nonce(connection: Any, account_id: str, start_nonce: int | None = None) -> int:
+    if start_nonce is None:
+        start_nonce = _confirmed_nonce(connection, account_id) + 1
+    return _next_nonce_after_statuses(
+        connection,
+        account_id,
+        int(start_nonce),
+        CONSUMED_TERMINAL_NONCE_STATUSES,
+    )
+
+
+def _next_nonce_after_statuses(
+    connection: Any,
+    account_id: str,
+    start_nonce: int,
+    statuses: set[str],
+) -> int:
+    if not statuses:
+        return int(start_nonce)
+    ordered_statuses = tuple(sorted(statuses))
+    placeholders = ",".join("?" for _ in ordered_statuses)
+    rows = connection.execute(
+        f"""
+        SELECT nonce
+        FROM mempool_transactions
+        WHERE sender = ?
+        AND nonce >= ?
+        AND status IN ({placeholders})
+        ORDER BY nonce ASC
+        """,
+        (account_id, int(start_nonce), *ordered_statuses),
+    ).fetchall()
+    consumed = {int(row["nonce"]) for row in rows}
+    nonce = int(start_nonce)
+    while nonce in consumed:
+        nonce += 1
+    return nonce
+
+
 def _record_confirmed_nonce(connection: Any, account_id: str, nonce: int, timestamp: str) -> None:
     connection.execute(
         """
@@ -585,7 +632,7 @@ def _transaction_rejection_reason(
     sender = tx["sender"]
     expected_nonce = expected_nonce_by_sender.get(sender)
     if expected_nonce is None:
-        expected_nonce = _confirmed_nonce(connection, sender) + 1
+        expected_nonce = _next_selectable_nonce(connection, sender)
     if int(tx["nonce"]) != expected_nonce:
         return f"invalid nonce, expected {expected_nonce}"
     balance = _balance(connection, sender)
