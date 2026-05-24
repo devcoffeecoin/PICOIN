@@ -32,6 +32,7 @@ def load_env_file(path: Path = Path(".env")) -> None:
 load_env_file()
 
 from app.core.crypto import canonical_json, sha256_text
+from app.core.network_profiles import MAINNET_PROFILE
 from app.core.settings import (
     CHAIN_ID,
     DATABASE_PATH,
@@ -485,6 +486,242 @@ def command_node_report(args: argparse.Namespace) -> int:
         "block_hash": sync.get("effective_latest_block_hash") or sync.get("latest_block_hash"),
         "network_id": sync.get("network_id"),
         "chain_id": sync.get("chain_id"),
+        "checks": checks,
+        "summary": {"errors": len(failures), "warnings": len(warnings), "checked": len(checks)},
+    }
+    if args.verbose:
+        output["payloads"] = payloads
+    print_json(output)
+    return 1 if failures else 0
+
+
+def _optional_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _float_matches(value: Any, expected: float, tolerance: float = 0.00000001) -> bool:
+    parsed = _optional_float(value)
+    return parsed is not None and abs(parsed - expected) <= tolerance
+
+
+def _audit_issue_codes(audit: dict[str, Any]) -> set[str]:
+    codes: set[str] = set()
+    for issue in audit.get("issues", []) or []:
+        if isinstance(issue, dict):
+            code = issue.get("code")
+            if code:
+                codes.add(str(code))
+        elif issue:
+            codes.add(str(issue))
+    return codes
+
+
+def command_node_mainnet_preflight(args: argparse.Namespace) -> int:
+    server_url = normalize_server_url(args.server)
+    peer_url = normalize_server_url(args.peer) if args.peer else None
+    checks: list[dict[str, Any]] = []
+    payloads: dict[str, Any] = {}
+
+    def add_check(name: str, ok: bool, detail: str, severity: str = "error") -> None:
+        checks.append({"name": name, "ok": ok, "detail": detail, "severity": severity})
+
+    health = get_json(server_url, "/health")
+    protocol = get_json(server_url, "/protocol")
+    sync = get_json(server_url, "/node/sync-status")
+    audit = get_json(server_url, "/audit/full")
+    validators = get_json(server_url, "/validators/status")
+    mempool = get_json(server_url, "/mempool/status")
+    consensus = get_json(server_url, "/consensus/status")
+    payloads.update(
+        {
+            "health": health,
+            "protocol": protocol,
+            "sync": sync,
+            "audit": audit,
+            "validators": validators,
+            "mempool": mempool,
+            "consensus": consensus,
+        }
+    )
+
+    add_check("api_health", health.get("status") == "ok", f"status={health.get('status')}")
+    add_check("database", bool(health.get("database", {}).get("connected")), "database connected")
+    add_check("chain", bool(health.get("chain", {}).get("valid")), "chain validation")
+    add_check("audit_valid", bool(audit.get("valid")), f"issues={len(audit.get('issues', []) or [])}")
+    add_check("network_id", protocol.get("network_id") == MAINNET_PROFILE.network_id, f"network_id={protocol.get('network_id')}")
+    add_check("chain_id", protocol.get("chain_id") == MAINNET_PROFILE.chain_id, f"chain_id={protocol.get('chain_id')}")
+    add_check(
+        "protocol_version",
+        str(protocol.get("protocol_version")) == MAINNET_PROFILE.protocol_version,
+        f"protocol_version={protocol.get('protocol_version')}",
+    )
+    add_check("faucet_disabled", protocol.get("faucet_enabled") is False, f"faucet_enabled={protocol.get('faucet_enabled')}")
+    add_check(
+        "validator_quorum_frozen",
+        _optional_int(protocol.get("required_validator_approvals")) == MAINNET_PROFILE.required_validator_approvals,
+        f"required_validator_approvals={protocol.get('required_validator_approvals')}",
+    )
+    add_check(
+        "validator_eligibility_wallet_backed",
+        protocol.get("validator_eligibility_stake_field") == "wallet_stake_locked"
+        and protocol.get("validator_eligibility_stake_source") == "wallet",
+        (
+            f"field={protocol.get('validator_eligibility_stake_field')}, "
+            f"source={protocol.get('validator_eligibility_stake_source')}"
+        ),
+    )
+
+    reward_checks = {
+        "proof_of_pi_reward_percent": MAINNET_PROFILE.proof_of_pi_reward_percent,
+        "validator_reward_percent": MAINNET_PROFILE.validator_reward_percent,
+        "science_compute_reward_percent": MAINNET_PROFILE.science_compute_reward_percent,
+        "scientific_development_reward_percent": MAINNET_PROFILE.scientific_development_reward_percent,
+    }
+    for field, expected in reward_checks.items():
+        add_check(field, _float_matches(protocol.get(field), expected), f"{field}={protocol.get(field)}, expected={expected}")
+    reward_sum = sum(_optional_float(protocol.get(field)) or 0.0 for field in reward_checks)
+    add_check("reward_percent_sum", abs(reward_sum - 1.0) <= 0.00000001, f"sum={round(reward_sum, 8)}")
+    add_check(
+        "retroactive_audit_no_emission",
+        _float_matches(protocol.get("retroactive_audit_reward_percent"), 0.0)
+        and _float_matches(protocol.get("retroactive_audit_reward_per_audit"), 0.0),
+        (
+            f"percent={protocol.get('retroactive_audit_reward_percent')}, "
+            f"per_audit={protocol.get('retroactive_audit_reward_per_audit')}"
+        ),
+    )
+
+    issue_codes = _audit_issue_codes(audit)
+    add_check(
+        "no_legacy_mainnet_validator_stake",
+        "mainnet_legacy_validator_stake" not in issue_codes,
+        f"issue_codes={sorted(issue_codes)}",
+    )
+
+    required_approvals = _optional_int(validators.get("required_validator_approvals")) or MAINNET_PROFILE.required_validator_approvals
+    eligible_count = _optional_int(validators.get("eligible_validators")) or 0
+    add_check(
+        "validator_quorum_available",
+        required_approvals > 0 and eligible_count >= required_approvals,
+        f"eligible={eligible_count}, required={required_approvals}",
+    )
+
+    validator_rows = validators.get("validators", []) or []
+    eligible_validators = [validator for validator in validator_rows if validator.get("eligible") is True]
+    min_stake = _optional_float(protocol.get("min_validator_stake")) or MAINNET_PROFILE.min_validator_stake
+    missing_wallet_stake = []
+    unhealthy_validators = []
+    rewardless_validators = []
+    for validator in eligible_validators:
+        validator_id = validator.get("validator_id")
+        eligibility_stake = _optional_float(validator.get("eligibility_stake"))
+        if eligibility_stake is None:
+            eligibility_stake = _optional_float(validator.get("wallet_stake_locked"))
+        if eligibility_stake is None or eligibility_stake + 0.00000001 < min_stake:
+            missing_wallet_stake.append(validator_id)
+        if validator.get("eligibility_stake_source") not in {None, "wallet"}:
+            missing_wallet_stake.append(validator_id)
+        if validator.get("online_status") != "online" or validator.get("sync_status") != "synced":
+            unhealthy_validators.append(validator_id)
+        if not validator.get("reward_address"):
+            rewardless_validators.append(validator_id)
+    add_check(
+        "eligible_validators_wallet_staked",
+        not missing_wallet_stake and bool(eligible_validators),
+        f"missing_or_legacy={missing_wallet_stake}, eligible_checked={len(eligible_validators)}",
+    )
+    add_check(
+        "eligible_validators_healthy",
+        not unhealthy_validators and bool(eligible_validators),
+        f"unhealthy={unhealthy_validators}, eligible_checked={len(eligible_validators)}",
+    )
+    add_check(
+        "eligible_validators_reward_addresses",
+        not rewardless_validators and bool(eligible_validators),
+        f"missing_reward_address={rewardless_validators}",
+        "warning",
+    )
+
+    replay = sync.get("replay", {}) or {}
+    add_check(
+        "pending_replay_clear",
+        int(sync.get("pending_replay_blocks", 0) or 0) == 0
+        and int(replay.get("queue_size", 0) or 0) == 0
+        and int(replay.get("finalized_queue_size", 0) or 0) == 0
+        and int(replay.get("header_queue_size", 0) or 0) == 0,
+        (
+            f"pending_replay_blocks={sync.get('pending_replay_blocks', 0)}, "
+            f"queue={replay.get('queue_size', 0)}, finalized={replay.get('finalized_queue_size', 0)}, "
+            f"headers={replay.get('header_queue_size', 0)}"
+        ),
+    )
+    consensus_counts = consensus.get("proposals", {}) or sync.get("consensus", {}) or {}
+    add_check(
+        "consensus_backlog_clear",
+        int(consensus_counts.get("pending_missing_ancestors", 0) or 0) == 0,
+        f"pending_missing_ancestors={consensus_counts.get('pending_missing_ancestors', 0)}",
+    )
+    add_check(
+        "no_fork_groups",
+        int(consensus.get("fork_group_count", 0) or 0) == 0
+        and int(consensus.get("competing_proposal_count", 0) or 0) == 0,
+        (
+            f"fork_groups={consensus.get('fork_group_count', 0)}, "
+            f"competing_proposals={consensus.get('competing_proposal_count', 0)}"
+        ),
+        "warning",
+    )
+    mempool_pending = int(mempool.get("pending_count", 0) or 0)
+    mempool_selected = int(mempool.get("selected_count", 0) or 0)
+    mempool_empty = mempool_pending == 0 and mempool_selected == 0
+    add_check(
+        "mempool_empty",
+        mempool_empty,
+        f"pending={mempool_pending}, selected={mempool_selected}",
+        "warning" if args.allow_mempool else "error",
+    )
+
+    peer_sync: dict[str, Any] | None = None
+    if peer_url:
+        peer_sync = get_json(peer_url, "/node/sync-status")
+        payloads["peer_sync"] = peer_sync
+        local_height = int(sync.get("effective_latest_block_height", sync.get("latest_block_height", 0)) or 0)
+        local_hash = sync.get("effective_latest_block_hash") or sync.get("latest_block_hash")
+        peer_height = int(peer_sync.get("effective_latest_block_height", peer_sync.get("latest_block_height", 0)) or 0)
+        peer_hash = peer_sync.get("effective_latest_block_hash") or peer_sync.get("latest_block_hash")
+        add_check("peer_network_match", sync.get("network_id") == peer_sync.get("network_id"), f"peer={peer_sync.get('network_id')}")
+        add_check("peer_chain_match", sync.get("chain_id") == peer_sync.get("chain_id"), f"peer={peer_sync.get('chain_id')}")
+        add_check(
+            "peer_genesis_match",
+            sync.get("genesis_hash") == peer_sync.get("genesis_hash"),
+            f"peer={peer_sync.get('genesis_hash')}",
+        )
+        add_check("peer_height_match", local_height == peer_height, f"local={local_height}, peer={peer_height}")
+        add_check("peer_block_hash_match", local_hash == peer_hash, f"local={local_hash}, peer={peer_hash}")
+
+    failures = [check for check in checks if not check["ok"] and check["severity"] == "error"]
+    warnings = [check for check in checks if not check["ok"] and check["severity"] == "warning"]
+    output = {
+        "server": server_url,
+        "peer": peer_url,
+        "status": "fail" if failures else "warn" if warnings else "ok",
+        "network_id": protocol.get("network_id"),
+        "chain_id": protocol.get("chain_id"),
+        "protocol_version": protocol.get("protocol_version"),
+        "height": sync.get("effective_latest_block_height", sync.get("latest_block_height", 0)),
+        "block_hash": sync.get("effective_latest_block_hash") or sync.get("latest_block_hash"),
+        "eligible_validators": eligible_count,
+        "required_validator_approvals": required_approvals,
         "checks": checks,
         "summary": {"errors": len(failures), "warnings": len(warnings), "checked": len(checks)},
     }
@@ -1353,6 +1590,20 @@ def add_node_parser(subparsers: argparse._SubParsersAction) -> None:
     report_parser.add_argument("--require-peers", action="store_true")
     report_parser.add_argument("--verbose", action="store_true")
     report_parser.set_defaults(func=command_node_report)
+
+    mainnet_preflight_parser = node_subparsers.add_parser(
+        "mainnet-preflight",
+        help="Run mainnet launch preflight checks",
+    )
+    mainnet_preflight_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    mainnet_preflight_parser.add_argument("--peer", help="Optional peer base URL")
+    mainnet_preflight_parser.add_argument(
+        "--allow-mempool",
+        action="store_true",
+        help="Downgrade non-empty mempool from error to warning",
+    )
+    mainnet_preflight_parser.add_argument("--verbose", action="store_true")
+    mainnet_preflight_parser.set_defaults(func=command_node_mainnet_preflight)
 
     compare_parser = node_subparsers.add_parser("compare", help="Compare local chain identity and tip with one peer")
     compare_parser.add_argument("--server", default=DEFAULT_SERVER_URL)

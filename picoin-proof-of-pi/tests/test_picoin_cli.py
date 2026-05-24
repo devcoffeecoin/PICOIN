@@ -1,7 +1,9 @@
+import argparse
+import json
 from pathlib import Path
 
 from app.core.settings import FAUCET_DEFAULT_AMOUNT
-from picoin.cli import build_parser, normalize_server_url
+from picoin.cli import build_parser, command_node_mainnet_preflight, normalize_server_url
 
 
 def test_picoin_cli_parses_node_start_defaults() -> None:
@@ -43,6 +45,18 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
     genesis_hash = parser.parse_args(["node", "genesis-hash", "--file", "genesis.json"])
     compare = parser.parse_args(["node", "compare", "--peer", "http://peer:8000"])
     repair_rewards = parser.parse_args(["node", "repair-rewards"])
+    mainnet_preflight = parser.parse_args(
+        [
+            "node",
+            "mainnet-preflight",
+            "--server",
+            "http://mainnet:8000",
+            "--peer",
+            "http://peer:8000",
+            "--allow-mempool",
+            "--verbose",
+        ]
+    )
     debug_replay = parser.parse_args(
             [
                 "debug",
@@ -89,11 +103,109 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
     assert compare.node_command == "compare"
     assert compare.peer == "http://peer:8000"
     assert repair_rewards.node_command == "repair-rewards"
+    assert mainnet_preflight.node_command == "mainnet-preflight"
+    assert mainnet_preflight.server == "http://mainnet:8000"
+    assert mainnet_preflight.peer == "http://peer:8000"
+    assert mainnet_preflight.allow_mempool is True
+    assert mainnet_preflight.verbose is True
     assert debug_replay.command == "debug"
     assert debug_replay.debug_command == "replay-check"
     assert debug_replay.peer == "https://api.picoin.science"
     assert debug_replay.from_height == 939
     assert debug_replay.to_height == 960
+
+
+def _mainnet_preflight_payloads() -> dict[str, dict]:
+    validator = {
+        "eligible": True,
+        "eligibility_stake": 31.416,
+        "eligibility_stake_source": "wallet",
+        "online_status": "online",
+        "reward_address": "PI123",
+        "sync_status": "synced",
+        "validator_id": "validator_1",
+        "wallet_stake_locked": 31.416,
+    }
+    return {
+        "/health": {"status": "ok", "database": {"connected": True}, "chain": {"valid": True}},
+        "/protocol": {
+            "chain_id": "picoin-mainnet-v1",
+            "faucet_enabled": False,
+            "min_validator_stake": 31.416,
+            "network_id": "mainnet",
+            "proof_of_pi_reward_percent": 0.80,
+            "protocol_version": "1.0",
+            "required_validator_approvals": 3,
+            "retroactive_audit_reward_percent": 0.0,
+            "retroactive_audit_reward_per_audit": 0.0,
+            "science_compute_reward_percent": 0.07,
+            "scientific_development_reward_percent": 0.03,
+            "validator_eligibility_stake_field": "wallet_stake_locked",
+            "validator_eligibility_stake_source": "wallet",
+            "validator_reward_percent": 0.10,
+        },
+        "/node/sync-status": {
+            "chain_id": "picoin-mainnet-v1",
+            "effective_latest_block_hash": "block-hash",
+            "effective_latest_block_height": 10,
+            "genesis_hash": "genesis-hash",
+            "network_id": "mainnet",
+            "pending_replay_blocks": 0,
+            "replay": {
+                "finalized_queue_size": 0,
+                "header_queue_size": 0,
+                "queue_size": 0,
+            },
+        },
+        "/audit/full": {"valid": True, "issues": []},
+        "/validators/status": {
+            "eligible_validators": 3,
+            "required_validator_approvals": 3,
+            "validators": [dict(validator, validator_id=f"validator_{index}") for index in range(1, 4)],
+        },
+        "/mempool/status": {"pending_count": 0, "selected_count": 0},
+        "/consensus/status": {"competing_proposal_count": 0, "fork_group_count": 0, "proposals": {"pending_missing_ancestors": 0}},
+    }
+
+
+def test_node_mainnet_preflight_passes_with_wallet_backed_validators(monkeypatch, capsys) -> None:
+    payloads = _mainnet_preflight_payloads()
+
+    def fake_get_json(server_url: str, path: str) -> dict:
+        assert server_url == "http://node"
+        return payloads[path]
+
+    monkeypatch.setattr("picoin.cli.get_json", fake_get_json)
+    args = argparse.Namespace(server="http://node", peer=None, allow_mempool=False, verbose=False)
+
+    assert command_node_mainnet_preflight(args) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "ok"
+    assert output["network_id"] == "mainnet"
+    assert output["eligible_validators"] == 3
+
+
+def test_node_mainnet_preflight_fails_on_unbacked_validator_stake(monkeypatch, capsys) -> None:
+    payloads = _mainnet_preflight_payloads()
+    payloads["/audit/full"] = {
+        "valid": False,
+        "issues": [{"code": "mainnet_legacy_validator_stake", "message": "legacy stake"}],
+    }
+    payloads["/validators/status"]["validators"][0]["eligibility_stake_source"] = "legacy_or_wallet"
+
+    def fake_get_json(server_url: str, path: str) -> dict:
+        assert server_url == "http://node"
+        return payloads[path]
+
+    monkeypatch.setattr("picoin.cli.get_json", fake_get_json)
+    args = argparse.Namespace(server="http://node", peer=None, allow_mempool=False, verbose=False)
+
+    assert command_node_mainnet_preflight(args) == 1
+    output = json.loads(capsys.readouterr().out)
+    failed_checks = {check["name"] for check in output["checks"] if not check["ok"]}
+    assert output["status"] == "fail"
+    assert "no_legacy_mainnet_validator_stake" in failed_checks
+    assert "eligible_validators_wallet_staked" in failed_checks
 
 
 def test_picoin_cli_parses_wallet_and_tx_commands() -> None:
