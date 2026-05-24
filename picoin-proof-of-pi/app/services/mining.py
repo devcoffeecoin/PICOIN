@@ -87,6 +87,8 @@ from app.core.settings import (
     VALIDATOR_AVAILABILITY_WINDOW_SECONDS,
     VALIDATOR_COOLDOWN_AFTER_INVALID_RESULTS,
     VALIDATOR_COOLDOWN_SECONDS,
+    VALIDATOR_ELIGIBILITY_STAKE_FIELD,
+    VALIDATOR_ELIGIBILITY_STAKE_SOURCE,
     VALIDATOR_MIN_TRUST_SCORE,
     VALIDATOR_PENALTY_INVALID_SIGNATURE,
     VALIDATOR_ROTATION_WINDOW_SECONDS,
@@ -273,7 +275,7 @@ def get_validators(limit: int = 100, eligible_only: bool = False) -> list[dict[s
     where = ""
     params: tuple[Any, ...] = ()
     if eligible_only:
-        where = """
+        where = f"""
         WHERE is_banned = 0
         AND enabled = 1
         AND online_status = 'online'
@@ -281,7 +283,7 @@ def get_validators(limit: int = 100, eligible_only: bool = False) -> list[dict[s
         AND COALESCE(node_id, '') != ''
         AND COALESCE(advertised_address, '') != ''
         AND protocol_version = ?
-        AND stake_locked >= ?
+        AND {VALIDATOR_ELIGIBILITY_STAKE_FIELD} >= ?
         AND trust_score >= ?
         """
         params = (PROTOCOL_VERSION, MIN_VALIDATOR_STAKE, VALIDATOR_MIN_TRUST_SCORE)
@@ -290,7 +292,7 @@ def get_validators(limit: int = 100, eligible_only: bool = False) -> list[dict[s
             f"""
             SELECT * FROM validators
             {where}
-            ORDER BY trust_score DESC, stake_locked DESC, accepted_jobs DESC, registered_at ASC
+            ORDER BY trust_score DESC, {VALIDATOR_ELIGIBILITY_STAKE_FIELD} DESC, accepted_jobs DESC, registered_at ASC
             LIMIT ?
             """,
             (*params, limit),
@@ -313,6 +315,8 @@ def enrich_validator(validator: dict[str, Any] | None, connection: Any | None = 
     validator["enabled"] = bool(validator.get("enabled", 1))
     validator["online_status"] = validator.get("online_status") or "offline"
     validator["sync_status"] = validator.get("sync_status") or "unknown"
+    validator["eligibility_stake"] = round(_validator_eligibility_stake(validator), 8)
+    validator["eligibility_stake_source"] = VALIDATOR_ELIGIBILITY_STAKE_SOURCE
     validator["eligible"] = _validator_row_is_eligible(validator)
     validator["total_rewards"] = _validator_reward_total(
         [validator["validator_id"], reward_address] if reward_address else [validator["validator_id"]]
@@ -435,7 +439,7 @@ def _validator_row_is_eligible(validator: dict[str, Any]) -> bool:
     return (
         not bool(validator.get("is_banned"))
         and bool(validator.get("enabled", 1))
-        and float(validator.get("stake_locked") or 0) >= MIN_VALIDATOR_STAKE
+        and _validator_eligibility_stake(validator) >= MIN_VALIDATOR_STAKE
         and float(validator.get("trust_score") or 0) >= VALIDATOR_MIN_TRUST_SCORE
         and str(validator.get("online_status") or "") == "online"
         and str(validator.get("sync_status") or "") != "out_of_sync"
@@ -443,6 +447,16 @@ def _validator_row_is_eligible(validator: dict[str, Any]) -> bool:
         and bool(str(validator.get("advertised_address") or "").strip())
         and str(validator.get("protocol_version") or PROTOCOL_VERSION) == PROTOCOL_VERSION
     )
+
+
+def _validator_eligibility_stake(validator: dict[str, Any]) -> float:
+    return float(validator.get(VALIDATOR_ELIGIBILITY_STAKE_FIELD) or 0)
+
+
+def _validator_min_stake_reason() -> str:
+    if VALIDATOR_ELIGIBILITY_STAKE_FIELD == "wallet_stake_locked":
+        return "validator wallet-backed stake is below the minimum required"
+    return "validator stake is below the minimum required"
 
 
 def adaptive_required_validator_approvals(eligible_validators: int) -> int:
@@ -488,6 +502,8 @@ def refresh_participant_liveness(now: datetime | None = None) -> dict[str, Any]:
                 reason = "validator out of sync"
             elif str(validator.get("protocol_version") or PROTOCOL_VERSION) != PROTOCOL_VERSION:
                 reason = "protocol version mismatch"
+            elif _validator_eligibility_stake(validator) < MIN_VALIDATOR_STAKE:
+                reason = _validator_min_stake_reason()
             connection.execute(
                 """
                 UPDATE validators
@@ -1991,8 +2007,8 @@ def get_validation_job(
         cooldown_until = parse_iso(validator["cooldown_until"])
         if cooldown_until is not None and cooldown_until > utc_now_dt():
             raise MiningError(429, f"validator is in cooldown until {validator['cooldown_until']}")
-        if float(validator["stake_locked"]) < MIN_VALIDATOR_STAKE:
-            raise MiningError(403, "validator stake is below the minimum required")
+        if _validator_eligibility_stake(validator) < MIN_VALIDATOR_STAKE:
+            raise MiningError(403, _validator_min_stake_reason())
         if float(validator["trust_score"]) < VALIDATOR_MIN_TRUST_SCORE:
             raise MiningError(403, "validator trust score is below the minimum required")
         if not str(validator.get("node_id") or "").strip() or not str(validator.get("advertised_address") or "").strip():
@@ -2678,12 +2694,12 @@ def get_audit_summary() -> dict[str, Any]:
         blocks = connection.execute("SELECT COUNT(*) AS count FROM blocks").fetchone()["count"]
         pending_jobs = connection.execute("SELECT COUNT(*) AS count FROM validation_jobs WHERE status = 'pending'").fetchone()["count"]
         validators = connection.execute(
-            """
+            f"""
             SELECT
                 COUNT(*) AS validator_count,
                 COALESCE(SUM(stake_locked), 0) AS locked_stake,
                 COALESCE(SUM(slashed_amount), 0) AS slashed_stake,
-                COALESCE(SUM(CASE WHEN is_banned = 0 AND stake_locked >= ? AND trust_score >= ? THEN 1 ELSE 0 END), 0) AS eligible_count
+                COALESCE(SUM(CASE WHEN is_banned = 0 AND {VALIDATOR_ELIGIBILITY_STAKE_FIELD} >= ? AND trust_score >= ? THEN 1 ELSE 0 END), 0) AS eligible_count
             FROM validators
             """,
             (MIN_VALIDATOR_STAKE, VALIDATOR_MIN_TRUST_SCORE),
@@ -2908,6 +2924,18 @@ def get_full_economic_audit() -> dict[str, Any]:
         expected=validator_slashed_amount,
         actual=ledger_genesis_slashes,
     )
+    if NETWORK_ID == "mainnet" and legacy_validator_stake_locked > ECONOMIC_AUDIT_TOLERANCE:
+        issues.append(
+            {
+                "code": "mainnet_legacy_validator_stake",
+                "severity": "error",
+                "message": "mainnet validator collateral must be wallet-backed stake",
+                "details": {
+                    "legacy_unbacked_stake_locked": legacy_validator_stake_locked,
+                    "wallet_stake_locked": validator_wallet_stake_locked,
+                },
+            }
+        )
 
     if accepted_blocks != reward_count:
         issues.append(
@@ -2981,6 +3009,7 @@ def get_full_economic_audit() -> dict[str, Any]:
             "wallet_stake_locked": validator_wallet_stake_locked,
             "expected_wallet_stake_locked": expected_validator_wallet_stake_locked,
             "legacy_unbacked_stake_locked": legacy_validator_stake_locked,
+            "eligibility_stake_source": VALIDATOR_ELIGIBILITY_STAKE_SOURCE,
             "ledger_validator_stake_locks": ledger_validator_stake_locks,
             "ledger_validator_stake_unlocks": ledger_validator_stake_unlocks,
             "slashed_amount": validator_slashed_amount,
@@ -3594,6 +3623,9 @@ def _protocol_payload(params: dict[str, Any]) -> dict[str, Any]:
         "fraud_validator_invalid_results": FRAUD_VALIDATOR_INVALID_RESULTS,
         "fraud_cooldown_seconds": FRAUD_COOLDOWN_SECONDS,
         "faucet_enabled": NETWORK_ID in FAUCET_ALLOWED_NETWORKS,
+        "min_validator_stake": MIN_VALIDATOR_STAKE,
+        "validator_eligibility_stake_field": VALIDATOR_ELIGIBILITY_STAKE_FIELD,
+        "validator_eligibility_stake_source": VALIDATOR_ELIGIBILITY_STAKE_SOURCE,
         "validator_selection_mode": VALIDATOR_SELECTION_MODE,
         "penalty_invalid_result": PENALTY_INVALID_RESULT,
         "penalty_duplicate": PENALTY_DUPLICATE,
@@ -4046,7 +4078,7 @@ def _eligible_validator_rows(connection: Any) -> list[dict[str, Any]]:
                 (online_status, sync_status, out_of_sync_since, validator["validator_id"]),
             )
     rows = connection.execute(
-        """
+        f"""
         SELECT *
         FROM validators
         WHERE is_banned = 0
@@ -4056,7 +4088,7 @@ def _eligible_validator_rows(connection: Any) -> list[dict[str, Any]]:
         AND COALESCE(node_id, '') != ''
         AND COALESCE(advertised_address, '') != ''
         AND protocol_version = ?
-        AND stake_locked >= ?
+        AND {VALIDATOR_ELIGIBILITY_STAKE_FIELD} >= ?
         AND trust_score >= ?
         """,
         (PROTOCOL_VERSION, MIN_VALIDATOR_STAKE, VALIDATOR_MIN_TRUST_SCORE),
@@ -4074,7 +4106,7 @@ def _eligible_validator_rows(connection: Any) -> list[dict[str, Any]]:
 
 def _validator_selection_metrics(connection: Any, validator: dict[str, Any]) -> dict[str, Any]:
     trust_score = max(0.0, min(1.0, float(validator.get("trust_score") or 0.0)))
-    stake_locked = max(0.0, float(validator.get("stake_locked") or 0.0))
+    stake_locked = max(0.0, _validator_eligibility_stake(validator))
     stake_score = min(1.0, stake_locked / (MIN_VALIDATOR_STAKE * 2))
 
     last_seen_at = parse_iso(validator.get("last_seen_at"))

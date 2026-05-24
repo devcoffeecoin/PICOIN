@@ -100,6 +100,8 @@ class ValidatorResponse(BaseModel):
     avg_validation_ms: float = 0.0
     stake_locked: float = 0.0
     wallet_stake_locked: float = 0.0
+    eligibility_stake: float = 0.0
+    eligibility_stake_source: str = "legacy_or_wallet"
     slashed_amount: float = 0.0
     total_rewards: float = 0.0
     selection_score: float = 0.0

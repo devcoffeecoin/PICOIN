@@ -22,13 +22,59 @@ def test_mainnet_profile_freezes_launch_parameters(tmp_path) -> None:
     code = """
 import json
 from app.core import settings
-from app.core.signatures import generate_keypair
-from app.db.database import init_db
-from app.services.mining import MiningError, get_balance, get_protocol, register_validator, request_faucet
+from app.core.signatures import generate_keypair, sign_payload
+from app.db.database import get_connection, init_db
+from app.services.mining import (
+    MiningError,
+    get_balance,
+    get_full_economic_audit,
+    get_protocol,
+    get_validators,
+    get_validators_status,
+    record_validator_heartbeat,
+    register_validator,
+    request_faucet,
+)
 
 init_db()
 validator_keys = generate_keypair()
 validator = register_validator("mainnet-validator", validator_keys["public_key"])
+heartbeat = {
+    "validator_id": validator["validator_id"],
+    "node_id": "mainnet-validator-node",
+    "public_key": validator_keys["public_key"],
+    "address": "http://mainnet-validator.node:8000",
+    "local_height": 1,
+    "effective_height": 1,
+    "latest_block_hash": "a" * 64,
+    "pending_replay_blocks": 0,
+    "sync_lag": 0,
+    "version": settings.PROTOCOL_VERSION,
+}
+heartbeat["signature"] = sign_payload(validator_keys["private_key"], heartbeat)
+record_validator_heartbeat(heartbeat)
+eligible_without_stake = len(get_validators(eligible_only=True))
+with get_connection() as connection:
+    connection.execute(
+        "UPDATE validators SET stake_locked = ?, wallet_stake_locked = 0 WHERE validator_id = ?",
+        (settings.MIN_VALIDATOR_STAKE, validator["validator_id"]),
+    )
+eligible_with_legacy_only = len(get_validators(eligible_only=True))
+legacy_audit_issue_codes = [issue["code"] for issue in get_full_economic_audit()["issues"]]
+legacy_status = next(
+    item for item in get_validators_status()["validators"] if item["validator_id"] == validator["validator_id"]
+)
+with get_connection() as connection:
+    connection.execute(
+        "UPDATE validators SET stake_locked = ?, wallet_stake_locked = ?, stake_owner_address = ? WHERE validator_id = ?",
+        (
+            settings.MIN_VALIDATOR_STAKE,
+            settings.MIN_VALIDATOR_STAKE,
+            "PI_MAINNET_STAKER",
+            validator["validator_id"],
+        ),
+    )
+eligible_with_wallet_stake = get_validators(eligible_only=True)
 faucet_error = None
 try:
     request_faucet("PI_MAINNET_TEST", "wallet", 1.0)
@@ -43,8 +89,15 @@ payload = {
     "genesis_balance": get_balance("genesis")["balance"],
     "faucet_allowed_networks": sorted(settings.FAUCET_ALLOWED_NETWORKS),
     "protocol": get_protocol(),
+    "validator_id": validator["validator_id"],
     "validator_registration_stake": validator["stake_locked"],
     "validator_wallet_stake": validator["wallet_stake_locked"],
+    "eligible_without_stake": eligible_without_stake,
+    "eligible_with_legacy_only": eligible_with_legacy_only,
+    "legacy_audit_issue_codes": legacy_audit_issue_codes,
+    "legacy_only_reason": legacy_status["reason_if_not_eligible"],
+    "legacy_only_eligibility_stake_source": legacy_status["eligibility_stake_source"],
+    "eligible_with_wallet_stake": [item["validator_id"] for item in eligible_with_wallet_stake],
     "faucet_error": faucet_error,
 }
 print(json.dumps(payload, sort_keys=True))
@@ -73,8 +126,16 @@ print(json.dumps(payload, sort_keys=True))
     assert payload["protocol"]["required_validator_approvals"] == 3
     assert payload["protocol"]["RETARGET_MAX_PI_POSITION"] == 10**15
     assert payload["protocol"]["reward_per_block"] == 3.1416
+    assert payload["protocol"]["validator_eligibility_stake_field"] == "wallet_stake_locked"
+    assert payload["protocol"]["validator_eligibility_stake_source"] == "wallet"
     assert payload["validator_registration_stake"] == 0.0
     assert payload["validator_wallet_stake"] == 0.0
+    assert payload["eligible_without_stake"] == 0
+    assert payload["eligible_with_legacy_only"] == 0
+    assert "mainnet_legacy_validator_stake" in payload["legacy_audit_issue_codes"]
+    assert payload["legacy_only_reason"] == "validator wallet-backed stake is below the minimum required"
+    assert payload["legacy_only_eligibility_stake_source"] == "wallet"
+    assert payload["eligible_with_wallet_stake"] == [payload["validator_id"]]
     assert payload["faucet_error"]["status_code"] == 403
 
 
