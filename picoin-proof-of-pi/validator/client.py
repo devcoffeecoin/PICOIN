@@ -29,6 +29,16 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def normalize_node_address(address: str) -> str:
+    normalized = str(address or "").strip().rstrip("/")
+    for duplicated in ("http://http://", "https://https://", "https://http://", "http://https://"):
+        if normalized.startswith(duplicated):
+            scheme, rest = duplicated.split("://", 1)
+            normalized = f"{scheme}://{normalized[len(duplicated):]}"
+            break
+    return normalized
+
+
 def load_identity(path: Path) -> dict[str, Any]:
     if not path.exists():
         raise FileNotFoundError(f"identity file not found: {path}")
@@ -134,9 +144,9 @@ def send_validator_heartbeat(
         or 0
     )
     local_height = int(local_status.get("local_block_height") or local_status.get("latest_block_height") or 0)
-    advertised_address = (
+    advertised_address = normalize_node_address(
         VALIDATOR_NODE_ADDRESS
-        or str(local_status.get("peer_address") or "").strip().rstrip("/")
+        or str(local_status.get("peer_address") or "")
         or node_server
     )
     payload = {

@@ -300,6 +300,10 @@ sudo journalctl -u picoin-miner -f
 ## Run a Validator
 
 Run one validator per machine. Do not reuse the same validator identity on multiple hosts.
+Validator workers must poll the bootstrap coordinator, not the local validator
+node. Keep `PICOIN_VALIDATOR_SERVER=https://api.picoin.science` explicit; if it
+is omitted, the worker script falls back to `PICOIN_BOOTSTRAP_PEER` before local
+`PICOIN_SERVER`.
 
 Validator one:
 

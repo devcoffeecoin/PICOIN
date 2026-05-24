@@ -3,6 +3,7 @@ from pathlib import Path
 from miner.client import load_or_register_identity as load_or_register_miner_identity
 from validator.client import get_job as get_validator_job
 from validator.client import load_or_register_identity as load_or_register_validator_identity
+from validator.client import normalize_node_address
 
 
 class _Response:
@@ -71,3 +72,8 @@ def test_validator_job_poll_sends_identity_context(monkeypatch) -> None:
     monkeypatch.setattr("validator.client.requests.get", get)
 
     assert get_validator_job("http://node", identity) == {}
+
+
+def test_validator_node_address_normalizes_duplicate_scheme() -> None:
+    assert normalize_node_address("http://http://170.64.193.147:8000/") == "http://170.64.193.147:8000"
+    assert normalize_node_address("https://https://validator.example.com/") == "https://validator.example.com"
