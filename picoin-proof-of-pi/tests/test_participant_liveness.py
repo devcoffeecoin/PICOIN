@@ -6,6 +6,7 @@ from app.core.signatures import generate_keypair, sign_payload
 from app.db.database import get_connection, init_db
 from app.services.mining import (
     MiningError,
+    cleanup_expired_tasks,
     get_validation_job,
     get_validators,
     record_validator_heartbeat,
@@ -211,3 +212,59 @@ def test_validation_job_is_visible_to_parallel_eligible_validators(tmp_path, mon
     with get_connection() as connection:
         row = connection.execute("SELECT assignment_failures FROM validation_jobs WHERE job_id = 'job_parallel'").fetchone()
     assert row["assignment_failures"] == 0
+
+
+def test_revealed_task_does_not_expire_while_quorum_can_still_advance(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "revealed-quorum-path.sqlite3")
+    miner = register_miner("quorum-path-miner", generate_keypair()["public_key"])
+    first_keys = generate_keypair()
+    second_keys = generate_keypair()
+    first = register_validator("quorum-validator-one", first_keys["public_key"])
+    second = register_validator("quorum-validator-two", second_keys["public_key"])
+    record_validator_heartbeat(_signed_validator_heartbeat(first_keys, first["validator_id"], node_id="node-one"))
+    record_validator_heartbeat(_signed_validator_heartbeat(second_keys, second["validator_id"], node_id="node-two"))
+
+    old_time = (datetime.now(timezone.utc) - timedelta(seconds=1200)).isoformat()
+    with get_connection() as connection:
+        protocol_params_id = connection.execute(
+            "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at, expires_at
+            )
+            VALUES ('task_quorum_path', ?, 1000, 1063, 'bbp_hex_v1', 'revealed', ?, ?, ?)
+            """,
+            (miner["miner_id"], protocol_params_id, old_time, old_time),
+        )
+        connection.execute(
+            """
+            INSERT INTO validation_jobs (
+                job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                samples, status, created_at
+            )
+            VALUES ('job_quorum_path', 'task_quorum_path', ?, ?, ?, ?, '[]', 'pending', ?)
+            """,
+            (miner["miner_id"], "a" * 64, "b" * 64, "c" * 64, old_time),
+        )
+        connection.execute(
+            """
+            INSERT INTO validation_votes (
+                job_id, task_id, validator_id, approved, reason, signature,
+                signed_at, validation_ms, created_at
+            )
+            VALUES ('job_quorum_path', 'task_quorum_path', ?, 1, 'ok', 'sig', ?, 1, ?)
+            """,
+            (first["validator_id"], old_time, old_time),
+        )
+
+    result = cleanup_expired_tasks()
+
+    assert result["expired_tasks"] == 0
+    with get_connection() as connection:
+        task = connection.execute("SELECT status FROM tasks WHERE task_id = 'task_quorum_path'").fetchone()
+        job = connection.execute("SELECT status FROM validation_jobs WHERE job_id = 'job_quorum_path'").fetchone()
+    assert task["status"] == "revealed"
+    assert job["status"] == "pending"

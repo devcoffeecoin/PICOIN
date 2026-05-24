@@ -489,11 +489,10 @@ def test_validation_job_restores_known_validator_identity_after_db_restore(tmp_p
     assert validator["stake_locked"] >= 31.416
 
 
-def test_validation_job_falls_back_to_global_pending_job(tmp_path, monkeypatch) -> None:
+def test_validation_job_broadcasts_global_pending_job(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "assignment-validator-fallback.sqlite3"
     monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
     monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
-    monkeypatch.setattr("app.services.mining._selected_validators_for_job", lambda connection, job, params: [])
     init_db(db_path)
 
     miner_keys = generate_keypair()
@@ -532,4 +531,4 @@ def test_validation_job_falls_back_to_global_pending_job(tmp_path, monkeypatch) 
 
     assert job is not None
     assert job["job_id"] == "job_fallback_validator"
-    assert job["selection_score"] is None
+    assert job["selection_score"] is not None

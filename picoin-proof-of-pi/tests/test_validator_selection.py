@@ -5,7 +5,7 @@ from app.db.database import get_connection, init_db
 from app.services.mining import get_validation_job, get_validators, record_validator_heartbeat, register_miner, register_validator
 
 
-def test_weighted_validator_selection_excludes_lowest_rank_when_pool_is_full(tmp_path, monkeypatch) -> None:
+def test_broadcast_validation_job_is_visible_to_all_eligible_validators(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "validator-selection.sqlite3"
     monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
     monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
@@ -24,7 +24,9 @@ def test_weighted_validator_selection_excludes_lowest_rank_when_pool_is_full(tmp
     low_job = get_validation_job(low_validator["validator_id"])
     high_job = get_validation_job(validators[0]["validator_id"])
 
-    assert low_job is None
+    assert low_job is not None
+    assert low_job["job_id"] == "job_selection_1"
+    assert low_job["selection_rank"] == 7
     assert high_job is not None
     assert high_job["selection_rank"] <= 6
     assert high_job["selection_score"] > 0

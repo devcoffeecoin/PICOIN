@@ -1929,7 +1929,12 @@ def reveal_task(
                 expected_snapshot_id,
                 expected_fee_units,
             )
-            connection.execute("UPDATE tasks SET status = 'revealed' WHERE task_id = ?", (task_id,))
+            params = _protocol_params_for_task(connection, task)
+            validation_expires_at = iso_at(params["task_expiration_seconds"])
+            connection.execute(
+                "UPDATE tasks SET status = 'revealed', expires_at = ? WHERE task_id = ?",
+                (validation_expires_at, task_id),
+            )
         else:
             job_id = existing_job["job_id"]
 
@@ -2028,22 +2033,12 @@ def get_validation_job(
 
         job = None
         selection_meta = None
-        selection_empty = False
         for candidate_row in candidate_rows:
             candidate = row_to_dict(candidate_row)
             params = _protocol_params_for_task(connection, candidate)
-            selected = _selected_validators_for_job(connection, candidate, params)
-            if not selected:
-                selection_empty = True
-            match = next((item for item in selected if item["validator_id"] == validator_id), None)
-            if match is not None:
-                job = candidate
-                selection_meta = match
-                break
-
-        if job is None and selection_empty and candidate_rows:
-            job = row_to_dict(candidate_rows[0])
-            selection_meta = None
+            job = candidate
+            selection_meta = _validator_selection_metadata_for_job(connection, candidate, params, validator_id)
+            break
 
         if job is None:
             return None
@@ -2099,6 +2094,37 @@ def _release_timed_out_validation_assignments(connection: Any) -> int:
         (threshold,),
     )
     return max(0, cursor.rowcount)
+
+
+def _validator_selection_metadata_for_job(
+    connection: Any,
+    job: dict[str, Any],
+    params: dict[str, Any],
+    validator_id: str,
+) -> dict[str, Any] | None:
+    eligible = _eligible_validator_rows(connection)
+    required = _effective_required_validator_approvals(connection, params)
+    pool_size = min(len(eligible), max(required, required * VALIDATOR_SELECTION_POOL_MULTIPLIER))
+    scored: list[dict[str, Any]] = []
+    for validator in eligible:
+        metrics = _validator_selection_metrics(connection, validator)
+        jitter = _selection_jitter(job["challenge_seed"], validator["validator_id"])
+        scored.append(
+            {
+                "validator_id": validator["validator_id"],
+                "selection_score": metrics["selection_score"],
+                "selection_weight": round(metrics["selection_score"] + jitter, 8),
+                "recent_validation_votes": metrics["recent_validation_votes"],
+                "availability_score": metrics["availability_score"],
+            }
+        )
+    scored.sort(key=lambda item: (-item["selection_weight"], item["validator_id"]))
+    for index, item in enumerate(scored, start=1):
+        if item["validator_id"] == validator_id:
+            item["selection_rank"] = index
+            item["selection_pool_size"] = pool_size
+            return item
+    return None
 
 
 def _refresh_validation_job_timing(
@@ -3677,42 +3703,107 @@ def _expire_assigned_tasks(connection: Any) -> dict[str, int]:
         """
         SELECT task_id
         FROM tasks
-        WHERE status IN ('assigned', 'committed', 'revealed')
+        WHERE status IN ('assigned', 'committed')
         AND expires_at IS NOT NULL
         AND expires_at <= ?
         ORDER BY task_id ASC
         """,
         (utc_now(),),
     ).fetchall()
+    revealed_candidates = connection.execute(
+        """
+        SELECT task_id
+        FROM tasks
+        WHERE status = 'revealed'
+        AND expires_at IS NOT NULL
+        AND expires_at <= ?
+        ORDER BY task_id ASC
+        """,
+        (utc_now(),),
+    ).fetchall()
+    expirable_revealed_task_ids = [
+        row["task_id"]
+        for row in revealed_candidates
+        if not _revealed_task_has_quorum_path(connection, row["task_id"])
+    ]
     task_cursor = connection.execute(
         """
         UPDATE tasks
         SET status = 'expired'
-        WHERE status IN ('assigned', 'committed', 'revealed')
+        WHERE status IN ('assigned', 'committed')
         AND expires_at IS NOT NULL
         AND expires_at <= ?
         """,
         (utc_now(),),
     )
-    job_cursor = connection.execute(
-        """
-        UPDATE validation_jobs
-        SET status = 'expired', completed_at = ?
-        WHERE status = 'pending'
-        AND task_id IN (
-            SELECT task_id
-            FROM tasks
-            WHERE status = 'expired'
+    expired_task_ids = [row["task_id"] for row in expired_rows] + expirable_revealed_task_ids
+    revealed_expired_count = 0
+    job_expired_count = 0
+    if expirable_revealed_task_ids:
+        placeholders = ", ".join("?" for _ in expirable_revealed_task_ids)
+        revealed_cursor = connection.execute(
+            f"""
+            UPDATE tasks
+            SET status = 'expired'
+            WHERE status = 'revealed'
+            AND task_id IN ({placeholders})
+            """,
+            tuple(expirable_revealed_task_ids),
         )
-        """,
-        (utc_now(),),
-    )
-    for row in expired_rows:
-        release_selected_transactions(connection, row["task_id"], "task expired")
+        revealed_expired_count = max(0, revealed_cursor.rowcount)
+    if expired_task_ids:
+        placeholders = ", ".join("?" for _ in expired_task_ids)
+        job_cursor = connection.execute(
+            f"""
+            UPDATE validation_jobs
+            SET status = 'expired', completed_at = ?
+            WHERE status = 'pending'
+            AND task_id IN ({placeholders})
+            """,
+            (utc_now(), *expired_task_ids),
+        )
+        job_expired_count = max(0, job_cursor.rowcount)
+    for task_id in expired_task_ids:
+        release_selected_transactions(connection, task_id, "task expired")
     return {
-        "expired_tasks": max(0, task_cursor.rowcount),
-        "expired_validation_jobs": max(0, job_cursor.rowcount),
+        "expired_tasks": max(0, task_cursor.rowcount) + revealed_expired_count,
+        "expired_validation_jobs": job_expired_count,
     }
+
+
+def _revealed_task_has_quorum_path(connection: Any, task_id: str) -> bool:
+    job = row_to_dict(
+        connection.execute(
+            """
+            SELECT validation_jobs.*, tasks.protocol_params_id
+            FROM validation_jobs
+            JOIN tasks ON tasks.task_id = validation_jobs.task_id
+            WHERE validation_jobs.task_id = ?
+            AND validation_jobs.status = 'pending'
+            ORDER BY validation_jobs.created_at DESC
+            LIMIT 1
+            """,
+            (task_id,),
+        ).fetchone()
+    )
+    if job is None:
+        return False
+    params = _protocol_params_for_task(connection, job)
+    required = _effective_required_validator_approvals(connection, params)
+    counts = _validation_vote_counts(connection, job["job_id"])
+    if counts["approvals"] >= required or counts["rejections"] >= required:
+        return True
+    voted_rows = connection.execute(
+        "SELECT validator_id FROM validation_votes WHERE job_id = ?",
+        (job["job_id"],),
+    ).fetchall()
+    voted_validator_ids = {row["validator_id"] for row in voted_rows}
+    eligible_unvoted = [
+        validator
+        for validator in _eligible_validator_rows(connection)
+        if validator["validator_id"] not in voted_validator_ids
+    ]
+    return bool(eligible_unvoted)
 
 
 def _record_submission(
