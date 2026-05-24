@@ -141,6 +141,31 @@ def test_faucet_nonce_chain_does_not_require_sender_balance_for_selection(tmp_pa
     assert [tx["tx_hash"] for tx in selected] == [first["tx_hash"], second["tx_hash"]]
 
 
+def test_faucet_rate_limit_reservation_prevents_overselecting_same_block(tmp_path, monkeypatch) -> None:
+    _setup_db(tmp_path, monkeypatch, "task-snapshot-faucet-rate-reservation")
+    source = create_wallet("faucet-rate-source")
+    request_faucet(source["address"], "wallet", 0.1)
+    request_faucet(source["address"], "wallet", 0.1)
+    first = _submit_faucet_tx(source, 0.1, 1)
+    second = _submit_faucet_tx(source, 0.1, 2)
+
+    with get_connection() as connection:
+        selected = select_transactions_for_task(connection, 10, 0)
+        first_row = connection.execute(
+            "SELECT status FROM mempool_transactions WHERE tx_hash = ?",
+            (first["tx_hash"],),
+        ).fetchone()
+        second_row = connection.execute(
+            "SELECT status, failure_reason FROM mempool_transactions WHERE tx_hash = ?",
+            (second["tx_hash"],),
+        ).fetchone()
+
+    assert [tx["tx_hash"] for tx in selected] == [first["tx_hash"]]
+    assert first_row["status"] == "pending"
+    assert second_row["status"] == "failed"
+    assert second_row["failure_reason"] == "faucet rate limit exceeded for account"
+
+
 def test_release_selected_transactions_returns_valid_tx_to_pending(tmp_path, monkeypatch) -> None:
     _setup_db(tmp_path, monkeypatch, "task-snapshot-release")
     source = _funded_wallet(1.0)

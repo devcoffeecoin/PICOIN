@@ -9,10 +9,12 @@ from app.services.mining import (
     get_ledger_entries,
     get_validator,
     get_validators,
+    record_validator_heartbeat,
     register_miner,
     register_validator,
     submit_validation_result,
 )
+from app.services.transactions import canonical_empty_tx_merkle_root, canonical_selected_tx_hashes_hash
 
 
 def test_validator_reputation_tracks_completed_approved_jobs(tmp_path, monkeypatch) -> None:
@@ -24,6 +26,7 @@ def test_validator_reputation_tracks_completed_approved_jobs(tmp_path, monkeypat
     miner_id = _register_miner("miner-ok")
     validator_keys = generate_keypair()
     validator = register_validator("validator-ok", validator_keys["public_key"])
+    record_validator_heartbeat(_signed_validator_heartbeat(validator_keys, validator["validator_id"]))
     job_id, task_id = _insert_validation_job(miner_id, validator["validator_id"])
     signed_at = "2026-05-10T00:00:00+00:00"
     reason = "accepted samples"
@@ -153,6 +156,68 @@ def test_block_is_accepted_after_validator_quorum(tmp_path, monkeypatch) -> None
     assert get_validator(third_validator["validator_id"])["total_rewards"] == 0.10472
 
 
+def test_quorum_finalization_failure_rejects_job_without_losing_vote(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "validator-quorum-finalization-failure.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    miner_id = _register_miner("miner-finalization-failure")
+    first_keys = generate_keypair()
+    second_keys = generate_keypair()
+    third_keys = generate_keypair()
+    first_validator = register_validator("validator-one", first_keys["public_key"])
+    second_validator = register_validator("validator-two", second_keys["public_key"])
+    third_validator = register_validator("validator-three", third_keys["public_key"])
+    job_id, task_id = _insert_validation_job(miner_id, first_validator["validator_id"], suffix="failure")
+
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE tasks SET tx_merkle_root = ?, tx_count = 1 WHERE task_id = ?",
+            ("f" * 64, task_id),
+        )
+
+    signed_at = "2026-05-10T00:00:00+00:00"
+    validators = [
+        (first_keys, first_validator["validator_id"], "accepted by first"),
+        (second_keys, second_validator["validator_id"], "accepted by second"),
+        (third_keys, third_validator["validator_id"], "accepted by third"),
+    ]
+    responses = []
+    for keys, validator_id, reason in validators:
+        signature = _sign_validation_result(
+            keys["private_key"],
+            job_id,
+            validator_id,
+            task_id,
+            True,
+            reason,
+            signed_at,
+        )
+        responses.append(
+            submit_validation_result(
+                job_id=job_id,
+                validator_id=validator_id,
+                approved=True,
+                reason=reason,
+                signature=signature,
+                signed_at=signed_at,
+            )
+        )
+
+    assert responses[-1]["accepted"] is False
+    assert responses[-1]["status"] == "rejected"
+    assert responses[-1]["approvals"] == 3
+    with get_connection() as connection:
+        job = connection.execute("SELECT status, result_reason FROM validation_jobs WHERE job_id = ?", (job_id,)).fetchone()
+        task = connection.execute("SELECT status FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+        votes = connection.execute("SELECT COUNT(*) AS count FROM validation_votes WHERE job_id = ?", (job_id,)).fetchone()
+    assert job["status"] == "rejected"
+    assert "transaction finalization failed" in job["result_reason"]
+    assert task["status"] == "rejected"
+    assert votes["count"] == 3
+
+
 def test_genesis_balance_and_validator_stake_are_persisted(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "economy.sqlite3"
     monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
@@ -161,6 +226,7 @@ def test_genesis_balance_and_validator_stake_are_persisted(tmp_path, monkeypatch
 
     keys = generate_keypair()
     validator = register_validator("stake-validator", keys["public_key"])
+    record_validator_heartbeat(_signed_validator_heartbeat(keys, validator["validator_id"]))
     genesis = get_balance("genesis")
     validator_balance = get_balance(validator["validator_id"])
     audit = get_audit_summary()
@@ -212,6 +278,23 @@ def _register_miner(name: str) -> str:
     return miner["miner_id"]
 
 
+def _signed_validator_heartbeat(keys: dict[str, str], validator_id: str) -> dict:
+    payload = {
+        "validator_id": validator_id,
+        "node_id": f"node-{validator_id}",
+        "public_key": keys["public_key"],
+        "address": "http://127.0.0.1:8000",
+        "local_height": 100,
+        "effective_height": 100,
+        "latest_block_hash": "a" * 64,
+        "pending_replay_blocks": 0,
+        "sync_lag": 0,
+        "version": "0.18",
+    }
+    payload["signature"] = sign_payload(keys["private_key"], payload)
+    return payload
+
+
 def _insert_validation_job(miner_id: str, validator_id: str, suffix: str = "1") -> tuple[str, str]:
     with get_connection() as connection:
         protocol_params_id = connection.execute(
@@ -225,11 +308,21 @@ def _insert_validation_job(miner_id: str, validator_id: str, suffix: str = "1") 
             """
             INSERT INTO tasks (
                 task_id, miner_id, range_start, range_end, algorithm, status,
-                protocol_params_id, created_at
+                protocol_params_id, selected_tx_hashes, tx_merkle_root, tx_count,
+                tx_fee_total_units, selected_tx_hashes_hash, created_at
             )
-            VALUES (?, ?, ?, ?, 'bbp_hex_v1', 'revealed', ?, ?)
+            VALUES (?, ?, ?, ?, 'bbp_hex_v1', 'revealed', ?, '[]', ?, 0, 0, ?, ?)
             """,
-            (task_id, miner_id, range_start, range_end, protocol_params_id, "2026-05-10T00:00:00+00:00"),
+            (
+                task_id,
+                miner_id,
+                range_start,
+                range_end,
+                protocol_params_id,
+                canonical_empty_tx_merkle_root(),
+                canonical_selected_tx_hashes_hash([]),
+                "2026-05-10T00:00:00+00:00",
+            ),
         )
         connection.execute(
             """

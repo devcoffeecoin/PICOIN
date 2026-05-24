@@ -96,6 +96,7 @@ def select_transactions_for_task(connection: Any, max_count: int, chain_height: 
 
     expected_nonce_by_sender: dict[str, int] = {}
     reserved_units_by_sender: dict[str, int] = {}
+    reserved_faucet_timestamps_by_sender: dict[str, list[datetime]] = {}
     selected: list[dict[str, Any]] = []
     selected_hashes: list[str] = []
     progress = True
@@ -125,7 +126,12 @@ def select_transactions_for_task(connection: Any, max_count: int, chain_height: 
             if tx_nonce > expected_nonce:
                 # Nonce gap: keep the transaction pending for a future pass/block.
                 continue
-            semantic_reason = _transaction_rejection_reason(connection, tx, expected_nonce_by_sender)
+            semantic_reason = _transaction_rejection_reason(
+                connection,
+                tx,
+                expected_nonce_by_sender,
+                reserved_faucet_timestamps_by_sender,
+            )
             if semantic_reason:
                 _fail_transaction(connection, tx["tx_hash"], semantic_reason)
                 continue
@@ -136,6 +142,8 @@ def select_transactions_for_task(connection: Any, max_count: int, chain_height: 
             selected_hashes.append(tx["tx_hash"])
             expected_nonce_by_sender[sender] = tx_nonce + 1
             reserved_units_by_sender[sender] = reserved_units_by_sender.get(sender, 0) + debit_units
+            if tx["tx_type"] == "faucet":
+                reserved_faucet_timestamps_by_sender.setdefault(sender, []).append(_tx_timestamp(tx))
             progress = True
     return selected
 
@@ -559,6 +567,7 @@ def _transaction_rejection_reason(
     connection: Any,
     tx: dict[str, Any],
     expected_nonce_by_sender: dict[str, int],
+    reserved_faucet_timestamps_by_sender: dict[str, list[datetime]] | None = None,
 ) -> str | None:
     if tx["tx_type"] not in SUPPORTED_BLOCK_TX_TYPES:
         return "unsupported transaction type for block execution"
@@ -589,7 +598,7 @@ def _transaction_rejection_reason(
     if tx["tx_type"] == "treasury_claim":
         return _treasury_claim_rejection_reason(connection, tx)
     if tx["tx_type"] == "faucet":
-        return _faucet_rejection_reason(connection, tx)
+        return _faucet_rejection_reason(connection, tx, reserved_faucet_timestamps_by_sender)
     return None
 
 
@@ -601,7 +610,11 @@ def _transfer_rejection_reason(tx: dict[str, Any]) -> str | None:
     return None
 
 
-def _faucet_rejection_reason(connection: Any, tx: dict[str, Any]) -> str | None:
+def _faucet_rejection_reason(
+    connection: Any,
+    tx: dict[str, Any],
+    reserved_faucet_timestamps_by_sender: dict[str, list[datetime]] | None = None,
+) -> str | None:
     if NETWORK_ID not in FAUCET_ALLOWED_NETWORKS:
         return f"faucet is disabled on network '{NETWORK_ID}'"
     amount = round(float(tx.get("amount", 0)), 8)
@@ -616,7 +629,9 @@ def _faucet_rejection_reason(connection: Any, tx: dict[str, Any]) -> str | None:
     genesis_balance = _balance(connection, GENESIS_ACCOUNT_ID)
     if genesis_balance < amount:
         return "genesis faucet balance is insufficient"
-    window_start = (datetime.fromisoformat(tx["timestamp"]) - timedelta(seconds=FAUCET_RATE_LIMIT_WINDOW_SECONDS)).isoformat()
+    tx_timestamp = _tx_timestamp(tx)
+    window_start_dt = tx_timestamp - timedelta(seconds=FAUCET_RATE_LIMIT_WINDOW_SECONDS)
+    window_start = window_start_dt.isoformat()
     recent_requests = connection.execute(
         """
         SELECT COUNT(*) AS count
@@ -627,9 +642,21 @@ def _faucet_rejection_reason(connection: Any, tx: dict[str, Any]) -> str | None:
         """,
         (tx["sender"], window_start),
     ).fetchone()
-    if int(recent_requests["count"]) >= FAUCET_RATE_LIMIT_MAX_REQUESTS:
+    reserved_count = 0
+    if reserved_faucet_timestamps_by_sender:
+        for reserved_at in reserved_faucet_timestamps_by_sender.get(tx["sender"], []):
+            if window_start_dt <= reserved_at <= tx_timestamp:
+                reserved_count += 1
+    if int(recent_requests["count"]) + reserved_count >= FAUCET_RATE_LIMIT_MAX_REQUESTS:
         return "faucet rate limit exceeded for account"
     return None
+
+
+def _tx_timestamp(tx: dict[str, Any]) -> datetime:
+    timestamp = str(tx["timestamp"])
+    if timestamp.endswith("Z"):
+        timestamp = f"{timestamp[:-1]}+00:00"
+    return datetime.fromisoformat(timestamp)
 
 
 def _transaction_priority(tx: dict[str, Any]) -> tuple[float, str, str]:
