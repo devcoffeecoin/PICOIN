@@ -146,6 +146,13 @@ def command_node_sync_status(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_node_validation_health(args: argparse.Namespace) -> int:
+    path = f"/validation/jobs/health?stale_after_seconds={int(args.stale_after_seconds)}&limit={int(args.limit)}"
+    payload = get_json(args.server, path)
+    print_json(payload)
+    return 0 if payload.get("healthy") else 1
+
+
 def command_node_doctor(args: argparse.Namespace) -> int:
     server_url = normalize_server_url(args.server)
     checks: list[dict[str, Any]] = []
@@ -542,6 +549,7 @@ def command_node_mainnet_preflight(args: argparse.Namespace) -> int:
     validators = get_json(server_url, "/validators/status")
     mempool = get_json(server_url, "/mempool/status")
     consensus = get_json(server_url, "/consensus/status")
+    validation_health = get_json(server_url, "/validation/jobs/health")
     payloads.update(
         {
             "health": health,
@@ -551,6 +559,7 @@ def command_node_mainnet_preflight(args: argparse.Namespace) -> int:
             "validators": validators,
             "mempool": mempool,
             "consensus": consensus,
+            "validation_health": validation_health,
         }
     )
 
@@ -706,6 +715,15 @@ def command_node_mainnet_preflight(args: argparse.Namespace) -> int:
         mempool_empty,
         f"pending={mempool_pending}, selected={mempool_selected}",
         "warning" if args.allow_mempool else "error",
+    )
+    add_check(
+        "validation_jobs_not_stuck",
+        bool(validation_health.get("healthy", False)),
+        (
+            f"pending={validation_health.get('pending_count', 0)}, "
+            f"stuck={validation_health.get('stuck_count', 0)}, "
+            f"counts={validation_health.get('counts', {})}"
+        ),
     )
 
     peer_sync: dict[str, Any] | None = None
@@ -1577,6 +1595,12 @@ def add_node_parser(subparsers: argparse._SubParsersAction) -> None:
     sync_parser = node_subparsers.add_parser("sync-status", help="Show distributed sync and mempool status")
     sync_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
     sync_parser.set_defaults(func=command_node_sync_status)
+
+    validation_health_parser = node_subparsers.add_parser("validation-health", help="Show pending validation job health")
+    validation_health_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    validation_health_parser.add_argument("--stale-after-seconds", type=int, default=120)
+    validation_health_parser.add_argument("--limit", type=int, default=20)
+    validation_health_parser.set_defaults(func=command_node_validation_health)
 
     doctor_parser = node_subparsers.add_parser("doctor", help="Run public testnet readiness checks")
     doctor_parser.add_argument("--server", default=DEFAULT_SERVER_URL)

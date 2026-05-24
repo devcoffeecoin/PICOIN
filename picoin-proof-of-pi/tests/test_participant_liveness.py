@@ -8,6 +8,7 @@ from app.services.mining import (
     MiningError,
     cleanup_expired_tasks,
     get_validation_job,
+    get_validation_jobs_health,
     get_validators,
     record_validator_heartbeat,
     refresh_participant_liveness,
@@ -212,6 +213,102 @@ def test_validation_job_is_visible_to_parallel_eligible_validators(tmp_path, mon
     with get_connection() as connection:
         row = connection.execute("SELECT assignment_failures FROM validation_jobs WHERE job_id = 'job_parallel'").fetchone()
     assert row["assignment_failures"] == 0
+
+
+def test_validation_jobs_health_reports_stuck_partial_quorum(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "validation-health-stuck.sqlite3")
+    miner = register_miner("health-miner", generate_keypair()["public_key"])
+    first_keys = generate_keypair()
+    second_keys = generate_keypair()
+    first = register_validator("health-validator-one", first_keys["public_key"])
+    second = register_validator("health-validator-two", second_keys["public_key"])
+    record_validator_heartbeat(_signed_validator_heartbeat(first_keys, first["validator_id"], node_id="node-one"))
+    record_validator_heartbeat(_signed_validator_heartbeat(second_keys, second["validator_id"], node_id="node-two"))
+
+    old_time = (datetime.now(timezone.utc) - timedelta(seconds=300)).isoformat()
+    with get_connection() as connection:
+        protocol_params_id = connection.execute(
+            "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at
+            )
+            VALUES ('task_health_stuck', ?, 1000, 1063, 'bbp_hex_v1', 'revealed', ?, ?)
+            """,
+            (miner["miner_id"], protocol_params_id, old_time),
+        )
+        connection.execute(
+            """
+            INSERT INTO validation_jobs (
+                job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                samples, status, created_at, job_created_at, first_vote_at
+            )
+            VALUES ('job_health_stuck', 'task_health_stuck', ?, ?, ?, ?, '[]', 'pending', ?, ?, ?)
+            """,
+            (miner["miner_id"], "a" * 64, "b" * 64, "c" * 64, old_time, old_time, old_time),
+        )
+        connection.execute(
+            """
+            INSERT INTO validation_votes (
+                job_id, task_id, validator_id, approved, reason, signature,
+                signed_at, validation_ms, created_at
+            )
+            VALUES ('job_health_stuck', 'task_health_stuck', ?, 1, 'ok', 'sig', ?, 1, ?)
+            """,
+            (first["validator_id"], old_time, old_time),
+        )
+
+    health = get_validation_jobs_health(stale_after_seconds=120)
+
+    assert health["healthy"] is False
+    assert health["stuck_count"] == 1
+    assert health["counts"]["stuck_waiting_for_quorum"] == 1
+    assert health["jobs"][0]["job_id"] == "job_health_stuck"
+    assert health["jobs"][0]["health"] == "stuck_waiting_for_quorum"
+
+
+def test_validation_jobs_health_treats_recent_pending_as_healthy(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "validation-health-recent.sqlite3")
+    miner = register_miner("recent-health-miner", generate_keypair()["public_key"])
+    keys = generate_keypair()
+    validator = register_validator("recent-health-validator", keys["public_key"])
+    record_validator_heartbeat(_signed_validator_heartbeat(keys, validator["validator_id"]))
+
+    now = datetime.now(timezone.utc).isoformat()
+    with get_connection() as connection:
+        protocol_params_id = connection.execute(
+            "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at
+            )
+            VALUES ('task_health_recent', ?, 1000, 1063, 'bbp_hex_v1', 'revealed', ?, ?)
+            """,
+            (miner["miner_id"], protocol_params_id, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO validation_jobs (
+                job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                samples, status, created_at, job_created_at
+            )
+            VALUES ('job_health_recent', 'task_health_recent', ?, ?, ?, ?, '[]', 'pending', ?, ?)
+            """,
+            (miner["miner_id"], "a" * 64, "b" * 64, "c" * 64, now, now),
+        )
+
+    health = get_validation_jobs_health(stale_after_seconds=120)
+
+    assert health["healthy"] is True
+    assert health["pending_count"] == 1
+    assert health["stuck_count"] == 0
+    assert health["counts"]["pending_recent"] == 1
 
 
 def test_revealed_task_does_not_expire_while_quorum_can_still_advance(tmp_path, monkeypatch) -> None:

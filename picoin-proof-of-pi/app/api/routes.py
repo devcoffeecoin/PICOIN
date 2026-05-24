@@ -179,6 +179,7 @@ from app.services.mining import (
     get_retroactive_audits,
     get_stats,
     get_validation_job,
+    get_validation_jobs_health,
     get_validator,
     get_validators,
     get_validators_status,
@@ -1158,6 +1159,14 @@ def validation_job(
         return get_validation_job(validator_id, public_key=public_key, name=name, reward_address=reward_address)
     except MiningError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.get("/validation/jobs/health")
+def validation_jobs_health(
+    stale_after_seconds: int = Query(120, ge=1, le=3600),
+    limit: int = Query(20, ge=1, le=200),
+) -> dict:
+    return get_validation_jobs_health(stale_after_seconds=stale_after_seconds, limit=limit)
 
 
 @router.post("/validation/results", response_model=ValidationResultResponse)

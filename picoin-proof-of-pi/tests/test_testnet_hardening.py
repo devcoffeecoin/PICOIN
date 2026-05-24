@@ -5,7 +5,13 @@ import pytest
 from app.core.crypto import hash_result
 from app.core.merkle import merkle_proof, merkle_root, verify_merkle_proof
 from app.core.pi import calculate_pi_segment
-from app.core.settings import FAUCET_RATE_LIMIT_MAX_REQUESTS, TASK_RATE_LIMIT_MAX_ASSIGNMENTS
+from app.core.settings import (
+    CHAIN_ID,
+    FAUCET_RATE_LIMIT_MAX_REQUESTS,
+    NETWORK_ID,
+    PROTOCOL_VERSION,
+    TASK_RATE_LIMIT_MAX_ASSIGNMENTS,
+)
 from app.core.signatures import (
     build_commit_signature_payload,
     build_reveal_signature_payload,
@@ -22,6 +28,7 @@ from app.services.mining import (
     create_next_task,
     get_protocol,
     get_validation_job,
+    record_validator_heartbeat,
     register_miner,
     register_validator,
     request_faucet,
@@ -106,6 +113,9 @@ def test_full_commit_reveal_flow_accepts_block_after_three_validator_votes(tmp_p
     first_validator, first_keys = _register_validator_with_keys("flow-validator-one")
     second_validator, second_keys = _register_validator_with_keys("flow-validator-two")
     third_validator, third_keys = _register_validator_with_keys("flow-validator-three")
+    _record_validator_heartbeat(first_keys, first_validator["validator_id"], "flow-node-one")
+    _record_validator_heartbeat(second_keys, second_validator["validator_id"], "flow-node-two")
+    _record_validator_heartbeat(third_keys, third_validator["validator_id"], "flow-node-three")
 
     task = create_next_task(miner["miner_id"])
     segment = calculate_pi_segment(task["range_start"], task["range_end"], task["algorithm"])
@@ -124,9 +134,29 @@ def test_full_commit_reveal_flow_accepts_block_after_three_validator_votes(tmp_p
             result_hash=result_hash,
             merkle_root=root,
             signed_at=commit_signed_at,
+            tx_merkle_root=task["tx_merkle_root"],
+            mempool_snapshot_id=task["mempool_snapshot_id"],
+            selected_tx_hashes_hash=task["selected_tx_hashes_hash"],
+            tx_count=int(task["tx_count"]),
+            tx_fee_total_units=int(task["tx_fee_total_units"]),
+            chain_id=CHAIN_ID,
+            network_id=NETWORK_ID,
         ),
     )
-    challenge = commit_task(task["task_id"], miner["miner_id"], result_hash, root, commit_signature, commit_signed_at, 1)
+    challenge = commit_task(
+        task["task_id"],
+        miner["miner_id"],
+        result_hash,
+        root,
+        commit_signature,
+        commit_signed_at,
+        1,
+        tx_merkle_root=task["tx_merkle_root"],
+        mempool_snapshot_id=task["mempool_snapshot_id"],
+        selected_tx_hashes_hash=task["selected_tx_hashes_hash"],
+        tx_count=int(task["tx_count"]),
+        tx_fee_total_units=int(task["tx_fee_total_units"]),
+    )
     assert challenge["accepted"] is True
 
     revealed_samples = [
@@ -146,9 +176,23 @@ def test_full_commit_reveal_flow_accepts_block_after_three_validator_votes(tmp_p
             merkle_root=root,
             challenge_seed=challenge["challenge_seed"],
             signed_at=reveal_signed_at,
+            tx_merkle_root=task["tx_merkle_root"],
+            mempool_snapshot_id=task["mempool_snapshot_id"],
+            selected_tx_hashes_hash=task["selected_tx_hashes_hash"],
         ),
     )
-    reveal = reveal_task(task["task_id"], miner["miner_id"], revealed_samples, reveal_signature, reveal_signed_at)
+    reveal = reveal_task(
+        task["task_id"],
+        miner["miner_id"],
+        revealed_samples,
+        reveal_signature,
+        reveal_signed_at,
+        tx_merkle_root=task["tx_merkle_root"],
+        mempool_snapshot_id=task["mempool_snapshot_id"],
+        selected_tx_hashes_hash=task["selected_tx_hashes_hash"],
+        tx_count=int(task["tx_count"]),
+        tx_fee_total_units=int(task["tx_fee_total_units"]),
+    )
     assert reveal["status"] == "validation_pending"
 
     first_response = _vote_next_job(first_validator["validator_id"], first_keys["private_key"])
@@ -171,6 +215,23 @@ def _register_miner_with_keys(name: str) -> tuple[dict, dict]:
 def _register_validator_with_keys(name: str) -> tuple[dict, dict]:
     keypair = generate_keypair()
     return register_validator(name, keypair["public_key"]), keypair
+
+
+def _record_validator_heartbeat(keys: dict, validator_id: str, node_id: str) -> None:
+    payload = {
+        "validator_id": validator_id,
+        "node_id": node_id,
+        "public_key": keys["public_key"],
+        "address": f"http://{node_id}.local:8000",
+        "local_height": 0,
+        "effective_height": 0,
+        "latest_block_hash": "0" * 64,
+        "pending_replay_blocks": 0,
+        "sync_lag": 0,
+        "version": PROTOCOL_VERSION,
+    }
+    payload["signature"] = sign_payload(keys["private_key"], payload)
+    record_validator_heartbeat(payload)
 
 
 def _insert_recent_tasks(miner_id: str, count: int) -> None:
