@@ -32,6 +32,7 @@ from app.core.settings import (
     REPLAY_WORKER_INTERVAL_SECONDS,
     REQUIRED_VALIDATOR_APPROVALS,
     VALIDATION_MODE,
+    VALIDATOR_ELIGIBILITY_STAKE_FIELD,
     VALIDATOR_MIN_TRUST_SCORE,
     VALIDATOR_REGISTRATION_STAKE,
 )
@@ -65,7 +66,7 @@ class ConsensusError(Exception):
 
 def _eligible_validator_count_for_quorum(connection: Any) -> int:
     row = connection.execute(
-        """
+        f"""
         SELECT COUNT(*) AS count
         FROM validators
         WHERE is_banned = 0
@@ -73,7 +74,7 @@ def _eligible_validator_count_for_quorum(connection: Any) -> int:
           AND online_status = 'online'
           AND sync_status != 'out_of_sync'
           AND protocol_version = ?
-          AND stake_locked >= ?
+          AND {VALIDATOR_ELIGIBILITY_STAKE_FIELD} >= ?
           AND trust_score >= ?
         """,
         (PROTOCOL_VERSION, MIN_VALIDATOR_STAKE, VALIDATOR_MIN_TRUST_SCORE),
@@ -1393,8 +1394,8 @@ def get_block_proposal(proposal_id: str) -> dict[str, Any] | None:
 def list_consensus_votes(proposal_id: str) -> list[dict[str, Any]]:
     with get_connection() as connection:
         rows = connection.execute(
-            """
-            SELECT v.*, validators.trust_score, validators.stake_locked
+            f"""
+            SELECT v.*, validators.trust_score, validators.{VALIDATOR_ELIGIBILITY_STAKE_FIELD} AS eligibility_stake
             FROM consensus_votes v
             LEFT JOIN validators ON validators.validator_id = v.validator_id
             WHERE v.proposal_id = ?
@@ -1406,7 +1407,7 @@ def list_consensus_votes(proposal_id: str) -> list[dict[str, Any]]:
         for row in rows:
             vote = row_to_dict(row)
             vote["approved"] = bool(vote["approved"])
-            vote["weight"] = _validator_weight(vote.get("trust_score"), vote.get("stake_locked"))
+            vote["weight"] = _validator_weight(vote.get("trust_score"), vote.get("eligibility_stake"))
             votes.append(vote)
         return votes
 
@@ -2268,21 +2269,21 @@ def _fork_choice_summary(proposal: dict[str, Any]) -> dict[str, Any]:
 
 def _proposal_vote_weight(connection: Any, proposal_id: str, approved: bool) -> float:
     rows = connection.execute(
-        """
-        SELECT validators.trust_score, validators.stake_locked
+        f"""
+        SELECT validators.trust_score, validators.{VALIDATOR_ELIGIBILITY_STAKE_FIELD} AS eligibility_stake
         FROM consensus_votes
         LEFT JOIN validators ON validators.validator_id = consensus_votes.validator_id
         WHERE consensus_votes.proposal_id = ? AND consensus_votes.approved = ?
         """,
         (proposal_id, 1 if approved else 0),
     ).fetchall()
-    return round(sum(_validator_weight(row["trust_score"], row["stake_locked"]) for row in rows), 8)
+    return round(sum(_validator_weight(row["trust_score"], row["eligibility_stake"]) for row in rows), 8)
 
 
-def _validator_weight(trust_score: Any, stake_locked: Any) -> float:
+def _validator_weight(trust_score: Any, eligibility_stake: Any) -> float:
     trust = max(0.0, float(trust_score if trust_score is not None else 0.0))
-    stake = max(0.0, float(stake_locked if stake_locked is not None else 0.0))
-    stake_units = min(stake / 31.416, 100.0)
+    stake = max(0.0, float(eligibility_stake if eligibility_stake is not None else 0.0))
+    stake_units = min(stake / MIN_VALIDATOR_STAKE, 100.0) if MIN_VALIDATOR_STAKE > 0 else 0.0
     return round(trust * (1.0 + stake_units), 8)
 
 
