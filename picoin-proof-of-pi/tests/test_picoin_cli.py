@@ -140,6 +140,8 @@ def _mainnet_preflight_payloads() -> dict[str, dict]:
             "retroactive_audit_reward_per_audit": 0.0,
             "science_compute_reward_percent": 0.07,
             "scientific_development_reward_percent": 0.03,
+            "scientific_development_governance_wallet": "PI6D17B68D576E0543CD5814D39F09FB58E3D35CAD355BB1",
+            "scientific_development_treasury_wallet": "PIEB149E99DCD64653088B68F92D6790068428462919DD96",
             "validator_eligibility_stake_field": "wallet_stake_locked",
             "validator_eligibility_stake_source": "wallet",
             "validator_reward_percent": 0.10,

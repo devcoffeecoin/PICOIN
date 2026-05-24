@@ -1,3 +1,4 @@
+import hashlib
 import os
 from pathlib import Path
 
@@ -20,6 +21,30 @@ def _int_env(name: str, default: int) -> int:
     if not value:
         return default
     return int(value)
+
+
+def _is_canonical_wallet_address(value: str) -> bool:
+    normalized = str(value or "").strip().upper()
+    if not normalized.startswith("PI") or len(normalized) != 48:
+        return False
+    body = normalized[2:40]
+    checksum = normalized[40:]
+    if not all(character in "0123456789ABCDEF" for character in body + checksum):
+        return False
+    expected_checksum = hashlib.sha256(body.encode("utf-8")).hexdigest().upper()[:8]
+    return checksum == expected_checksum
+
+
+def _require_mainnet_wallet_env(env_name: str, value: str, default: str) -> None:
+    raw_value = os.getenv(env_name)
+    normalized = str(value or "").strip()
+    if raw_value is None or not normalized:
+        raise RuntimeError(f"mainnet {env_name} is required")
+    upper_normalized = normalized.upper()
+    if upper_normalized == default.upper() or upper_normalized.startswith(("CHANGE_ME", "PI_TREASURY", "PI_GOVERNANCE")):
+        raise RuntimeError(f"mainnet {env_name} must not use a placeholder")
+    if not _is_canonical_wallet_address(normalized):
+        raise RuntimeError(f"mainnet {env_name} must be a canonical Picoin wallet address")
 
 
 DATA_DIR = _configured_path(os.getenv("PICOIN_DATA_DIR", ""), BASE_DIR / "data")
@@ -130,14 +155,31 @@ SCIENCE_MAX_PAYOUT_PER_EPOCH = float(os.getenv("PICOIN_SCIENCE_MAX_PAYOUT_PER_EP
 SCIENCE_MAX_PENDING_PER_REQUESTER = float(os.getenv("PICOIN_SCIENCE_MAX_PENDING_PER_REQUESTER", "314.16"))
 SCIENTIFIC_DEVELOPMENT_REWARD_PERCENT_OF_BLOCK = NETWORK_PROFILE.scientific_development_reward_percent
 SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID = "scientific_development_treasury"
+DEFAULT_SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET = "picoin_scientific_development_wallet"
+DEFAULT_SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET = "picoin_governance_multisig"
 SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET = os.getenv(
     "PICOIN_TREASURY_WALLET",
-    "picoin_scientific_development_wallet",
+    DEFAULT_SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET,
 ).strip()
 SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET = os.getenv(
     "PICOIN_GOVERNANCE_WALLET",
-    "picoin_governance_multisig",
+    DEFAULT_SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET,
 ).strip()
+if NETWORK_PROFILE.name == "mainnet":
+    SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET = SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET.upper()
+    SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET = SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET.upper()
+    _require_mainnet_wallet_env(
+        "PICOIN_TREASURY_WALLET",
+        SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET,
+        DEFAULT_SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET,
+    )
+    _require_mainnet_wallet_env(
+        "PICOIN_GOVERNANCE_WALLET",
+        SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET,
+        DEFAULT_SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET,
+    )
+    if SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET == SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET:
+        raise RuntimeError("mainnet treasury and governance wallets must be distinct")
 SCIENTIFIC_DEVELOPMENT_UNLOCK_INTERVAL_DAYS = 90
 ALLOW_DIRECT_SCIENCE_GOVERNANCE = (
     NETWORK_PROFILE.name != "mainnet"
