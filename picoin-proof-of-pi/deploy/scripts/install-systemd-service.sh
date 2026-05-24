@@ -2,7 +2,7 @@
 set -euo pipefail
 
 REPO_DIR="${PICOIN_REPO_DIR:-/opt/picoin/picoin-proof-of-pi}"
-ENV_SOURCE="$REPO_DIR/deploy/public-testnet.env.example"
+ENV_SOURCE="${PICOIN_ENV_SOURCE:-$REPO_DIR/deploy/public-testnet.env.example}"
 SERVICES=(
   picoin-node.service
   picoin-miner.service
