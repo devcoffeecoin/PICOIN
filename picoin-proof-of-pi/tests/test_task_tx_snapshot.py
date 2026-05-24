@@ -45,6 +45,19 @@ def _submit_transfer(wallet: dict, recipient: str, amount: float, nonce: int, fe
     return submit_transaction(tx)
 
 
+def _submit_faucet_tx(wallet: dict, amount: float, nonce: int) -> dict:
+    tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="faucet",
+        sender=wallet["address"],
+        amount=amount,
+        nonce=nonce,
+        fee=0.0,
+    )
+    return submit_transaction(tx)
+
+
 def _insert_dummy_task(task_id: str) -> None:
     keypair = generate_keypair()
     miner = register_miner(f"miner-{task_id}", keypair["public_key"])
@@ -112,6 +125,20 @@ def test_double_spend_selects_only_affordable_transactions(tmp_path, monkeypatch
     assert [tx["tx_hash"] for tx in selected] == [first["tx_hash"]]
     assert get_balance(source["address"])["balance"] == 1.0
     assert second["status"] == "pending"
+
+
+def test_faucet_nonce_chain_does_not_require_sender_balance_for_selection(tmp_path, monkeypatch) -> None:
+    _setup_db(tmp_path, monkeypatch, "task-snapshot-faucet-nonce-chain")
+    source = create_wallet("faucet-chain-source")
+    recipient = create_wallet("faucet-chain-recipient")
+    first = _submit_faucet_tx(source, 1.0, 1)
+    second = _submit_faucet_tx(source, 0.5, 2)
+    _submit_transfer(source, recipient["address"], 0.1, 3, fee=0.001)
+
+    with get_connection() as connection:
+        selected = select_transactions_for_task(connection, 10, 0)
+
+    assert [tx["tx_hash"] for tx in selected] == [first["tx_hash"], second["tx_hash"]]
 
 
 def test_release_selected_transactions_returns_valid_tx_to_pending(tmp_path, monkeypatch) -> None:

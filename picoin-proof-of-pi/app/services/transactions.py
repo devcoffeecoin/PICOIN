@@ -129,7 +129,7 @@ def select_transactions_for_task(connection: Any, max_count: int, chain_height: 
             if semantic_reason:
                 _fail_transaction(connection, tx["tx_hash"], semantic_reason)
                 continue
-            debit_units = _tx_amount_units(tx) + _tx_fee_units(tx)
+            debit_units = _total_debit_units(tx)
             if _balance_units(connection, sender) < reserved_units_by_sender.get(sender, 0) + debit_units:
                 continue
             selected.append(tx)
@@ -1061,11 +1061,15 @@ def _apply_fee_reward(
 
 
 def _total_debit(tx: dict[str, Any]) -> float:
+    return units_to_float(_total_debit_units(tx))
+
+
+def _total_debit_units(tx: dict[str, Any]) -> int:
     if tx["tx_type"] in {"transfer", "stake"}:
-        return units_to_float(_tx_amount_units(tx) + _tx_fee_units(tx))
+        return _tx_amount_units(tx) + _tx_fee_units(tx)
     if tx["tx_type"] == "faucet":
-        return 0.0
-    return units_to_float(_tx_fee_units(tx))
+        return 0
+    return _tx_fee_units(tx)
 
 
 def _science_job_budget_from_payload(payload: dict[str, Any]) -> tuple[float, float, float]:
