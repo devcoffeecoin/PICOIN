@@ -779,6 +779,139 @@ def get_validators_status(limit: int = 500) -> dict[str, Any]:
     }
 
 
+def get_validation_jobs_health(stale_after_seconds: int = VALIDATION_JOB_ASSIGNMENT_TIMEOUT_SECONDS * 2, limit: int = 20) -> dict[str, Any]:
+    refresh_participant_liveness()
+    stale_after_seconds = max(1, int(stale_after_seconds))
+    limit = max(1, int(limit))
+    now_iso = utc_now()
+
+    def age_seconds(value: str | None) -> int | None:
+        elapsed = _elapsed_iso_ms(value, now_iso)
+        if elapsed is None:
+            return None
+        return max(0, elapsed // 1000)
+
+    with get_connection() as connection:
+        pending_rows = connection.execute(
+            """
+            SELECT
+                validation_jobs.job_id,
+                validation_jobs.task_id,
+                validation_jobs.miner_id,
+                validation_jobs.status,
+                validation_jobs.assigned_validator_id,
+                validation_jobs.assigned_at,
+                validation_jobs.assignment_failures,
+                validation_jobs.blocking_reason,
+                validation_jobs.job_created_at,
+                validation_jobs.created_at,
+                validation_jobs.first_vote_at,
+                validation_jobs.second_vote_at,
+                validation_jobs.quorum_reached_at,
+                validation_jobs.finalized_at,
+                tasks.status AS task_status,
+                tasks.protocol_params_id,
+                tasks.range_start,
+                tasks.range_end
+            FROM validation_jobs
+            JOIN tasks ON tasks.task_id = validation_jobs.task_id
+            WHERE validation_jobs.status = 'pending'
+            ORDER BY validation_jobs.created_at ASC
+            """
+        ).fetchall()
+        eligible = len(_eligible_validator_rows(connection))
+        active_required = _effective_required_validator_approvals(connection)
+
+        jobs: list[dict[str, Any]] = []
+        counts = {
+            "pending_recent": 0,
+            "stuck_no_votes": 0,
+            "stuck_waiting_for_quorum": 0,
+            "assignment_timeout_pending_release": 0,
+            "quorum_reached_waiting_finalization": 0,
+        }
+
+        for row in pending_rows:
+            job = row_to_dict(row)
+            params = _protocol_params_for_task(connection, job)
+            required = _effective_required_validator_approvals(connection, params)
+            vote_counts = _validation_vote_counts(connection, job["job_id"])
+            approvals = vote_counts["approvals"]
+            rejections = vote_counts["rejections"]
+            total_votes = approvals + rejections
+            job_age_seconds = age_seconds(job.get("job_created_at") or job.get("created_at"))
+            assigned_age_seconds = age_seconds(job.get("assigned_at"))
+            quorum_reached = approvals >= required or rejections >= required
+            assigned_timeout = (
+                assigned_age_seconds is not None
+                and assigned_age_seconds >= VALIDATION_JOB_ASSIGNMENT_TIMEOUT_SECONDS
+                and bool(job.get("assigned_validator_id"))
+            )
+            stale = job_age_seconds is not None and job_age_seconds >= stale_after_seconds
+
+            if quorum_reached:
+                health = "quorum_reached_waiting_finalization"
+            elif assigned_timeout:
+                health = "assignment_timeout_pending_release"
+            elif stale and total_votes == 0:
+                health = "stuck_no_votes"
+            elif stale and total_votes > 0:
+                health = "stuck_waiting_for_quorum"
+            else:
+                health = "pending_recent"
+            counts[health] += 1
+
+            jobs.append(
+                {
+                    "job_id": job["job_id"],
+                    "task_id": job["task_id"],
+                    "miner_id": job["miner_id"],
+                    "task_status": job.get("task_status"),
+                    "age_seconds": job_age_seconds,
+                    "assigned_validator_id": job.get("assigned_validator_id"),
+                    "assigned_age_seconds": assigned_age_seconds,
+                    "assignment_failures": int(job.get("assignment_failures") or 0),
+                    "blocking_reason": job.get("blocking_reason"),
+                    "approvals": approvals,
+                    "rejections": rejections,
+                    "total_votes": total_votes,
+                    "required_approvals": required,
+                    "missing_approvals": max(0, required - approvals),
+                    "health": health,
+                    "first_vote_at": job.get("first_vote_at"),
+                    "second_vote_at": job.get("second_vote_at"),
+                    "quorum_reached_at": job.get("quorum_reached_at"),
+                    "created_at": job.get("job_created_at") or job.get("created_at"),
+                }
+            )
+
+    stuck_count = (
+        counts["stuck_no_votes"]
+        + counts["stuck_waiting_for_quorum"]
+        + counts["assignment_timeout_pending_release"]
+        + counts["quorum_reached_waiting_finalization"]
+    )
+    jobs.sort(
+        key=lambda item: (
+            0 if item["health"] != "pending_recent" else 1,
+            -(item["age_seconds"] or 0),
+            item["job_id"],
+        )
+    )
+    return {
+        "checked_at": now_iso,
+        "healthy": stuck_count == 0,
+        "pending_count": len(pending_rows),
+        "stuck_count": stuck_count,
+        "stale_after_seconds": stale_after_seconds,
+        "assignment_timeout_seconds": VALIDATION_JOB_ASSIGNMENT_TIMEOUT_SECONDS,
+        "eligible_validators": eligible,
+        "required_validator_approvals": active_required,
+        "counts": counts,
+        "jobs": jobs[:limit],
+    }
+
+
 def get_miners_status(limit: int = 500) -> dict[str, Any]:
     refresh_participant_liveness()
     with get_connection() as connection:

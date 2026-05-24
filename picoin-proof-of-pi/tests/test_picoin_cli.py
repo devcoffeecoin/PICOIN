@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 
 from app.core.settings import FAUCET_DEFAULT_AMOUNT
-from picoin.cli import build_parser, command_node_mainnet_preflight, normalize_server_url
+from picoin.cli import build_parser, command_node_mainnet_preflight, command_node_validation_health, normalize_server_url
 
 
 def test_picoin_cli_parses_node_start_defaults() -> None:
@@ -22,6 +22,7 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
 
     peers = parser.parse_args(["node", "peers", "--connected-only"])
     sync = parser.parse_args(["node", "sync-status"])
+    validation_health = parser.parse_args(["node", "validation-health", "--stale-after-seconds", "90", "--limit", "5"])
     reconcile = parser.parse_args(["node", "reconcile", "--peer", "http://peer:8000"])
     checkpoint = parser.parse_args(["node", "checkpoint", "verify", "--height", "10"])
     snapshot_export = parser.parse_args(["node", "checkpoint", "export", "--height", "10", "--output", "snap.json"])
@@ -77,6 +78,9 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
     assert peers.include_stale is False
     assert sync.command == "node"
     assert sync.node_command == "sync-status"
+    assert validation_health.node_command == "validation-health"
+    assert validation_health.stale_after_seconds == 90
+    assert validation_health.limit == 5
     assert reconcile.node_command == "reconcile"
     assert reconcile.peer == "http://peer:8000"
     assert checkpoint.node_command == "checkpoint"
@@ -167,6 +171,18 @@ def _mainnet_preflight_payloads() -> dict[str, dict]:
         },
         "/mempool/status": {"pending_count": 0, "selected_count": 0},
         "/consensus/status": {"competing_proposal_count": 0, "fork_group_count": 0, "proposals": {"pending_missing_ancestors": 0}},
+        "/validation/jobs/health": {
+            "healthy": True,
+            "pending_count": 0,
+            "stuck_count": 0,
+            "counts": {
+                "assignment_timeout_pending_release": 0,
+                "pending_recent": 0,
+                "quorum_reached_waiting_finalization": 0,
+                "stuck_no_votes": 0,
+                "stuck_waiting_for_quorum": 0,
+            },
+        },
     }
 
 
@@ -208,6 +224,49 @@ def test_node_mainnet_preflight_fails_on_unbacked_validator_stake(monkeypatch, c
     assert output["status"] == "fail"
     assert "no_legacy_mainnet_validator_stake" in failed_checks
     assert "eligible_validators_wallet_staked" in failed_checks
+
+
+def test_node_mainnet_preflight_fails_on_stuck_validation_jobs(monkeypatch, capsys) -> None:
+    payloads = _mainnet_preflight_payloads()
+    payloads["/validation/jobs/health"] = {
+        "healthy": False,
+        "pending_count": 1,
+        "stuck_count": 1,
+        "counts": {
+            "assignment_timeout_pending_release": 0,
+            "pending_recent": 0,
+            "quorum_reached_waiting_finalization": 0,
+            "stuck_no_votes": 0,
+            "stuck_waiting_for_quorum": 1,
+        },
+    }
+
+    def fake_get_json(server_url: str, path: str) -> dict:
+        assert server_url == "http://node"
+        return payloads[path]
+
+    monkeypatch.setattr("picoin.cli.get_json", fake_get_json)
+    args = argparse.Namespace(server="http://node", peer=None, allow_mempool=False, verbose=False)
+
+    assert command_node_mainnet_preflight(args) == 1
+    output = json.loads(capsys.readouterr().out)
+    failed_checks = {check["name"] for check in output["checks"] if not check["ok"]}
+    assert output["status"] == "fail"
+    assert "validation_jobs_not_stuck" in failed_checks
+
+
+def test_node_validation_health_command_returns_nonzero_when_unhealthy(monkeypatch, capsys) -> None:
+    def fake_get_json(server_url: str, path: str) -> dict:
+        assert server_url == "http://node"
+        assert path == "/validation/jobs/health?stale_after_seconds=90&limit=5"
+        return {"healthy": False, "pending_count": 1, "stuck_count": 1}
+
+    monkeypatch.setattr("picoin.cli.get_json", fake_get_json)
+    args = argparse.Namespace(server="http://node", stale_after_seconds=90, limit=5)
+
+    assert command_node_validation_health(args) == 1
+    output = json.loads(capsys.readouterr().out)
+    assert output["stuck_count"] == 1
 
 
 def test_picoin_cli_parses_wallet_and_tx_commands() -> None:

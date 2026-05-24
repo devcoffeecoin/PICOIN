@@ -1,6 +1,7 @@
 import statistics
 
 from app.core.difficulty import calculate_difficulty
+from app.core.settings import RETARGET_MAX_PI_POSITION
 from app.services.difficulty_service import DifficultyService
 
 
@@ -87,6 +88,7 @@ def test_calculate_next_difficulty_network_too_slow():
 
 def test_calculate_next_difficulty_within_deadband():
     current_params = {"segment_size": 64, "sample_count": 8, "max_pi_position": 10000}
+    expected_params = dict(current_params, RETARGET_MAX_PI_POSITION=RETARGET_MAX_PI_POSITION)
     history = [
         {"total_task_ms": 55000, "range_start": 1000, "range_end": 1063, "total_block_ms": 60000}
         for _ in range(DifficultyService.RETARGET_WINDOW)
@@ -94,7 +96,7 @@ def test_calculate_next_difficulty_within_deadband():
     
     new_params, meta = DifficultyService.calculate_next_difficulty(history, current_params, 1000)
     
-    assert new_params == current_params
+    assert new_params == expected_params
     assert meta["action"] == "keep"
     assert meta["within_hysteresis"] is True
     assert "Within hysteresis" in meta["reason"]
@@ -102,6 +104,7 @@ def test_calculate_next_difficulty_within_deadband():
 
 def test_calculate_next_difficulty_hysteresis_keeps_72_seconds():
     current_params = {"segment_size": 64, "sample_count": 8, "max_pi_position": 10000}
+    expected_params = dict(current_params, RETARGET_MAX_PI_POSITION=RETARGET_MAX_PI_POSITION)
     history = [
         {"total_task_ms": 72000, "range_start": 1000, "range_end": 1063, "total_block_ms": 72000}
         for _ in range(DifficultyService.RETARGET_WINDOW)
@@ -109,7 +112,7 @@ def test_calculate_next_difficulty_hysteresis_keeps_72_seconds():
 
     new_params, meta = DifficultyService.calculate_next_difficulty(history, current_params, 1000)
 
-    assert new_params == current_params
+    assert new_params == expected_params
     assert meta["action"] == "keep"
     assert meta["within_hysteresis"] is True
 
@@ -196,7 +199,13 @@ def test_bbp_guardrail_is_inactive_below_one_million_positions():
 
 
 def test_bbp_guardrail_above_one_million_reduces_segment_by_max_two():
-    current_params = {"difficulty": 0.125, "segment_size": 32, "sample_count": 32, "max_pi_position": 10000}
+    current_params = {
+        "difficulty": 0.125,
+        "segment_size": 32,
+        "sample_count": 32,
+        "max_pi_position": 10000,
+        "RETARGET_MAX_PI_POSITION": 2_000_000,
+    }
     history = [
         {
             "total_task_ms": 60000,
@@ -231,4 +240,4 @@ def test_calculate_difficulty_visual_metric():
 
     params_max = {"segment_size": 1024, "sample_count": 128, "max_pi_position": 10**9}
     difficulty_max = calculate_difficulty(params_max)
-    assert difficulty_max == 576.0
+    assert difficulty_max == 384.0

@@ -124,6 +124,9 @@ sudo systemctl status picoin-node --no-pager
 Then run:
 
 ```bash
+.venv/bin/python -m picoin node validation-health \
+  --server http://127.0.0.1:8000
+
 .venv/bin/python -m picoin node mainnet-preflight \
   --server http://127.0.0.1:8000 \
   --verbose

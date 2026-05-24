@@ -79,6 +79,8 @@ Current state:
 - Jobs reach `approved` only after quorum.
 - Jobs reach `rejected` only after rejection quorum.
 - Tasks and pending validation jobs expire after the task expiration window.
+- Pending validation job health is exposed through `/validation/jobs/health`
+  and `picoin node validation-health`.
 
 Mainnet work:
 
@@ -92,7 +94,7 @@ Mainnet work:
 - Add validation deadlines directly to `validation_jobs`.
 - Reject late validator votes after expiration.
 - Add rescue validation when selected validators fail to respond.
-- Add metrics for jobs stuck at partial quorum.
+- Expand stuck validation job monitoring into alerts.
 
 Tests to add:
 
@@ -206,7 +208,7 @@ Mainnet work:
   - API down.
   - block height stalled.
   - validator offline.
-  - stuck validation jobs.
+  - stuck validation jobs reported by `/validation/jobs/health`.
   - peer mismatch.
   - audit invalid.
   - disk space low.
@@ -246,7 +248,7 @@ Launch phases:
 Recommended order:
 
 1. Run the current public testnet for sustained uptime and collect metrics.
-2. Add stuck validation job monitoring.
+2. Add alert delivery for stuck validation job monitoring.
 3. Add tests for validator disconnects and POST failures.
 4. Decide quorum roadmap: keep `3/3` for testnet, plan `3/4` or `5/7` before mainnet.
 5. Draft `MAINNET_PARAMETERS.md`.
