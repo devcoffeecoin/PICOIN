@@ -2344,19 +2344,54 @@ def submit_validation_result(
                 counts["approvals"],
                 required,
             )
-            block = _accept_block_in_connection(
-                connection=connection,
-                task=task,
-                miner_id=job["miner_id"],
-                result_hash=job["result_hash"],
-                merkle_root=job["merkle_root"],
-                samples=samples,
-                signature=signature,
-                submission_reason=f"external validation approved by {validator_id}",
-                validation_ms=validation_ms,
-                params=params,
-                validation_job_id=job_id,
-            )
+            try:
+                block = _accept_block_in_connection(
+                    connection=connection,
+                    task=task,
+                    miner_id=job["miner_id"],
+                    result_hash=job["result_hash"],
+                    merkle_root=job["merkle_root"],
+                    samples=samples,
+                    signature=signature,
+                    submission_reason=f"external validation approved by {validator_id}",
+                    validation_ms=validation_ms,
+                    params=params,
+                    validation_job_id=job_id,
+                )
+            except TransactionExecutionError as exc:
+                finalized_at = utc_now()
+                reason_text = f"transaction finalization failed: {exc}"
+                logger.error(
+                    "validation finalization failed job_id=%s task_id=%s reason=%s",
+                    job_id,
+                    job["task_id"],
+                    reason_text,
+                )
+                connection.execute(
+                    "UPDATE tasks SET status = 'rejected', submitted_at = ? WHERE task_id = ?",
+                    (finalized_at, job["task_id"]),
+                )
+                release_selected_transactions(connection, job["task_id"], reason_text, finalized_at)
+                _mark_validation_job_finalized(connection, job_id=job_id, finalized_at=finalized_at)
+                connection.execute(
+                    """
+                    UPDATE validation_jobs
+                    SET status = 'rejected', assigned_validator_id = ?, result_reason = ?,
+                        validator_signature = ?, validation_ms = ?, completed_at = ?
+                    WHERE job_id = ?
+                    """,
+                    (validator_id, reason_text, signature, validation_ms, finalized_at, job_id),
+                )
+                return {
+                    "accepted": False,
+                    "status": "rejected",
+                    "message": reason_text,
+                    "block": None,
+                    "approvals": counts["approvals"],
+                    "rejections": counts["rejections"],
+                    "required_approvals": required,
+                    "required_rejections": required,
+                }
             finalized_at = utc_now()
             _mark_validation_job_finalized(connection, job_id=job_id, finalized_at=finalized_at)
             connection.execute(
