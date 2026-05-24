@@ -148,6 +148,8 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 last_seen_at TEXT,
                 total_validation_ms INTEGER NOT NULL DEFAULT 0,
                 stake_locked REAL NOT NULL DEFAULT __VALIDATOR_REGISTRATION_STAKE__,
+                wallet_stake_locked REAL NOT NULL DEFAULT 0,
+                stake_owner_address TEXT,
                 slashed_amount REAL NOT NULL DEFAULT 0,
                 is_banned INTEGER NOT NULL DEFAULT 0
             );
@@ -768,6 +770,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "validators", "enabled", "INTEGER NOT NULL DEFAULT 1")
         _ensure_column(connection, "validators", "total_validation_ms", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "validators", "stake_locked", f"REAL NOT NULL DEFAULT {VALIDATOR_REGISTRATION_STAKE}")
+        _ensure_column(connection, "validators", "wallet_stake_locked", "REAL NOT NULL DEFAULT 0")
         _ensure_column(connection, "validators", "stake_owner_address", "TEXT")
         _ensure_column(connection, "validators", "slashed_amount", "REAL NOT NULL DEFAULT 0")
         _ensure_column(connection, "validators", "reward_address", "TEXT")

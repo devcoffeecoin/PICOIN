@@ -99,6 +99,7 @@ class ValidatorResponse(BaseModel):
     last_seen_at: datetime | None = None
     avg_validation_ms: float = 0.0
     stake_locked: float = 0.0
+    wallet_stake_locked: float = 0.0
     slashed_amount: float = 0.0
     total_rewards: float = 0.0
     selection_score: float = 0.0
