@@ -143,7 +143,7 @@ def test_block_is_accepted_after_validator_quorum(tmp_path, monkeypatch) -> None
     second_validator_balance = get_balance(second_validator["validator_id"])
     third_validator_balance = get_balance(third_validator["validator_id"])
     ledger = get_ledger_entries(miner_id)
-    assert miner_balance["balance"] == 2.104872
+    assert miner_balance["balance"] == 2.51328
     assert first_validator_balance["balance"] == 0.10472
     assert second_validator_balance["balance"] == 0.10472
     assert third_validator_balance["balance"] == 0.10472

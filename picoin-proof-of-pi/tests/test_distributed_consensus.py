@@ -16,7 +16,7 @@ from app.services.consensus import (
     select_fork_choice,
     vote_on_proposal,
 )
-from app.services.mining import get_balance, get_block, register_validator, verify_chain
+from app.services.mining import get_balance, get_block, record_validator_heartbeat, register_validator, verify_chain
 from app.services.science import get_science_reserve
 from app.services.treasury import get_scientific_development_treasury
 
@@ -40,7 +40,7 @@ def _block(height: int = 1, previous_hash: str = GENESIS_HASH) -> dict:
         "merkle_root": "b" * 64,
         "samples": [{"position": 1, "digit": "2"}],
         "timestamp": "2026-05-12T00:00:00+00:00",
-        "reward": 2.104872,
+        "reward": 2.51328,
         "difficulty": 4.0,
         "protocol_params_id": 1,
         "protocol_version": PROTOCOL_VERSION,
@@ -95,6 +95,21 @@ def _register_validators(count: int = REQUIRED_VALIDATOR_APPROVALS) -> list[dict
     for index in range(count):
         keys = generate_keypair()
         validator = register_validator(f"validator-{index}", keys["public_key"])
+        heartbeat = {
+            "validator_id": validator["validator_id"],
+            "name": validator["name"],
+            "node_id": f"validator-node-{index}",
+            "public_key": keys["public_key"],
+            "address": f"http://validator-node-{index}:8000",
+            "local_height": 0,
+            "effective_height": 0,
+            "latest_block_hash": GENESIS_HASH,
+            "pending_replay_blocks": 0,
+            "sync_lag": 0,
+            "version": PROTOCOL_VERSION,
+        }
+        heartbeat["signature"] = sign_payload(keys["private_key"], heartbeat)
+        record_validator_heartbeat(heartbeat)
         identities.append({**validator, **keys})
     return identities
 
@@ -166,9 +181,9 @@ def test_block_proposal_reaches_quorum_and_imports_canonical_block(tmp_path, mon
 
     assert proposal["status"] == "imported"
     assert imported["block_hash"] == proposal["block_hash"]
-    assert get_balance("distributed-miner")["balance"] == 2.104872
+    assert get_balance("distributed-miner")["balance"] == 2.51328
     assert get_balance(identities[0]["validator_id"])["balance"] == 0.10472
-    assert reserve["total_reserved"] == 0.62832
+    assert reserve["total_reserved"] == 0.219912
     assert treasury["locked_balance"] == 0.094248
     assert chain["valid"] is True
 

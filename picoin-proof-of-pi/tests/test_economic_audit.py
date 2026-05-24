@@ -15,6 +15,7 @@ from app.services.mining import (
     submit_validation_result,
     submit_task,
 )
+from app.services.transactions import canonical_empty_tx_merkle_root, canonical_selected_tx_hashes_hash
 from app.services.wallet import create_wallet
 
 
@@ -34,10 +35,10 @@ def test_full_economic_audit_passes_for_valid_local_economy(tmp_path, monkeypatc
 
     assert audit["valid"] is True
     assert audit["issues"] == []
-    assert audit["supply"]["expected_total_balances"] == pytest.approx(3.1416 + 2.104872 + 0.62832 + 0.094248)
+    assert audit["supply"]["expected_total_balances"] == pytest.approx(3.1416 + 2.51328 + 0.219912 + 0.094248)
     assert audit["rewards"]["accepted_blocks"] == 1
-    assert audit["rewards"]["block_reward_total"] == 2.104872
-    assert audit["rewards"]["science_reserve_total"] == 0.62832
+    assert audit["rewards"]["block_reward_total"] == 2.51328
+    assert audit["rewards"]["science_reserve_total"] == 0.219912
     assert audit["rewards"]["scientific_development_treasury_total"] == 0.094248
     assert audit["ledger"]["account_mismatch_count"] == 0
     assert audit["validators"]["stake_locked"] == 31.416
@@ -90,11 +91,11 @@ def test_full_economic_audit_includes_additional_validator_rewards(tmp_path, mon
     assert response["block"]["validator_reward"]["pool"] == 0.31416
     assert audit["valid"] is True
     assert audit["supply"]["expected_total_balances"] == pytest.approx(
-        3.1416 + 2.104872 + 0.31416 + 0.62832 + 0.094248
+        3.1416 + 2.51328 + 0.31416 + 0.219912 + 0.094248
     )
-    assert audit["rewards"]["block_reward_total"] == 2.104872
+    assert audit["rewards"]["block_reward_total"] == 2.51328
     assert audit["rewards"]["validator_reward_total"] == 0.31416
-    assert audit["rewards"]["science_reserve_total"] == 0.62832
+    assert audit["rewards"]["science_reserve_total"] == 0.219912
     assert audit["rewards"]["scientific_development_treasury_total"] == 0.094248
     assert audit["rewards"]["total_minted_rewards"] == 3.1416
 
@@ -189,11 +190,19 @@ def _insert_validation_job(miner_id: str) -> tuple[str, str]:
             """
             INSERT INTO tasks (
                 task_id, miner_id, range_start, range_end, algorithm, status,
-                protocol_params_id, created_at
+                protocol_params_id, selected_tx_hashes, tx_merkle_root, tx_count,
+                tx_fee_total_units, selected_tx_hashes_hash, created_at
             )
-            VALUES (?, ?, 2000, 2063, 'bbp_hex_v1', 'revealed', ?, ?)
+            VALUES (?, ?, 2000, 2063, 'bbp_hex_v1', 'revealed', ?, '[]', ?, 0, 0, ?, ?)
             """,
-            (task_id, miner_id, protocol_params_id, "2026-05-10T00:00:00+00:00"),
+            (
+                task_id,
+                miner_id,
+                protocol_params_id,
+                canonical_empty_tx_merkle_root(),
+                canonical_selected_tx_hashes_hash([]),
+                "2026-05-10T00:00:00+00:00",
+            ),
         )
         connection.execute(
             """

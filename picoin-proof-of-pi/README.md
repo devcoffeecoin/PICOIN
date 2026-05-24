@@ -35,10 +35,10 @@ difficulty = 4.0
 reward_per_block = 3.1416
 validator_reward_percent = 10%
 validator_reward_pool_per_block = 0.31416
-proof_of_pi_reward_percent = 67%
-proof_of_pi_reward_per_block = 2.104872
-science_compute_reward_percent = 20%
-science_compute_reserve_per_block = 0.62832
+proof_of_pi_reward_percent = 80%
+proof_of_pi_reward_per_block = 2.51328
+science_compute_reward_percent = 7%
+science_compute_reserve_per_block = 0.219912
 science_reserve_account_id = science_compute_reserve
 science_reserve_status = RESERVE_LOCKED
 science_reserve_governance_timelock = 86400 seconds
@@ -79,20 +79,20 @@ difficulty =
   * (sample_count / 8)
   * (log10(max_pi_position) / log10(10000))
 
-miner_reward_per_block = base_reward * 0.67
+miner_reward_per_block = base_reward * 0.80
 validator_reward_pool_per_block = base_reward * 0.10
-science_compute_reserve_per_block = base_reward * 0.20
+science_compute_reserve_per_block = base_reward * 0.07
 scientific_development_treasury_per_block = base_reward * 0.03
 retroactive_audit_reward_per_audit = base_reward * 0.20
 ```
 
-Difficulty regulates work; it does not multiply issuance. The `base_reward` is the total base block emission and is distributed as `67/20/10/3`: `2.104872` for the miner Proof of Pi, `0.62832` for `science_compute_reserve`, `0.31416` for validators/auditors and `0.094248` for the Scientific Development Fund with timelock.
+Difficulty regulates work; it does not multiply issuance. The `base_reward` is the total base block emission and is distributed as `80/10/7/3`: `2.51328` for the miner Proof of Pi, `0.31416` for validators/auditors, `0.219912` for `science_compute_reserve` and `0.094248` for the Scientific Development Fund with timelock.
 
 Picoin finances scientific infrastructure and protocol development through a time-locked treasury sustained by ongoing network activity rather than large upfront premine allocations. The account `genesis` not longer represents a large premine: is limited to a normal emission of `3.1416` for local testnet/faucet compatibility. The current validator stake is simulated metadata/collateral until real transaction-based staking is implemented.
 
-Each accepted block credits `2.104872` coins to the winning miner, `0.62832` to the scientific reserve, `0.094248` to the locked Scientific Development Fund and `0.31416` coins distributed among approving validators when the external validation flow reaches quorum. Each automatic retroactive audit credits `0.62832` additional coins to `audit_treasury`.
+Each accepted block credits `2.51328` coins to the winning miner, `0.219912` to the scientific reserve, `0.094248` to the locked Scientific Development Fund and `0.31416` coins distributed among approving validators when the external validation flow reaches quorum. Each automatic retroactive audit credits `0.62832` additional coins to `audit_treasury`.
 
-The 20% scientific allocation is not automatically paid to workers. By default it accumulates as a locked reserve with `status = RESERVE_LOCKED`. While it remains locked, it cannot be transferred, claimed, budget-reserved, or used to pay workers. Only when a future L2 is activated by governance/multisig with timelock, the reserve may be used for jobs `accepted`, with worker, `result_hash`, `proof_hash` and reserved budget. Jobs `rejected`, `disputed` or `expired` not pay.
+The 7% scientific allocation is not automatically paid to workers. By default it accumulates as a locked reserve with `status = RESERVE_LOCKED`. While it remains locked, it cannot be transferred, claimed, budget-reserved, or used to pay workers. Only when a future L2 is activated by governance/multisig with timelock, the reserve may be used for jobs `accepted`, with worker, `result_hash`, `proof_hash` and reserved budget. Jobs `rejected`, `disputed` or `expired` not pay.
 
 Each block stores the difficulty and reward used at the time it was accepted.
 Tasks and blocks also store `protocol_params_id`, so a retarget does not change the rules of a task that had already been assigned.
@@ -570,8 +570,8 @@ Returns active protocol parameters, incluyendo `base_reward`, `difficulty` and `
 It also exposes the conceptual distribution of useful work:
 
 ```text
-proof_of_pi_reward_percent = 0.67
-science_compute_reward_percent = 0.20
+proof_of_pi_reward_percent = 0.80
+science_compute_reward_percent = 0.07
 validator_auditor_reward_percent = 0.10
 scientific_development_reward_percent = 0.03
 ```
@@ -1242,8 +1242,8 @@ Current rules:
 ```text
 genesis_supply = 3.1416
 block_emission = 3.1416
-miner_reward = 2.104872
-science_compute_reserve = 0.62832
+miner_reward = 2.51328
+science_compute_reserve = 0.219912
 validator_reward_pool = 0.31416
 scientific_development_treasury = 0.094248
 total_minted_per_accepted_block = 3.1416
@@ -1281,7 +1281,7 @@ Uso previsto:
 - scientific/AI marketplace development;
 - node support and tooling.
 
-The treasury is separate from `science_compute_reserve`. The 20% of compute only pays scientific jobs `completed/verified/accepted` when the future L2 is activated; the 3% of treasury funds ecosystem development through auditable quarterly unlocks.
+The treasury is separate from `science_compute_reserve`. The 7% of compute only pays scientific jobs `completed/verified/accepted` when the future L2 is activated; the 3% of treasury funds ecosystem development through auditable quarterly unlocks.
 
 ## Science Compute Access Layer
 
@@ -1633,7 +1633,7 @@ Distributed consensus v0.18:
 7. A validator cannot vote for two competing proposals from the same fork.
 8. When hay `required_validator_approvals = 3`, only the fork-choice winning proposal for ese `(height, previous_hash)` se finaliza.
 9. Canonical replay validates `previous_hash`, recalcula `block_hash`, rejects duplicate ranges/results and creates the minimum missing context (`miner`, `task`) before inserting the block.
-10. To the importar, applies deterministic accounting: miner reward, validator pool, Science Compute Reserve 20% and Scientific Development Treasury 3%.
+10. To the importar, applies deterministic accounting: miner reward, validator pool, Science Compute Reserve 7% and Scientific Development Treasury 3%.
 
 Fork diagnostics:
 
@@ -1696,7 +1696,7 @@ python -m app.tools.reset_db
 
 ## Roadmap to Mainnet
 
-Picoin already has an experimental L1 with Proof of Pi, validators, audits, economics 67/20/10/3, timelocked treasury, Science Reserve locked, mempool, wallets, peers, gossip, proposals, votes, finalization, and initial canonical replay. It is not yet ready for mainnet with real value.
+Picoin already has an experimental L1 with Proof of Pi, validators, audits, economics 80/10/7/3, timelocked treasury, Science Reserve locked, mempool, wallets, peers, gossip, proposals, votes, finalization, and initial canonical replay. It is not yet ready for mainnet with real value.
 
 Fase 1 - Stable distributed testnet:
 

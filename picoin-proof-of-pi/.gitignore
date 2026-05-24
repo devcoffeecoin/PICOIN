@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 .pytest-tmp/
 .pytest_tmp/
+.pytest-basetemp-*/
 .codex-pytest-tmp/
 .tmp/
 test-output/
