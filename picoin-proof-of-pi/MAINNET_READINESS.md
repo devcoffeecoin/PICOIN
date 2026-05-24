@@ -22,7 +22,7 @@ Status key:
 | Peer discovery | `needs-work` | Bootstrap peers exist, but public peer discovery is not yet decentralized. |
 | Node operations | `testnet-ready` | Systemd, logs, backups, smoke checks, and refresh scripts exist. |
 | Security review | `needs-work` | Needs adversarial tests, endpoint hardening, and external review before real value. |
-| Mainnet genesis | `blocked` | Must freeze parameters, disable faucet, define genesis, and create mainnet chain ID. |
+| Mainnet genesis | `blocked` | Draft chain ID, genesis allocation file, env template, and runbook exist; final wallets, genesis hash, and launch tag remain. |
 
 ## Mainnet Blockers
 
@@ -194,11 +194,13 @@ Current state:
 - Refresh script preserves state.
 - Health, sync, audit, report, catch-up, repair, and restore commands exist.
 - Public testnet docs are in `deploy/README-public-testnet.md`.
+- Initial mainnet env template is in `deploy/mainnet.env.example`.
+- Initial mainnet launch runbook is in `deploy/README-mainnet.md`.
 
 Mainnet work:
 
-- Add mainnet env templates.
-- Add mainnet systemd runbook.
+- Finalize mainnet env placeholders during private launch rehearsal.
+- Rehearse mainnet systemd install with `PICOIN_ENV_SOURCE`.
 - Add monitoring dashboard.
 - Add alert thresholds:
   - API down.
@@ -249,7 +251,7 @@ Recommended order:
 4. Decide quorum roadmap: keep `3/3` for testnet, plan `3/4` or `5/7` before mainnet.
 5. Draft `MAINNET_PARAMETERS.md`.
 6. Draft `MAINNET_GENESIS.md`.
-7. Add mainnet `.env` templates after parameters are frozen.
+7. Rehearse `deploy/README-mainnet.md` on clean nodes.
 8. Prepare explorer/website ANN links.
 
 Mainnet parameter decisions are tracked in `MAINNET_PARAMETERS.md`.

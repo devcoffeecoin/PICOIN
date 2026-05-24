@@ -245,7 +245,7 @@ Launch target:
 | max segment size | `256` |
 | min sample count | `8` |
 | max sample count | `64` |
-| retarget max pi position | `100000` |
+| retarget max pi position | `1000000000000000` |
 
 Mainnet rule:
 
