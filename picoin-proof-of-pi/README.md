@@ -50,8 +50,8 @@ science_base_monthly_quota_units = 100
 validator_auditor_reward_percent = 10%
 retroactive_audit_interval_blocks = 314
 retroactive_audit_sample_multiplier = 2
-retroactive_audit_reward_percent = 20%
-retroactive_audit_reward_per_audit = 0.62832
+retroactive_audit_reward_percent = 0%
+retroactive_audit_reward_per_audit = 0.0
 fraud_miner_penalty_points = 20
 fraud_validator_invalid_results = 3
 fraud_cooldown_seconds = 3600
@@ -83,14 +83,14 @@ miner_reward_per_block = base_reward * 0.80
 validator_reward_pool_per_block = base_reward * 0.10
 science_compute_reserve_per_block = base_reward * 0.07
 scientific_development_treasury_per_block = base_reward * 0.03
-retroactive_audit_reward_per_audit = base_reward * 0.20
+retroactive_audit_reward_per_audit = 0.0
 ```
 
 Difficulty regulates work; it does not multiply issuance. The `base_reward` is the total base block emission and is distributed as `80/10/7/3`: `2.51328` for the miner Proof of Pi, `0.31416` for validators/auditors, `0.219912` for `science_compute_reserve` and `0.094248` for the Scientific Development Fund with timelock.
 
 Picoin finances scientific infrastructure and protocol development through a time-locked treasury sustained by ongoing network activity rather than large upfront premine allocations. The account `genesis` not longer represents a large premine: is limited to a normal emission of `3.1416` for local testnet/faucet compatibility. The current validator stake is simulated metadata/collateral until real transaction-based staking is implemented.
 
-Each accepted block credits `2.51328` coins to the winning miner, `0.219912` to the scientific reserve, `0.094248` to the locked Scientific Development Fund and `0.31416` coins distributed among approving validators when the external validation flow reaches quorum. Each automatic retroactive audit credits `0.62832` additional coins to `audit_treasury`.
+Each accepted block credits `2.51328` coins to the winning miner, `0.219912` to the scientific reserve, `0.094248` to the locked Scientific Development Fund and `0.31416` coins distributed among approving validators when the external validation flow reaches quorum. Automatic retroactive audits are security events and do not mint additional coins.
 
 The 7% scientific allocation is not automatically paid to workers. By default it accumulates as a locked reserve with `status = RESERVE_LOCKED`. While it remains locked, it cannot be transferred, claimed, budget-reserved, or used to pay workers. Only when a future L2 is activated by governance/multisig with timelock, the reserve may be used for jobs `accepted`, with worker, `result_hash`, `proof_hash` and reserved budget. Jobs `rejected`, `disputed` or `expired` not pay.
 
@@ -1376,7 +1376,7 @@ This avoids storing pi, avoids transmitting the full segment, separates the vali
 
 Normal validation checks 32 samples revealed by the miner. The retroactive audit checks an already accepted block with a new challenge and double the samples. En v0.16 that significa 64 posiciones.
 
-The coordinator runs a random automatic audit every 314 accepted blocks. The audit selects an accepted block at random, not necessarily the latest one. If the audit was automatic, it issues an additional reward of the 20% of the audited block base reward: `0.62832` PICOIN in the current configuration. That reward is recorded as `retroactive_audit_reward` in the ledger and credited to the protocol account `audit_treasury` until external auditors exist.
+The coordinator runs a random automatic audit every 314 accepted blocks. The audit selects an accepted block at random, not necessarily the latest one. Automatic retroactive audits are recorded as security events and do not mint additional PICOIN. Future auditor incentives must be funded from an existing reserve or treasury instead of creating extra supply.
 
 The flujo es:
 

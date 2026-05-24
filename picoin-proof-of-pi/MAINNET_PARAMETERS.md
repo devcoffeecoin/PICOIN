@@ -94,7 +94,7 @@ Reward split:
 Retroactive audit reward:
 
 ```text
-retroactive_audit_reward = 20% of base_reward = 0.628320 PI per scheduled audit
+retroactive_audit_reward = 0 PI per scheduled audit
 retroactive_audit_interval_blocks = 314
 retroactive_audit_sample_multiplier = 2
 ```

@@ -252,25 +252,19 @@ The protocol randomly selects a previously accepted historical block and recalcu
 64 audit samples
 ```
 
-If the audit succeeds, the protocol generates an additional reward equal to:
+If the audit succeeds, the protocol records a security event and generates no additional emission:
 
 ```text
-20% of the original block reward
+0 PI
 ```
 
 Current audit reward:
 
 ```text
-0.62832 PI
+0 PI
 ```
 
-Audit rewards are currently credited to:
-
-```text
-audit_treasury
-```
-
-until distributed external auditor nodes are activated.
+Future auditor incentives must be funded from an existing reserve or treasury, not by minting extra PI.
 
 ---
 
