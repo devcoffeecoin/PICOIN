@@ -42,11 +42,11 @@ def test_protocol_exposes_dynamic_difficulty_and_rewards(tmp_path, monkeypatch) 
     assert protocol["sample_count"] == 32
     assert protocol["difficulty"] == 4.0
     assert protocol["reward_per_block"] == protocol["base_reward"]
-    assert protocol["proof_of_pi_reward_percent"] == 0.67
-    assert protocol["science_compute_reward_percent"] == 0.20
+    assert protocol["proof_of_pi_reward_percent"] == 0.80
+    assert protocol["science_compute_reward_percent"] == 0.07
     assert protocol["validator_auditor_reward_percent"] == 0.10
     assert protocol["scientific_development_reward_percent"] == 0.03
-    assert protocol["proof_of_pi_reward_per_block"] == 2.104872
+    assert protocol["proof_of_pi_reward_per_block"] == 2.51328
     assert protocol["scientific_development_treasury_per_block"] == 0.094248
     assert protocol["RETARGET_MAX_PI_POSITION"] == 1_000_000
     assert history[0]["active"] is True

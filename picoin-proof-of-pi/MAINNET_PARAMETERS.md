@@ -85,8 +85,8 @@ Reward split:
 
 | Recipient | Percent | Amount per block |
 | --- | ---: | ---: |
-| Proof of Pi miner | `67%` | `2.104872 PI` |
-| Science Compute Reserve | `20%` | `0.628320 PI` |
+| Proof of Pi miner | `80%` | `2.513280 PI` |
+| Science Compute Reserve | `7%` | `0.219912 PI` |
 | Validator reward pool | `10%` | `0.314160 PI` |
 | Scientific Development Treasury | `3%` | `0.094248 PI` |
 | Total | `100%` | `3.141600 PI` |
@@ -158,7 +158,7 @@ Parameters:
 | Parameter | Value |
 | --- | --- |
 | reserve account | `science_compute_reserve` |
-| reserve percent | `20%` of each accepted block |
+| reserve percent | `7%` of each accepted block |
 | governance timelock | `24 hours` |
 | governance threshold | `2` authorized signers |
 | activation | disabled at genesis |

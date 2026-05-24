@@ -2,6 +2,7 @@ import pytest
 
 from app.core.crypto import hash_result
 from app.core.pi import calculate_pi_segment
+from app.core.settings import SCIENCE_COMPUTE_REWARD_PERCENT_OF_BLOCK
 from app.core.signatures import build_submission_signature_payload, generate_keypair, sign_payload
 from app.db.database import get_connection, init_db
 from app.services.mining import create_next_task, register_miner, submit_task
@@ -45,7 +46,7 @@ def test_science_stake_tiers_are_derived_from_amount(tmp_path, monkeypatch) -> N
     assert institution["compute_multiplier"] == 100
 
 
-def test_science_reserve_accumulates_twenty_percent_on_accepted_block(tmp_path, monkeypatch) -> None:
+def test_science_reserve_accumulates_seven_percent_on_accepted_block(tmp_path, monkeypatch) -> None:
     _init_science_db(tmp_path, monkeypatch, "science-reserve-block.sqlite3")
 
     keypair = generate_keypair()
@@ -53,9 +54,9 @@ def test_science_reserve_accumulates_twenty_percent_on_accepted_block(tmp_path, 
     _mine_legacy_block(miner["miner_id"], keypair["private_key"])
     reserve = get_science_reserve()
 
-    assert reserve["total_reserved"] == 0.62832
+    assert reserve["total_reserved"] == 0.219912
     assert reserve["total_paid"] == 0.0
-    assert reserve["available"] == 0.62832
+    assert reserve["available"] == 0.219912
     assert reserve["status"] == "RESERVE_LOCKED"
     assert reserve["payouts_enabled"] is False
     assert reserve["emergency_paused"] is False
@@ -295,7 +296,8 @@ def _init_science_db(tmp_path, monkeypatch, name: str) -> None:
     init_db(db_path)
 
 
-def _seed_science_reserve(block_reward: float) -> None:
+def _seed_science_reserve(reserve_amount: float) -> None:
+    block_reward = reserve_amount / SCIENCE_COMPUTE_REWARD_PERCENT_OF_BLOCK
     with get_connection() as connection:
         record_science_reserve_for_block(connection, 1, block_reward)
 

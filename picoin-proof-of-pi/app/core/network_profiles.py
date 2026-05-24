@@ -12,8 +12,8 @@ class NetworkProfile:
     required_validator_approvals: int = 3
     base_reward: float = 3.1416
     validator_reward_percent: float = 0.10
-    proof_of_pi_reward_percent: float = 0.67
-    science_compute_reward_percent: float = 0.20
+    proof_of_pi_reward_percent: float = 0.80
+    science_compute_reward_percent: float = 0.07
     scientific_development_reward_percent: float = 0.03
     min_validator_stake: float = 31.416
     validator_slash_invalid_signature: float = 3.1416

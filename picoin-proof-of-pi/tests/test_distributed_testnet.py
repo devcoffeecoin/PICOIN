@@ -703,7 +703,7 @@ def test_mined_block_confirms_signed_transfer_with_transaction_merkle_root(tmp_p
     assert confirmed["block_height"] == 1
     assert get_balance_amount(sender["address"]) == pytest.approx(0.99)
     assert get_balance_amount(recipient["address"]) == pytest.approx(1.0)
-    assert get_balance_amount(miner["miner_id"]) == pytest.approx(2.104872 + 0.01)
+    assert get_balance_amount(miner["miner_id"]) == pytest.approx(2.51328 + 0.01)
     assert chain["valid"] is True
 
 
@@ -1593,7 +1593,7 @@ def test_science_stake_and_job_create_transactions_are_canonical(tmp_path, monke
     assert job["metadata_hash"] == "metadata_hash"
     assert job["storage_pointer"] == "ipfs://payload"
     assert get_balance_amount(wallet["address"]) == pytest.approx(0.38)
-    assert get_balance_amount(miner["miner_id"]) == pytest.approx((2.104872 * 2) + 0.02)
+    assert get_balance_amount(miner["miner_id"]) == pytest.approx((2.51328 * 2) + 0.02)
     assert chain["valid"] is True
 
 
@@ -1640,7 +1640,7 @@ def test_science_unstake_transaction_unlocks_when_no_jobs_are_active(tmp_path, m
     assert account["stake_amount"] == pytest.approx(0)
     assert get_balance_amount(f"science_stake:{wallet['address']}") == pytest.approx(0)
     assert get_balance_amount(wallet["address"]) == pytest.approx(3_141.98)
-    assert get_balance_amount(miner["miner_id"]) == pytest.approx((2.104872 * 2) + 0.02)
+    assert get_balance_amount(miner["miner_id"]) == pytest.approx((2.51328 * 2) + 0.02)
     assert chain["valid"] is True
 
 
@@ -1696,7 +1696,7 @@ def test_science_reserve_governance_actions_are_canonical_transactions(tmp_path,
     assert unpaused["status"] == "L2_ACTIVE"
     assert unpaused["payouts_enabled"] is True
     assert get_transaction(unpause_tx["tx_hash"])["status"] == "confirmed"
-    assert get_balance_amount(miner["miner_id"]) == pytest.approx((2.104872 * 5) + 0.05)
+    assert get_balance_amount(miner["miner_id"]) == pytest.approx((2.51328 * 5) + 0.05)
     assert chain["valid"] is True
 
 
@@ -1740,7 +1740,7 @@ def test_scientific_development_treasury_claim_is_canonical_transaction(tmp_path
     assert get_balance_amount(treasury_wallet["address"]) == pytest.approx(0.094248)
     assert get_balance_amount(SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID) == pytest.approx(0.094248)
     assert get_balance_amount(owner["address"]) == pytest.approx(0.99)
-    assert get_balance_amount(miner["miner_id"]) == pytest.approx((2.104872 * 2) + 0.01)
+    assert get_balance_amount(miner["miner_id"]) == pytest.approx((2.51328 * 2) + 0.01)
     assert chain["valid"] is True
 
     duplicate = sign_transaction(
@@ -1838,5 +1838,4 @@ def _mine_legacy_block(miner_id: str, private_key: str) -> None:
     signature = sign_payload(private_key, payload)
     response = submit_task(task["task_id"], miner_id, result_hash, segment, signature, signed_at)
     assert response["accepted"] is True
-
 
