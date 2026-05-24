@@ -33,6 +33,7 @@ from app.core.settings import (
     REQUIRED_VALIDATOR_APPROVALS,
     VALIDATION_MODE,
     VALIDATOR_MIN_TRUST_SCORE,
+    VALIDATOR_REGISTRATION_STAKE,
 )
 from app.core.signatures import verify_payload_signature
 from app.db.database import get_connection, row_to_dict
@@ -1845,10 +1846,10 @@ def _ensure_validator(connection: Any, validator_id: str, timestamp: str) -> Non
         return
     connection.execute(
         """
-        INSERT INTO validators (validator_id, name, public_key, registered_at, last_seen_at)
-        VALUES (?, ?, '', ?, ?)
+        INSERT INTO validators (validator_id, name, public_key, registered_at, last_seen_at, stake_locked)
+        VALUES (?, ?, '', ?, ?, ?)
         """,
-        (validator_id, f"distributed:{validator_id}", timestamp, timestamp),
+        (validator_id, f"distributed:{validator_id}", timestamp, timestamp, VALIDATOR_REGISTRATION_STAKE),
     )
 
 

@@ -90,6 +90,7 @@ from app.core.settings import (
     VALIDATOR_MIN_TRUST_SCORE,
     VALIDATOR_PENALTY_INVALID_SIGNATURE,
     VALIDATOR_ROTATION_WINDOW_SECONDS,
+    VALIDATOR_REGISTRATION_STAKE,
     VALIDATOR_REWARD_PERCENT_OF_BLOCK,
     VALIDATOR_AUDITOR_REWARD_PERCENT,
     VALIDATOR_SELECTION_AVAILABILITY_WEIGHT,
@@ -248,11 +249,11 @@ def register_validator(name: str, public_key: str, reward_address: str | None = 
             INSERT INTO validators (
                 validator_id, name, public_key, reward_address, registered_at,
                 last_seen_at, last_heartbeat_at, online_status, sync_status,
-                protocol_version, enabled
+                protocol_version, enabled, stake_locked
             )
-            VALUES (?, ?, ?, ?, ?, ?, NULL, 'offline', 'unknown', ?, 1)
+            VALUES (?, ?, ?, ?, ?, ?, NULL, 'offline', 'unknown', ?, 1, ?)
             """,
-            (validator_id, name, public_key, reward_address, timestamp, timestamp, PROTOCOL_VERSION),
+            (validator_id, name, public_key, reward_address, timestamp, timestamp, PROTOCOL_VERSION, VALIDATOR_REGISTRATION_STAKE),
         )
         _ensure_balance_account(connection, validator_id, "validator")
         if reward_address:
@@ -548,9 +549,10 @@ def record_validator_heartbeat(payload: dict[str, Any], client_host: str | None 
                     validator_id, name, public_key, registered_at, last_seen_at,
                     last_heartbeat_at, online_status, sync_status, enabled,
                     reason_if_not_eligible, node_id, advertised_address, last_ip,
-                    effective_height, sync_lag, pending_replay_blocks, protocol_version
+                    effective_height, sync_lag, pending_replay_blocks, protocol_version,
+                    stake_locked
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 'duplicated_identity', 'unknown', 0, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, 'duplicated_identity', 'unknown', 0, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(validator_id) DO UPDATE SET
                     public_key = excluded.public_key,
                     last_seen_at = excluded.last_seen_at,
@@ -581,6 +583,7 @@ def record_validator_heartbeat(payload: dict[str, Any], client_host: str | None 
                     sync_lag,
                     pending_replay,
                     str(payload.get("version") or PROTOCOL_VERSION),
+                    0.0,
                 ),
             )
         else:
@@ -596,9 +599,9 @@ def record_validator_heartbeat(payload: dict[str, Any], client_host: str | None 
                     validator_id, name, public_key, registered_at, last_seen_at,
                     last_heartbeat_at, online_status, sync_status, out_of_sync_since,
                     node_id, advertised_address, last_ip, effective_height, sync_lag,
-                    pending_replay_blocks, protocol_version, enabled
+                    pending_replay_blocks, protocol_version, enabled, stake_locked
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 'online', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)
+                VALUES (?, ?, ?, ?, ?, ?, 'online', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                 ON CONFLICT(validator_id) DO UPDATE SET
                     name = COALESCE(NULLIF(excluded.name, ''), validators.name),
                     public_key = excluded.public_key,
@@ -631,6 +634,7 @@ def record_validator_heartbeat(payload: dict[str, Any], client_host: str | None 
                     sync_lag,
                     pending_replay,
                     str(payload.get("version") or PROTOCOL_VERSION),
+                    VALIDATOR_REGISTRATION_STAKE,
                 ),
             )
             _ensure_balance_account(connection, validator_id, "validator")
@@ -1115,9 +1119,9 @@ def _restore_validator_identity(
         """
         INSERT INTO validators (
             validator_id, name, public_key, reward_address, registered_at,
-            last_seen_at, last_heartbeat_at, online_status, sync_status, protocol_version, enabled
+            last_seen_at, last_heartbeat_at, online_status, sync_status, protocol_version, enabled, stake_locked
         )
-        VALUES (?, ?, ?, ?, ?, ?, NULL, 'offline', 'unknown', ?, 1)
+        VALUES (?, ?, ?, ?, ?, ?, NULL, 'offline', 'unknown', ?, 1, ?)
         ON CONFLICT(validator_id) DO UPDATE SET
             name = COALESCE(NULLIF(excluded.name, ''), validators.name),
             public_key = COALESCE(validators.public_key, excluded.public_key),
@@ -1125,7 +1129,16 @@ def _restore_validator_identity(
             last_seen_at = excluded.last_seen_at,
             protocol_version = excluded.protocol_version
         """,
-        (validator_id, (name or validator_id)[:80], public_key, reward_address, timestamp, timestamp, PROTOCOL_VERSION),
+        (
+            validator_id,
+            (name or validator_id)[:80],
+            public_key,
+            reward_address,
+            timestamp,
+            timestamp,
+            PROTOCOL_VERSION,
+            VALIDATOR_REGISTRATION_STAKE,
+        ),
     )
     _ensure_balance_account(connection, validator_id, "validator")
     if reward_address:
@@ -2782,15 +2795,26 @@ def get_full_economic_audit() -> dict[str, Any]:
             SELECT
                 COUNT(*) AS count,
                 COALESCE(SUM(stake_locked), 0) AS stake_locked,
+                COALESCE(SUM(CASE WHEN COALESCE(stake_owner_address, '') = '' THEN stake_locked ELSE 0 END), 0) AS legacy_stake_locked,
                 COALESCE(SUM(slashed_amount), 0) AS slashed_amount
             FROM validators
             """
         ).fetchone()
         validator_stake_locked = round(float(validators["stake_locked"]), 8)
+        legacy_validator_stake_locked = round(float(validators["legacy_stake_locked"]), 8)
         validator_slashed_amount = round(float(validators["slashed_amount"]), 8)
         ledger_validator_stake_locks = _sum_query(
             connection,
             "SELECT COALESCE(SUM(amount), 0) AS total FROM ledger_entries WHERE entry_type = 'validator_stake_lock'",
+        )
+        ledger_validator_stake_unlocks = _sum_query(
+            connection,
+            """
+            SELECT COALESCE(SUM(amount), 0) AS total
+            FROM ledger_entries
+            WHERE entry_type = 'validator_stake_unlock'
+            AND account_type = 'validator'
+            """,
         )
         ledger_validator_slashes = _sum_query(
             connection,
@@ -2821,7 +2845,13 @@ def get_full_economic_audit() -> dict[str, Any]:
         8,
     )
     expected_ledger_total = expected_total_balances
-    expected_validator_stake_locked = validator_stake_locked
+    expected_validator_stake_locked = round(
+        legacy_validator_stake_locked
+        + ledger_validator_stake_locks
+        + ledger_validator_stake_unlocks
+        + ledger_validator_slashes,
+        8,
+    )
 
     _audit_equal(
         issues,
@@ -2942,6 +2972,9 @@ def get_full_economic_audit() -> dict[str, Any]:
             "validator_count": int(validators["count"]),
             "stake_locked": validator_stake_locked,
             "expected_stake_locked": expected_validator_stake_locked,
+            "legacy_unbacked_stake_locked": legacy_validator_stake_locked,
+            "ledger_validator_stake_locks": ledger_validator_stake_locks,
+            "ledger_validator_stake_unlocks": ledger_validator_stake_unlocks,
             "slashed_amount": validator_slashed_amount,
             "ledger_validator_slashes": ledger_validator_slashes,
             "ledger_genesis_slashes": ledger_genesis_slashes,

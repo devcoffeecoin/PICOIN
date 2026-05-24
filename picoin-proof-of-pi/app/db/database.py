@@ -17,7 +17,6 @@ from app.core.settings import (
     MAX_PI_POSITION,
     NETWORK_ID,
     RETARGET_MAX_PI_POSITION,
-    MIN_VALIDATOR_STAKE,
     PI_ALGORITHM,
     PROTOCOL_VERSION,
     RANGE_ASSIGNMENT_MAX_ATTEMPTS,
@@ -34,6 +33,7 @@ from app.core.settings import (
     TASK_EXPIRATION_SECONDS,
     TASK_SEGMENT_SIZE,
     VALIDATION_MODE,
+    VALIDATOR_REGISTRATION_STAKE,
 )
 from app.core.difficulty import calculate_difficulty
 from app.core.money import to_units
@@ -147,7 +147,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 cooldown_until TEXT,
                 last_seen_at TEXT,
                 total_validation_ms INTEGER NOT NULL DEFAULT 0,
-                stake_locked REAL NOT NULL DEFAULT 31.416,
+                stake_locked REAL NOT NULL DEFAULT __VALIDATOR_REGISTRATION_STAKE__,
                 slashed_amount REAL NOT NULL DEFAULT 0,
                 is_banned INTEGER NOT NULL DEFAULT 0
             );
@@ -732,7 +732,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_consensus_votes_proposal ON consensus_votes(proposal_id);
             CREATE INDEX IF NOT EXISTS idx_canonical_checkpoints_height ON canonical_checkpoints(height);
             CREATE INDEX IF NOT EXISTS idx_canonical_snapshot_imports_height ON canonical_snapshot_imports(height);
-            """
+            """.replace("__VALIDATOR_REGISTRATION_STAKE__", str(VALIDATOR_REGISTRATION_STAKE))
         )
         _ensure_column(connection, "miners", "trust_score", "REAL NOT NULL DEFAULT 1.0")
         _ensure_column(connection, "miners", "cooldown_until", "TEXT")
@@ -767,7 +767,8 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "validators", "reason_if_not_eligible", "TEXT")
         _ensure_column(connection, "validators", "enabled", "INTEGER NOT NULL DEFAULT 1")
         _ensure_column(connection, "validators", "total_validation_ms", "INTEGER NOT NULL DEFAULT 0")
-        _ensure_column(connection, "validators", "stake_locked", f"REAL NOT NULL DEFAULT {MIN_VALIDATOR_STAKE}")
+        _ensure_column(connection, "validators", "stake_locked", f"REAL NOT NULL DEFAULT {VALIDATOR_REGISTRATION_STAKE}")
+        _ensure_column(connection, "validators", "stake_owner_address", "TEXT")
         _ensure_column(connection, "validators", "slashed_amount", "REAL NOT NULL DEFAULT 0")
         _ensure_column(connection, "validators", "reward_address", "TEXT")
         _ensure_column(connection, "tasks", "expires_at", "TEXT")

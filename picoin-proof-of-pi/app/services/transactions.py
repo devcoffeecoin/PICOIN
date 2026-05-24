@@ -14,6 +14,7 @@ from app.core.settings import (
     FAUCET_RATE_LIMIT_WINDOW_SECONDS,
     GENESIS_ACCOUNT_ID,
     MAX_TRANSACTIONS_PER_BLOCK,
+    MIN_VALIDATOR_STAKE,
     MIN_TX_FEE_UNITS,
     NETWORK_ID,
     SCIENCE_MAX_PENDING_PER_REQUESTER,
@@ -348,9 +349,15 @@ def apply_block_transactions(
         if tx["tx_type"] == "transfer":
             _apply_transfer_transaction(connection, tx, block_height, timestamp)
         elif tx["tx_type"] == "stake":
-            _apply_science_stake_transaction(connection, tx, block_height, timestamp)
+            if _is_validator_stake_tx(tx):
+                _apply_validator_stake_transaction(connection, tx, block_height, timestamp)
+            else:
+                _apply_science_stake_transaction(connection, tx, block_height, timestamp)
         elif tx["tx_type"] == "unstake":
-            _apply_science_unstake_transaction(connection, tx, block_height, timestamp)
+            if _is_validator_stake_tx(tx):
+                _apply_validator_unstake_transaction(connection, tx, block_height, timestamp)
+            else:
+                _apply_science_unstake_transaction(connection, tx, block_height, timestamp)
         elif tx["tx_type"] == "science_job_create":
             _apply_science_job_create_transaction(connection, tx, block_height, timestamp)
         elif tx["tx_type"] == "governance_action":
@@ -663,7 +670,26 @@ def _transaction_priority(tx: dict[str, Any]) -> tuple[float, str, str]:
     return (-float(tx.get("fee", 0)), str(tx.get("created_at") or ""), str(tx.get("tx_hash") or ""))
 
 
+def _stake_type(tx: dict[str, Any]) -> str:
+    payload = tx.get("payload") or {}
+    return str(payload.get("stake_type") or payload.get("type") or "science").strip().lower()
+
+
+def _is_validator_stake_tx(tx: dict[str, Any]) -> bool:
+    return _stake_type(tx) == "validator"
+
+
+def _validator_stake_validator_id(tx: dict[str, Any]) -> str:
+    payload = tx.get("payload") or {}
+    return str(payload.get("validator_id") or tx.get("recipient") or "").strip()
+
+
 def _stake_rejection_reason(connection: Any, tx: dict[str, Any]) -> str | None:
+    stake_type = _stake_type(tx)
+    if stake_type == "validator":
+        return _validator_stake_rejection_reason(connection, tx)
+    if stake_type != "science":
+        return "unsupported stake_type"
     amount = round(float(tx.get("amount", 0)), 8)
     if amount <= 0:
         return "stake amount must be positive"
@@ -678,6 +704,11 @@ def _stake_rejection_reason(connection: Any, tx: dict[str, Any]) -> str | None:
 
 
 def _unstake_rejection_reason(connection: Any, tx: dict[str, Any]) -> str | None:
+    stake_type = _stake_type(tx)
+    if stake_type == "validator":
+        return _validator_unstake_rejection_reason(connection, tx)
+    if stake_type != "science":
+        return "unsupported stake_type"
     requested_amount = round(float(tx.get("amount", 0)), 8)
     account = row_to_dict(
         connection.execute(
@@ -706,6 +737,83 @@ def _unstake_rejection_reason(connection: Any, tx: dict[str, Any]) -> str | None
     if int(active_jobs) > 0:
         return "cannot unstake while science jobs are active"
     return None
+
+
+def _validator_stake_rejection_reason(connection: Any, tx: dict[str, Any]) -> str | None:
+    if _tx_amount_units(tx) <= 0:
+        return "validator stake amount must be positive"
+    validator_id = _validator_stake_validator_id(tx)
+    if not validator_id.startswith("validator_"):
+        return "validator stake requires validator_id"
+    validator = row_to_dict(
+        connection.execute(
+            "SELECT validator_id, stake_owner_address FROM validators WHERE validator_id = ?",
+            (validator_id,),
+        ).fetchone()
+    )
+    if validator is None:
+        return "validator stake requires registered validator"
+    stake_owner = str(validator.get("stake_owner_address") or "").strip()
+    if stake_owner and stake_owner != tx["sender"]:
+        return "validator stake owner mismatch"
+    return None
+
+
+def _validator_unstake_rejection_reason(connection: Any, tx: dict[str, Any]) -> str | None:
+    validator = _validator_unstake_row(connection, tx)
+    if validator is None:
+        return "validator unstake requires registered validator"
+    stake_owner = str(validator.get("stake_owner_address") or "").strip()
+    if not stake_owner:
+        return "validator stake owner is not set"
+    if stake_owner != tx["sender"]:
+        return "validator unstake requires stake owner wallet"
+    stake_units = to_units(validator.get("stake_locked") or 0)
+    if stake_units <= 0:
+        return "validator has no locked stake"
+    amount_units = _validator_unstake_amount_units(tx, validator)
+    if amount_units <= 0:
+        return "validator stake has no withdrawable excess"
+    if amount_units > stake_units:
+        return "validator unstake amount exceeds locked stake"
+    remaining_units = stake_units - amount_units
+    enabled = bool(validator.get("enabled", 1))
+    banned = bool(validator.get("is_banned"))
+    if enabled and not banned and 0 < remaining_units < to_units(MIN_VALIDATOR_STAKE):
+        return "disable validator before unstaking below minimum"
+    if enabled and not banned and remaining_units == 0:
+        return "disable validator before full unstake"
+    if _balance_units(connection, validator["validator_id"]) < amount_units:
+        return "validator stake ledger balance is insufficient"
+    return None
+
+
+def _validator_unstake_row(connection: Any, tx: dict[str, Any]) -> dict[str, Any] | None:
+    validator_id = _validator_stake_validator_id(tx)
+    if not validator_id.startswith("validator_"):
+        return None
+    return row_to_dict(
+        connection.execute(
+            """
+            SELECT validator_id, stake_locked, stake_owner_address, enabled, is_banned
+            FROM validators
+            WHERE validator_id = ?
+            """,
+            (validator_id,),
+        ).fetchone()
+    )
+
+
+def _validator_unstake_amount_units(tx: dict[str, Any], validator: dict[str, Any]) -> int:
+    requested_units = _tx_amount_units(tx)
+    stake_units = to_units(validator.get("stake_locked") or 0)
+    if requested_units > 0:
+        return requested_units
+    enabled = bool(validator.get("enabled", 1))
+    banned = bool(validator.get("is_banned"))
+    if enabled and not banned:
+        return max(0, stake_units - to_units(MIN_VALIDATOR_STAKE))
+    return stake_units
 
 
 def _science_job_create_rejection_reason(connection: Any, tx: dict[str, Any]) -> str | None:
@@ -968,6 +1076,102 @@ def _apply_science_unstake_transaction(connection: Any, tx: dict[str, Any], bloc
         timestamp,
     )
     unstake_science_access_in_connection(connection, sender, timestamp=timestamp)
+
+
+def _apply_validator_stake_transaction(connection: Any, tx: dict[str, Any], block_height: int, timestamp: str) -> None:
+    amount_units = _tx_amount_units(tx)
+    fee_units = _tx_fee_units(tx)
+    amount = units_to_float(amount_units)
+    sender = tx["sender"]
+    validator_id = _validator_stake_validator_id(tx)
+    _apply_account_delta(
+        connection,
+        sender,
+        "wallet",
+        -units_to_float(amount_units + fee_units),
+        "validator_stake_debit",
+        block_height,
+        tx["tx_hash"],
+        f"validator stake lock for {validator_id}",
+        timestamp,
+    )
+    _apply_account_delta(
+        connection,
+        validator_id,
+        "validator",
+        amount,
+        "validator_stake_lock",
+        block_height,
+        tx["tx_hash"],
+        f"validator stake lock from {sender}",
+        timestamp,
+    )
+    connection.execute(
+        """
+        UPDATE validators
+        SET stake_locked = ROUND(stake_locked + ?, 8),
+            stake_owner_address = COALESCE(NULLIF(stake_owner_address, ''), ?),
+            last_seen_at = ?
+        WHERE validator_id = ?
+        """,
+        (amount, sender, timestamp, validator_id),
+    )
+
+
+def _apply_validator_unstake_transaction(connection: Any, tx: dict[str, Any], block_height: int, timestamp: str) -> None:
+    fee_units = _tx_fee_units(tx)
+    sender = tx["sender"]
+    validator = _validator_unstake_row(connection, tx)
+    if validator is None:
+        raise TransactionExecutionError("validator unstake requires registered validator")
+    validator_id = validator["validator_id"]
+    amount_units = _validator_unstake_amount_units(tx, validator)
+    amount = units_to_float(amount_units)
+    if fee_units > 0:
+        _apply_account_delta(
+            connection,
+            sender,
+            "wallet",
+            -units_to_float(fee_units),
+            "validator_unstake_fee_debit",
+            block_height,
+            tx["tx_hash"],
+            "validator unstake fee",
+            timestamp,
+        )
+    _apply_account_delta(
+        connection,
+        validator_id,
+        "validator",
+        -amount,
+        "validator_stake_unlock",
+        block_height,
+        tx["tx_hash"],
+        f"validator stake unlock to {sender}",
+        timestamp,
+    )
+    _apply_account_delta(
+        connection,
+        sender,
+        "wallet",
+        amount,
+        "validator_unstake_credit",
+        block_height,
+        tx["tx_hash"],
+        f"validator stake unlock from {validator_id}",
+        timestamp,
+    )
+    remaining_units = max(0, to_units(validator.get("stake_locked") or 0) - amount_units)
+    connection.execute(
+        """
+        UPDATE validators
+        SET stake_locked = ?,
+            stake_owner_address = CASE WHEN ? > 0 THEN stake_owner_address ELSE NULL END,
+            last_seen_at = ?
+        WHERE validator_id = ?
+        """,
+        (units_to_float(remaining_units), remaining_units, timestamp, validator_id),
+    )
 
 
 def _apply_science_job_create_transaction(connection: Any, tx: dict[str, Any], block_height: int, timestamp: str) -> None:
