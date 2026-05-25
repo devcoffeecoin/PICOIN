@@ -3650,6 +3650,12 @@ def get_difficulty_status() -> dict[str, Any]:
     average_ms = _average_epoch_ms(epoch_rows) if epoch_rows else None
     required_epoch_blocks = max(RETARGET_EPOCH_BLOCKS, RETARGET_WINDOW_BLOCKS)
     blocks_until_ready = max(0, required_epoch_blocks - len(epoch_rows))
+    next_range_start = min(
+        int(assignment_window["frontier"]) + 1,
+        int(assignment_window["RETARGET_MAX_PI_POSITION"]),
+    )
+    required_task_expiration_seconds = int(get_dynamic_expiration(next_range_start))
+    effective_task_expiration_seconds = _task_expiration_seconds_for_position(params, next_range_start)
     return {
         "enabled": True,
         "epoch_blocks": RETARGET_EPOCH_BLOCKS,
@@ -3670,6 +3676,11 @@ def get_difficulty_status() -> dict[str, Any]:
         "active_reward_per_block": calculate_reward(params),
         "configured_max_pi_position": params["max_pi_position"],
         "effective_max_pi_position": assignment_window["effective_max_pi_position"],
+        "RETARGET_MAX_PI_POSITION": assignment_window["RETARGET_MAX_PI_POSITION"],
+        "next_range_start": next_range_start,
+        "active_task_expiration_seconds": int(params["task_expiration_seconds"]),
+        "required_task_expiration_seconds": required_task_expiration_seconds,
+        "effective_task_expiration_seconds": effective_task_expiration_seconds,
         "range_frontier": assignment_window["frontier"],
         "range_start_min": assignment_window["min_start"],
         "range_start_max": assignment_window["max_start"],

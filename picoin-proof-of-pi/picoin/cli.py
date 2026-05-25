@@ -38,11 +38,13 @@ from app.core.settings import (
     DATABASE_PATH,
     FAUCET_DEFAULT_AMOUNT,
     GENESIS_HASH,
+    MAINNET_RETARGET_MAX_PI_POSITION,
     NETWORK_ID,
     PROJECT_NAME,
     PROTOCOL_VERSION,
     REPLAY_BACKLOG_THRESHOLD,
     REPLAY_BATCH_SIZE,
+    get_dynamic_expiration,
 )
 from app.core.signatures import sign_payload
 from app.services.consensus import consensus_vote_payload
@@ -550,6 +552,7 @@ def command_node_mainnet_preflight(args: argparse.Namespace) -> int:
     mempool = get_json(server_url, "/mempool/status")
     consensus = get_json(server_url, "/consensus/status")
     validation_health = get_json(server_url, "/validation/jobs/health")
+    difficulty = get_json(server_url, "/difficulty")
     payloads.update(
         {
             "health": health,
@@ -560,6 +563,7 @@ def command_node_mainnet_preflight(args: argparse.Namespace) -> int:
             "mempool": mempool,
             "consensus": consensus,
             "validation_health": validation_health,
+            "difficulty": difficulty,
         }
     )
 
@@ -579,6 +583,43 @@ def command_node_mainnet_preflight(args: argparse.Namespace) -> int:
         "validator_quorum_frozen",
         _optional_int(protocol.get("required_validator_approvals")) == MAINNET_PROFILE.required_validator_approvals,
         f"required_validator_approvals={protocol.get('required_validator_approvals')}",
+    )
+    retarget_max_pi_position = _optional_int(protocol.get("RETARGET_MAX_PI_POSITION"))
+    difficulty_retarget_max = _optional_int(difficulty.get("RETARGET_MAX_PI_POSITION"))
+    add_check(
+        "pi_depth_cap_frozen",
+        retarget_max_pi_position == MAINNET_RETARGET_MAX_PI_POSITION
+        and (difficulty_retarget_max is None or difficulty_retarget_max == MAINNET_RETARGET_MAX_PI_POSITION),
+        (
+            f"protocol_RETARGET_MAX_PI_POSITION={protocol.get('RETARGET_MAX_PI_POSITION')}, "
+            f"difficulty_RETARGET_MAX_PI_POSITION={difficulty.get('RETARGET_MAX_PI_POSITION')}"
+        ),
+    )
+    protocol_task_expiration = _optional_int(protocol.get("task_expiration_seconds"))
+    active_task_expiration = _optional_int(difficulty.get("active_task_expiration_seconds"))
+    required_task_expiration = _optional_int(difficulty.get("required_task_expiration_seconds"))
+    effective_task_expiration = _optional_int(difficulty.get("effective_task_expiration_seconds"))
+    dynamic_expiration_cap = int(get_dynamic_expiration(MAINNET_RETARGET_MAX_PI_POSITION))
+    task_expiration_floor_ok = (
+        protocol_task_expiration is not None
+        and active_task_expiration is not None
+        and required_task_expiration is not None
+        and effective_task_expiration is not None
+        and protocol_task_expiration >= int(get_dynamic_expiration(1))
+        and active_task_expiration == protocol_task_expiration
+        and effective_task_expiration >= required_task_expiration
+        and effective_task_expiration <= dynamic_expiration_cap
+    )
+    add_check(
+        "dynamic_task_expiration",
+        task_expiration_floor_ok,
+        (
+            f"protocol={protocol.get('task_expiration_seconds')}, "
+            f"active={difficulty.get('active_task_expiration_seconds')}, "
+            f"required={difficulty.get('required_task_expiration_seconds')}, "
+            f"effective={difficulty.get('effective_task_expiration_seconds')}, "
+            f"cap={dynamic_expiration_cap}"
+        ),
     )
     add_check(
         "validator_eligibility_wallet_backed",

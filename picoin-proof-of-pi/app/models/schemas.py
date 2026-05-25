@@ -977,6 +977,11 @@ class RetargetStatusResponse(BaseModel):
     active_reward_per_block: float
     configured_max_pi_position: int | None = None
     effective_max_pi_position: int | None = None
+    RETARGET_MAX_PI_POSITION: int | None = None
+    next_range_start: int | None = None
+    active_task_expiration_seconds: int | None = None
+    required_task_expiration_seconds: int | None = None
+    effective_task_expiration_seconds: int | None = None
     range_frontier: int | None = None
     range_start_min: int | None = None
     range_start_max: int | None = None
