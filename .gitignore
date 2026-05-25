@@ -1,6 +1,4 @@
 # Ignore desktop app sources and build artifacts for wallet and miner
-picoin-desktop-wallet/
-picoin-desktop-miner/
 
 # Node.js
 node_modules/
