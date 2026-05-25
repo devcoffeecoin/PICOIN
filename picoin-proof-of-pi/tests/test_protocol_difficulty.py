@@ -3,8 +3,10 @@ from pathlib import Path
 from app.core.crypto import hash_result
 from app.core.pi import calculate_pi_segment
 from app.core.signatures import build_submission_signature_payload, generate_keypair, sign_payload
+from app.core.settings import get_dynamic_expiration
 from app.db.database import get_connection, init_db
 from app.services.mining import (
+    _task_expiration_seconds_for_position,
     create_next_task,
     get_difficulty_status,
     get_protocol,
@@ -138,6 +140,55 @@ def test_retarget_preserves_RETARGET_MAX_PI_POSITION(tmp_path, monkeypatch) -> N
     assert result["retargeted"] is True
     assert protocol["RETARGET_MAX_PI_POSITION"] == 123_456
     assert history[0]["RETARGET_MAX_PI_POSITION"] == 123_456
+
+
+def test_retarget_persists_dynamic_task_expiration_above_one_million(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "retarget-dynamic-expiration.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    keypair = generate_keypair()
+    miner = register_miner("retarget-expiration-miner", keypair["public_key"])
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE protocol_params SET RETARGET_MAX_PI_POSITION = ?, task_expiration_seconds = 600 WHERE active = 1",
+            (10**15,),
+        )
+    _insert_epoch_blocks(miner["miner_id"], total_task_ms=60_000, total_block_ms=60_000, count=20)
+    with get_connection() as connection:
+        for height in range(1, 21):
+            range_start = 2_000_000 + ((height - 1) * 64)
+            range_end = range_start + 63
+            task_id = f"task_retarget_{height}"
+            connection.execute(
+                "UPDATE tasks SET range_start = ?, range_end = ? WHERE task_id = ?",
+                (range_start, range_end, task_id),
+            )
+            connection.execute(
+                "UPDATE blocks SET range_start = ?, range_end = ? WHERE task_id = ?",
+                (range_start, range_end, task_id),
+            )
+
+    before = get_protocol()
+    expected_timeout = get_dynamic_expiration(2_000_000 + (20 * 64))
+    result = run_retarget()
+    after = get_protocol()
+
+    assert result["retargeted"] is True
+    assert result["event"]["action"] == "increase"
+    assert "dynamic task expiration" in result["event"]["reason"]
+    assert before["difficulty"] == after["difficulty"]
+    assert before["segment_size"] == after["segment_size"]
+    assert after["task_expiration_seconds"] == expected_timeout
+
+
+def test_task_expiration_seconds_for_position_uses_depth_floor() -> None:
+    params = {"task_expiration_seconds": 600}
+
+    assert _task_expiration_seconds_for_position(params, 1_000_000) == 600
+    assert _task_expiration_seconds_for_position(params, 10**9) == 900
+    assert _task_expiration_seconds_for_position({"task_expiration_seconds": 1_200}, 10**9) == 1_200
 
 
 def test_retarget_preview_does_not_mutate_protocol_or_history(tmp_path, monkeypatch) -> None:
