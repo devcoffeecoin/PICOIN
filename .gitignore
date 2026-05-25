@@ -1,0 +1,46 @@
+# Node.js
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Build outputs
+dist/
+dist-*
+dist-electron/
+build/
+out/
+release/
+win-unpacked/
+
+# Electron / installers
+*.exe
+*.msi
+*.nsis.7z
+*.7z
+*.zip
+*.tar.gz
+*.blockmap
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# VSCode
+.vscode/
+
+# Environment
+.env
+.env.*
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# Logs
+*.log
+
+# Misc
+vendor/*.min.js

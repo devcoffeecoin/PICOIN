@@ -1,0 +1,17 @@
+# Local ignores for picoin-desktop-miner
+node_modules/
+dist/
+dist-electron/
+release/
+win-unpacked/
+*.exe
+*.msi
+*.7z
+*.zip
+*.blockmap
+
+# build artifacts
+*.tgz
+
+# editor
+.vscode/
