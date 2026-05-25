@@ -274,6 +274,58 @@ def test_mainnet_rejects_same_treasury_and_governance_wallet() -> None:
     assert "mainnet treasury and governance wallets must be distinct" in result.stderr
 
 
+def test_mainnet_rejects_draft_genesis_allocations() -> None:
+    result = _run_isolated(
+        "import app.core.settings",
+        {
+            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_GENESIS_ALLOCATIONS_FILE": "deploy/mainnet-genesis.allocations.draft.json",
+            **_mainnet_wallet_env(),
+        },
+    )
+
+    assert result.returncode != 0
+    assert "mainnet genesis allocations must fund wallet accounts only" in result.stderr
+
+
+def test_mainnet_accepts_wallet_only_genesis_allocations(tmp_path) -> None:
+    allocation_file = tmp_path / "mainnet-genesis.allocations.final.json"
+    allocation_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "network_id": "mainnet",
+                "chain_id": "picoin-mainnet-v1",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "allocations": [
+                    {
+                        "account_id": MAINNET_TREASURY_WALLET,
+                        "account_type": "wallet",
+                        "amount": 200.0,
+                    },
+                    {
+                        "account_id": MAINNET_GOVERNANCE_WALLET,
+                        "account_type": "wallet",
+                        "amount": 100.0,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _run_isolated(
+        "from app.core import settings; print(settings.GENESIS_HASH)",
+        {
+            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_GENESIS_ALLOCATIONS_FILE": str(allocation_file),
+            **_mainnet_wallet_env(),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert len(result.stdout.strip()) == 64
+
+
 def test_public_testnet_defaults_to_two_validator_approvals(tmp_path) -> None:
     db_path = tmp_path / "public-profile.sqlite3"
     code = """

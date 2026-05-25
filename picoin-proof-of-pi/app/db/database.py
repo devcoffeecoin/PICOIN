@@ -38,7 +38,7 @@ from app.core.settings import (
 )
 from app.core.difficulty import calculate_difficulty
 from app.core.money import to_units
-from app.services.genesis import load_genesis_allocations
+from app.services.genesis import load_genesis_allocations, validate_mainnet_genesis_allocations
 
 
 class PicoinConnection(sqlite3.Connection):
@@ -1335,6 +1335,8 @@ def _ensure_genesis_allocations(connection: sqlite3.Connection) -> None:
         raise RuntimeError("genesis allocations network_id mismatch")
     if document.get("chain_id") and document["chain_id"] != CHAIN_ID:
         raise RuntimeError("genesis allocations chain_id mismatch")
+    if NETWORK_ID == "mainnet":
+        validate_mainnet_genesis_allocations(document)
     timestamp = document["created_at"]
     for allocation in document["allocations"]:
         account_id = allocation["account_id"]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 from typing import Any
 
@@ -8,6 +9,37 @@ from app.core.crypto import canonical_json, sha256_text
 
 
 GENESIS_ALLOCATION_VERSION = 1
+
+
+def _is_canonical_wallet_address(value: str) -> bool:
+    normalized = str(value or "").strip().upper()
+    if not normalized.startswith("PI") or len(normalized) != 48:
+        return False
+    body = normalized[2:40]
+    checksum = normalized[40:]
+    if not all(character in "0123456789ABCDEF" for character in body + checksum):
+        return False
+    expected_checksum = hashlib.sha256(body.encode("utf-8")).hexdigest().upper()[:8]
+    return checksum == expected_checksum
+
+
+def validate_mainnet_genesis_allocations(document: dict[str, Any]) -> None:
+    normalized = normalize_genesis_allocations(document)
+    if normalized["network_id"] and normalized["network_id"] != "mainnet":
+        raise ValueError("mainnet genesis allocations network_id mismatch")
+    if normalized["chain_id"] and normalized["chain_id"] != "picoin-mainnet-v1":
+        raise ValueError("mainnet genesis allocations chain_id mismatch")
+    if not normalized["allocations"]:
+        raise ValueError("mainnet genesis allocations are required")
+    for allocation in normalized["allocations"]:
+        account_id = allocation["account_id"]
+        account_type = allocation["account_type"]
+        if "CHANGE_ME" in account_id.upper():
+            raise ValueError("mainnet genesis allocation account_id must not use a placeholder")
+        if account_type != "wallet":
+            raise ValueError("mainnet genesis allocations must fund wallet accounts only")
+        if not _is_canonical_wallet_address(account_id):
+            raise ValueError("mainnet genesis allocation account_id must be a canonical Picoin wallet address")
 
 
 def load_genesis_allocations(path: str | Path | None) -> dict[str, Any] | None:

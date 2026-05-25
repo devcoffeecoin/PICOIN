@@ -71,9 +71,12 @@ def _resolve_path(value: str) -> Path:
 def _computed_genesis_hash() -> str:
     if not GENESIS_ALLOCATIONS_FILE:
         return "0" * 64
-    from app.services.genesis import genesis_allocations_hash, load_genesis_allocations
+    from app.services.genesis import genesis_allocations_hash, load_genesis_allocations, validate_mainnet_genesis_allocations
 
-    return genesis_allocations_hash(load_genesis_allocations(_resolve_path(GENESIS_ALLOCATIONS_FILE)))
+    document = load_genesis_allocations(_resolve_path(GENESIS_ALLOCATIONS_FILE))
+    if NETWORK_PROFILE.name == "mainnet":
+        validate_mainnet_genesis_allocations(document)
+    return genesis_allocations_hash(document)
 
 
 GENESIS_HASH = os.getenv("PICOIN_GENESIS_HASH", "").strip() or _computed_genesis_hash()
