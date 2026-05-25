@@ -47,12 +47,16 @@ Start from:
 deploy/mainnet-genesis.allocations.draft.json
 ```
 
-Before launch, replace draft validator IDs and reserve accounts with final
-canonical launch allocations, then compute the deterministic hash:
+Before launch, create a final allocation file with only canonical wallet
+addresses. Mainnet rejects draft validator IDs, placeholders, reserve account
+IDs, non-wallet account types, and non-canonical wallet addresses.
 
 ```bash
+cp deploy/mainnet-genesis.allocations.draft.json deploy/mainnet-genesis.allocations.final.json
+nano deploy/mainnet-genesis.allocations.final.json
+
 python -m picoin node genesis-hash \
-  --file deploy/mainnet-genesis.allocations.draft.json
+  --file deploy/mainnet-genesis.allocations.final.json
 ```
 
 Every mainnet node must use the same allocation file and resulting genesis hash.
@@ -77,7 +81,7 @@ Required launch values:
 PICOIN_NETWORK=mainnet
 PICOIN_CHAIN_ID=picoin-mainnet-v1
 PICOIN_PROTOCOL_VERSION=1.0
-PICOIN_GENESIS_ALLOCATIONS_FILE=deploy/mainnet-genesis.allocations.draft.json
+PICOIN_GENESIS_ALLOCATIONS_FILE=deploy/mainnet-genesis.allocations.final.json
 PICOIN_TREASURY_WALLET=PI...
 PICOIN_GOVERNANCE_WALLET=PI...
 PICOIN_FAUCET_ALLOWED_NETWORKS=

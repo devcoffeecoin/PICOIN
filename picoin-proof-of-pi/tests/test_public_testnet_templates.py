@@ -46,7 +46,7 @@ def test_mainnet_env_template_pins_identity_and_safety_flags() -> None:
     assert values["PICOIN_NETWORK"] == "mainnet"
     assert values["PICOIN_CHAIN_ID"] == "picoin-mainnet-v1"
     assert values["PICOIN_PROTOCOL_VERSION"] == "1.0"
-    assert values["PICOIN_GENESIS_ALLOCATIONS_FILE"] == "deploy/mainnet-genesis.allocations.draft.json"
+    assert values["PICOIN_GENESIS_ALLOCATIONS_FILE"] == "CHANGE_ME_FINAL_MAINNET_GENESIS_ALLOCATIONS_JSON"
     assert values["PICOIN_REQUIRED_VALIDATOR_APPROVALS"] == "3"
     assert values["PICOIN_RETARGET_MAX_PI_POSITION"] == "1000000000000000"
     assert values["PICOIN_FAUCET_ALLOWED_NETWORKS"] == ""
@@ -67,6 +67,7 @@ def test_mainnet_genesis_draft_matches_mainnet_identity_and_supply() -> None:
     assert genesis["chain_id"] == "picoin-mainnet-v1"
     assert total_units == 300_000_000
     assert any(row["account_type"] == "validator" for row in allocations)
+    assert "draft validator IDs" in (PROJECT_ROOT / "deploy" / "README-mainnet.md").read_text(encoding="utf-8")
 
 
 def test_mainnet_runbook_references_preflight_and_env_source() -> None:
