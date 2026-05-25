@@ -33,7 +33,7 @@ export class WalletService {
       locked: !this.secrets,
       address: keystore?.address ?? null,
       publicKey: keystore?.publicKey ?? null,
-      networkId: keystore?.networkId,
+      network: keystore?.network,
       chainId: keystore?.chainId,
     };
   }
@@ -112,7 +112,7 @@ export class WalletService {
       fee_units: feeUnits,
       nonce: tx.nonce,
       payload: tx.payload || {},
-      network_id: network.networkId,
+      network_id: network.network,
       chain_id: network.chainId,
       timestamp: new Date().toISOString(),
     };
@@ -130,7 +130,7 @@ export class WalletService {
       {
         address,
         publicKey: material.publicKey,
-        networkId: network.networkId,
+        network: network.network,
         chainId: network.chainId,
       },
     );
@@ -143,7 +143,13 @@ export class WalletService {
     if (!fs.existsSync(this.keystorePath)) {
       return null;
     }
-    return JSON.parse(fs.readFileSync(this.keystorePath, "utf-8")) as EncryptedKeystore;
+    const parsed = JSON.parse(fs.readFileSync(this.keystorePath, "utf-8")) as EncryptedKeystore & {
+      networkId?: string;
+    };
+    if (!parsed.network && parsed.networkId) {
+      parsed.network = parsed.networkId;
+    }
+    return parsed;
   }
 
   private requireKeystore(): EncryptedKeystore {
@@ -167,7 +173,7 @@ export class WalletService {
       locked: !this.secrets,
       address: keystore.address,
       publicKey: keystore.publicKey,
-      networkId: keystore.networkId,
+      network: keystore.network,
       chainId: keystore.chainId,
     };
   }

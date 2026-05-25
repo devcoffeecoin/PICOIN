@@ -12,7 +12,7 @@ export function networkConfig(network: NetworkId, apiUrl?: string): NetworkConfi
       apiUrl: normalizeApiUrl(apiUrl || DEFAULT_API_URLS.mainnet),
       chainName: "Picoin Mainnet",
       symbol: "PI",
-      networkId: "picoin-mainnet-v1",
+      network: "picoin-mainnet-v1",
       chainId: 314159,
     };
   }
@@ -22,7 +22,7 @@ export function networkConfig(network: NetworkId, apiUrl?: string): NetworkConfi
     apiUrl: normalizeApiUrl(apiUrl || DEFAULT_API_URLS.testnet),
     chainName: "Picoin Public Testnet",
     symbol: "PI",
-    networkId: "public-testnet",
+    network: "public-testnet",
     chainId: "picoin-public-testnet-v018",
   };
 }

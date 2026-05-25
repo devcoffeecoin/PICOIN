@@ -495,7 +495,7 @@ function SettingsPage({
         <div className="network-detail">
           <strong>{networks[settings.selectedNetwork].chainName}</strong>
           <span>{networks[settings.selectedNetwork].apiUrl}</span>
-          <span>network_id: {networks[settings.selectedNetwork].networkId}</span>
+          <span>network: {networks[settings.selectedNetwork].network}</span>
           <span>chain_id: {String(networks[settings.selectedNetwork].chainId)}</span>
         </div>
       </Panel>

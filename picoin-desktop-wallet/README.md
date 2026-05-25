@@ -64,12 +64,12 @@ are stored under Electron `userData`.
 
 - `testnet`
   - default API: `https://api.picoin.science`
-  - `network_id`: `public-testnet`
+  - `network`: `public-testnet`
   - `chain_id`: `picoin-public-testnet-v018`
   - symbol: `PI`
 - `mainnet`
   - default API: `https://mainnet-api.picoin.science`
-  - `network_id`: `picoin-mainnet-v1`
+  - `network`: `picoin-mainnet-v1`
   - `chain_id`: `314159`
   - symbol: `PI`
 
@@ -120,6 +120,10 @@ Current endpoint mapping:
 - `/transactions/recent?limit=50` fallback for history
 - `/wallet/:address/nonce`
 - `/transactions/submit`
+
+The wallet profile names the selected profile field as `network`. Signed
+transactions still use `network_id` in the payload because the current Picoin API
+schema expects that field.
 
 TODO: update `PicoinAPI.ts` if final public API endpoint names change.
 
