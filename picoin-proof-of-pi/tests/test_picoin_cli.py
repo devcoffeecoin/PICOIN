@@ -142,13 +142,22 @@ def _mainnet_preflight_payloads() -> dict[str, dict]:
             "required_validator_approvals": 3,
             "retroactive_audit_reward_percent": 0.0,
             "retroactive_audit_reward_per_audit": 0.0,
+            "RETARGET_MAX_PI_POSITION": 10**15,
             "science_compute_reward_percent": 0.07,
             "scientific_development_reward_percent": 0.03,
             "scientific_development_governance_wallet": "PI6D17B68D576E0543CD5814D39F09FB58E3D35CAD355BB1",
             "scientific_development_treasury_wallet": "PIEB149E99DCD64653088B68F92D6790068428462919DD96",
+            "task_expiration_seconds": 600,
             "validator_eligibility_stake_field": "wallet_stake_locked",
             "validator_eligibility_stake_source": "wallet",
             "validator_reward_percent": 0.10,
+        },
+        "/difficulty": {
+            "RETARGET_MAX_PI_POSITION": 10**15,
+            "active_task_expiration_seconds": 600,
+            "effective_task_expiration_seconds": 600,
+            "next_range_start": 1,
+            "required_task_expiration_seconds": 600,
         },
         "/node/sync-status": {
             "chain_id": "picoin-mainnet-v1",
@@ -253,6 +262,28 @@ def test_node_mainnet_preflight_fails_on_stuck_validation_jobs(monkeypatch, caps
     failed_checks = {check["name"] for check in output["checks"] if not check["ok"]}
     assert output["status"] == "fail"
     assert "validation_jobs_not_stuck" in failed_checks
+
+
+def test_node_mainnet_preflight_fails_on_noncanonical_depth_or_expiration(monkeypatch, capsys) -> None:
+    payloads = _mainnet_preflight_payloads()
+    payloads["/protocol"]["RETARGET_MAX_PI_POSITION"] = 1_000_000
+    payloads["/difficulty"]["RETARGET_MAX_PI_POSITION"] = 1_000_000
+    payloads["/difficulty"]["required_task_expiration_seconds"] = 900
+    payloads["/difficulty"]["effective_task_expiration_seconds"] = 600
+
+    def fake_get_json(server_url: str, path: str) -> dict:
+        assert server_url == "http://node"
+        return payloads[path]
+
+    monkeypatch.setattr("picoin.cli.get_json", fake_get_json)
+    args = argparse.Namespace(server="http://node", peer=None, allow_mempool=False, verbose=False)
+
+    assert command_node_mainnet_preflight(args) == 1
+    output = json.loads(capsys.readouterr().out)
+    failed_checks = {check["name"] for check in output["checks"] if not check["ok"]}
+    assert output["status"] == "fail"
+    assert "pi_depth_cap_frozen" in failed_checks
+    assert "dynamic_task_expiration" in failed_checks
 
 
 def test_node_validation_health_command_returns_nonzero_when_unhealthy(monkeypatch, capsys) -> None:
