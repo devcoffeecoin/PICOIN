@@ -2,19 +2,14 @@ import fs from "node:fs";
 import path from "node:path";
 import { app } from "electron";
 import type { AppSettings, NetworkId } from "../../../shared/types";
-import { defaultNodePath } from "../config/networks";
+import { DEFAULT_API_URLS, normalizeApiUrl } from "../config/networks";
 
 const SETTINGS_FILE = "settings.json";
 
 function defaultSettings(): AppSettings {
-  const root = app.getPath("userData");
   return {
     selectedNetwork: "testnet",
-    nodePath: defaultNodePath(),
-    dataDirs: {
-      testnet: path.join(root, "nodes", "testnet"),
-      mainnet: path.join(root, "nodes", "mainnet"),
-    },
+    apiUrls: DEFAULT_API_URLS,
   };
 }
 
@@ -31,15 +26,16 @@ export class SettingsStore {
       return fallback;
     }
     try {
-      const parsed = JSON.parse(fs.readFileSync(this.settingsPath, "utf-8")) as Partial<AppSettings>;
+      const parsed = JSON.parse(fs.readFileSync(this.settingsPath, "utf-8")) as Partial<AppSettings> & {
+        rpcUrls?: Partial<Record<NetworkId, string>>;
+      };
+      const savedApiUrls = parsed.apiUrls || parsed.rpcUrls || {};
       return {
-        ...fallback,
-        ...parsed,
-        dataDirs: {
-          ...fallback.dataDirs,
-          ...(parsed.dataDirs || {}),
+        selectedNetwork: parsed.selectedNetwork === "mainnet" ? "mainnet" : fallback.selectedNetwork,
+        apiUrls: {
+          testnet: normalizeApiUrl(savedApiUrls.testnet || fallback.apiUrls.testnet),
+          mainnet: normalizeApiUrl(savedApiUrls.mainnet || fallback.apiUrls.mainnet),
         },
-        selectedNetwork: parsed.selectedNetwork === "mainnet" ? "mainnet" : "testnet",
       };
     } catch {
       return fallback;
@@ -47,12 +43,13 @@ export class SettingsStore {
   }
 
   update(patch: Partial<AppSettings>): AppSettings {
+    const current = this.get();
     const next = {
-      ...this.get(),
+      ...current,
       ...patch,
-      dataDirs: {
-        ...this.get().dataDirs,
-        ...(patch.dataDirs || {}),
+      apiUrls: {
+        testnet: normalizeApiUrl((patch.apiUrls?.testnet || current.apiUrls.testnet).trim()),
+        mainnet: normalizeApiUrl((patch.apiUrls?.mainnet || current.apiUrls.mainnet).trim()),
       },
     };
     fs.mkdirSync(path.dirname(this.settingsPath), { recursive: true });
@@ -64,4 +61,3 @@ export class SettingsStore {
     return this.update({ selectedNetwork: network });
   }
 }
-

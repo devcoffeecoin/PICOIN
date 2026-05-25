@@ -4,18 +4,27 @@ Electron + React + Vite + TypeScript desktop wallet for Picoin.
 
 ## Scope
 
-V1 includes only:
+V1 is an API-connected wallet. It does not run or bundle a Picoin node.
 
-- local node process management
-- testnet/mainnet selector
-- local RPC adapters
+Included:
+
 - create/import/export/lock/unlock wallet
 - BIP39 seed phrase support
 - encrypted local keystore
-- send/receive PI
-- dashboard and basic transaction history
+- local transaction signing
+- configurable testnet/mainnet API URLs
+- balance lookup via API
+- transaction history via API
+- signed transaction broadcast via API
+- send and receive PI
 
-No staking, mining dashboard, swaps, governance UI, or extra modules are included.
+Not included:
+
+- embedded node
+- mining dashboard
+- staking UI
+- swaps
+- governance UI
 
 ## Project Structure
 
@@ -25,8 +34,7 @@ picoin-desktop-wallet/
     main/
       config/networks.ts
       services/
-        NodeManager.ts
-        PicoinRPC.ts
+        PicoinAPI.ts
         SettingsStore.ts
         WalletService.ts
         wallet/
@@ -37,47 +45,36 @@ picoin-desktop-wallet/
           encoding.ts
       main.ts
     preload/preload.ts
-  resources/bin/
-    picoin-node.exe
+  resources/icons/
+    picoin-logo.ico
+    picoin-logo.png
   shared/types.ts
   src/
+    assets/picoin-logo.png
     App.tsx
     main.tsx
     styles.css
     types/picoin-api.d.ts
 ```
 
-## Node Binary
-
-Place the local Picoin node binary at:
-
-```text
-resources/bin/picoin-node.exe
-```
-
-For a packaged Windows build, `electron-builder` copies `resources/bin` into
-the application resources. The app expects the final packaged path:
-
-```text
-resources/bin/picoin-node.exe
-```
-
-During development, Settings lets you override the node path.
-
 ## Network Profiles
 
-The wallet has two networks:
+The wallet has two network profiles. API URLs are editable from Settings and
+are stored under Electron `userData`.
 
 - `testnet`
-  - RPC: `http://127.0.0.1:18000`
-  - chain: `Picoin Public Testnet`
+  - default API: `https://api.picoin.science`
+  - `network_id`: `public-testnet`
+  - `chain_id`: `picoin-public-testnet-v018`
   - symbol: `PI`
 - `mainnet`
-  - RPC: `http://127.0.0.1:8000`
-  - chain: `Picoin Mainnet`
+  - default API: `https://mainnet-api.picoin.science`
+  - `network_id`: `picoin-mainnet-v1`
+  - `chain_id`: `314159`
   - symbol: `PI`
 
-Network selection and local paths are saved under Electron `userData`.
+Update the mainnet API URL in Settings when the canonical mainnet endpoint is
+published.
 
 ## Security Model
 
@@ -88,6 +85,7 @@ Network selection and local paths are saved under Electron `userData`.
 - Private keys are kept in memory only after unlock.
 - Seed phrase is shown only once after wallet creation.
 - The renderer never reads the keystore file directly.
+- Transactions are signed in the Electron main process before API broadcast.
 
 ## Wallet Crypto
 
@@ -100,7 +98,7 @@ V1 uses:
 TODO: confirm final mainnet wallet derivation path before public release. The
 current `KeyProvider` is isolated so it can be swapped without changing the UI.
 
-## RPC Adapters
+## API Adapters
 
 Implemented adapter methods:
 
@@ -116,12 +114,14 @@ Current endpoint mapping:
 
 - `/node/sync-status`
 - `/node/peers`
+- `/protocol` fallback for API availability
 - `/accounts/:address`
 - `/accounts/:address/history?limit=50`
+- `/transactions/recent?limit=50` fallback for history
 - `/wallet/:address/nonce`
 - `/transactions/submit`
 
-TODO: update `PicoinRPC.ts` if final desktop node endpoint names change.
+TODO: update `PicoinAPI.ts` if final public API endpoint names change.
 
 ## Commands
 
@@ -167,5 +167,5 @@ V1 builds an unsigned installer. Code signing can be enabled later by removing
 
 ## Mainnet Note
 
-Mainnet should only be enabled for real funds after the final node binary,
+Mainnet should only be enabled for real funds after the canonical API URL,
 mainnet genesis hash, and Picoin wallet derivation rules are frozen.

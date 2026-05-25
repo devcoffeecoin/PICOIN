@@ -17,7 +17,7 @@ export interface EncryptedKeystore {
   address: string;
   publicKey: string;
   networkId: string;
-  chainId: string;
+  chainId: string | number;
   createdAt: string;
 }
 
@@ -78,4 +78,3 @@ function assertPassword(password: string): void {
     throw new Error("password must be at least 8 characters");
   }
 }
-

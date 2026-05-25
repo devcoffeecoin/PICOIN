@@ -1,62 +1,39 @@
-import path from "node:path";
-import { app } from "electron";
 import type { NetworkConfig, NetworkId } from "../../../shared/types";
 
-function defaultDataDir(network: NetworkId): string {
-  return path.join(app.getPath("userData"), "nodes", network);
-}
+export const DEFAULT_API_URLS: Record<NetworkId, string> = {
+  testnet: "https://api.picoin.science",
+  mainnet: "https://mainnet-api.picoin.science",
+};
 
-export function defaultNodePath(): string {
-  if (app.isPackaged) {
-    return path.join(process.resourcesPath, "bin", "picoin-node.exe");
-  }
-  return path.join(app.getAppPath(), "resources", "bin", "picoin-node.exe");
-}
-
-export function networkConfig(network: NetworkId, dataDir?: string): NetworkConfig {
-  const resolvedDataDir = dataDir || defaultDataDir(network);
+export function networkConfig(network: NetworkId, apiUrl?: string): NetworkConfig {
   if (network === "mainnet") {
     return {
       id: "mainnet",
-      rpcUrl: "http://127.0.0.1:8000",
+      apiUrl: normalizeApiUrl(apiUrl || DEFAULT_API_URLS.mainnet),
       chainName: "Picoin Mainnet",
       symbol: "PI",
-      dataDir: resolvedDataDir,
-      nodeArgs: [
-        "--network",
-        "mainnet",
-        "--chain-id",
-        "picoin-mainnet-v1",
-        "--data-dir",
-        resolvedDataDir,
-        "--rpc",
-        "127.0.0.1:8000",
-      ],
+      networkId: "picoin-mainnet-v1",
+      chainId: 314159,
     };
   }
+
   return {
     id: "testnet",
-    rpcUrl: "http://127.0.0.1:18000",
+    apiUrl: normalizeApiUrl(apiUrl || DEFAULT_API_URLS.testnet),
     chainName: "Picoin Public Testnet",
     symbol: "PI",
-    dataDir: resolvedDataDir,
-    nodeArgs: [
-      "--network",
-      "public-testnet",
-      "--chain-id",
-      "picoin-public-testnet-v018",
-      "--data-dir",
-      resolvedDataDir,
-      "--rpc",
-      "127.0.0.1:18000",
-    ],
+    networkId: "public-testnet",
+    chainId: "picoin-public-testnet-v018",
   };
 }
 
-export function allNetworks(dataDirs?: Partial<Record<NetworkId, string>>): Record<NetworkId, NetworkConfig> {
+export function allNetworks(apiUrls?: Partial<Record<NetworkId, string>>): Record<NetworkId, NetworkConfig> {
   return {
-    testnet: networkConfig("testnet", dataDirs?.testnet),
-    mainnet: networkConfig("mainnet", dataDirs?.mainnet),
+    testnet: networkConfig("testnet", apiUrls?.testnet),
+    mainnet: networkConfig("mainnet", apiUrls?.mainnet),
   };
 }
 
+export function normalizeApiUrl(apiUrl: string): string {
+  return apiUrl.trim().replace(/\/$/, "");
+}

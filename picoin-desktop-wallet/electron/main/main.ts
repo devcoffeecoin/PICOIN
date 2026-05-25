@@ -2,12 +2,12 @@ import path from "node:path";
 import { app, BrowserWindow, ipcMain, shell } from "electron";
 import type { AppSettings, NetworkId, SendTransactionRequest } from "../../shared/types";
 import { allNetworks, networkConfig } from "./config/networks";
-import { NodeManager } from "./services/NodeManager";
+import { PicoinAPI } from "./services/PicoinAPI";
 import { SettingsStore } from "./services/SettingsStore";
 import { WalletService } from "./services/WalletService";
 
 let mainWindow: BrowserWindow | null = null;
-let nodeManager: NodeManager;
+let apiClient: PicoinAPI;
 let settingsStore: SettingsStore;
 let walletService: WalletService;
 
@@ -47,49 +47,34 @@ function createWindow(): BrowserWindow {
   return window;
 }
 
-async function startConfiguredNode(): Promise<void> {
-  const settings = settingsStore.get();
-  const network = networkConfig(settings.selectedNetwork, settings.dataDirs[settings.selectedNetwork]);
-  await nodeManager.start(settings.nodePath, network);
-}
-
 function selectedNetworkConfig() {
   const settings = settingsStore.get();
-  return networkConfig(settings.selectedNetwork, settings.dataDirs[settings.selectedNetwork]);
+  return networkConfig(settings.selectedNetwork, settings.apiUrls[settings.selectedNetwork]);
+}
+
+function refreshApiNetwork(): void {
+  apiClient.setNetwork(selectedNetworkConfig());
 }
 
 function registerIpc(): void {
   ipcMain.handle("app:get-settings", () => settingsStore.get());
-  ipcMain.handle("app:update-settings", async (_event, patch: Partial<AppSettings>) => {
-    const before = settingsStore.get();
+  ipcMain.handle("app:update-settings", (_event, patch: Partial<AppSettings>) => {
     const next = settingsStore.update(patch);
-    const networkChanged = before.selectedNetwork !== next.selectedNetwork;
-    const nodePathChanged = before.nodePath !== next.nodePath;
-    const dataDirChanged = JSON.stringify(before.dataDirs) !== JSON.stringify(next.dataDirs);
-    if (networkChanged || nodePathChanged || dataDirChanged) {
-      await nodeManager.restart(next.nodePath, networkConfig(next.selectedNetwork, next.dataDirs[next.selectedNetwork]));
-    }
+    refreshApiNetwork();
     return next;
   });
-  ipcMain.handle("app:set-network", async (_event, network: NetworkId) => {
+  ipcMain.handle("app:set-network", (_event, network: NetworkId) => {
     const next = settingsStore.setNetwork(network);
-    await nodeManager.restart(next.nodePath, networkConfig(next.selectedNetwork, next.dataDirs[next.selectedNetwork]));
+    refreshApiNetwork();
     return next;
   });
-  ipcMain.handle("app:get-networks", () => allNetworks(settingsStore.get().dataDirs));
+  ipcMain.handle("app:get-networks", () => allNetworks(settingsStore.get().apiUrls));
 
-  ipcMain.handle("node:get-status", () => nodeManager.getStatus());
-  ipcMain.handle("node:start", async () => {
-    const settings = settingsStore.get();
-    return nodeManager.start(settings.nodePath, selectedNetworkConfig());
-  });
-  ipcMain.handle("node:stop", async () => nodeManager.stop());
-  ipcMain.handle("node:refresh", async () => nodeManager.refreshStatus());
-
-  ipcMain.handle("rpc:get-balance", async (_event, address: string) => nodeManager.getRpc().getBalance(address));
-  ipcMain.handle("rpc:get-history", async (_event, address: string) => nodeManager.getRpc().getTransactionHistory(address));
-  ipcMain.handle("rpc:get-peers", async () => nodeManager.getRpc().getPeers());
-  ipcMain.handle("rpc:get-sync-status", async () => nodeManager.getRpc().getSyncStatus());
+  ipcMain.handle("api:get-status", () => apiClient.getApiStatus());
+  ipcMain.handle("api:get-balance", (_event, address: string) => apiClient.getBalance(address));
+  ipcMain.handle("api:get-history", (_event, address: string) => apiClient.getTransactionHistory(address));
+  ipcMain.handle("api:get-peers", () => apiClient.getPeers());
+  ipcMain.handle("api:get-sync-status", () => apiClient.getSyncStatus());
 
   ipcMain.handle("wallet:get-summary", () => walletService.getSummary());
   ipcMain.handle("wallet:create", (_event, password: string) =>
@@ -109,7 +94,8 @@ function registerIpc(): void {
     if (!address) {
       throw new Error("wallet has not been created or imported");
     }
-    const nonce = await nodeManager.getRpc().getNextNonce(address);
+    const network = selectedNetworkConfig();
+    const nonce = await apiClient.getNextNonce(address);
     const signedTx = walletService.signTransaction(
       {
         to: request.to,
@@ -117,35 +103,24 @@ function registerIpc(): void {
         fee: request.fee,
         nonce,
       },
-      selectedNetworkConfig(),
+      network,
     );
-    return nodeManager.getRpc().sendTransaction(signedTx);
+    return apiClient.sendTransaction(signedTx);
   });
 }
 
-app.whenReady().then(async () => {
+app.whenReady().then(() => {
   settingsStore = new SettingsStore();
-  const settings = settingsStore.get();
-  nodeManager = new NodeManager(settings.nodePath, networkConfig(settings.selectedNetwork, settings.dataDirs[settings.selectedNetwork]));
+  apiClient = new PicoinAPI(selectedNetworkConfig());
   walletService = new WalletService();
   registerIpc();
   mainWindow = createWindow();
-  await startConfiguredNode();
 
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       mainWindow = createWindow();
     }
   });
-});
-
-app.on("before-quit", async (event) => {
-  if (!nodeManager) {
-    return;
-  }
-  event.preventDefault();
-  await nodeManager.stop();
-  app.exit(0);
 });
 
 app.on("window-all-closed", () => {

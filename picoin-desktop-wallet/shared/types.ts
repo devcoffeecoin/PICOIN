@@ -1,31 +1,29 @@
 export type NetworkId = "testnet" | "mainnet";
 
-export type NodeRuntimeStatus = "stopped" | "starting" | "running" | "syncing" | "synced" | "error";
+export type ApiRuntimeStatus = "online" | "syncing" | "synced" | "offline" | "error";
 
 export interface NetworkConfig {
   id: NetworkId;
-  rpcUrl: string;
+  apiUrl: string;
   chainName: string;
   symbol: "PI";
-  dataDir: string;
-  nodeArgs: string[];
+  networkId: string;
+  chainId: string | number;
 }
 
 export interface AppSettings {
   selectedNetwork: NetworkId;
-  nodePath: string;
-  dataDirs: Record<NetworkId, string>;
+  apiUrls: Record<NetworkId, string>;
 }
 
-export interface NodeStatus {
-  status: NodeRuntimeStatus;
+export interface ApiStatus {
+  status: ApiRuntimeStatus;
   network: NetworkId;
-  rpcUrl: string;
+  apiUrl: string;
   blockHeight: number | null;
   syncStatus: string;
-  peers: number | null;
   message?: string;
-  startedAt?: string;
+  checkedAt?: string;
 }
 
 export interface SyncStatus {
@@ -69,7 +67,7 @@ export interface WalletSummary {
   address: string | null;
   publicKey: string | null;
   networkId?: string;
-  chainId?: string;
+  chainId?: string | number;
 }
 
 export interface CreateWalletResult extends WalletSummary {
@@ -103,7 +101,7 @@ export interface TransactionDraft {
   nonce: number;
   payload: Record<string, unknown>;
   network_id: string;
-  chain_id: string;
+  chain_id: string | number;
   timestamp: string;
 }
 
@@ -112,4 +110,3 @@ export interface SignedTransaction extends TransactionDraft {
   signature: string;
   tx_hash: string;
 }
-
