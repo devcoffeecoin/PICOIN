@@ -57,7 +57,7 @@ def create_wallet(
     name: str = "picoin-wallet",
     *,
     network_id: str | None = None,
-    chain_id: str | None = None,
+    chain_id: str | int | None = None,
 ) -> dict[str, Any]:
     keypair = generate_keypair()
     address = address_from_public_key(keypair["public_key"])
@@ -69,7 +69,7 @@ def create_wallet(
         "public_key": keypair["public_key"],
         "private_key": keypair["private_key"],
         "network_id": network_id or NETWORK_ID,
-        "chain_id": chain_id or CHAIN_ID,
+        "chain_id": _normalize_chain_id(chain_id or CHAIN_ID),
         "created_at": timestamp,
     }
 
@@ -85,7 +85,7 @@ def unsigned_transaction_payload(
     payload: dict[str, Any] | None = None,
     timestamp: str | None = None,
     network_id: str = NETWORK_ID,
-    chain_id: str = CHAIN_ID,
+    chain_id: str | int = CHAIN_ID,
 ) -> dict[str, Any]:
     amount_units = to_units(amount)
     fee_units = to_units(fee)
@@ -103,6 +103,13 @@ def unsigned_transaction_payload(
         "timestamp": timestamp or datetime.now(timezone.utc).isoformat(),
         "tx_type": tx_type,
     }
+
+
+def _normalize_chain_id(value: str | int) -> str | int:
+    if isinstance(value, int):
+        return value
+    cleaned = str(value).strip()
+    return int(cleaned) if cleaned.isdigit() else cleaned
 
 
 def transaction_hash(unsigned_payload: dict[str, Any], public_key: str) -> str:

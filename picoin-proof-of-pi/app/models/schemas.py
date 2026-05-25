@@ -513,7 +513,7 @@ class PeerRegisterRequest(BaseModel):
     peer_type: str = Field("full", pattern="^(full|miner|validator|auditor|bootstrap)$")
     protocol_version: str
     network_id: str
-    chain_id: str
+    chain_id: str | int
     genesis_hash: str
     metadata: dict[str, Any] = {}
 
@@ -525,7 +525,7 @@ class PeerResponse(BaseModel):
     peer_type: str
     protocol_version: str
     network_id: str
-    chain_id: str
+    chain_id: str | int
     genesis_hash: str
     connected_at: datetime
     last_seen: datetime
@@ -541,7 +541,7 @@ class NodeIdentityResponse(BaseModel):
     peer_type: str
     protocol_version: str
     network_id: str
-    chain_id: str
+    chain_id: str | int
     genesis_hash: str
     bootstrap_peers: list[str] = []
 
@@ -581,7 +581,7 @@ class SignedTransactionRequest(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     timestamp: str
     network_id: str
-    chain_id: str
+    chain_id: str | int
     public_key: str = Field(..., min_length=1, max_length=256)
     signature: str = Field(..., min_length=1, max_length=256)
 
@@ -596,7 +596,7 @@ class MempoolTransactionResponse(BaseModel):
     fee: float
     payload: dict[str, Any] = Field(default_factory=dict)
     network_id: str
-    chain_id: str
+    chain_id: str | int
     timestamp: datetime
     public_key: str
     signature: str
@@ -790,7 +790,7 @@ class WalletCreateResponse(BaseModel):
     public_key: str
     private_key: str
     network_id: str
-    chain_id: str
+    chain_id: str | int
     created_at: datetime
 
 

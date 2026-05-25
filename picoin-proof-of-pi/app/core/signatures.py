@@ -133,7 +133,7 @@ def build_commit_signature_payload(
     selected_tx_hashes_hash: str | None = None,
     tx_count: int | None = None,
     tx_fee_total_units: int | None = None,
-    chain_id: str | None = None,
+    chain_id: str | int | None = None,
     network_id: str | None = None,
 ) -> dict[str, Any]:
     payload = {

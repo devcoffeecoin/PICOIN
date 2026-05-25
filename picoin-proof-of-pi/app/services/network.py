@@ -172,7 +172,7 @@ def register_peer(
     peer_type: str = "full",
     protocol_version: str = PROTOCOL_VERSION,
     network_id: str = NETWORK_ID,
-    chain_id: str = CHAIN_ID,
+    chain_id: str | int = CHAIN_ID,
     genesis_hash: str = GENESIS_HASH,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
@@ -181,13 +181,13 @@ def register_peer(
         raise NetworkError(422, "invalid peer_type")
     metadata = dict(metadata or {})
     if network_id != NETWORK_ID:
-        if not (PEER_NETWORK_ID_TOLERANCE and chain_id == CHAIN_ID and genesis_hash == GENESIS_HASH):
+        if not (PEER_NETWORK_ID_TOLERANCE and str(chain_id) == str(CHAIN_ID) and genesis_hash == GENESIS_HASH):
             raise NetworkError(409, "peer network_id mismatch")
         metadata["observed_network_id"] = network_id
         metadata["accepted_network_id"] = NETWORK_ID
         metadata["network_id_warning"] = "accepted because chain_id and genesis_hash match"
         network_id = NETWORK_ID
-    if chain_id != CHAIN_ID:
+    if str(chain_id) != str(CHAIN_ID):
         raise NetworkError(409, "peer chain_id mismatch")
     if genesis_hash != GENESIS_HASH:
         raise NetworkError(409, "peer genesis_hash mismatch")
@@ -1101,7 +1101,7 @@ def _validate_signed_transaction(tx: dict[str, Any]) -> None:
         raise NetworkError(401, "sender address does not match public key")
     
     # Most critical check: network/chain mismatch
-    if tx["network_id"] != NETWORK_ID or tx["chain_id"] != CHAIN_ID:
+    if tx["network_id"] != NETWORK_ID or str(tx["chain_id"]) != str(CHAIN_ID):
         logger.warning(
             f"[TX_VALIDATE] Network/chain mismatch: "
             f"tx network_id={tx['network_id']} (expected {NETWORK_ID}), "

@@ -502,7 +502,7 @@ def _basic_transaction_rejection_reason(tx: dict[str, Any]) -> str | None:
         return "unsupported transaction type for block execution"
     if not _is_signature_valid(tx):
         return "invalid transaction signature"
-    if tx.get("network_id") != NETWORK_ID or tx.get("chain_id") != CHAIN_ID:
+    if tx.get("network_id") != NETWORK_ID or str(tx.get("chain_id")) != str(CHAIN_ID):
         return "transaction network or chain mismatch"
     if _tx_fee_units(tx) < MIN_TX_FEE_UNITS:
         return "transaction fee below minimum"
@@ -1567,7 +1567,7 @@ def _is_signature_valid(tx: dict[str, Any]) -> bool:
         unsigned_payload = _unsigned_from_tx(tx)
         return (
             tx.get("network_id") == NETWORK_ID
-            and tx.get("chain_id") == CHAIN_ID
+            and str(tx.get("chain_id")) == str(CHAIN_ID)
             and address_matches_public_key(tx.get("sender"), tx.get("public_key"))
             and transaction_hash(unsigned_payload, tx["public_key"]) == tx["tx_hash"]
             and verify_payload_signature(tx["public_key"], unsigned_payload, tx["signature"])

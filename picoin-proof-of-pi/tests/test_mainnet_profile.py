@@ -129,7 +129,7 @@ print(json.dumps(payload, sort_keys=True))
     result = _run_isolated(
         code,
         {
-            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_NETWORK": "picoin-mainnet-v1",
             "PICOIN_DB_PATH": str(db_path),
             "PICOIN_DATA_DIR": str(tmp_path),
             **_mainnet_wallet_env(),
@@ -138,14 +138,14 @@ print(json.dumps(payload, sort_keys=True))
 
     assert result.returncode == 0, result.stderr
     payload = json.loads(result.stdout)
-    assert payload["network_id"] == "mainnet"
-    assert payload["chain_id"] == "picoin-mainnet-v1"
+    assert payload["network_id"] == "picoin-mainnet-v1"
+    assert payload["chain_id"] == 314159
     assert payload["protocol_version"] == "1.0"
     assert payload["genesis_supply"] == 300.0
     assert payload["genesis_balance"] == 300.0
     assert payload["faucet_allowed_networks"] == []
-    assert payload["protocol"]["network_id"] == "mainnet"
-    assert payload["protocol"]["chain_id"] == "picoin-mainnet-v1"
+    assert payload["protocol"]["network_id"] == "picoin-mainnet-v1"
+    assert payload["protocol"]["chain_id"] == 314159
     assert payload["protocol"]["protocol_version"] == "1.0"
     assert payload["protocol"]["faucet_enabled"] is False
     assert payload["protocol"]["required_validator_approvals"] == 3
@@ -170,7 +170,7 @@ def test_mainnet_rejects_chain_id_override() -> None:
     result = _run_isolated(
         "import app.core.settings",
         {
-            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_NETWORK": "picoin-mainnet-v1",
             "PICOIN_CHAIN_ID": "picoin-public-testnet-v018",
         },
     )
@@ -183,7 +183,7 @@ def test_mainnet_rejects_protocol_version_override() -> None:
     result = _run_isolated(
         "import app.core.settings",
         {
-            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_NETWORK": "picoin-mainnet-v1",
             "PICOIN_PROTOCOL_VERSION": "0.18",
         },
     )
@@ -196,7 +196,7 @@ def test_mainnet_rejects_faucet_enablement() -> None:
     result = _run_isolated(
         "import app.core.settings",
         {
-            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_NETWORK": "picoin-mainnet-v1",
             "PICOIN_FAUCET_ALLOWED_NETWORKS": "mainnet",
             **_mainnet_wallet_env(),
         },
@@ -210,7 +210,7 @@ def test_mainnet_rejects_validator_quorum_override() -> None:
     result = _run_isolated(
         "import app.core.settings",
         {
-            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_NETWORK": "picoin-mainnet-v1",
             "PICOIN_REQUIRED_VALIDATOR_APPROVALS": "2",
         },
     )
@@ -223,7 +223,7 @@ def test_mainnet_rejects_RETARGET_MAX_PI_POSITION_override() -> None:
     result = _run_isolated(
         "import app.core.settings",
         {
-            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_NETWORK": "picoin-mainnet-v1",
             "PICOIN_RETARGET_MAX_PI_POSITION": "1000000",
             **_mainnet_wallet_env(),
         },
@@ -237,7 +237,7 @@ def test_mainnet_requires_treasury_and_governance_wallets() -> None:
     result = _run_isolated(
         "import app.core.settings",
         {
-            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_NETWORK": "picoin-mainnet-v1",
         },
     )
 
@@ -249,7 +249,7 @@ def test_mainnet_rejects_treasury_governance_placeholders() -> None:
     result = _run_isolated(
         "import app.core.settings",
         {
-            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_NETWORK": "picoin-mainnet-v1",
             "PICOIN_TREASURY_WALLET": "picoin_scientific_development_wallet",
             "PICOIN_GOVERNANCE_WALLET": MAINNET_GOVERNANCE_WALLET,
         },
@@ -263,7 +263,7 @@ def test_mainnet_rejects_non_canonical_treasury_wallet() -> None:
     result = _run_isolated(
         "import app.core.settings",
         {
-            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_NETWORK": "picoin-mainnet-v1",
             "PICOIN_TREASURY_WALLET": "PI123",
             "PICOIN_GOVERNANCE_WALLET": MAINNET_GOVERNANCE_WALLET,
         },
@@ -277,7 +277,7 @@ def test_mainnet_rejects_same_treasury_and_governance_wallet() -> None:
     result = _run_isolated(
         "import app.core.settings",
         {
-            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_NETWORK": "picoin-mainnet-v1",
             "PICOIN_TREASURY_WALLET": MAINNET_TREASURY_WALLET,
             "PICOIN_GOVERNANCE_WALLET": MAINNET_TREASURY_WALLET,
         },
@@ -291,7 +291,7 @@ def test_mainnet_rejects_draft_genesis_allocations() -> None:
     result = _run_isolated(
         "import app.core.settings",
         {
-            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_NETWORK": "picoin-mainnet-v1",
             "PICOIN_GENESIS_ALLOCATIONS_FILE": "deploy/mainnet-genesis.allocations.draft.json",
             **_mainnet_wallet_env(),
         },
@@ -307,8 +307,8 @@ def test_mainnet_accepts_wallet_only_genesis_allocations(tmp_path) -> None:
         json.dumps(
             {
                 "version": 1,
-                "network_id": "mainnet",
-                "chain_id": "picoin-mainnet-v1",
+                "network_id": "picoin-mainnet-v1",
+                "chain_id": 314159,
                 "created_at": "2026-01-01T00:00:00+00:00",
                 "allocations": [
                     {
@@ -329,7 +329,7 @@ def test_mainnet_accepts_wallet_only_genesis_allocations(tmp_path) -> None:
     result = _run_isolated(
         "from app.core import settings; print(settings.GENESIS_HASH)",
         {
-            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_NETWORK": "picoin-mainnet-v1",
             "PICOIN_GENESIS_ALLOCATIONS_FILE": str(allocation_file),
             **_mainnet_wallet_env(),
         },
@@ -345,8 +345,8 @@ def test_mainnet_rejects_partial_genesis_allocations(tmp_path) -> None:
         json.dumps(
             {
                 "version": 1,
-                "network_id": "mainnet",
-                "chain_id": "picoin-mainnet-v1",
+                "network_id": "picoin-mainnet-v1",
+                "chain_id": 314159,
                 "created_at": "2026-01-01T00:00:00+00:00",
                 "allocations": [
                     {
@@ -367,7 +367,7 @@ def test_mainnet_rejects_partial_genesis_allocations(tmp_path) -> None:
     result = _run_isolated(
         "import app.core.settings",
         {
-            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_NETWORK": "picoin-mainnet-v1",
             "PICOIN_GENESIS_ALLOCATIONS_FILE": str(allocation_file),
             **_mainnet_wallet_env(),
         },
@@ -383,8 +383,8 @@ def test_mainnet_rejects_duplicate_genesis_wallets(tmp_path) -> None:
         json.dumps(
             {
                 "version": 1,
-                "network_id": "mainnet",
-                "chain_id": "picoin-mainnet-v1",
+                "network_id": "picoin-mainnet-v1",
+                "chain_id": 314159,
                 "created_at": "2026-01-01T00:00:00+00:00",
                 "allocations": [
                     {
@@ -405,7 +405,7 @@ def test_mainnet_rejects_duplicate_genesis_wallets(tmp_path) -> None:
     result = _run_isolated(
         "import app.core.settings",
         {
-            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_NETWORK": "picoin-mainnet-v1",
             "PICOIN_GENESIS_ALLOCATIONS_FILE": str(allocation_file),
             **_mainnet_wallet_env(),
         },
@@ -424,9 +424,9 @@ def test_wallet_create_can_write_mainnet_metadata_before_mainnet_env_is_final(tm
             "--name",
             "treasury-mainnet",
             "--network",
-            "mainnet",
-            "--chain-id",
             "picoin-mainnet-v1",
+            "--chain-id",
+            "314159",
             "--output",
             str(wallet_file),
         ],
@@ -435,8 +435,8 @@ def test_wallet_create_can_write_mainnet_metadata_before_mainnet_env_is_final(tm
 
     assert result.returncode == 0, result.stderr
     wallet = json.loads(wallet_file.read_text(encoding="utf-8"))
-    assert wallet["network_id"] == "mainnet"
-    assert wallet["chain_id"] == "picoin-mainnet-v1"
+    assert wallet["network_id"] == "picoin-mainnet-v1"
+    assert wallet["chain_id"] == 314159
     assert wallet["address"].startswith("PI")
 
 
@@ -446,8 +446,8 @@ def test_genesis_hash_mainnet_validates_and_summarizes(tmp_path) -> None:
         json.dumps(
             {
                 "version": 1,
-                "network_id": "mainnet",
-                "chain_id": "picoin-mainnet-v1",
+                "network_id": "picoin-mainnet-v1",
+                "chain_id": 314159,
                 "created_at": "2026-01-01T00:00:00+00:00",
                 "allocations": [
                     {

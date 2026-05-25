@@ -45,7 +45,7 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
     )
     genesis_hash = parser.parse_args(["node", "genesis-hash", "--file", "genesis.json", "--mainnet"])
     wallet_create = parser.parse_args(
-        ["wallet", "create", "--network", "mainnet", "--chain-id", "picoin-mainnet-v1", "--output", "wallet.json"]
+        ["wallet", "create", "--network", "picoin-mainnet-v1", "--chain-id", "314159", "--output", "wallet.json"]
     )
     compare = parser.parse_args(["node", "compare", "--peer", "http://peer:8000"])
     repair_rewards = parser.parse_args(["node", "repair-rewards"])
@@ -109,8 +109,8 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
     assert genesis_hash.file == Path("genesis.json")
     assert genesis_hash.mainnet is True
     assert wallet_create.wallet_command == "create"
-    assert wallet_create.network == "mainnet"
-    assert wallet_create.chain_id == "picoin-mainnet-v1"
+    assert wallet_create.network == "picoin-mainnet-v1"
+    assert wallet_create.chain_id == "314159"
     assert wallet_create.output == Path("wallet.json")
     assert compare.node_command == "compare"
     assert compare.peer == "http://peer:8000"
@@ -141,10 +141,10 @@ def _mainnet_preflight_payloads() -> dict[str, dict]:
     return {
         "/health": {"status": "ok", "database": {"connected": True}, "chain": {"valid": True}},
         "/protocol": {
-            "chain_id": "picoin-mainnet-v1",
+            "chain_id": 314159,
             "faucet_enabled": False,
             "min_validator_stake": 31.416,
-            "network_id": "mainnet",
+            "network_id": "picoin-mainnet-v1",
             "proof_of_pi_reward_percent": 0.80,
             "protocol_version": "1.0",
             "required_validator_approvals": 3,
@@ -168,11 +168,11 @@ def _mainnet_preflight_payloads() -> dict[str, dict]:
             "required_task_expiration_seconds": 600,
         },
         "/node/sync-status": {
-            "chain_id": "picoin-mainnet-v1",
+            "chain_id": 314159,
             "effective_latest_block_hash": "block-hash",
             "effective_latest_block_height": 10,
             "genesis_hash": "genesis-hash",
-            "network_id": "mainnet",
+            "network_id": "picoin-mainnet-v1",
             "pending_replay_blocks": 0,
             "replay": {
                 "finalized_queue_size": 0,
@@ -216,7 +216,7 @@ def test_node_mainnet_preflight_passes_with_wallet_backed_validators(monkeypatch
     assert command_node_mainnet_preflight(args) == 0
     output = json.loads(capsys.readouterr().out)
     assert output["status"] == "ok"
-    assert output["network_id"] == "mainnet"
+    assert output["network_id"] == "picoin-mainnet-v1"
     assert output["eligible_validators"] == 3
 
 

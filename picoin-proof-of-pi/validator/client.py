@@ -193,7 +193,7 @@ def validate_job(job: dict[str, Any]) -> tuple[bool, str]:
                 network_id=tx.get("network_id"),
                 chain_id=tx.get("chain_id"),
             )
-            if unsigned["chain_id"] != CHAIN_ID or unsigned["network_id"] != NETWORK_ID:
+            if str(unsigned["chain_id"]) != str(CHAIN_ID) or unsigned["network_id"] != NETWORK_ID:
                 return False, "invalid_tx_payload"
             if transaction_hash(unsigned, tx.get("public_key", "")) != tx.get("tx_hash"):
                 return False, "invalid_tx_payload"

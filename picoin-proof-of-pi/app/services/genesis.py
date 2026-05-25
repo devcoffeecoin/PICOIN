@@ -27,9 +27,9 @@ def _is_canonical_wallet_address(value: str) -> bool:
 
 def validate_mainnet_genesis_allocations(document: dict[str, Any]) -> None:
     normalized = normalize_genesis_allocations(document)
-    if normalized["network_id"] and normalized["network_id"] != "mainnet":
+    if normalized["network_id"] and normalized["network_id"] != MAINNET_PROFILE.network_id:
         raise ValueError("mainnet genesis allocations network_id mismatch")
-    if normalized["chain_id"] and normalized["chain_id"] != "picoin-mainnet-v1":
+    if normalized["chain_id"] and normalized["chain_id"] != MAINNET_PROFILE.chain_id:
         raise ValueError("mainnet genesis allocations chain_id mismatch")
     if not normalized["allocations"]:
         raise ValueError("mainnet genesis allocations are required")
@@ -88,10 +88,19 @@ def normalize_genesis_allocations(document: dict[str, Any]) -> dict[str, Any]:
     return {
         "version": version,
         "network_id": str(document.get("network_id") or "").strip(),
-        "chain_id": str(document.get("chain_id") or "").strip(),
+        "chain_id": _normalize_chain_id(document.get("chain_id")),
         "created_at": str(document.get("created_at") or "1970-01-01T00:00:00+00:00"),
         "allocations": allocations,
     }
+
+
+def _normalize_chain_id(value: Any) -> str | int:
+    if value is None:
+        return ""
+    if isinstance(value, int):
+        return value
+    cleaned = str(value).strip()
+    return int(cleaned) if cleaned.isdigit() else cleaned
 
 
 def genesis_allocations_hash(document: dict[str, Any] | None) -> str:
