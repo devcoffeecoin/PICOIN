@@ -1,0 +1,576 @@
+import { useEffect, useMemo, useState } from "react";
+import {
+  Copy,
+  Gauge,
+  Home,
+  Lock,
+  Network,
+  Power,
+  QrCode,
+  RefreshCw,
+  Send,
+  Settings,
+  Shield,
+  Wallet,
+} from "lucide-react";
+import { QRCodeCanvas } from "qrcode.react";
+import type {
+  AccountBalance,
+  AppSettings,
+  NetworkConfig,
+  NetworkId,
+  NodeStatus,
+  SendTransactionResult,
+  TransactionRecord,
+  WalletSummary,
+} from "../shared/types";
+
+type Page = "dashboard" | "send" | "receive" | "wallet" | "settings";
+
+const emptyNodeStatus: NodeStatus = {
+  status: "stopped",
+  network: "testnet",
+  rpcUrl: "http://127.0.0.1:18000",
+  blockHeight: null,
+  syncStatus: "stopped",
+  peers: null,
+};
+
+const emptyWallet: WalletSummary = {
+  hasWallet: false,
+  locked: true,
+  address: null,
+  publicKey: null,
+};
+
+export default function App() {
+  const [page, setPage] = useState<Page>("dashboard");
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [networks, setNetworks] = useState<Record<NetworkId, NetworkConfig> | null>(null);
+  const [nodeStatus, setNodeStatus] = useState<NodeStatus>(emptyNodeStatus);
+  const [wallet, setWallet] = useState<WalletSummary>(emptyWallet);
+  const [balance, setBalance] = useState<AccountBalance | null>(null);
+  const [history, setHistory] = useState<TransactionRecord[]>([]);
+  const [notice, setNotice] = useState<string>("");
+  const activeNetwork = settings?.selectedNetwork || "testnet";
+
+  const refreshAll = async () => {
+    try {
+      const [nextSettings, nextNetworks, nextNode, nextWallet] = await Promise.all([
+        window.picoin.settings.get(),
+        window.picoin.settings.networks(),
+        window.picoin.node.refresh(),
+        window.picoin.wallet.summary(),
+      ]);
+      setSettings(nextSettings);
+      setNetworks(nextNetworks);
+      setNodeStatus(nextNode);
+      setWallet(nextWallet);
+      if (nextWallet.address) {
+        const [nextBalance, nextHistory] = await Promise.all([
+          window.picoin.rpc.getBalance(nextWallet.address),
+          window.picoin.rpc.getHistory(nextWallet.address),
+        ]);
+        setBalance(nextBalance);
+        setHistory(nextHistory);
+      } else {
+        setBalance(null);
+        setHistory([]);
+      }
+    } catch (error) {
+      setNotice(errorMessage(error));
+    }
+  };
+
+  useEffect(() => {
+    void refreshAll();
+    const timer = window.setInterval(() => void refreshAll(), 5000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const pageTitle = useMemo(() => {
+    return {
+      dashboard: "Dashboard",
+      send: "Send",
+      receive: "Receive",
+      wallet: "Wallet",
+      settings: "Settings",
+    }[page];
+  }, [page]);
+
+  return (
+    <div className="app-shell">
+      <Sidebar page={page} onChange={setPage} />
+      <main className="workspace">
+        <header className="topbar">
+          <div>
+            <p className="eyebrow">Picoin Desktop Wallet V1</p>
+            <h1>{pageTitle}</h1>
+          </div>
+          <div className="topbar-actions">
+            <StatusPill status={nodeStatus.status} />
+            <button className="icon-button" onClick={() => void refreshAll()} title="Refresh">
+              <RefreshCw size={18} />
+            </button>
+          </div>
+        </header>
+
+        {notice && (
+          <div className="notice">
+            <span>{notice}</span>
+            <button onClick={() => setNotice("")}>Dismiss</button>
+          </div>
+        )}
+
+        {page === "dashboard" && (
+          <Dashboard
+            wallet={wallet}
+            balance={balance}
+            history={history}
+            nodeStatus={nodeStatus}
+            activeNetwork={activeNetwork}
+          />
+        )}
+        {page === "send" && <SendPage wallet={wallet} onSent={(message) => {
+          setNotice(message);
+          void refreshAll();
+        }} />}
+        {page === "receive" && <ReceivePage wallet={wallet} />}
+        {page === "wallet" && <WalletPage wallet={wallet} onWalletChange={(message) => {
+          setNotice(message);
+          void refreshAll();
+        }} />}
+        {page === "settings" && settings && networks && (
+          <SettingsPage
+            settings={settings}
+            networks={networks}
+            nodeStatus={nodeStatus}
+            onChanged={(message) => {
+              setNotice(message);
+              void refreshAll();
+            }}
+          />
+        )}
+      </main>
+    </div>
+  );
+}
+
+function Sidebar({ page, onChange }: { page: Page; onChange: (page: Page) => void }) {
+  const items: Array<{ page: Page; label: string; icon: JSX.Element }> = [
+    { page: "dashboard", label: "Dashboard", icon: <Home size={20} /> },
+    { page: "send", label: "Send", icon: <Send size={20} /> },
+    { page: "receive", label: "Receive", icon: <QrCode size={20} /> },
+    { page: "wallet", label: "Wallet", icon: <Wallet size={20} /> },
+    { page: "settings", label: "Settings", icon: <Settings size={20} /> },
+  ];
+  return (
+    <aside className="sidebar">
+      <div className="brand">
+        <div className="brand-mark">π</div>
+        <div>
+          <strong>Picoin</strong>
+          <span>Science Wallet</span>
+        </div>
+      </div>
+      <nav>
+        {items.map((item) => (
+          <button
+            key={item.page}
+            className={page === item.page ? "nav-item active" : "nav-item"}
+            onClick={() => onChange(item.page)}
+          >
+            {item.icon}
+            <span>{item.label}</span>
+          </button>
+        ))}
+      </nav>
+      <div className="sidebar-footer">
+        <Shield size={18} />
+        <span>Local keys, encrypted keystore</span>
+      </div>
+    </aside>
+  );
+}
+
+function Dashboard({
+  wallet,
+  balance,
+  history,
+  nodeStatus,
+  activeNetwork,
+}: {
+  wallet: WalletSummary;
+  balance: AccountBalance | null;
+  history: TransactionRecord[];
+  nodeStatus: NodeStatus;
+  activeNetwork: NetworkId;
+}) {
+  return (
+    <section className="page-grid dashboard-grid">
+      <Panel className="hero-panel">
+        <div>
+          <p className="eyebrow">Balance</p>
+          <div className="balance">{balance ? balance.balance.toFixed(6) : "0.000000"} PI</div>
+          <p className="muted">{wallet.address ? shortAddress(wallet.address) : "No wallet loaded"}</p>
+        </div>
+        <div className="orbital">
+          <span>π</span>
+        </div>
+      </Panel>
+
+      <Panel>
+        <h2>Node</h2>
+        <div className="metric-list">
+          <Metric icon={<Gauge />} label="Block height" value={nodeStatus.blockHeight ?? "n/a"} />
+          <Metric icon={<Network />} label="Sync" value={nodeStatus.syncStatus} />
+          <Metric icon={<Power />} label="Status" value={nodeStatus.status} />
+          <Metric icon={<Network />} label="Peers" value={nodeStatus.peers ?? "n/a"} />
+        </div>
+      </Panel>
+
+      <Panel>
+        <h2>Network</h2>
+        <div className="large-value">{activeNetwork}</div>
+        <p className="muted">RPC {nodeStatus.rpcUrl}</p>
+      </Panel>
+
+      <Panel className="wide-panel">
+        <h2>Recent Activity</h2>
+        <div className="table">
+          {history.length === 0 && <p className="muted">No transactions found.</p>}
+          {history.slice(0, 8).map((tx, index) => (
+            <div className="table-row" key={String(tx.tx_hash || index)}>
+              <span>{tx.tx_type || "tx"}</span>
+              <span>{tx.amount ?? ""} PI</span>
+              <span>{tx.status || "unknown"}</span>
+              <span>{tx.tx_hash ? shortHash(tx.tx_hash) : ""}</span>
+            </div>
+          ))}
+        </div>
+      </Panel>
+    </section>
+  );
+}
+
+function SendPage({ wallet, onSent }: { wallet: WalletSummary; onSent: (message: string) => void }) {
+  const [to, setTo] = useState("");
+  const [amount, setAmount] = useState("0.01");
+  const [fee, setFee] = useState("0.001");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async () => {
+    if (!wallet.address || wallet.locked) {
+      onSent("Unlock a wallet before sending.");
+      return;
+    }
+    const parsedAmount = Number(amount);
+    const parsedFee = Number(fee);
+    if (!to.trim() || !Number.isFinite(parsedAmount) || parsedAmount <= 0 || !Number.isFinite(parsedFee) || parsedFee < 0) {
+      onSent("Check destination, amount and fee.");
+      return;
+    }
+    const confirmed = window.confirm(`Send ${parsedAmount} PI to ${to}? Fee: ${parsedFee} PI.`);
+    if (!confirmed) {
+      return;
+    }
+    setBusy(true);
+    try {
+      const result = (await window.picoin.wallet.send({
+        to: to.trim(),
+        amount: parsedAmount,
+        fee: parsedFee,
+      })) as SendTransactionResult;
+      onSent(`Transaction broadcast${result.txHash ? `: ${shortHash(result.txHash)}` : "."}`);
+      setTo("");
+    } catch (error) {
+      onSent(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section className="single-column">
+      <Panel>
+        <h2>Send PI</h2>
+        <FormRow label="Destination address">
+          <input value={to} onChange={(event) => setTo(event.target.value)} placeholder="PI..." />
+        </FormRow>
+        <div className="form-grid">
+          <FormRow label="Amount">
+            <input value={amount} onChange={(event) => setAmount(event.target.value)} inputMode="decimal" />
+          </FormRow>
+          <FormRow label="Fee">
+            <input value={fee} onChange={(event) => setFee(event.target.value)} inputMode="decimal" />
+          </FormRow>
+        </div>
+        <button className="primary-button" disabled={busy || wallet.locked || !wallet.hasWallet} onClick={() => void submit()}>
+          <Send size={18} />
+          {busy ? "Sending..." : "Send"}
+        </button>
+      </Panel>
+    </section>
+  );
+}
+
+function ReceivePage({ wallet }: { wallet: WalletSummary }) {
+  const copyAddress = async () => {
+    if (wallet.address) {
+      await navigator.clipboard.writeText(wallet.address);
+    }
+  };
+  return (
+    <section className="single-column">
+      <Panel className="receive-panel">
+        <h2>Receive PI</h2>
+        {wallet.address ? (
+          <>
+            <div className="qr-wrap">
+              <QRCodeCanvas value={wallet.address} size={188} bgColor="#ffffff" fgColor="#111827" />
+            </div>
+            <div className="address-box">{wallet.address}</div>
+            <button className="secondary-button" onClick={() => void copyAddress()}>
+              <Copy size={18} />
+              Copy address
+            </button>
+          </>
+        ) : (
+          <p className="muted">Create or import a wallet first.</p>
+        )}
+      </Panel>
+    </section>
+  );
+}
+
+function WalletPage({ wallet, onWalletChange }: { wallet: WalletSummary; onWalletChange: (message: string) => void }) {
+  const [password, setPassword] = useState("");
+  const [seedPhrase, setSeedPhrase] = useState("");
+  const [privateKey, setPrivateKey] = useState("");
+  const [createdSeed, setCreatedSeed] = useState("");
+
+  const withPassword = async (operation: () => Promise<unknown>, success: string) => {
+    try {
+      if (password.length < 8) {
+        onWalletChange("Password must be at least 8 characters.");
+        return;
+      }
+      const result = await operation();
+      if (typeof result === "object" && result && "seedPhrase" in result) {
+        setCreatedSeed(String((result as { seedPhrase: string }).seedPhrase));
+      }
+      onWalletChange(success);
+    } catch (error) {
+      onWalletChange(errorMessage(error));
+    }
+  };
+
+  const exportKeystore = async () => {
+    try {
+      const exportData = await window.picoin.wallet.exportKeystore(password);
+      const blob = new Blob([exportData.keystore], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = exportData.fileName;
+      anchor.click();
+      URL.revokeObjectURL(url);
+      onWalletChange("Encrypted keystore exported.");
+    } catch (error) {
+      onWalletChange(errorMessage(error));
+    }
+  };
+
+  return (
+    <section className="page-grid wallet-grid">
+      <Panel>
+        <h2>Wallet Status</h2>
+        <div className="metric-list">
+          <Metric icon={<Wallet />} label="Address" value={wallet.address ? shortAddress(wallet.address) : "none"} />
+          <Metric icon={<Lock />} label="Lock" value={wallet.locked ? "locked" : "unlocked"} />
+        </div>
+        <FormRow label="Password">
+          <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} />
+        </FormRow>
+        <div className="button-row">
+          <button className="secondary-button" onClick={() => void withPassword(() => window.picoin.wallet.unlock(password), "Wallet unlocked.")}>
+            Unlock
+          </button>
+          <button className="secondary-button" onClick={() => void window.picoin.wallet.lock().then(() => onWalletChange("Wallet locked."))}>
+            Lock
+          </button>
+        </div>
+      </Panel>
+
+      <Panel>
+        <h2>Create</h2>
+        <button className="primary-button" onClick={() => void withPassword(() => window.picoin.wallet.create(password), "Wallet created.")}>
+          Create wallet
+        </button>
+        {createdSeed && (
+          <div className="seed-box">
+            <strong>Seed phrase</strong>
+            <p>{createdSeed}</p>
+          </div>
+        )}
+      </Panel>
+
+      <Panel>
+        <h2>Import Seed</h2>
+        <textarea value={seedPhrase} onChange={(event) => setSeedPhrase(event.target.value)} placeholder="BIP39 seed phrase" />
+        <button className="secondary-button" onClick={() => void withPassword(() => window.picoin.wallet.importSeed(seedPhrase, password), "Wallet imported from seed.")}>
+          Import seed
+        </button>
+      </Panel>
+
+      <Panel>
+        <h2>Import Key</h2>
+        <textarea value={privateKey} onChange={(event) => setPrivateKey(event.target.value)} placeholder="ed25519:..." />
+        <button className="secondary-button" onClick={() => void withPassword(() => window.picoin.wallet.importPrivateKey(privateKey, password), "Wallet imported from private key.")}>
+          Import private key
+        </button>
+      </Panel>
+
+      <Panel className="wide-panel">
+        <h2>Export</h2>
+        <button className="secondary-button" disabled={!wallet.hasWallet} onClick={() => void exportKeystore()}>
+          Export encrypted keystore
+        </button>
+      </Panel>
+    </section>
+  );
+}
+
+function SettingsPage({
+  settings,
+  networks,
+  nodeStatus,
+  onChanged,
+}: {
+  settings: AppSettings;
+  networks: Record<NetworkId, NetworkConfig>;
+  nodeStatus: NodeStatus;
+  onChanged: (message: string) => void;
+}) {
+  const [draftNodePath, setDraftNodePath] = useState(settings.nodePath);
+  const [draftTestnetDir, setDraftTestnetDir] = useState(settings.dataDirs.testnet);
+  const [draftMainnetDir, setDraftMainnetDir] = useState(settings.dataDirs.mainnet);
+
+  useEffect(() => {
+    setDraftNodePath(settings.nodePath);
+    setDraftTestnetDir(settings.dataDirs.testnet);
+    setDraftMainnetDir(settings.dataDirs.mainnet);
+  }, [settings]);
+
+  const updateNetwork = async (network: NetworkId) => {
+    try {
+      await window.picoin.settings.setNetwork(network);
+      onChanged(`Network changed to ${network}.`);
+    } catch (error) {
+      onChanged(errorMessage(error));
+    }
+  };
+
+  const savePaths = async () => {
+    try {
+      await window.picoin.settings.update({
+        nodePath: draftNodePath,
+        dataDirs: {
+          testnet: draftTestnetDir,
+          mainnet: draftMainnetDir,
+        },
+      });
+      onChanged("Settings saved. Node restarted with current configuration.");
+    } catch (error) {
+      onChanged(errorMessage(error));
+    }
+  };
+
+  return (
+    <section className="page-grid settings-grid">
+      <Panel>
+        <h2>Network</h2>
+        <div className="segmented">
+          <button className={settings.selectedNetwork === "testnet" ? "selected" : ""} onClick={() => void updateNetwork("testnet")}>
+            Testnet
+          </button>
+          <button className={settings.selectedNetwork === "mainnet" ? "selected" : ""} onClick={() => void updateNetwork("mainnet")}>
+            Mainnet
+          </button>
+        </div>
+        <div className="network-detail">
+          <strong>{networks[settings.selectedNetwork].chainName}</strong>
+          <span>{networks[settings.selectedNetwork].rpcUrl}</span>
+        </div>
+      </Panel>
+
+      <Panel>
+        <h2>RPC</h2>
+        <div className="metric-list">
+          <Metric icon={<Power />} label="Status" value={nodeStatus.status} />
+          <Metric icon={<Network />} label="RPC URL" value={nodeStatus.rpcUrl} />
+          <Metric icon={<Gauge />} label="Height" value={nodeStatus.blockHeight ?? "n/a"} />
+        </div>
+      </Panel>
+
+      <Panel className="wide-panel">
+        <h2>Paths</h2>
+        <FormRow label="Node binary">
+          <input value={draftNodePath} onChange={(event) => setDraftNodePath(event.target.value)} />
+        </FormRow>
+        <FormRow label="Testnet data directory">
+          <input value={draftTestnetDir} onChange={(event) => setDraftTestnetDir(event.target.value)} />
+        </FormRow>
+        <FormRow label="Mainnet data directory">
+          <input value={draftMainnetDir} onChange={(event) => setDraftMainnetDir(event.target.value)} />
+        </FormRow>
+        <button className="primary-button" onClick={() => void savePaths()}>
+          Save settings
+        </button>
+      </Panel>
+    </section>
+  );
+}
+
+function Panel({ children, className = "" }: { children: React.ReactNode; className?: string }) {
+  return <section className={`panel ${className}`}>{children}</section>;
+}
+
+function FormRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <label className="form-row">
+      <span>{label}</span>
+      {children}
+    </label>
+  );
+}
+
+function Metric({ icon, label, value }: { icon: JSX.Element; label: string; value: React.ReactNode }) {
+  return (
+    <div className="metric">
+      <span className="metric-icon">{icon}</span>
+      <span className="metric-label">{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function StatusPill({ status }: { status: string }) {
+  return <span className={`status-pill ${status}`}>{status}</span>;
+}
+
+function shortAddress(address: string): string {
+  return `${address.slice(0, 10)}...${address.slice(-8)}`;
+}
+
+function shortHash(hash: string): string {
+  return `${hash.slice(0, 10)}...${hash.slice(-6)}`;
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error || "Unknown error");
+}
+
