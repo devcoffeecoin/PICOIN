@@ -79,4 +79,5 @@ def test_mainnet_runbook_references_preflight_and_env_source() -> None:
     assert "PICOIN_TREASURY_WALLET" in runbook
     assert "PICOIN_GOVERNANCE_WALLET" in runbook
     assert "genesis-hash" in runbook
+    assert "--mainnet" in runbook
     assert "PICOIN_ENV_SOURCE" in installer

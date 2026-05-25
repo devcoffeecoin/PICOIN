@@ -53,7 +53,12 @@ def is_valid_address(address: str | None) -> bool:
     return checksum == address_checksum(body)
 
 
-def create_wallet(name: str = "picoin-wallet") -> dict[str, Any]:
+def create_wallet(
+    name: str = "picoin-wallet",
+    *,
+    network_id: str | None = None,
+    chain_id: str | None = None,
+) -> dict[str, Any]:
     keypair = generate_keypair()
     address = address_from_public_key(keypair["public_key"])
     timestamp = datetime.now(timezone.utc).isoformat()
@@ -63,8 +68,8 @@ def create_wallet(name: str = "picoin-wallet") -> dict[str, Any]:
         "address": address,
         "public_key": keypair["public_key"],
         "private_key": keypair["private_key"],
-        "network_id": NETWORK_ID,
-        "chain_id": CHAIN_ID,
+        "network_id": network_id or NETWORK_ID,
+        "chain_id": chain_id or CHAIN_ID,
         "created_at": timestamp,
     }
 

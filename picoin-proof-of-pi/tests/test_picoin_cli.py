@@ -43,7 +43,10 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
             "backups",
         ]
     )
-    genesis_hash = parser.parse_args(["node", "genesis-hash", "--file", "genesis.json"])
+    genesis_hash = parser.parse_args(["node", "genesis-hash", "--file", "genesis.json", "--mainnet"])
+    wallet_create = parser.parse_args(
+        ["wallet", "create", "--network", "mainnet", "--chain-id", "picoin-mainnet-v1", "--output", "wallet.json"]
+    )
     compare = parser.parse_args(["node", "compare", "--peer", "http://peer:8000"])
     repair_rewards = parser.parse_args(["node", "repair-rewards"])
     mainnet_preflight = parser.parse_args(
@@ -104,6 +107,11 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
     assert snapshot_restore_sqlite.backup_current == Path("backups")
     assert genesis_hash.node_command == "genesis-hash"
     assert genesis_hash.file == Path("genesis.json")
+    assert genesis_hash.mainnet is True
+    assert wallet_create.wallet_command == "create"
+    assert wallet_create.network == "mainnet"
+    assert wallet_create.chain_id == "picoin-mainnet-v1"
+    assert wallet_create.output == Path("wallet.json")
     assert compare.node_command == "compare"
     assert compare.peer == "http://peer:8000"
     assert repair_rewards.node_command == "repair-rewards"

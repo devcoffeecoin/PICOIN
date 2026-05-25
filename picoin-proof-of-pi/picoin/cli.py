@@ -48,7 +48,12 @@ from app.core.settings import (
 )
 from app.core.signatures import sign_payload
 from app.services.consensus import consensus_vote_payload
-from app.services.genesis import genesis_allocations_hash, load_genesis_allocations
+from app.services.genesis import (
+    genesis_allocation_summary,
+    genesis_allocations_hash,
+    load_genesis_allocations,
+    validate_mainnet_genesis_allocations,
+)
 from app.services.state import (
     balance_snapshot,
     calculate_state_root,
@@ -1140,12 +1145,20 @@ def _infer_account_type_for_cli_snapshot(account_id: str) -> str:
 
 def command_node_genesis_hash(args: argparse.Namespace) -> int:
     document = load_genesis_allocations(args.file)
-    print_json({"genesis_hash": genesis_allocations_hash(document), "allocations": len(document["allocations"])})
+    if args.mainnet:
+        validate_mainnet_genesis_allocations(document)
+    payload = {
+        "genesis_hash": genesis_allocations_hash(document),
+        **genesis_allocation_summary(document),
+    }
+    if args.mainnet:
+        payload["mainnet_valid"] = True
+    print_json(payload)
     return 0
 
 
 def command_wallet_create(args: argparse.Namespace) -> int:
-    wallet = create_wallet(args.name)
+    wallet = create_wallet(args.name, network_id=args.network, chain_id=args.chain_id)
     output = args.output or DEFAULT_WALLET_PATH
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(json.dumps(wallet, indent=2, sort_keys=True), encoding="utf-8")
@@ -1771,6 +1784,11 @@ def add_node_parser(subparsers: argparse._SubParsersAction) -> None:
 
     genesis_hash_parser = node_subparsers.add_parser("genesis-hash", help="Compute deterministic hash for a genesis allocation file")
     genesis_hash_parser.add_argument("--file", type=Path, required=True)
+    genesis_hash_parser.add_argument(
+        "--mainnet",
+        action="store_true",
+        help="Validate the allocation file against mainnet launch rules before printing the hash",
+    )
     genesis_hash_parser.set_defaults(func=command_node_genesis_hash)
 
 
@@ -1782,6 +1800,8 @@ def add_wallet_parser(subparsers: argparse._SubParsersAction) -> None:
     create_parser = wallet_subparsers.add_parser("create", help="Create an Ed25519 Picoin wallet")
     create_parser.add_argument("--name", default="picoin-wallet")
     create_parser.add_argument("--output", type=Path)
+    create_parser.add_argument("--network", help="Optional network_id metadata to store in the wallet file")
+    create_parser.add_argument("--chain-id", help="Optional chain_id metadata to store in the wallet file")
     create_parser.set_defaults(func=command_wallet_create)
 
     import_parser = wallet_subparsers.add_parser("import", help="Import a wallet JSON into the local default wallet path")
