@@ -14,6 +14,7 @@ import {
   Wallet,
 } from "lucide-react";
 import { QRCodeCanvas } from "qrcode.react";
+import picoinLogo from "./assets/picoin-logo.png";
 import type {
   AccountBalance,
   AppSettings,
@@ -167,7 +168,7 @@ function Sidebar({ page, onChange }: { page: Page; onChange: (page: Page) => voi
   return (
     <aside className="sidebar">
       <div className="brand">
-        <div className="brand-mark">π</div>
+        <img className="brand-mark" src={picoinLogo} alt="Picoin" />
         <div>
           <strong>Picoin</strong>
           <span>Science Wallet</span>
@@ -214,9 +215,7 @@ function Dashboard({
           <div className="balance">{balance ? balance.balance.toFixed(6) : "0.000000"} PI</div>
           <p className="muted">{wallet.address ? shortAddress(wallet.address) : "No wallet loaded"}</p>
         </div>
-        <div className="orbital">
-          <span>π</span>
-        </div>
+        <img className="hero-logo" src={picoinLogo} alt="Picoin Proof of Pi" />
       </Panel>
 
       <Panel>
@@ -573,4 +572,3 @@ function errorMessage(error: unknown): string {
   }
   return String(error || "Unknown error");
 }
-
