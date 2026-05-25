@@ -13,6 +13,9 @@ let walletService: WalletService;
 
 function createWindow(): BrowserWindow {
   const preloadPath = path.join(__dirname, "../preload/preload.js");
+  const iconPath = app.isPackaged
+    ? path.join(process.resourcesPath, "icons", "picoin-logo.png")
+    : path.join(app.getAppPath(), "resources", "icons", "picoin-logo.png");
   const window = new BrowserWindow({
     width: 1240,
     height: 820,
@@ -20,6 +23,7 @@ function createWindow(): BrowserWindow {
     minHeight: 720,
     backgroundColor: "#080b12",
     title: "Picoin Wallet",
+    icon: iconPath,
     webPreferences: {
       preload: preloadPath,
       nodeIntegration: false,
@@ -149,4 +153,3 @@ app.on("window-all-closed", () => {
     app.quit();
   }
 });
-

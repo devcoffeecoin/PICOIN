@@ -57,16 +57,13 @@ button {
 }
 
 .brand-mark {
-  display: grid;
-  place-items: center;
   width: 44px;
   height: 44px;
+  object-fit: cover;
   border: 1px solid rgba(50, 220, 180, 0.45);
   border-radius: 8px;
   background: linear-gradient(145deg, rgba(42, 210, 170, 0.22), rgba(244, 189, 71, 0.12));
-  color: #60f0c9;
-  font-size: 28px;
-  font-weight: 800;
+  box-shadow: 0 0 24px rgba(28, 172, 255, 0.25);
 }
 
 .brand strong,
@@ -214,22 +211,14 @@ nav {
   letter-spacing: 0;
 }
 
-.orbital {
-  display: grid;
-  place-items: center;
+.hero-logo {
   width: 150px;
   aspect-ratio: 1;
-  border: 1px solid rgba(96, 240, 201, 0.28);
   border-radius: 50%;
-  background:
-    conic-gradient(from 160deg, rgba(96, 240, 201, 0.24), rgba(246, 194, 75, 0.22), rgba(96, 240, 201, 0.24)),
-    rgba(255, 255, 255, 0.04);
-}
-
-.orbital span {
-  font-size: 70px;
-  font-weight: 900;
-  color: #f6c24b;
+  object-fit: cover;
+  box-shadow:
+    0 0 0 1px rgba(96, 240, 201, 0.26),
+    0 18px 48px rgba(0, 159, 255, 0.25);
 }
 
 .muted {
@@ -497,4 +486,3 @@ textarea:focus {
     grid-template-columns: 1fr;
   }
 }
-

@@ -51,9 +51,17 @@
         "filter": [
           "**/*"
         ]
+      },
+      {
+        "from": "resources/icons",
+        "to": "icons",
+        "filter": [
+          "**/*"
+        ]
       }
     ],
     "win": {
+      "icon": "resources/icons/picoin-logo.ico",
       "target": [
         "nsis"
       ],
@@ -61,6 +69,8 @@
       "artifactName": "Picoin-Wallet-Setup-${version}.${ext}"
     },
     "nsis": {
+      "installerIcon": "resources/icons/picoin-logo.ico",
+      "uninstallerIcon": "resources/icons/picoin-logo.ico",
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true
