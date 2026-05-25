@@ -74,6 +74,12 @@
             Import wallet
             <input id="importWallet" type="file" accept="application/json" />
           </label>
+          <label class="button secondary import-button">
+            Import keystore
+            <input id="importKeystore" type="file" accept="application/json" />
+          </label>
+          <button id="importSeed" class="button secondary" type="button">Import seed phrase</button>
+          <button id="exportKeystore" class="button secondary" type="button">Export keystore</button>
           <button id="exportWallet" class="button secondary" type="button">Export private key</button>
         </aside>
 
@@ -145,6 +151,7 @@
       </section>
     </main>
 
+    <script src="./vendor/tweetnacl.min.js" defer></script>
     <script src="./wallet.js?v=20260520-2" defer></script>
   </body>
 </html>

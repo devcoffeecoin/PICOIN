@@ -44,6 +44,15 @@ function base64Url(bytes) {
   return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "");
 }
 
+function base64UrlToUint8Array(str) {
+  const pad = "=".repeat((4 - (str.length % 4)) % 4);
+  const b64 = (str || "").replace(/-/g, "+").replace(/_/g, "/") + pad;
+  const binary = atob(b64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
 function keyBody(value) {
   return String(value || "").replace("ed25519:", "");
 }
@@ -389,6 +398,173 @@ els.exportWallet.addEventListener("click", () => {
   link.click();
   URL.revokeObjectURL(link.href);
 });
+// Keystore import/export and seed phrase support (compatible with desktop wallet)
+const ITERATIONS = 310000;
+function assertPassword(password) {
+  if (!password || password.length < 8) throw new Error("password must be at least 8 characters");
+}
+
+async function deriveKeyFromPassword(password, saltBytes, iterations = ITERATIONS) {
+  const pwKey = await crypto.subtle.importKey("raw", encoder.encode(password), { name: "PBKDF2" }, false, ["deriveBits"]);
+  const derived = await crypto.subtle.deriveBits(
+    { name: "PBKDF2", salt: saltBytes, iterations, hash: "SHA-256" },
+    pwKey,
+    256,
+  );
+  return new Uint8Array(derived);
+}
+
+async function exportKeystore() {
+  const wallet = getWallet();
+  if (!wallet) throw new Error("Create or import a wallet first.");
+  const password = prompt("Enter a password to protect the keystore (min 8 chars):");
+  assertPassword(password);
+  const salt = crypto.getRandomValues(new Uint8Array(16));
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const keyBytes = await deriveKeyFromPassword(password, salt, ITERATIONS);
+  const cryptoKey = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["encrypt"]);
+  const plaintext = JSON.stringify({ privateKey: wallet.private_key, seedPhrase: wallet.seedPhrase });
+  const ctBuffer = await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, cryptoKey, encoder.encode(plaintext));
+  const ct = new Uint8Array(ctBuffer);
+  const tag = ct.slice(ct.length - 16);
+  const ciphertext = ct.slice(0, ct.length - 16);
+  const keystore = {
+    version: 1,
+    cipher: "aes-256-gcm",
+    kdf: "pbkdf2-sha256",
+    iterations: ITERATIONS,
+    salt: base64Url(salt),
+    iv: base64Url(iv),
+    tag: base64Url(tag),
+    ciphertext: base64Url(ciphertext),
+    address: wallet.address,
+    publicKey: wallet.public_key,
+    network: wallet.network_id || els.networkSelect.value,
+    chainId: wallet.chain_id || CHAIN_ID,
+    createdAt: new Date().toISOString(),
+  };
+  const blob = new Blob([JSON.stringify(keystore, null, 2)], { type: "application/json" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `picoin-keystore-${wallet.address}.json`;
+  link.click();
+  URL.revokeObjectURL(link.href);
+}
+
+async function importKeystoreFile(file) {
+  const json = JSON.parse(await file.text());
+  if (!json || !json.ciphertext || !json.iv || !json.salt) throw new Error("Invalid keystore file");
+  const password = prompt("Enter keystore password:");
+  assertPassword(password);
+  const salt = base64UrlToUint8Array(json.salt);
+  const iv = base64UrlToUint8Array(json.iv);
+  const tag = base64UrlToUint8Array(json.tag || "");
+  const ciphertext = base64UrlToUint8Array(json.ciphertext || "");
+  // Reconstruct full ciphertext (ciphertext + tag) as WebCrypto returns combined
+  const combined = new Uint8Array(ciphertext.length + tag.length);
+  combined.set(ciphertext, 0);
+  combined.set(tag, ciphertext.length);
+  const keyBytes = await deriveKeyFromPassword(password, salt, json.iterations || ITERATIONS);
+  const cryptoKey = await crypto.subtle.importKey("raw", keyBytes, "AES-GCM", false, ["decrypt"]);
+  let plain;
+  try {
+    const pt = await crypto.subtle.decrypt({ name: "AES-GCM", iv: iv }, cryptoKey, combined);
+    plain = new TextDecoder().decode(pt);
+  } catch (err) {
+    throw new Error("Failed to decrypt keystore: wrong password or corrupted file");
+  }
+  const material = JSON.parse(plain);
+  if (!material.privateKey) throw new Error("Keystore does not contain a private key");
+  const wallet = {
+    version: 1,
+    name: "picoin-web-wallet",
+    address: json.address || (await deriveAddress(material.publicKey || material.privateKey)),
+    public_key: json.publicKey || material.publicKey,
+    private_key: material.privateKey,
+    seedPhrase: material.seedPhrase,
+    network_id: json.network || els.networkSelect.value,
+    chain_id: json.chainId || CHAIN_ID,
+    created_at: json.createdAt || new Date().toISOString(),
+  };
+  setWallet(wallet);
+  await refreshWallet();
+  await refreshHistory();
+}
+
+// Import seed phrase (BIP39) using WebCrypto PBKDF2+HMAC-SHA512 and tweetnacl for key derivation
+async function mnemonicToSeed(mnemonic, pass = "") {
+  const saltStr = "mnemonic" + pass;
+  const keyMaterial = await crypto.subtle.importKey("raw", encoder.encode(mnemonic), { name: "PBKDF2" }, false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits({ name: "PBKDF2", salt: encoder.encode(saltStr), iterations: 2048, hash: "SHA-512" }, keyMaterial, 64 * 8);
+  return new Uint8Array(bits);
+}
+
+function encodeEd25519Key(raw) {
+  return `ed25519:${base64Url(new Uint8Array(raw))}`;
+}
+
+async function importSeedPhraseFlow() {
+  const seed = prompt("Paste your BIP39 seed phrase (words) here:");
+  if (!seed) return;
+  const normalized = seed.trim().toLowerCase().replace(/\s+/g, " ");
+  // require tweetnacl to be available via local vendor file
+  if (typeof window === "undefined" || !window.nacl) {
+    throw new Error("tweetnacl not found. Ensure './vendor/tweetnacl.min.js' is present and loaded before wallet.js.");
+  }
+  try {
+    const seedBytes = await mnemonicToSeed(normalized);
+    const prefix = encoder.encode("picoin-wallet-v1:ed25519");
+    const combined = new Uint8Array(prefix.length + seedBytes.length);
+    combined.set(prefix, 0);
+    combined.set(seedBytes, prefix.length);
+    const hash = await crypto.subtle.digest("SHA-256", combined);
+    const privateSeed = new Uint8Array(hash);
+    const keypair = window.nacl.sign.keyPair.fromSeed(privateSeed);
+    const privateKey = encodeEd25519Key(privateSeed);
+    const publicKey = encodeEd25519Key(keypair.publicKey);
+    const wallet = {
+      version: 1,
+      name: "picoin-web-wallet",
+      address: await deriveAddress(publicKey),
+      public_key: publicKey,
+      private_key: privateKey,
+      seedPhrase: normalized,
+      network_id: els.networkSelect.value,
+      chain_id: CHAIN_ID,
+      created_at: new Date().toISOString(),
+    };
+    setWallet(wallet);
+    await refreshWallet();
+    await refreshHistory();
+    alert("Wallet imported from seed phrase. Consider exporting a keystore for safe backup.");
+  } catch (err) {
+    updateBadge(els.walletBadge, err.message || String(err), "bad");
+  }
+}
+
+// Wire new UI controls
+els.importKeystore = document.getElementById("importKeystore");
+els.exportKeystore = document.getElementById("exportKeystore");
+els.importSeed = document.getElementById("importSeed");
+if (els.importKeystore) els.importKeystore.addEventListener("change", async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  try {
+    await importKeystoreFile(file);
+    alert("Keystore imported successfully.");
+  } catch (err) {
+    updateBadge(els.walletBadge, err.message || String(err), "bad");
+  }
+});
+if (els.exportKeystore) els.exportKeystore.addEventListener("click", async () => {
+  try {
+    await exportKeystore();
+    alert("Keystore exported.");
+  } catch (err) {
+    updateBadge(els.walletBadge, err.message || String(err), "bad");
+  }
+});
+if (els.importSeed) els.importSeed.addEventListener("click", () => importSeedPhraseFlow());
 els.importWallet.addEventListener("change", async (event) => {
   const file = event.target.files?.[0];
   if (!file) return;
