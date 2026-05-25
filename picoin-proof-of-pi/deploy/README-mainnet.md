@@ -17,14 +17,14 @@ source .venv/bin/activate
 
 python -m picoin wallet create \
   --name treasury-mainnet \
-  --network mainnet \
-  --chain-id picoin-mainnet-v1 \
+  --network picoin-mainnet-v1 \
+  --chain-id 314159 \
   --output treasury-mainnet.json
 
 python -m picoin wallet create \
   --name governance-mainnet \
-  --network mainnet \
-  --chain-id picoin-mainnet-v1 \
+  --network picoin-mainnet-v1 \
+  --chain-id 314159 \
   --output governance-mainnet.json
 
 python -m picoin wallet address --wallet treasury-mainnet.json
@@ -89,8 +89,8 @@ the mainnet template deliberately before starting services.
 Required launch values:
 
 ```bash
-PICOIN_NETWORK=mainnet
-PICOIN_CHAIN_ID=picoin-mainnet-v1
+PICOIN_NETWORK=picoin-mainnet-v1
+PICOIN_CHAIN_ID=314159
 PICOIN_PROTOCOL_VERSION=1.0
 PICOIN_GENESIS_ALLOCATIONS_FILE=deploy/mainnet-genesis.allocations.final.json
 PICOIN_TREASURY_WALLET=PI...

@@ -16,6 +16,7 @@ from app.core.settings import (
     MAX_ACTIVE_TASKS_PER_MINER,
     MAX_PI_POSITION,
     NETWORK_ID,
+    NETWORK_PROFILE,
     RETARGET_MAX_PI_POSITION,
     PI_ALGORITHM,
     PROTOCOL_VERSION,
@@ -1333,9 +1334,9 @@ def _ensure_genesis_allocations(connection: sqlite3.Connection) -> None:
         return
     if document.get("network_id") and document["network_id"] != NETWORK_ID:
         raise RuntimeError("genesis allocations network_id mismatch")
-    if document.get("chain_id") and document["chain_id"] != CHAIN_ID:
+    if document.get("chain_id") and str(document["chain_id"]) != str(CHAIN_ID):
         raise RuntimeError("genesis allocations chain_id mismatch")
-    if NETWORK_ID == "mainnet":
+    if NETWORK_PROFILE.name == "mainnet":
         validate_mainnet_genesis_allocations(document)
     timestamp = document["created_at"]
     for allocation in document["allocations"]:

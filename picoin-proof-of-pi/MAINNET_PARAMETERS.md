@@ -6,8 +6,8 @@ This document freezes the first mainnet parameter draft. It is a launch target, 
 
 | Parameter | Mainnet Value | Status |
 | --- | --- | --- |
-| `network_id` | `mainnet` | draft |
-| `chain_id` | `picoin-mainnet-v1` | draft |
+| `network_id` | `picoin-mainnet-v1` | draft |
+| `chain_id` | `314159` | draft |
 | `protocol_version` | `1.0` | implementation-required |
 | public bootstrap API | `https://api.picoin.science` or a mainnet-specific DNS name before launch | draft |
 | explorer | mainnet explorer URL to be assigned | pending |
@@ -18,6 +18,7 @@ Mainnet must not reuse the public testnet chain ID:
 ```text
 public testnet: picoin-public-testnet-v018
 mainnet:        picoin-mainnet-v1
+chain_id:       314159
 ```
 
 ## Genesis
@@ -277,8 +278,8 @@ Before mainnet genesis:
 - [ ] Replace treasury/governance wallet placeholders.
 - [ ] Create final mainnet genesis allocation JSON.
 - [ ] Compute and publish deterministic genesis hash.
-- [ ] Set `PICOIN_NETWORK=mainnet`.
-- [ ] Set `PICOIN_CHAIN_ID=picoin-mainnet-v1`.
+- [ ] Set `PICOIN_NETWORK=picoin-mainnet-v1`.
+- [ ] Set `PICOIN_CHAIN_ID=314159`.
 - [ ] Ensure faucet is disabled.
 - [ ] Confirm initial validators and identities.
 - [ ] Confirm minimum four eligible validators or explicitly accept `3/3` risk.

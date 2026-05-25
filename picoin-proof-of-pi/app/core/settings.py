@@ -23,6 +23,15 @@ def _int_env(name: str, default: int) -> int:
     return int(value)
 
 
+def _chain_id_env(name: str, default: str | int) -> str | int:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return default
+    if isinstance(default, int) and value.isdigit():
+        return int(value)
+    return value
+
+
 def _is_canonical_wallet_address(value: str) -> bool:
     normalized = str(value or "").strip().upper()
     if not normalized.startswith("PI") or len(normalized) != 48:
@@ -51,15 +60,16 @@ DATA_DIR = _configured_path(os.getenv("PICOIN_DATA_DIR", ""), BASE_DIR / "data")
 DATABASE_PATH = _configured_path(os.getenv("PICOIN_DB_PATH", ""), DATA_DIR / "picoin.sqlite3")
 
 PROJECT_NAME = "picoin-proof-of-pi"
-NETWORK_ID = os.getenv("PICOIN_NETWORK", "local").strip().lower() or "local"
-NETWORK_PROFILE = profile_for_network(NETWORK_ID)
+CONFIGURED_NETWORK = os.getenv("PICOIN_NETWORK", "local").strip().lower() or "local"
+NETWORK_PROFILE = profile_for_network(CONFIGURED_NETWORK)
+NETWORK_ID = NETWORK_PROFILE.network_id
 PROTOCOL_VERSION = os.getenv("PICOIN_PROTOCOL_VERSION", NETWORK_PROFILE.protocol_version).strip() or NETWORK_PROFILE.protocol_version
-CHAIN_ID = os.getenv("PICOIN_CHAIN_ID", NETWORK_PROFILE.chain_id).strip() or NETWORK_PROFILE.chain_id
+CHAIN_ID = _chain_id_env("PICOIN_CHAIN_ID", NETWORK_PROFILE.chain_id)
 if NETWORK_PROFILE.name == "mainnet":
     if PROTOCOL_VERSION != NETWORK_PROFILE.protocol_version:
         raise RuntimeError("mainnet protocol_version is frozen at 1.0")
     if CHAIN_ID != NETWORK_PROFILE.chain_id:
-        raise RuntimeError("mainnet chain_id is frozen at picoin-mainnet-v1")
+        raise RuntimeError("mainnet chain_id is frozen at 314159")
 GENESIS_ALLOCATIONS_FILE = os.getenv("PICOIN_GENESIS_ALLOCATIONS_FILE", "").strip()
 
 
@@ -226,7 +236,7 @@ if NETWORK_PROFILE.name == "mainnet" and FAUCET_ALLOWED_NETWORKS:
 FAUCET_RATE_LIMIT_WINDOW_SECONDS = 60 * 60
 FAUCET_RATE_LIMIT_MAX_REQUESTS = 3
 MIN_VALIDATOR_STAKE = NETWORK_PROFILE.min_validator_stake
-VALIDATOR_REGISTRATION_STAKE = 0.0 if NETWORK_ID == "mainnet" else MIN_VALIDATOR_STAKE
+VALIDATOR_REGISTRATION_STAKE = 0.0 if NETWORK_PROFILE.name == "mainnet" else MIN_VALIDATOR_STAKE
 VALIDATOR_ELIGIBILITY_STAKE_FIELD = "wallet_stake_locked" if NETWORK_PROFILE.name == "mainnet" else "stake_locked"
 VALIDATOR_ELIGIBILITY_STAKE_SOURCE = "wallet" if NETWORK_PROFILE.name == "mainnet" else "legacy_or_wallet"
 VALIDATOR_SLASH_INVALID_SIGNATURE = NETWORK_PROFILE.validator_slash_invalid_signature

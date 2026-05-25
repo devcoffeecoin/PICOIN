@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "network_id": "mainnet",
-  "chain_id": "picoin-mainnet-v1",
+  "network_id": "picoin-mainnet-v1",
+  "chain_id": 314159,
   "created_at": "2026-01-01T00:00:00+00:00",
   "allocations": [
     {

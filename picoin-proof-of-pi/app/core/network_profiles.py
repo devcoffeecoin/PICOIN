@@ -5,7 +5,7 @@ from dataclasses import dataclass
 class NetworkProfile:
     name: str
     network_id: str
-    chain_id: str
+    chain_id: str | int
     protocol_version: str
     genesis_supply: float
     faucet_allowed_networks: frozenset[str]
@@ -40,8 +40,8 @@ PUBLIC_TESTNET_PROFILE = NetworkProfile(
 
 MAINNET_PROFILE = NetworkProfile(
     name="mainnet",
-    network_id="mainnet",
-    chain_id="picoin-mainnet-v1",
+    network_id="picoin-mainnet-v1",
+    chain_id=314159,
     protocol_version="1.0",
     genesis_supply=300.0,
     faucet_allowed_networks=frozenset(),
@@ -51,6 +51,7 @@ NETWORK_PROFILES = {
     LOCAL_PROFILE.name: LOCAL_PROFILE,
     PUBLIC_TESTNET_PROFILE.name: PUBLIC_TESTNET_PROFILE,
     MAINNET_PROFILE.name: MAINNET_PROFILE,
+    MAINNET_PROFILE.network_id: MAINNET_PROFILE,
 }
 
 

@@ -48,6 +48,7 @@ from app.core.settings import (
     MAX_TRANSACTIONS_PER_BLOCK,
     MIN_VALIDATOR_STAKE,
     NETWORK_ID,
+    NETWORK_PROFILE,
     NODE_TYPE,
     PENALTY_DUPLICATE,
     PENALTY_INVALID_RESULT,
@@ -3070,7 +3071,7 @@ def get_full_economic_audit() -> dict[str, Any]:
         expected=validator_slashed_amount,
         actual=ledger_genesis_slashes,
     )
-    if NETWORK_ID == "mainnet" and legacy_validator_stake_locked > ECONOMIC_AUDIT_TOLERANCE:
+    if NETWORK_PROFILE.name == "mainnet" and legacy_validator_stake_locked > ECONOMIC_AUDIT_TOLERANCE:
         issues.append(
             {
                 "code": "mainnet_legacy_validator_stake",
