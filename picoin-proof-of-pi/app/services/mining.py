@@ -103,6 +103,7 @@ from app.core.settings import (
     VALIDATOR_SELECTION_TRUST_WEIGHT,
     VALIDATOR_SLASH_INVALID_SIGNATURE,
     VALIDATION_MODE,
+    get_dynamic_expiration,
 )
 from app.db.database import get_connection, row_to_dict
 from app.services.consensus import record_local_block_proposal
@@ -158,6 +159,18 @@ def utc_now() -> str:
 
 def iso_at(seconds_from_now: int) -> str:
     return (utc_now_dt() + timedelta(seconds=seconds_from_now)).isoformat()
+
+
+def _task_expiration_seconds_for_position(params: dict[str, Any], position: int | None) -> int:
+    try:
+        configured = int(params.get("task_expiration_seconds") or 0)
+    except (TypeError, ValueError):
+        configured = 0
+    try:
+        depth = max(1, int(position or 1))
+    except (TypeError, ValueError):
+        depth = 1
+    return max(configured, int(get_dynamic_expiration(depth)))
 
 
 def iso_ago(seconds_before_now: int) -> str:
@@ -1144,7 +1157,7 @@ def create_next_task(
         assignment = _assign_pseudo_random_range(connection, miner_id, task_id, params)
         assignment_ms = elapsed_ms(started)
         now = utc_now()
-        expires_at = iso_at(params["task_expiration_seconds"])
+        expires_at = iso_at(_task_expiration_seconds_for_position(params, assignment["range_end"]))
 
         connection.execute(
             """
@@ -1331,7 +1344,7 @@ def _claim_global_task_for_miner(
     ).fetchone()
     if row is None:
         return None
-    expires_at = row["expires_at"] or iso_at(params["task_expiration_seconds"])
+    expires_at = iso_at(_task_expiration_seconds_for_position(params, row["range_end"]))
     connection.execute(
         """
         UPDATE tasks
@@ -2092,7 +2105,7 @@ def reveal_task(
                 expected_fee_units,
             )
             params = _protocol_params_for_task(connection, task)
-            validation_expires_at = iso_at(params["task_expiration_seconds"])
+            validation_expires_at = iso_at(_task_expiration_seconds_for_position(params, task["range_end"]))
             connection.execute(
                 "UPDATE tasks SET status = 'revealed', expires_at = ? WHERE task_id = ?",
                 (validation_expires_at, task_id),
@@ -5738,6 +5751,9 @@ def _maybe_retarget_after_block(connection: Any, current_height: int, force: boo
                 "avg_validation_ms": meta.get("avg_validation_ms"),
                 "mining_ratio": meta.get("mining_ratio"),
                 "validation_ratio": meta.get("validation_ratio"),
+                "old_task_expiration_seconds": meta.get("old_task_expiration_seconds"),
+                "new_task_expiration_seconds": meta.get("new_task_expiration_seconds"),
+                "task_expiration_changed": meta.get("task_expiration_changed"),
             },
             sort_keys=True,
         )

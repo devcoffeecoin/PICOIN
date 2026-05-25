@@ -34,6 +34,7 @@ from app.core.settings import (
     TASK_SEGMENT_SIZE,
     VALIDATION_MODE,
     VALIDATOR_REGISTRATION_STAKE,
+    get_dynamic_expiration,
 )
 from app.core.difficulty import calculate_difficulty
 from app.core.money import to_units
@@ -1180,7 +1181,7 @@ def _ensure_default_protocol_params(connection: sqlite3.Connection) -> None:
             RANGE_ASSIGNMENT_MAX_ATTEMPTS,
             TASK_SEGMENT_SIZE,
             SAMPLE_COUNT,
-            TASK_EXPIRATION_SECONDS,
+            get_dynamic_expiration(MAX_PI_POSITION) or TASK_EXPIRATION_SECONDS,
             MAX_ACTIVE_TASKS_PER_MINER,
             DEFAULT_REWARD,
             RETARGET_TARGET_BLOCK_MS,

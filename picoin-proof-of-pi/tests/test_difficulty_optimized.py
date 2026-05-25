@@ -1,7 +1,7 @@
 import statistics
 
 from app.core.difficulty import calculate_difficulty
-from app.core.settings import RETARGET_MAX_PI_POSITION
+from app.core.settings import RETARGET_MAX_PI_POSITION, get_dynamic_expiration
 from app.services.difficulty_service import DifficultyService
 
 
@@ -19,6 +19,12 @@ def test_get_position_bucket():
     assert DifficultyService.get_position_bucket(10**9) == "1000000000-2500000000"
     assert DifficultyService.get_position_bucket(0) == "0-100"
     assert DifficultyService.get_position_bucket(-50) == "0-100"
+
+
+def test_dynamic_expiration_scales_after_one_million():
+    assert get_dynamic_expiration(1_000_000) == 600
+    assert get_dynamic_expiration(10**9) == 900
+    assert get_dynamic_expiration(10**15) == 1500
 
 
 def test_handle_cold_start_no_history():
@@ -227,6 +233,42 @@ def test_bbp_guardrail_above_one_million_reduces_segment_by_max_two():
     assert meta["predicted_next_task_ms"] > DifficultyService.DEADBAND_HIGH
     assert new_params["difficulty"] == current_params["difficulty"]
     assert new_params["segment_size"] == current_params["segment_size"] - DifficultyService.MAX_SEGMENT_STEP
+
+
+def test_retarget_updates_task_expiration_above_one_million_without_difficulty_change():
+    current_params = {
+        "difficulty": 0.125,
+        "segment_size": 32,
+        "sample_count": 32,
+        "max_pi_position": 10000,
+        "task_expiration_seconds": 600,
+        "RETARGET_MAX_PI_POSITION": 10**15,
+    }
+    history = [
+        {
+            "total_task_ms": 60000,
+            "range_start": 10**9,
+            "range_end": 10**9 + 31,
+            "segment_size": 32,
+            "sample_count": 32,
+            "difficulty": 0.125,
+            "validation_ms": 1000,
+            "total_block_ms": 60000,
+        }
+        for _ in range(DifficultyService.RETARGET_WINDOW)
+    ]
+
+    new_params, meta = DifficultyService.calculate_next_difficulty(history, current_params, 10**9)
+
+    assert meta["within_hysteresis"] is True
+    assert meta["task_expiration_changed"] is True
+    assert meta["old_task_expiration_seconds"] == 600
+    assert meta["new_task_expiration_seconds"] == 900
+    assert meta["action"] == "increase"
+    assert "dynamic task expiration" in meta["reason"]
+    assert new_params["difficulty"] == current_params["difficulty"]
+    assert new_params["segment_size"] == current_params["segment_size"]
+    assert new_params["task_expiration_seconds"] == 900
 
 
 def test_calculate_difficulty_visual_metric():

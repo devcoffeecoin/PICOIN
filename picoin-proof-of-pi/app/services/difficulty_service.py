@@ -15,6 +15,7 @@ from app.core.settings import (
     RETARGET_MIN_SEGMENT_SIZE,
     RETARGET_TARGET_BLOCK_MS,
     RETARGET_WINDOW_BLOCKS,
+    get_dynamic_expiration,
 )
 
 
@@ -125,6 +126,18 @@ class DifficultyService:
         RETARGET_MAX_PI_POSITION_value = max(1, RETARGET_MAX_PI_POSITION_value)
         new_params["RETARGET_MAX_PI_POSITION"] = RETARGET_MAX_PI_POSITION_value
         capped_next_range_start = min(max(1, int(next_range_start or 1)), RETARGET_MAX_PI_POSITION_value)
+        current_has_expiration = "task_expiration_seconds" in current_params
+        base_task_expiration_seconds = int(get_dynamic_expiration(1))
+        next_task_expiration_seconds = int(get_dynamic_expiration(capped_next_range_start))
+        try:
+            current_task_expiration_seconds = int(
+                current_params.get("task_expiration_seconds") or next_task_expiration_seconds
+            )
+        except (TypeError, ValueError):
+            current_task_expiration_seconds = next_task_expiration_seconds
+        if current_has_expiration or next_task_expiration_seconds != base_task_expiration_seconds:
+            new_params["task_expiration_seconds"] = next_task_expiration_seconds
+        task_expiration_changed = next_task_expiration_seconds != current_task_expiration_seconds
         target_bucket = DifficultyService.get_position_bucket(capped_next_range_start)
         valid_history = [
             block
@@ -140,6 +153,9 @@ class DifficultyService:
                 "adjustment_factor": 1.0,
                 "difficulty_factor": 1.0,
                 "sample_factor": 1.0,
+                "old_task_expiration_seconds": current_task_expiration_seconds,
+                "new_task_expiration_seconds": next_task_expiration_seconds,
+                "task_expiration_changed": task_expiration_changed,
             }
 
         bucket_history = [
@@ -236,6 +252,10 @@ class DifficultyService:
             action = "increase"
         if Decimal(str(new_params["difficulty"])) < old_difficulty or new_segment < current_segment or new_samples < current_samples:
             action = "decrease" if action == "keep" else "mixed"
+        if task_expiration_changed:
+            expiration_action = "increase" if next_task_expiration_seconds > current_task_expiration_seconds else "decrease"
+            action = expiration_action if action == "keep" else ("mixed" if action != expiration_action else action)
+            reasons.append("dynamic task expiration")
 
         if action == "keep":
             reasons.append("Within deadband / target envelope")
@@ -284,6 +304,9 @@ class DifficultyService:
             "new_segment_size": new_segment,
             "old_sample_count": current_samples,
             "new_sample_count": new_samples,
+            "old_task_expiration_seconds": current_task_expiration_seconds,
+            "new_task_expiration_seconds": next_task_expiration_seconds,
+            "task_expiration_changed": task_expiration_changed,
             "observed_median_ms": int(statistics.median(float(block.get("total_task_ms") or 0) for block in bucket_history)),
             **cold_details,
         }

@@ -141,7 +141,7 @@ def get_dynamic_expiration(max_pi_position: int) -> int:
     scale_factor = math.log10(max_pi_position) / 6.0
     return int(base_timeout * scale_factor)
 
-TASK_EXPIRATION_SECONDS = 600 # Valor base, el coordinador debería usar get_dynamic_expiration
+TASK_EXPIRATION_SECONDS = 600  # Base value; retarget/task assignment derive dynamic TTL from Pi depth.
 MAX_ACTIVE_TASKS_PER_MINER = 1
 SAMPLE_COUNT = 32
 DEFAULT_REWARD = NETWORK_PROFILE.base_reward
