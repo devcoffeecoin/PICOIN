@@ -17,10 +17,10 @@ import { QRCodeCanvas } from "qrcode.react";
 import picoinLogo from "./assets/picoin-logo.png";
 import type {
   AccountBalance,
+  ApiStatus,
   AppSettings,
   NetworkConfig,
   NetworkId,
-  NodeStatus,
   SendTransactionResult,
   TransactionRecord,
   WalletSummary,
@@ -28,13 +28,12 @@ import type {
 
 type Page = "dashboard" | "send" | "receive" | "wallet" | "settings";
 
-const emptyNodeStatus: NodeStatus = {
-  status: "stopped",
+const emptyApiStatus: ApiStatus = {
+  status: "offline",
   network: "testnet",
-  rpcUrl: "http://127.0.0.1:18000",
+  apiUrl: "https://api.picoin.science",
   blockHeight: null,
-  syncStatus: "stopped",
-  peers: null,
+  syncStatus: "unavailable",
 };
 
 const emptyWallet: WalletSummary = {
@@ -48,7 +47,7 @@ export default function App() {
   const [page, setPage] = useState<Page>("dashboard");
   const [settings, setSettings] = useState<AppSettings | null>(null);
   const [networks, setNetworks] = useState<Record<NetworkId, NetworkConfig> | null>(null);
-  const [nodeStatus, setNodeStatus] = useState<NodeStatus>(emptyNodeStatus);
+  const [apiStatus, setApiStatus] = useState<ApiStatus>(emptyApiStatus);
   const [wallet, setWallet] = useState<WalletSummary>(emptyWallet);
   const [balance, setBalance] = useState<AccountBalance | null>(null);
   const [history, setHistory] = useState<TransactionRecord[]>([]);
@@ -57,20 +56,20 @@ export default function App() {
 
   const refreshAll = async () => {
     try {
-      const [nextSettings, nextNetworks, nextNode, nextWallet] = await Promise.all([
+      const [nextSettings, nextNetworks, nextApiStatus, nextWallet] = await Promise.all([
         window.picoin.settings.get(),
         window.picoin.settings.networks(),
-        window.picoin.node.refresh(),
+        window.picoin.api.status(),
         window.picoin.wallet.summary(),
       ]);
       setSettings(nextSettings);
       setNetworks(nextNetworks);
-      setNodeStatus(nextNode);
+      setApiStatus(nextApiStatus);
       setWallet(nextWallet);
       if (nextWallet.address) {
         const [nextBalance, nextHistory] = await Promise.all([
-          window.picoin.rpc.getBalance(nextWallet.address),
-          window.picoin.rpc.getHistory(nextWallet.address),
+          window.picoin.api.getBalance(nextWallet.address),
+          window.picoin.api.getHistory(nextWallet.address),
         ]);
         setBalance(nextBalance);
         setHistory(nextHistory);
@@ -109,7 +108,7 @@ export default function App() {
             <h1>{pageTitle}</h1>
           </div>
           <div className="topbar-actions">
-            <StatusPill status={nodeStatus.status} />
+            <StatusPill status={apiStatus.status} />
             <button className="icon-button" onClick={() => void refreshAll()} title="Refresh">
               <RefreshCw size={18} />
             </button>
@@ -128,7 +127,7 @@ export default function App() {
             wallet={wallet}
             balance={balance}
             history={history}
-            nodeStatus={nodeStatus}
+            apiStatus={apiStatus}
             activeNetwork={activeNetwork}
           />
         )}
@@ -145,7 +144,7 @@ export default function App() {
           <SettingsPage
             settings={settings}
             networks={networks}
-            nodeStatus={nodeStatus}
+            apiStatus={apiStatus}
             onChanged={(message) => {
               setNotice(message);
               void refreshAll();
@@ -198,13 +197,13 @@ function Dashboard({
   wallet,
   balance,
   history,
-  nodeStatus,
+  apiStatus,
   activeNetwork,
 }: {
   wallet: WalletSummary;
   balance: AccountBalance | null;
   history: TransactionRecord[];
-  nodeStatus: NodeStatus;
+  apiStatus: ApiStatus;
   activeNetwork: NetworkId;
 }) {
   return (
@@ -219,19 +218,18 @@ function Dashboard({
       </Panel>
 
       <Panel>
-        <h2>Node</h2>
+        <h2>API Connection</h2>
         <div className="metric-list">
-          <Metric icon={<Gauge />} label="Block height" value={nodeStatus.blockHeight ?? "n/a"} />
-          <Metric icon={<Network />} label="Sync" value={nodeStatus.syncStatus} />
-          <Metric icon={<Power />} label="Status" value={nodeStatus.status} />
-          <Metric icon={<Network />} label="Peers" value={nodeStatus.peers ?? "n/a"} />
+          <Metric icon={<Gauge />} label="Block height" value={apiStatus.blockHeight ?? "n/a"} />
+          <Metric icon={<Network />} label="Sync" value={apiStatus.syncStatus} />
+          <Metric icon={<Power />} label="Status" value={apiStatus.status} />
         </div>
       </Panel>
 
       <Panel>
         <h2>Network</h2>
         <div className="large-value">{activeNetwork}</div>
-        <p className="muted">RPC {nodeStatus.rpcUrl}</p>
+        <p className="muted">API {apiStatus.apiUrl}</p>
       </Panel>
 
       <Panel className="wide-panel">
@@ -443,22 +441,20 @@ function WalletPage({ wallet, onWalletChange }: { wallet: WalletSummary; onWalle
 function SettingsPage({
   settings,
   networks,
-  nodeStatus,
+  apiStatus,
   onChanged,
 }: {
   settings: AppSettings;
   networks: Record<NetworkId, NetworkConfig>;
-  nodeStatus: NodeStatus;
+  apiStatus: ApiStatus;
   onChanged: (message: string) => void;
 }) {
-  const [draftNodePath, setDraftNodePath] = useState(settings.nodePath);
-  const [draftTestnetDir, setDraftTestnetDir] = useState(settings.dataDirs.testnet);
-  const [draftMainnetDir, setDraftMainnetDir] = useState(settings.dataDirs.mainnet);
+  const [draftTestnetApi, setDraftTestnetApi] = useState(settings.apiUrls.testnet);
+  const [draftMainnetApi, setDraftMainnetApi] = useState(settings.apiUrls.mainnet);
 
   useEffect(() => {
-    setDraftNodePath(settings.nodePath);
-    setDraftTestnetDir(settings.dataDirs.testnet);
-    setDraftMainnetDir(settings.dataDirs.mainnet);
+    setDraftTestnetApi(settings.apiUrls.testnet);
+    setDraftMainnetApi(settings.apiUrls.mainnet);
   }, [settings]);
 
   const updateNetwork = async (network: NetworkId) => {
@@ -470,16 +466,15 @@ function SettingsPage({
     }
   };
 
-  const savePaths = async () => {
+  const saveApiUrls = async () => {
     try {
       await window.picoin.settings.update({
-        nodePath: draftNodePath,
-        dataDirs: {
-          testnet: draftTestnetDir,
-          mainnet: draftMainnetDir,
+        apiUrls: {
+          testnet: draftTestnetApi,
+          mainnet: draftMainnetApi,
         },
       });
-      onChanged("Settings saved. Node restarted with current configuration.");
+      onChanged("API settings saved.");
     } catch (error) {
       onChanged(errorMessage(error));
     }
@@ -499,31 +494,30 @@ function SettingsPage({
         </div>
         <div className="network-detail">
           <strong>{networks[settings.selectedNetwork].chainName}</strong>
-          <span>{networks[settings.selectedNetwork].rpcUrl}</span>
+          <span>{networks[settings.selectedNetwork].apiUrl}</span>
+          <span>network_id: {networks[settings.selectedNetwork].networkId}</span>
+          <span>chain_id: {String(networks[settings.selectedNetwork].chainId)}</span>
         </div>
       </Panel>
 
       <Panel>
-        <h2>RPC</h2>
+        <h2>API Status</h2>
         <div className="metric-list">
-          <Metric icon={<Power />} label="Status" value={nodeStatus.status} />
-          <Metric icon={<Network />} label="RPC URL" value={nodeStatus.rpcUrl} />
-          <Metric icon={<Gauge />} label="Height" value={nodeStatus.blockHeight ?? "n/a"} />
+          <Metric icon={<Power />} label="Status" value={apiStatus.status} />
+          <Metric icon={<Network />} label="API URL" value={apiStatus.apiUrl} />
+          <Metric icon={<Gauge />} label="Height" value={apiStatus.blockHeight ?? "n/a"} />
         </div>
       </Panel>
 
       <Panel className="wide-panel">
-        <h2>Paths</h2>
-        <FormRow label="Node binary">
-          <input value={draftNodePath} onChange={(event) => setDraftNodePath(event.target.value)} />
+        <h2>API Connections</h2>
+        <FormRow label="Testnet API URL">
+          <input value={draftTestnetApi} onChange={(event) => setDraftTestnetApi(event.target.value)} />
         </FormRow>
-        <FormRow label="Testnet data directory">
-          <input value={draftTestnetDir} onChange={(event) => setDraftTestnetDir(event.target.value)} />
+        <FormRow label="Mainnet API URL">
+          <input value={draftMainnetApi} onChange={(event) => setDraftMainnetApi(event.target.value)} />
         </FormRow>
-        <FormRow label="Mainnet data directory">
-          <input value={draftMainnetDir} onChange={(event) => setDraftMainnetDir(event.target.value)} />
-        </FormRow>
-        <button className="primary-button" onClick={() => void savePaths()}>
+        <button className="primary-button" onClick={() => void saveApiUrls()}>
           Save settings
         </button>
       </Panel>

@@ -1,10 +1,10 @@
 import { contextBridge, ipcRenderer } from "electron";
 import type {
+  ApiStatus,
   AppSettings,
   CreateWalletResult,
   NetworkConfig,
   NetworkId,
-  NodeStatus,
   SendTransactionRequest,
   SendTransactionResult,
   WalletSummary,
@@ -17,17 +17,12 @@ const api = {
     setNetwork: (network: NetworkId) => ipcRenderer.invoke("app:set-network", network) as Promise<AppSettings>,
     networks: () => ipcRenderer.invoke("app:get-networks") as Promise<Record<NetworkId, NetworkConfig>>,
   },
-  node: {
-    status: () => ipcRenderer.invoke("node:get-status") as Promise<NodeStatus>,
-    start: () => ipcRenderer.invoke("node:start") as Promise<NodeStatus>,
-    stop: () => ipcRenderer.invoke("node:stop") as Promise<NodeStatus>,
-    refresh: () => ipcRenderer.invoke("node:refresh") as Promise<NodeStatus>,
-  },
-  rpc: {
-    getBalance: (address: string) => ipcRenderer.invoke("rpc:get-balance", address),
-    getHistory: (address: string) => ipcRenderer.invoke("rpc:get-history", address),
-    getPeers: () => ipcRenderer.invoke("rpc:get-peers"),
-    getSyncStatus: () => ipcRenderer.invoke("rpc:get-sync-status"),
+  api: {
+    status: () => ipcRenderer.invoke("api:get-status") as Promise<ApiStatus>,
+    getBalance: (address: string) => ipcRenderer.invoke("api:get-balance", address),
+    getHistory: (address: string) => ipcRenderer.invoke("api:get-history", address),
+    getPeers: () => ipcRenderer.invoke("api:get-peers"),
+    getSyncStatus: () => ipcRenderer.invoke("api:get-sync-status"),
   },
   wallet: {
     summary: () => ipcRenderer.invoke("wallet:get-summary") as Promise<WalletSummary>,
@@ -47,4 +42,3 @@ const api = {
 contextBridge.exposeInMainWorld("picoin", api);
 
 export type PicoinDesktopAPI = typeof api;
-

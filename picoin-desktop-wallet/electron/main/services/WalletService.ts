@@ -112,8 +112,8 @@ export class WalletService {
       fee_units: feeUnits,
       nonce: tx.nonce,
       payload: tx.payload || {},
-      network_id: network.id === "mainnet" ? "mainnet" : "public-testnet",
-      chain_id: network.id === "mainnet" ? "picoin-mainnet-v1" : "picoin-public-testnet-v018",
+      network_id: network.networkId,
+      chain_id: network.chainId,
       timestamp: new Date().toISOString(),
     };
     return this.signer.sign(draft, secrets.privateKey, keystore.publicKey);
@@ -130,8 +130,8 @@ export class WalletService {
       {
         address,
         publicKey: material.publicKey,
-        networkId: network.id,
-        chainId: network.id === "mainnet" ? "picoin-mainnet-v1" : "picoin-public-testnet-v018",
+        networkId: network.networkId,
+        chainId: network.chainId,
       },
     );
     fs.mkdirSync(path.dirname(this.keystorePath), { recursive: true });
@@ -172,4 +172,3 @@ export class WalletService {
     };
   }
 }
-

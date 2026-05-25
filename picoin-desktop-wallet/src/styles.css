@@ -377,7 +377,8 @@ textarea:focus {
   text-transform: capitalize;
 }
 
-.status-pill.synced {
+.status-pill.synced,
+.status-pill.online {
   color: #04100e;
   background: #60f0c9;
 }
@@ -388,7 +389,8 @@ textarea:focus {
   background: #f6c24b;
 }
 
-.status-pill.error {
+.status-pill.error,
+.status-pill.offline {
   background: #e15b64;
 }
 

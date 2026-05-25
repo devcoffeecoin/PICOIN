@@ -1,5 +1,7 @@
 import type {
   AccountBalance,
+  ApiStatus,
+  NetworkConfig,
   PeerInfo,
   SendTransactionResult,
   SignedTransaction,
@@ -7,19 +9,39 @@ import type {
   TransactionRecord,
 } from "../../../shared/types";
 
-export class PicoinRPC {
-  constructor(private rpcUrl: string) {}
+export class PicoinAPI {
+  private network: NetworkConfig;
 
-  setRpcUrl(rpcUrl: string): void {
-    this.rpcUrl = rpcUrl.replace(/\/$/, "");
+  constructor(network: NetworkConfig) {
+    this.network = network;
   }
 
-  async isAvailable(timeoutMs = 1500): Promise<boolean> {
+  setNetwork(network: NetworkConfig): void {
+    this.network = network;
+  }
+
+  async getApiStatus(): Promise<ApiStatus> {
     try {
-      await this.request("/node/sync-status", { timeoutMs });
-      return true;
-    } catch {
-      return false;
+      const sync = await this.getSyncStatus();
+      const status = sync.status === "healthy" || sync.status === "synced" ? "synced" : "online";
+      return {
+        status,
+        network: this.network.id,
+        apiUrl: this.network.apiUrl,
+        blockHeight: sync.blockHeight,
+        syncStatus: sync.status,
+        checkedAt: new Date().toISOString(),
+      };
+    } catch (error) {
+      return {
+        status: "offline",
+        network: this.network.id,
+        apiUrl: this.network.apiUrl,
+        blockHeight: null,
+        syncStatus: "unavailable",
+        message: errorMessage(error),
+        checkedAt: new Date().toISOString(),
+      };
     }
   }
 
@@ -29,17 +51,32 @@ export class PicoinRPC {
   }
 
   async getSyncStatus(): Promise<SyncStatus> {
-    const raw = await this.request<Record<string, unknown>>("/node/sync-status");
-    const replay = raw.replay && typeof raw.replay === "object" ? (raw.replay as Record<string, unknown>) : {};
-    const localBlockHeight = numberOrNull(raw.local_block_height);
-    const latestBlockHeight = numberOrNull(raw.latest_block_height ?? raw.effective_latest_block_height);
-    return {
-      blockHeight: localBlockHeight ?? latestBlockHeight,
-      localBlockHeight,
-      latestBlockHeight,
-      status: String(raw.sync_status || replay.sync_status || "unknown"),
-      raw,
-    };
+    try {
+      const raw = await this.request<Record<string, unknown>>("/node/sync-status", { timeoutMs: 5000 });
+      const replay = raw.replay && typeof raw.replay === "object" ? (raw.replay as Record<string, unknown>) : {};
+      const localBlockHeight = numberOrNull(raw.local_block_height);
+      const latestBlockHeight = numberOrNull(raw.latest_block_height ?? raw.effective_latest_block_height);
+      return {
+        blockHeight: localBlockHeight ?? latestBlockHeight,
+        localBlockHeight,
+        latestBlockHeight,
+        status: String(raw.sync_status || replay.sync_status || "online"),
+        raw,
+      };
+    } catch (error) {
+      if (!isHttpStatus(error, 404)) {
+        throw error;
+      }
+      // TODO: replace this fallback once the public API exposes a canonical wallet status endpoint.
+      const protocol = await this.request<Record<string, unknown>>("/protocol", { timeoutMs: 5000 });
+      return {
+        blockHeight: numberOrNull(protocol.latest_block_height ?? protocol.block_height),
+        localBlockHeight: null,
+        latestBlockHeight: numberOrNull(protocol.latest_block_height ?? protocol.block_height),
+        status: "online",
+        raw: protocol,
+      };
+    }
   }
 
   async getPeers(): Promise<PeerInfo[]> {
@@ -53,7 +90,7 @@ export class PicoinRPC {
       }
       return [];
     } catch (error) {
-      // TODO: adapt this when the final node peer endpoint is frozen.
+      // Wallet V1 does not depend on peer data; this endpoint is informational only.
       if (isHttpStatus(error, 404)) {
         return [];
       }
@@ -66,7 +103,7 @@ export class PicoinRPC {
     return {
       address,
       balance: Number(raw.balance ?? 0),
-      symbol: "PI",
+      symbol: this.network.symbol,
       raw,
     };
   }
@@ -74,19 +111,14 @@ export class PicoinRPC {
   async getTransactionHistory(address: string): Promise<TransactionRecord[]> {
     try {
       const raw = await this.request<unknown>(`/accounts/${encodeURIComponent(address)}/history?limit=50`);
-      if (Array.isArray(raw)) {
-        return raw as TransactionRecord[];
-      }
-      if (raw && typeof raw === "object" && Array.isArray((raw as { transactions?: unknown[] }).transactions)) {
-        return (raw as { transactions: TransactionRecord[] }).transactions;
-      }
-      return [];
+      return normalizeTransactions(raw);
     } catch (error) {
-      // TODO: connect to the canonical explorer/history endpoint if this route changes.
-      if (isHttpStatus(error, 404)) {
-        return [];
+      if (!isHttpStatus(error, 404)) {
+        throw error;
       }
-      throw error;
+      // TODO: switch to the canonical account history endpoint once it is frozen.
+      const recent = await this.request<unknown>("/transactions/recent?limit=50");
+      return normalizeTransactions(recent).filter((tx) => tx.sender === address || tx.recipient === address);
     }
   }
 
@@ -102,7 +134,6 @@ export class PicoinRPC {
   }
 
   async sendTransaction(rawTx: SignedTransaction): Promise<SendTransactionResult> {
-    // The wallet service signs; RPC only broadcasts. Kept as a named adapter for the V1 API.
     return this.broadcastTransaction(rawTx);
   }
 
@@ -110,7 +141,7 @@ export class PicoinRPC {
     const raw = await this.request<Record<string, unknown>>(`/wallet/${encodeURIComponent(address)}/nonce`);
     const nextNonce = Number(raw.next_nonce);
     if (!Number.isInteger(nextNonce) || nextNonce < 1) {
-      throw new Error("RPC nonce endpoint returned an invalid next_nonce");
+      throw new Error("API nonce endpoint returned an invalid next_nonce");
     }
     return nextNonce;
   }
@@ -126,7 +157,7 @@ export class PicoinRPC {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 8000);
     try {
-      const response = await fetch(`${this.rpcUrl}${pathname}`, {
+      const response = await fetch(`${this.network.apiUrl}${pathname}`, {
         method: options.method ?? "GET",
         headers: options.body ? { "content-type": "application/json" } : undefined,
         body: options.body ? JSON.stringify(options.body) : undefined,
@@ -152,6 +183,16 @@ class HttpError extends Error {
   }
 }
 
+function normalizeTransactions(raw: unknown): TransactionRecord[] {
+  if (Array.isArray(raw)) {
+    return raw as TransactionRecord[];
+  }
+  if (raw && typeof raw === "object" && Array.isArray((raw as { transactions?: unknown[] }).transactions)) {
+    return (raw as { transactions: TransactionRecord[] }).transactions;
+  }
+  return [];
+}
+
 function isHttpStatus(error: unknown, status: number): boolean {
   return error instanceof HttpError && error.status === status;
 }
@@ -159,4 +200,11 @@ function isHttpStatus(error: unknown, status: number): boolean {
 function numberOrNull(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function errorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  return String(error || "Unknown error");
 }
