@@ -16,7 +16,7 @@ export interface EncryptedKeystore {
   ciphertext: string;
   address: string;
   publicKey: string;
-  networkId: string;
+  network: string;
   chainId: string | number;
   createdAt: string;
 }
@@ -26,7 +26,7 @@ const ITERATIONS = 310_000;
 export function encryptKeystore(
   secrets: PlainSecrets,
   password: string,
-  metadata: Pick<EncryptedKeystore, "address" | "publicKey" | "networkId" | "chainId">,
+  metadata: Pick<EncryptedKeystore, "address" | "publicKey" | "network" | "chainId">,
 ): EncryptedKeystore {
   assertPassword(password);
   const salt = crypto.randomBytes(16);
@@ -49,7 +49,7 @@ export function encryptKeystore(
     ciphertext: ciphertext.toString("base64url"),
     address: metadata.address,
     publicKey: metadata.publicKey,
-    networkId: metadata.networkId,
+    network: metadata.network,
     chainId: metadata.chainId,
     createdAt: new Date().toISOString(),
   };

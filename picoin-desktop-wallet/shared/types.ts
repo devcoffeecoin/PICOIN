@@ -7,7 +7,7 @@ export interface NetworkConfig {
   apiUrl: string;
   chainName: string;
   symbol: "PI";
-  networkId: string;
+  network: string;
   chainId: string | number;
 }
 
@@ -66,7 +66,7 @@ export interface WalletSummary {
   locked: boolean;
   address: string | null;
   publicKey: string | null;
-  networkId?: string;
+  network?: string;
   chainId?: string | number;
 }
 
