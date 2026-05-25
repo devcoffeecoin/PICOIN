@@ -28,6 +28,19 @@ def _run_isolated(code: str, env: dict[str, str]) -> subprocess.CompletedProcess
     )
 
 
+def _run_cli(args: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
+    run_env = os.environ.copy()
+    run_env.update(env)
+    return subprocess.run(
+        [sys.executable, "-m", "picoin", *args],
+        cwd=os.path.dirname(os.path.dirname(__file__)),
+        env=run_env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def test_mainnet_profile_freezes_launch_parameters(tmp_path) -> None:
     db_path = tmp_path / "mainnet-profile.sqlite3"
     code = """
@@ -324,6 +337,145 @@ def test_mainnet_accepts_wallet_only_genesis_allocations(tmp_path) -> None:
 
     assert result.returncode == 0, result.stderr
     assert len(result.stdout.strip()) == 64
+
+
+def test_mainnet_rejects_partial_genesis_allocations(tmp_path) -> None:
+    allocation_file = tmp_path / "partial-mainnet-genesis.allocations.json"
+    allocation_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "network_id": "mainnet",
+                "chain_id": "picoin-mainnet-v1",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "allocations": [
+                    {
+                        "account_id": MAINNET_TREASURY_WALLET,
+                        "account_type": "wallet",
+                        "amount": 200.0,
+                    },
+                    {
+                        "account_id": MAINNET_GOVERNANCE_WALLET,
+                        "account_type": "wallet",
+                        "amount": 99.0,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _run_isolated(
+        "import app.core.settings",
+        {
+            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_GENESIS_ALLOCATIONS_FILE": str(allocation_file),
+            **_mainnet_wallet_env(),
+        },
+    )
+
+    assert result.returncode != 0
+    assert "mainnet genesis allocations must sum to 300.000000 PI" in result.stderr
+
+
+def test_mainnet_rejects_duplicate_genesis_wallets(tmp_path) -> None:
+    allocation_file = tmp_path / "duplicate-mainnet-genesis.allocations.json"
+    allocation_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "network_id": "mainnet",
+                "chain_id": "picoin-mainnet-v1",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "allocations": [
+                    {
+                        "account_id": MAINNET_TREASURY_WALLET,
+                        "account_type": "wallet",
+                        "amount": 150.0,
+                    },
+                    {
+                        "account_id": MAINNET_TREASURY_WALLET,
+                        "account_type": "wallet",
+                        "amount": 150.0,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _run_isolated(
+        "import app.core.settings",
+        {
+            "PICOIN_NETWORK": "mainnet",
+            "PICOIN_GENESIS_ALLOCATIONS_FILE": str(allocation_file),
+            **_mainnet_wallet_env(),
+        },
+    )
+
+    assert result.returncode != 0
+    assert "mainnet genesis allocation account_id must be unique" in result.stderr
+
+
+def test_wallet_create_can_write_mainnet_metadata_before_mainnet_env_is_final(tmp_path) -> None:
+    wallet_file = tmp_path / "treasury-mainnet.json"
+    result = _run_cli(
+        [
+            "wallet",
+            "create",
+            "--name",
+            "treasury-mainnet",
+            "--network",
+            "mainnet",
+            "--chain-id",
+            "picoin-mainnet-v1",
+            "--output",
+            str(wallet_file),
+        ],
+        {"PICOIN_NETWORK": "local"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    wallet = json.loads(wallet_file.read_text(encoding="utf-8"))
+    assert wallet["network_id"] == "mainnet"
+    assert wallet["chain_id"] == "picoin-mainnet-v1"
+    assert wallet["address"].startswith("PI")
+
+
+def test_genesis_hash_mainnet_validates_and_summarizes(tmp_path) -> None:
+    allocation_file = tmp_path / "mainnet-genesis.allocations.final.json"
+    allocation_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "network_id": "mainnet",
+                "chain_id": "picoin-mainnet-v1",
+                "created_at": "2026-01-01T00:00:00+00:00",
+                "allocations": [
+                    {
+                        "account_id": MAINNET_TREASURY_WALLET,
+                        "account_type": "wallet",
+                        "amount": 200.0,
+                    },
+                    {
+                        "account_id": MAINNET_GOVERNANCE_WALLET,
+                        "account_type": "wallet",
+                        "amount": 100.0,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    result = _run_cli(
+        ["node", "genesis-hash", "--file", str(allocation_file), "--mainnet"],
+        {"PICOIN_NETWORK": "local"},
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["mainnet_valid"] is True
+    assert payload["allocations"] == 2
+    assert payload["total_units"] == 300_000_000
+    assert len(payload["genesis_hash"]) == 64
 
 
 def test_public_testnet_defaults_to_two_validator_approvals(tmp_path) -> None:

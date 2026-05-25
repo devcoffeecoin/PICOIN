@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Any
 
 from app.core.crypto import canonical_json, sha256_text
+from app.core.money import canonical_amount, to_units, units_to_float
+from app.core.network_profiles import MAINNET_PROFILE
 
 
 GENESIS_ALLOCATION_VERSION = 1
@@ -31,15 +33,26 @@ def validate_mainnet_genesis_allocations(document: dict[str, Any]) -> None:
         raise ValueError("mainnet genesis allocations chain_id mismatch")
     if not normalized["allocations"]:
         raise ValueError("mainnet genesis allocations are required")
+    seen_accounts: set[str] = set()
+    total_units = 0
     for allocation in normalized["allocations"]:
         account_id = allocation["account_id"]
         account_type = allocation["account_type"]
         if "CHANGE_ME" in account_id.upper():
             raise ValueError("mainnet genesis allocation account_id must not use a placeholder")
+        if account_id in seen_accounts:
+            raise ValueError("mainnet genesis allocation account_id must be unique")
+        seen_accounts.add(account_id)
         if account_type != "wallet":
             raise ValueError("mainnet genesis allocations must fund wallet accounts only")
         if not _is_canonical_wallet_address(account_id):
             raise ValueError("mainnet genesis allocation account_id must be a canonical Picoin wallet address")
+        total_units += to_units(allocation["amount"])
+    expected_units = to_units(MAINNET_PROFILE.genesis_supply)
+    if total_units != expected_units:
+        expected = canonical_amount(expected_units)
+        actual = canonical_amount(total_units)
+        raise ValueError(f"mainnet genesis allocations must sum to {expected} PI, got {actual} PI")
 
 
 def load_genesis_allocations(path: str | Path | None) -> dict[str, Any] | None:
@@ -86,3 +99,23 @@ def genesis_allocations_hash(document: dict[str, Any] | None) -> str:
         return "0" * 64
     normalized = normalize_genesis_allocations(document)
     return sha256_text(canonical_json(normalized))
+
+
+def genesis_allocation_summary(document: dict[str, Any] | None) -> dict[str, Any]:
+    if not document:
+        return {
+            "network_id": "",
+            "chain_id": "",
+            "allocations": 0,
+            "total_amount": 0.0,
+            "total_units": 0,
+        }
+    normalized = normalize_genesis_allocations(document)
+    total_units = sum(to_units(allocation["amount"]) for allocation in normalized["allocations"])
+    return {
+        "network_id": normalized["network_id"],
+        "chain_id": normalized["chain_id"],
+        "allocations": len(normalized["allocations"]),
+        "total_amount": units_to_float(total_units),
+        "total_units": total_units,
+    }

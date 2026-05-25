@@ -8,21 +8,23 @@ with `CHANGE_ME` values.
 
 Generate the treasury and governance wallets before genesis. The private key
 files should stay offline; only the addresses go into `/etc/picoin/picoin.env`.
+Use explicit wallet metadata flags here; do not source the unfinished mainnet
+environment while creating the first canonical wallets.
 
 ```bash
 cd /opt/picoin/picoin-proof-of-pi
 source .venv/bin/activate
 
-PICOIN_NETWORK=mainnet \
-PICOIN_CHAIN_ID=picoin-mainnet-v1 \
 python -m picoin wallet create \
   --name treasury-mainnet \
+  --network mainnet \
+  --chain-id picoin-mainnet-v1 \
   --output treasury-mainnet.json
 
-PICOIN_NETWORK=mainnet \
-PICOIN_CHAIN_ID=picoin-mainnet-v1 \
 python -m picoin wallet create \
   --name governance-mainnet \
+  --network mainnet \
+  --chain-id picoin-mainnet-v1 \
   --output governance-mainnet.json
 
 python -m picoin wallet address --wallet treasury-mainnet.json
@@ -56,10 +58,19 @@ cp deploy/mainnet-genesis.allocations.draft.json deploy/mainnet-genesis.allocati
 nano deploy/mainnet-genesis.allocations.final.json
 
 python -m picoin node genesis-hash \
-  --file deploy/mainnet-genesis.allocations.final.json
+  --file deploy/mainnet-genesis.allocations.final.json \
+  --mainnet
 ```
 
+The command rejects draft validator IDs, duplicate wallets, non-wallet accounts,
+non-canonical addresses, placeholders, and any total other than exactly
+`300.000000` PI. Its output contains the deterministic `genesis_hash`,
+`mainnet_valid: true`, the allocation count, and the total units.
+
 Every mainnet node must use the same allocation file and resulting genesis hash.
+The genesis hash is the SHA-256 of the canonical JSON form of the final
+allocation document. It becomes the chain identity anchor: peers with a different
+hash are not on the same mainnet, even if they use the same network name.
 
 ## 3. Install Services With Mainnet Env
 
