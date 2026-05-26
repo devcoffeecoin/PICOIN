@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.pytest-tmp/
+.pytest_tmp/
+.pytest-basetemp-*/
+.codex-pytest-tmp/
+.tmp/
+test-output/
+.venv/
+venv/
+.localdeps/
+data/
+.env
+miner_identity.json
+validator_identity.json
