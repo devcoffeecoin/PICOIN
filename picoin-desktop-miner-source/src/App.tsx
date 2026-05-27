@@ -90,11 +90,20 @@ export default function App() {
       if (typeof result?.idleDelaySeconds === "number") setIdleDelaySeconds(result.idleDelaySeconds);
       setCurrentTask("Miner running.");
       addLog(result.message || "Miner started.");
-    } catch (error) {
+    } catch (error: any) {
+      console.error("MINER START ERROR:", error);
+
       setStatus("error");
-      setCurrentTask("Miner failed to start.");
-      addLog(errorMessage(error));
-    }
+
+      const message =
+        error?.message ||
+        error?.toString() ||
+        JSON.stringify(error);
+
+      setCurrentTask(`Miner failed to start: ${message}`);
+
+      addLog(message);
+      }
   }
 
   async function stopMining() {

@@ -9,53 +9,57 @@
     "start": "electron .",
     "dist": "npm run build && electron-builder"
   },
-  "dependencies": {
+ "dependencies": {
     "axios": "latest",
+    "electron-squirrel-startup": "^1.0.1",
     "lucide-react": "^1.16.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "tweetnacl": "^1.0.3"
-},
- "devDependencies": {
-  "@types/node": "^25.9.1",
-  "@types/react": "^19.2.15",
-  "@types/react-dom": "^19.2.3",
-  "@vitejs/plugin-react": "^6.0.2",
-  "concurrently": "^9.2.1",
-  "cross-env": "^10.1.0",
-  "electron": "^42.2.0",
-  "electron-builder": "^26.8.1",
-  "typescript": "^6.0.3",
-  "vite": "^8.0.14",
-  "wait-on": "^9.0.10"
-},
- "build": {
-  "appId": "science.picoin.miner",
-  "productName": "Picoin Miner",
-  "copyright": "Copyright © 2026 Picoin",
-  "directories": {
-    "output": "release"
   },
-  "files": [
-    "dist/**/*",
-    "dist-electron/**/*",
-    "package.json"
-  ],
-  "win": {
-    "target": [
-      {
-        "target": "nsis",
-        "arch": ["x64"]
-      }
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^42.2.0",
+    "electron-builder": "^26.8.1",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.14",
+    "wait-on": "^9.0.10"
+  },
+  "build": {
+    "appId": "science.picoin.miner",
+    "productName": "Picoin Miner",
+    "copyright": "Copyright © 2026 Picoin",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
     ],
-    "icon": "resources/icons/logopi.ico"
-  },
-  "nsis": {
-    "oneClick": false,
-    "allowToChangeInstallationDirectory": true,
-    "createDesktopShortcut": true,
-    "createStartMenuShortcut": true,
-    "shortcutName": "Picoin Miner"
+    "extraResources": [
+      "backend/**"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": "resources/icons/logopi.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Picoin Miner"
+    }
   }
-}
 }

@@ -4,6 +4,12 @@ import path from "path";
 import os from "os";
 import fs from "fs";
 
+// 1. Constantes y Configuración Global
+const DEFAULT_NETWORK_ID = "public-testnet";
+const DEFAULT_CHAIN_ID = "picoin-public-testnet-v018";
+const MAX_LOG_LINES = 15;
+
+// 2. Variables de Estado del Minero
 let minerProcess: ChildProcessWithoutNullStreams | null = null;
 let lastLogs: string[] = [];
 let currentTask = "Idle";
@@ -15,25 +21,32 @@ let activeIntensity = 0;
 let idleDelaySeconds = 1;
 let latestSegmentLength: number | null = null;
 let latestComputeMs: number | null = null;
-const DEFAULT_NETWORK_ID = "public-testnet";
-const DEFAULT_CHAIN_ID = "picoin-public-testnet-v018";
-const MAX_LOG_LINES = 15;
 
-function addLog(line: string) {
-  const clean = line.trim();
-  if (!clean) return;
+// Registrar cierre controlado automático de procesos zombi de Python
+app.on("before-quit", () => {
+  if (minerProcess) {
+    console.log("Cierre de App detectado. Matando proceso minero de Python de forma segura...");
+    minerProcess.kill();
+  }
+});
 
-  lastLogs.unshift(`[${new Date().toLocaleTimeString()}] ${clean}`);
-  lastLogs = lastLogs.slice(0, MAX_LOG_LINES);
+// 3. Funciones Auxiliares Críticas (Declaradas al inicio para evitar ReferenceError)
+export function getIdentityPath(): string {
+  const identityDir = app.getPath("userData");
+  if (!fs.existsSync(identityDir)) {
+    fs.mkdirSync(identityDir, { recursive: true });
+  }
+  return path.join(identityDir, "miner_identity.json");
+}
 
-  if (clean.includes("Task assigned")) currentTask = clean;
-  if (clean.includes("Calculated segment")) currentTask = clean;
-  if (clean.includes("Commit accepted")) currentTask = clean;
-  if (clean.includes("Reveal accepted")) currentTask = clean;
-  if (clean.includes("Accepted block")) currentTask = clean;
-  if (clean.includes("Reward")) currentTask = clean;
+function getCorePath(): string {
+  const isDev = !app.isPackaged;
+  const rootPath = isDev ? process.cwd() : process.resourcesPath;
+  return path.join(rootPath, "backend"); 
+}
 
-  updateMiningMetrics(clean);
+function configValue(value: string | undefined, fallback: string) {
+  return String(value || "").trim() || fallback;
 }
 
 function normalizeIntensity(intensity: number | undefined) {
@@ -47,8 +60,23 @@ function workersFromIntensity(intensity: number) {
   return Math.max(1, Math.floor((cpus * intensity) / 100));
 }
 
+// Optimización matemática del cálculo del delay de descanso según hilos científicos de PICOIN
 function idleDelayFromIntensity(intensity: number) {
   return Number((0.25 + ((100 - intensity) / 100) * 2.75).toFixed(2));
+}
+
+function formatHashrate(rate: number) {
+  if (!Number.isFinite(rate) || rate <= 0) return "0 H/s";
+  if (rate >= 1_000_000) return `${(rate / 1_000_000).toFixed(2)} MH/s`;
+  if (rate >= 1_000) return `${(rate / 1_000).toFixed(2)} kH/s`;
+  if (rate >= 100) return `${Math.round(rate)} H/s`;
+  return `${rate.toFixed(2)} H/s`;
+}
+
+function refreshHashrate() {
+  if (!latestSegmentLength || latestComputeMs === null) return;
+  const seconds = Math.max(0.001, latestComputeMs / 1000);
+  hashrate = formatHashrate(latestSegmentLength / seconds);
 }
 
 function updateMiningMetrics(line: string) {
@@ -72,174 +100,161 @@ function updateMiningMetrics(line: string) {
   }
 }
 
-function refreshHashrate() {
-  if (!latestSegmentLength || latestComputeMs === null) return;
-  const seconds = Math.max(0.001, latestComputeMs / 1000);
-  hashrate = formatHashrate(latestSegmentLength / seconds);
+function addLog(line: string) {
+  const clean = line.trim();
+  if (!clean) return;
+
+  lastLogs.unshift(`[${new Date().toLocaleTimeString()}] ${clean}`);
+  lastLogs = lastLogs.slice(0, MAX_LOG_LINES);
+
+  if (clean.includes("Task assigned")) currentTask = clean;
+  if (clean.includes("Calculated segment")) currentTask = clean;
+  if (clean.includes("Commit accepted")) currentTask = clean;
+  if (clean.includes("Reveal accepted")) currentTask = clean;
+  if (clean.includes("Accepted block")) currentTask = clean;
+  if (clean.includes("Reward")) currentTask = clean;
+
+  updateMiningMetrics(clean);
 }
 
-function formatHashrate(rate: number) {
-  if (!Number.isFinite(rate) || rate <= 0) return "0 H/s";
-  if (rate >= 1_000_000) return `${(rate / 1_000_000).toFixed(2)} MH/s`;
-  if (rate >= 1_000) return `${(rate / 1_000).toFixed(2)} kH/s`;
-  if (rate >= 100) return `${Math.round(rate)} H/s`;
-  return `${rate.toFixed(2)} H/s`;
-}
-
-function configValue(value: string | undefined, fallback: string) {
-  return String(value || "").trim() || fallback;
-}
-
+// 4. Funciones Principales de Control del Ciclo de Minado
 export function startMiner(config: {
-  minerName: string;
-  rewardWallet: string;
-  apiNodeUrl: string;
-  networkId: string;
-  chainId: string;
-  miningIntensity: number;
-}) {
-  if (minerProcess) {
-    return { ok: true, message: "Miner already running" };
-  }
+    pythonCmd: string;
+    minerName: string;
+    rewardWallet: string;
+    apiNodeUrl: string;
+    networkId: string;
+    chainId: string;
+    miningIntensity: number;
+  }) {
+    if (minerProcess) {
+      return { ok: true, message: "Miner already running" };
+    }
 
-  status = "starting";
-  currentTask = "Starting miner...";
-  lastLogs = [];
+    status = "starting";
+    currentTask = "Starting miner...";
+    lastLogs = [];
 
-  const projectRoot = path.resolve(__dirname, "..", "..", "..");
-  const corePath = app.isPackaged
-    ? path.join(process.resourcesPath, "picoin-core")
-    : path.resolve(projectRoot, "resources", "picoin-core");
+    const corePath = getCorePath();
+    const identityPath = getIdentityPath();
+    const normalizedIntensity = normalizeIntensity(config.miningIntensity);
+    const workers = workersFromIntensity(normalizedIntensity);
+    const sleepSeconds = idleDelayFromIntensity(normalizedIntensity);
+    const networkId = configValue(config.networkId, DEFAULT_NETWORK_ID);
+    const chainId = configValue(config.chainId, DEFAULT_CHAIN_ID);
+    
+    activeIntensity = normalizedIntensity;
+    activeWorkers = workers;
+    idleDelaySeconds = sleepSeconds;
+    hashrate = "0 H/s";
+    latestSegmentLength = null;
+    latestComputeMs = null;
 
+    const env = {
+      ...process.env,
+      PICOIN_MINER_REWARD_ADDRESS: config.rewardWallet,
+      PICOIN_NETWORK: networkId,
+      PICOIN_CHAIN_ID: chainId,
+      PICOIN_AUTO_REGISTER_IDENTITY: "1",
+      PYTHONUNBUFFERED: "1",
+    };
 
-  const identityPath = getIdentityPath();
-  const normalizedIntensity = normalizeIntensity(config.miningIntensity);
-  const workers = workersFromIntensity(normalizedIntensity);
-  const sleepSeconds = idleDelayFromIntensity(normalizedIntensity);
-  const networkId = configValue(config.networkId, DEFAULT_NETWORK_ID);
-  const chainId = configValue(config.chainId, DEFAULT_CHAIN_ID);
-  activeIntensity = normalizedIntensity;
-  activeWorkers = workers;
-  idleDelaySeconds = sleepSeconds;
-  hashrate = "0 H/s";
-  latestSegmentLength = null;
-  latestComputeMs = null;
-
-  const env = {
-    ...process.env,
-    PICOIN_MINER_REWARD_ADDRESS: config.rewardWallet,
-    PICOIN_NETWORK: networkId,
-    PICOIN_CHAIN_ID: chainId,
-    PICOIN_AUTO_REGISTER_IDENTITY: "1",
-    PYTHONUNBUFFERED: "1",
-  };
-
-  
+    // --- CORRECCIÓN AQUÍ: Llamada directa a client.py ---
     const args = [
-    "-u",
-    "-m",
-    "miner.client",
-    "--server",
-    config.apiNodeUrl,
-    "--identity",
-    identityPath,
-    "mine",
-    "--loops",
-    "999999",
-    "--sleep",
-    String(sleepSeconds),
-    "--workers",
-    String(workers),
+      "-u",
+      "client.py", // Antes tenías: "-m", "miner.client"
+      "--server",
+      config.apiNodeUrl,
+      "--identity",
+      identityPath,
+      "mine",
+      "--loops",
+      "999999",
+      "--sleep",
+      String(sleepSeconds),
+      "--workers",
+      String(workers),
     ];
 
-  addLog(`Starting Picoin miner with ${workers} workers`);
-  addLog(`Mining intensity: ${normalizedIntensity}%`);
-  addLog(`Idle delay: ${sleepSeconds}s`);
-  addLog(`API node: ${config.apiNodeUrl}`);
-  addLog(`Network: ${env.PICOIN_NETWORK}`);
-  addLog(`Chain ID: ${env.PICOIN_CHAIN_ID}`);
-  addLog(`Identity: ${identityPath}`);
-
+    addLog(`Starting Picoin miner with ${workers} workers`);
+    addLog(`Mining intensity: ${normalizedIntensity}%`);
+    addLog(`Idle delay: ${sleepSeconds}s`);
+    addLog(`API node: ${config.apiNodeUrl}`);
+    addLog(`Network: ${env.PICOIN_NETWORK}`);
+    addLog(`Chain ID: ${env.PICOIN_CHAIN_ID}`);
+    addLog(`Identity: ${identityPath}`);
 
     if (!fs.existsSync(corePath)) {
-    throw new Error(`Picoin core path not found: ${corePath}`);
+      throw new Error(`Picoin core path not found: ${corePath}`);
     }
 
-    if (!fs.existsSync(path.join(corePath, "miner", "client.py"))) {
-    throw new Error(`miner/client.py not found in: ${corePath}`);
+    // --- CORRECCIÓN AQUÍ: Validar que client.py esté en la raíz de corePath ---
+    if (!fs.existsSync(path.join(corePath, "client.py"))) {
+      throw new Error(`client.py not found in: ${corePath}`);
     }
 
-   const pythonExecutable = path.join(
-  corePath,
-  ".venv",
-  "Scripts",
-  "python.exe"
-    );
-
+    const pythonExecutable = config.pythonCmd || "python";
     addLog(`Python: ${pythonExecutable}`);
 
+    // --- EJECUCIÓN ---
     minerProcess = spawn(pythonExecutable, args, {
-        cwd: corePath,
-        env,
-        shell: false,
+      cwd: corePath, // <--- Esto es lo que permite que los "import app..." funcionen
+      env,
+      shell: false,
     });
 
-  addLog(`PID: ${minerProcess.pid}`);
-  addLog(`Core path: ${corePath}`);
-  addLog(`Command: python ${args.join(" ")}`);
+    addLog(`PID: ${minerProcess.pid}`);
+    addLog(`Core path: ${corePath}`);
+    addLog(`Command: python ${args.join(" ")}`);
 
-  status = "mining";
+    status = "mining";
 
-  minerProcess.stdout.on("data", (data) => {
-    String(data)
-      .split(/\r?\n/)
-      .forEach(addLog);
-  });
+    minerProcess.stdout.on("data", (data) => {
+      String(data).split(/\r?\n/).forEach(addLog);
+    });
 
-  minerProcess.stderr.on("data", (data) => {
-    String(data)
-      .split(/\r?\n/)
-      .forEach((line) => addLog(`ERROR: ${line}`));
-  });
+    minerProcess.stderr.on("data", (data) => {
+      String(data).split(/\r?\n/).forEach((line) => addLog(`ERROR: ${line}`));
+    });
 
-  minerProcess.on("close", (code) => {
-  addLog(`Miner process exited with code ${code}`);
+    minerProcess.on("close", (code) => {
+      addLog(`Miner process exited with code ${code}`);
+      minerProcess = null;
+      activeWorkers = 0;
 
-    minerProcess = null;
-    activeWorkers = 0;
-
-    if (stoppedByUser) {
+      if (stoppedByUser) {
         status = "stopped";
         currentTask = "Miner stopped by user";
         hashrate = "0 H/s";
         stoppedByUser = false;
         return;
-    }
+      }
 
-    status = code === 0 ? "stopped" : "error";
-    currentTask = "Miner stopped";
-    hashrate = "0 H/s";
+      status = code === 0 ? "stopped" : "error";
+      currentTask = "Miner stopped";
+      hashrate = "0 H/s";
     });
 
-  minerProcess.on("error", (error) => {
-    addLog(`Miner process error: ${error.message}`);
-    minerProcess = null;
-    activeWorkers = 0;
-    hashrate = "0 H/s";
-    status = "error";
-    currentTask = error.message;
-  });
+    minerProcess.on("error", (error) => {
+      addLog(`Miner process error: ${error.message}`);
+      minerProcess = null;
+      activeWorkers = 0;
+      hashrate = "0 H/s";
+      status = "error";
+      currentTask = error.message;
+    });
 
-  return {
-    ok: true,
-    message: "Miner started",
-    workers,
-    miningIntensity: normalizedIntensity,
-    idleDelaySeconds: sleepSeconds,
-    identityPath,
-    corePath,
-  };
-}
+    return {
+      ok: true,
+      message: "Miner started",
+      workers,
+      miningIntensity: normalizedIntensity,
+      idleDelaySeconds: sleepSeconds,
+      identityPath,
+      corePath,
+    };
+  }
+
 
 export function stopMiner() {
   if (!minerProcess) {
@@ -305,18 +320,14 @@ export function getSavedMinerIdentity() {
 }
 
 export function registerMiner(config: {
+  pythonCmd: string;
   minerName: string;
   rewardWallet: string;
   apiNodeUrl: string;
   networkId: string;
   chainId: string;
 }) {
-  const projectRoot = path.resolve(__dirname, "..", "..", "..");
-
-  const corePath = app.isPackaged
-    ? path.join(process.resourcesPath, "picoin-core")
-    : path.resolve(projectRoot, "resources", "picoin-core");
-
+  const corePath = getCorePath();
   const identityPath = getIdentityPath();
   const networkId = configValue(config.networkId, DEFAULT_NETWORK_ID);
   const chainId = configValue(config.chainId, DEFAULT_CHAIN_ID);
@@ -331,15 +342,10 @@ export function registerMiner(config: {
     PYTHONUNBUFFERED: "1",
   };
 
-  const pythonExecutable = path.join(
-    corePath,
-    ".venv",
-    "Scripts",
-    "python.exe"
-  );
+  const pythonExecutable = config.pythonCmd || "python";
 
-  if (!fs.existsSync(pythonExecutable)) {
-    throw new Error(`Python executable not found: ${pythonExecutable}`);
+  if (!fs.existsSync(corePath)) {
+    throw new Error(`Picoin core path not found: ${corePath}`);
   }
 
   addLog(`Register core path: ${corePath}`);
@@ -374,20 +380,15 @@ export function registerMiner(config: {
   );
 
   result.stdout.on("data", (data) => {
-    String(data)
-      .split(/\r?\n/)
-      .forEach(addLog);
+    String(data).split(/\r?\n/).forEach(addLog);
   });
 
   result.stderr.on("data", (data) => {
-    String(data)
-      .split(/\r?\n/)
-      .forEach((line) => addLog(`ERROR: ${line}`));
+    String(data).split(/\r?\n/).forEach((line) => addLog(`ERROR: ${line}`));
   });
 
   result.on("close", (code) => {
     addLog(`Register process exited with code ${code}`);
-
     if (fs.existsSync(identityPath)) {
       addLog(`Identity file created: ${identityPath}`);
     } else {
@@ -404,10 +405,4 @@ export function registerMiner(config: {
     message: "Miner registration started",
     identityPath,
   };
-}
-
-function getIdentityPath() {
-  const identityDir = app.getPath("userData");
-  fs.mkdirSync(identityDir, { recursive: true });
-  return path.join(identityDir, "miner_identity.json");
 }

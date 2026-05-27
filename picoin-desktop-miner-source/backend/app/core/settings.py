@@ -1,0 +1,301 @@
+import hashlib
+import os
+from pathlib import Path
+
+from app.core.network_profiles import parse_network_set, profile_for_network
+
+
+BASE_DIR = Path(__file__).resolve().parents[2]
+
+
+def _configured_path(value: str, default: Path) -> Path:
+    cleaned = value.strip()
+    if not cleaned:
+        return default
+    path = Path(cleaned)
+    return path if path.is_absolute() else BASE_DIR / path
+
+
+def _int_env(name: str, default: int) -> int:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return default
+    return int(value)
+
+
+def _chain_id_env(name: str, default: str | int) -> str | int:
+    value = os.getenv(name, "").strip()
+    if not value:
+        return default
+    if isinstance(default, int) and value.isdigit():
+        return int(value)
+    return value
+
+
+def _is_canonical_wallet_address(value: str) -> bool:
+    normalized = str(value or "").strip().upper()
+    if not normalized.startswith("PI") or len(normalized) != 48:
+        return False
+    body = normalized[2:40]
+    checksum = normalized[40:]
+    if not all(character in "0123456789ABCDEF" for character in body + checksum):
+        return False
+    expected_checksum = hashlib.sha256(body.encode("utf-8")).hexdigest().upper()[:8]
+    return checksum == expected_checksum
+
+
+def _require_mainnet_wallet_env(env_name: str, value: str, default: str) -> None:
+    raw_value = os.getenv(env_name)
+    normalized = str(value or "").strip()
+    if raw_value is None or not normalized:
+        raise RuntimeError(f"mainnet {env_name} is required")
+    upper_normalized = normalized.upper()
+    if upper_normalized == default.upper() or upper_normalized.startswith(("CHANGE_ME", "PI_TREASURY", "PI_GOVERNANCE")):
+        raise RuntimeError(f"mainnet {env_name} must not use a placeholder")
+    if not _is_canonical_wallet_address(normalized):
+        raise RuntimeError(f"mainnet {env_name} must be a canonical Picoin wallet address")
+
+
+DATA_DIR = _configured_path(os.getenv("PICOIN_DATA_DIR", ""), BASE_DIR / "data")
+DATABASE_PATH = _configured_path(os.getenv("PICOIN_DB_PATH", ""), DATA_DIR / "picoin.sqlite3")
+
+PROJECT_NAME = "picoin-proof-of-pi"
+CONFIGURED_NETWORK = os.getenv("PICOIN_NETWORK", "local").strip().lower() or "local"
+NETWORK_PROFILE = profile_for_network(CONFIGURED_NETWORK)
+NETWORK_ID = NETWORK_PROFILE.network_id
+PROTOCOL_VERSION = os.getenv("PICOIN_PROTOCOL_VERSION", NETWORK_PROFILE.protocol_version).strip() or NETWORK_PROFILE.protocol_version
+CHAIN_ID = _chain_id_env("PICOIN_CHAIN_ID", NETWORK_PROFILE.chain_id)
+if NETWORK_PROFILE.name == "mainnet":
+    if PROTOCOL_VERSION != NETWORK_PROFILE.protocol_version:
+        raise RuntimeError("mainnet protocol_version is frozen at 1.0")
+    if CHAIN_ID != NETWORK_PROFILE.chain_id:
+        raise RuntimeError("mainnet chain_id is frozen at 314159")
+GENESIS_ALLOCATIONS_FILE = os.getenv("PICOIN_GENESIS_ALLOCATIONS_FILE", "").strip()
+
+
+def _resolve_path(value: str) -> Path:
+    path = Path(value)
+    return path if path.is_absolute() else BASE_DIR / path
+
+
+def _computed_genesis_hash() -> str:
+    if not GENESIS_ALLOCATIONS_FILE:
+        return "0" * 64
+    from app.services.genesis import genesis_allocations_hash, load_genesis_allocations, validate_mainnet_genesis_allocations
+
+    document = load_genesis_allocations(_resolve_path(GENESIS_ALLOCATIONS_FILE))
+    if NETWORK_PROFILE.name == "mainnet":
+        validate_mainnet_genesis_allocations(document)
+    return genesis_allocations_hash(document)
+
+
+GENESIS_HASH = os.getenv("PICOIN_GENESIS_HASH", "").strip() or _computed_genesis_hash()
+NODE_ID = os.getenv("PICOIN_NODE_ID", "local-node").strip() or "local-node"
+NODE_TYPE = os.getenv("PICOIN_NODE_TYPE", "full").strip().lower() or "full"
+NODE_PUBLIC_ADDRESS = os.getenv("PICOIN_NODE_ADDRESS", "http://127.0.0.1:8000").strip()
+BOOTSTRAP_PEERS = tuple(
+    peer.strip().rstrip("/")
+    for peer in os.getenv("PICOIN_BOOTSTRAP_PEERS", "").split(",")
+    if peer.strip()
+)
+CORS_ORIGINS = tuple(
+    origin.strip().rstrip("/")
+    for origin in os.getenv("PICOIN_CORS_ORIGINS", "").split(",")
+    if origin.strip()
+)
+PEER_TIMEOUT_SECONDS = int(os.getenv("PICOIN_PEER_TIMEOUT_SECONDS", "90"))
+MEMPOOL_TX_TTL_SECONDS = int(os.getenv("PICOIN_MEMPOOL_TX_TTL_SECONDS", "3600"))
+MEMPOOL_MAX_FEE = float(os.getenv("PICOIN_MEMPOOL_MAX_FEE", "31.416"))
+MAX_TRANSACTIONS_PER_BLOCK = int(os.getenv("PICOIN_MAX_TRANSACTIONS_PER_BLOCK", "100"))
+MIN_TX_FEE_UNITS = int(os.getenv("PICOIN_MIN_TX_FEE_UNITS", "0"))
+MAX_MEMPOOL_TXS = int(os.getenv("PICOIN_MAX_MEMPOOL_TXS", "10000"))
+MAX_MEMPOOL_TXS_PER_ACCOUNT = int(os.getenv("PICOIN_MAX_MEMPOOL_TXS_PER_ACCOUNT", "100"))
+MAX_TX_SIZE_BYTES = int(os.getenv("PICOIN_MAX_TX_SIZE_BYTES", "16384"))
+GOSSIP_ENABLED = os.getenv("PICOIN_GOSSIP_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
+GOSSIP_TIMEOUT_SECONDS = float(os.getenv("PICOIN_GOSSIP_TIMEOUT_SECONDS", "2.0"))
+GOSSIP_MAX_PEERS = int(os.getenv("PICOIN_GOSSIP_MAX_PEERS", "16"))
+PEER_DISCOVERY_ENABLED = os.getenv("PICOIN_PEER_DISCOVERY_ENABLED", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+}
+PEER_DISCOVERY_INTERVAL_SECONDS = float(os.getenv("PICOIN_PEER_DISCOVERY_INTERVAL_SECONDS", "300"))
+PEER_DISCOVERY_MAX_PEERS = int(os.getenv("PICOIN_PEER_DISCOVERY_MAX_PEERS", "32"))
+PEER_NETWORK_ID_TOLERANCE = os.getenv("PICOIN_PEER_NETWORK_ID_TOLERANCE", "1").strip().lower() not in {
+    "0",
+    "false",
+    "no",
+}
+CHECKPOINT_INTERVAL_BLOCKS = int(os.getenv("PICOIN_CHECKPOINT_INTERVAL_BLOCKS", "10"))
+VALIDATION_MODE = "external_commit_reveal"
+REQUIRED_VALIDATOR_APPROVALS = _int_env(
+    "PICOIN_REQUIRED_VALIDATOR_APPROVALS",
+    NETWORK_PROFILE.required_validator_approvals,
+)
+if NETWORK_PROFILE.name == "mainnet" and REQUIRED_VALIDATOR_APPROVALS != NETWORK_PROFILE.required_validator_approvals:
+    raise RuntimeError("mainnet validator quorum is frozen at 3 approvals")
+RANGE_ASSIGNMENT_MODE = "pseudo_random"
+MAX_PI_POSITION = 10_000
+RANGE_ASSIGNMENT_MAX_ATTEMPTS = 512
+RANGE_START_WINDOW_SIZE = int(os.getenv("PICOIN_RANGE_START_WINDOW_SIZE", "10000"))
+RANGE_WINDOW_RETIRE_OCCUPANCY = float(os.getenv("PICOIN_RANGE_WINDOW_RETIRE_OCCUPANCY", "0.80"))
+RANGE_WINDOW_MAX_AGE_BLOCKS = int(os.getenv("PICOIN_RANGE_WINDOW_MAX_AGE_BLOCKS", "525600"))
+RANGE_WINDOW_LOOKAHEAD_MULTIPLIER = int(os.getenv("PICOIN_RANGE_WINDOW_LOOKAHEAD_MULTIPLIER", "314"))
+TASK_SEGMENT_SIZE = 64
+TASK_START_OFFSET = 1
+RETARGET_TARGET_BLOCK_MS = 60_000
+def get_dynamic_expiration(max_pi_position: int) -> int:
+    # Aumenta el tiempo de expiración base (600s) según la profundidad de Pi
+    # Añadiendo un margen extra por cada orden de magnitud sobre 1M
+    base_timeout = 600
+    if max_pi_position <= 1_000_000:
+        return base_timeout
+    import math
+    scale_factor = math.log10(max_pi_position) / 6.0
+    return int(base_timeout * scale_factor)
+
+TASK_EXPIRATION_SECONDS = 600  # Base value; retarget/task assignment derive dynamic TTL from Pi depth.
+MAX_ACTIVE_TASKS_PER_MINER = 1
+SAMPLE_COUNT = 32
+DEFAULT_REWARD = NETWORK_PROFILE.base_reward
+VALIDATOR_REWARD_PERCENT_OF_BLOCK = NETWORK_PROFILE.validator_reward_percent
+PROOF_OF_PI_REWARD_PERCENT = NETWORK_PROFILE.proof_of_pi_reward_percent
+SCIENCE_COMPUTE_REWARD_PERCENT_OF_BLOCK = NETWORK_PROFILE.science_compute_reward_percent
+VALIDATOR_AUDITOR_REWARD_PERCENT = 0.10
+SCIENCE_RESERVE_ACCOUNT_ID = "science_compute_reserve"
+SCIENCE_MAX_REWARD_PER_JOB = float(os.getenv("PICOIN_SCIENCE_MAX_REWARD_PER_JOB", "314.16"))
+SCIENCE_MAX_PAYOUT_PER_EPOCH = float(os.getenv("PICOIN_SCIENCE_MAX_PAYOUT_PER_EPOCH", "3141.6"))
+SCIENCE_MAX_PENDING_PER_REQUESTER = float(os.getenv("PICOIN_SCIENCE_MAX_PENDING_PER_REQUESTER", "314.16"))
+SCIENTIFIC_DEVELOPMENT_REWARD_PERCENT_OF_BLOCK = NETWORK_PROFILE.scientific_development_reward_percent
+SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID = "scientific_development_treasury"
+DEFAULT_SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET = "picoin_scientific_development_wallet"
+DEFAULT_SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET = "picoin_governance_multisig"
+SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET = os.getenv(
+    "PICOIN_TREASURY_WALLET",
+    DEFAULT_SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET,
+).strip()
+SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET = os.getenv(
+    "PICOIN_GOVERNANCE_WALLET",
+    DEFAULT_SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET,
+).strip()
+if NETWORK_PROFILE.name == "mainnet":
+    SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET = SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET.upper()
+    SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET = SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET.upper()
+    _require_mainnet_wallet_env(
+        "PICOIN_TREASURY_WALLET",
+        SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET,
+        DEFAULT_SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET,
+    )
+    _require_mainnet_wallet_env(
+        "PICOIN_GOVERNANCE_WALLET",
+        SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET,
+        DEFAULT_SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET,
+    )
+    if SCIENTIFIC_DEVELOPMENT_TREASURY_WALLET == SCIENTIFIC_DEVELOPMENT_GOVERNANCE_WALLET:
+        raise RuntimeError("mainnet treasury and governance wallets must be distinct")
+SCIENTIFIC_DEVELOPMENT_UNLOCK_INTERVAL_DAYS = 90
+ALLOW_DIRECT_SCIENCE_GOVERNANCE = (
+    NETWORK_PROFILE.name != "mainnet"
+    and os.getenv("PICOIN_ALLOW_DIRECT_SCIENCE_GOVERNANCE", "1").strip().lower() not in {"0", "false", "no"}
+)
+ALLOW_DIRECT_TREASURY_CLAIM = (
+    NETWORK_PROFILE.name != "mainnet"
+    and os.getenv("PICOIN_ALLOW_DIRECT_TREASURY_CLAIM", "1").strip().lower() not in {"0", "false", "no"}
+)
+SCIENCE_BASE_MONTHLY_QUOTA_UNITS = 100
+SCIENCE_ALLOW_SELF_WORK = False
+SCIENCE_RESERVE_LOCKED_STATUS = "RESERVE_LOCKED"
+SCIENCE_RESERVE_PENDING_STATUS = "L2_PENDING"
+SCIENCE_RESERVE_ACTIVE_STATUS = "L2_ACTIVE"
+SCIENCE_RESERVE_PAUSED_STATUS = "EMERGENCY_PAUSED"
+SCIENCE_RESERVE_GOVERNANCE_TIMELOCK_SECONDS = 24 * 60 * 60
+SCIENCE_RESERVE_GOVERNANCE_MULTISIG_THRESHOLD = 2
+SCIENCE_RESERVE_AUTHORIZED_SIGNERS = tuple(
+    signer.strip()
+    for signer in os.getenv("PICOIN_SCIENCE_RESERVE_AUTHORIZED_SIGNERS", "signer-1,signer-2").split(",")
+    if signer.strip()
+)
+RETROACTIVE_AUDIT_INTERVAL_BLOCKS = 314
+RETROACTIVE_AUDIT_SAMPLE_MULTIPLIER = 2
+RETROACTIVE_AUDIT_REWARD_PERCENT_OF_BLOCK = 0.0
+RETROACTIVE_AUDIT_REWARD_ACCOUNT_ID = "audit_treasury"
+FRAUD_MINER_PENALTY_POINTS = 20
+FRAUD_VALIDATOR_INVALID_RESULTS = 3
+FRAUD_COOLDOWN_SECONDS = 60 * 60
+PI_ALGORITHM = "bbp_hex_v1"
+GENESIS_ACCOUNT_ID = "genesis"
+GENESIS_SUPPLY = NETWORK_PROFILE.genesis_supply
+FAUCET_DEFAULT_AMOUNT = 3.1416
+FAUCET_MAX_AMOUNT = 3.1416
+FAUCET_ALLOWED_NETWORKS = parse_network_set(
+    os.getenv("PICOIN_FAUCET_ALLOWED_NETWORKS", ""),
+    NETWORK_PROFILE.faucet_allowed_networks,
+)
+if NETWORK_PROFILE.name == "mainnet" and FAUCET_ALLOWED_NETWORKS:
+    raise RuntimeError("mainnet faucet is frozen off")
+FAUCET_RATE_LIMIT_WINDOW_SECONDS = 60 * 60
+FAUCET_RATE_LIMIT_MAX_REQUESTS = 3
+MIN_VALIDATOR_STAKE = NETWORK_PROFILE.min_validator_stake
+VALIDATOR_REGISTRATION_STAKE = 0.0 if NETWORK_PROFILE.name == "mainnet" else MIN_VALIDATOR_STAKE
+VALIDATOR_ELIGIBILITY_STAKE_FIELD = "wallet_stake_locked" if NETWORK_PROFILE.name == "mainnet" else "stake_locked"
+VALIDATOR_ELIGIBILITY_STAKE_SOURCE = "wallet" if NETWORK_PROFILE.name == "mainnet" else "legacy_or_wallet"
+VALIDATOR_SLASH_INVALID_SIGNATURE = NETWORK_PROFILE.validator_slash_invalid_signature
+VALIDATOR_MIN_TRUST_SCORE = 0.25
+VALIDATOR_SELECTION_MODE = "weighted_reputation_stake_rotation"
+VALIDATOR_SELECTION_POOL_MULTIPLIER = 2
+VALIDATOR_SELECTION_TRUST_WEIGHT = 0.55
+VALIDATOR_SELECTION_STAKE_WEIGHT = 0.25
+VALIDATOR_SELECTION_AVAILABILITY_WEIGHT = 0.10
+VALIDATOR_SELECTION_ROTATION_WEIGHT = 0.10
+VALIDATOR_AVAILABILITY_WINDOW_SECONDS = 60 * 60
+VALIDATOR_ROTATION_WINDOW_SECONDS = 60 * 60
+BASE_DIFFICULTY_SEGMENT_SIZE = 64
+BASE_DIFFICULTY_SAMPLE_COUNT = 8
+BASE_DIFFICULTY_MAX_PI_POSITION = 10_000
+RETARGET_EPOCH_BLOCKS = 5
+RETARGET_TARGET_BLOCK_MS = 60_000
+RETARGET_TOLERANCE = 0.20
+RETARGET_MAX_ADJUSTMENT_FACTOR = float(os.getenv("PICOIN_RETARGET_MAX_ADJUSTMENT_FACTOR", "1.15"))
+RETARGET_WINDOW_BLOCKS = int(os.getenv("PICOIN_RETARGET_WINDOW_BLOCKS", "20"))
+RETARGET_MIN_DIFFICULTY = float(os.getenv("PICOIN_RETARGET_MIN_DIFFICULTY", "0.03125"))
+RETARGET_MAX_DIFFICULTY = float(os.getenv("PICOIN_RETARGET_MAX_DIFFICULTY", "1024"))
+
+RETARGET_MIN_SAMPLE_COUNT = 8  # Seguridad mínima: 16^8 combinaciones
+RETARGET_MIN_SEGMENT_SIZE = max(8, RETARGET_MIN_SAMPLE_COUNT) # El segmento debe contener al menos las muestras
+
+RETARGET_MAX_SEGMENT_SIZE = int(os.getenv("PICOIN_RETARGET_MAX_SEGMENT_SIZE", "256"))
+RETARGET_MAX_SAMPLE_COUNT = 64
+RETARGET_MIN_PI_POSITION = 10_000
+MAINNET_RETARGET_MAX_PI_POSITION = 10**15
+TESTNET_RETARGET_MAX_PI_POSITION = 1_000_000
+DEFAULT_RETARGET_MAX_PI_POSITION = (
+    MAINNET_RETARGET_MAX_PI_POSITION
+    if NETWORK_PROFILE.name == "mainnet"
+    else TESTNET_RETARGET_MAX_PI_POSITION
+)
+RETARGET_MAX_PI_POSITION = _int_env(
+    "PICOIN_RETARGET_MAX_PI_POSITION",
+    DEFAULT_RETARGET_MAX_PI_POSITION,
+)
+if NETWORK_PROFILE.name == "mainnet" and RETARGET_MAX_PI_POSITION != MAINNET_RETARGET_MAX_PI_POSITION:
+    raise RuntimeError("mainnet RETARGET_MAX_PI_POSITION is frozen at 1000000000000000")
+
+REPLAY_BATCH_SIZE = int(os.getenv("PICOIN_REPLAY_BATCH_SIZE", "10"))
+REPLAY_BACKLOG_THRESHOLD = int(os.getenv("PICOIN_REPLAY_BACKLOG_THRESHOLD", "25"))
+REPLAY_WORKER_ENABLED = os.getenv("PICOIN_REPLAY_WORKER_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
+REPLAY_WORKER_INTERVAL_SECONDS = float(os.getenv("PICOIN_REPLAY_WORKER_INTERVAL_SECONDS", "1.0"))
+REPLAY_STALL_FAILURES = int(os.getenv("PICOIN_REPLAY_STALL_FAILURES", "3"))
+MIN_QUORUM_PEERS = int(os.getenv("PICOIN_MIN_QUORUM_PEERS", "1"))
+AUTO_RECOVERY_ENABLED = os.getenv("PICOIN_AUTO_RECOVERY_ENABLED", "0").strip().lower() in {"1", "true", "yes"}
+
+PENALTY_INVALID_RESULT = 1
+PENALTY_DUPLICATE = 3
+PENALTY_INVALID_SIGNATURE = 5
+COOLDOWN_AFTER_REJECTIONS = 3
+COOLDOWN_SECONDS = 5 * 60
+TASK_RATE_LIMIT_WINDOW_SECONDS = 60
+TASK_RATE_LIMIT_MAX_ASSIGNMENTS = 12
+VALIDATOR_PENALTY_INVALID_SIGNATURE = 2
+VALIDATOR_COOLDOWN_AFTER_INVALID_RESULTS = 3
+VALIDATOR_BAN_AFTER_INVALID_RESULTS = 9
+VALIDATOR_COOLDOWN_SECONDS = 10 * 60
