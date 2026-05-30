@@ -8,7 +8,7 @@ const SETTINGS_FILE = "settings.json";
 
 function defaultSettings(): AppSettings {
   return {
-    selectedNetwork: "testnet",
+    selectedNetwork: "mainnet",
     apiUrls: DEFAULT_API_URLS,
   };
 }
@@ -30,11 +30,25 @@ export class SettingsStore {
         rpcUrls?: Partial<Record<NetworkId, string>>;
       };
       const savedApiUrls = parsed.apiUrls || parsed.rpcUrls || {};
+      const selectedNetwork =
+        parsed.selectedNetwork === "testnet" || parsed.selectedNetwork === "mainnet"
+          ? parsed.selectedNetwork
+          : fallback.selectedNetwork;
+      const savedTestnetApi = savedApiUrls.testnet ? normalizeApiUrl(savedApiUrls.testnet) : "";
+      const savedMainnetApi = savedApiUrls.mainnet ? normalizeApiUrl(savedApiUrls.mainnet) : "";
+      const legacyTestnetSelection =
+        selectedNetwork === "testnet" &&
+        (!savedTestnetApi || savedTestnetApi === "https://api.picoin.science") &&
+        (!savedMainnetApi || savedMainnetApi === "https://mainnet-api.picoin.science");
       return {
-        selectedNetwork: parsed.selectedNetwork === "mainnet" ? "mainnet" : fallback.selectedNetwork,
+        selectedNetwork: legacyTestnetSelection ? "mainnet" : selectedNetwork,
         apiUrls: {
           testnet: normalizeApiUrl(savedApiUrls.testnet || fallback.apiUrls.testnet),
-          mainnet: normalizeApiUrl(savedApiUrls.mainnet || fallback.apiUrls.mainnet),
+          mainnet: normalizeApiUrl(
+            savedMainnetApi === "https://mainnet-api.picoin.science"
+              ? fallback.apiUrls.mainnet
+              : savedApiUrls.mainnet || fallback.apiUrls.mainnet,
+          ),
         },
       };
     } catch {

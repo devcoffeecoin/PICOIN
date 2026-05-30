@@ -28,7 +28,7 @@ window.PICOIN_EXPLORER_CONFIG = {
 };
 ```
 
-`apiBaseUrl` is the primary read API for blocks, validators, events, mempool and lookup. `nodes` powers the public network comparison table and should list the public API URL for every testnet node you want visitors to see.
+`apiBaseUrl` is the primary read API for blocks, validators, events, mempool and lookup. `nodes` powers the public network comparison table and should list the public API URL for every mainnet node you want visitors to see.
 
 The public Vercel deployment can use the included same-origin proxies:
 
@@ -43,7 +43,7 @@ window.PICOIN_EXPLORER_CONFIG = {
 };
 ```
 
-The proxies forward read-only explorer traffic to the public testnet droplets. Override the default targets with `PICOIN_BOOTSTRAP_API_URL` and `PICOIN_VALIDATOR_API_URL` in Vercel if the droplet IPs change.
+The proxies forward read-only explorer traffic to the mainnet API. Override the default targets with `PICOIN_BOOTSTRAP_API_URL` and `PICOIN_VALIDATOR_API_URL` in Vercel if the canonical API endpoint changes.
 
 If the website is served over HTTPS, the Picoin APIs must also be exposed over HTTPS; browsers block HTTP API calls from HTTPS pages.
 

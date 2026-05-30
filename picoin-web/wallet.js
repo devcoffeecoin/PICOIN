@@ -1,13 +1,13 @@
 const STORE_KEY = "picoin:web-wallet";
 const PICOIN_UNIT = 1_000_000n;
 const PICOIN_DECIMALS = 6;
-const CHAIN_ID = "picoin-public-testnet-v018";
+const CHAIN_ID = 314159;
 const NETWORKS = {
-  "public-testnet": "/api/bootstrap",
+  "picoin-mainnet-v1": "/picoin-api",
   localhost: "http://127.0.0.1:8000",
 };
 const NETWORK_LABELS = {
-  "public-testnet": "https://api.picoin.science",
+  "picoin-mainnet-v1": "https://api.picoin.science",
   localhost: "http://127.0.0.1:8000",
 };
 

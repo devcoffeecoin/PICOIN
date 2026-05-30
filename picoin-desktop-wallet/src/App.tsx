@@ -30,7 +30,7 @@ type Page = "dashboard" | "send" | "receive" | "wallet" | "settings";
 
 const emptyApiStatus: ApiStatus = {
   status: "offline",
-  network: "testnet",
+  network: "mainnet",
   apiUrl: "https://api.picoin.science",
   blockHeight: null,
   syncStatus: "unavailable",
@@ -52,7 +52,7 @@ export default function App() {
   const [balance, setBalance] = useState<AccountBalance | null>(null);
   const [history, setHistory] = useState<TransactionRecord[]>([]);
   const [notice, setNotice] = useState<string>("");
-  const activeNetwork = settings?.selectedNetwork || "testnet";
+  const activeNetwork = settings?.selectedNetwork || "mainnet";
 
   const refreshAll = async () => {
     try {

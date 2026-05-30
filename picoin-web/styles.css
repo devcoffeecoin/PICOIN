@@ -374,31 +374,31 @@ h3 {
   margin-bottom: 30px;
 }
 
-.testnet-section {
+.mainnet-section {
   background:
     linear-gradient(180deg, rgba(7, 16, 26, 0.96), rgba(5, 8, 13, 1)),
     linear-gradient(90deg, rgba(32, 184, 255, 0.08), transparent);
 }
 
-.testnet-layout {
+.mainnet-layout {
   display: grid;
   grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr);
   gap: 16px;
 }
 
-.testnet-status,
-.testnet-links a {
+.mainnet-status,
+.mainnet-links a {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(12, 20, 32, 0.92);
   box-shadow: var(--shadow);
 }
 
-.testnet-status {
+.mainnet-status {
   padding: 26px;
 }
 
-.testnet-status p {
+.mainnet-status p {
   color: var(--muted);
   line-height: 1.64;
 }
@@ -424,24 +424,24 @@ h3 {
   box-shadow: 0 0 16px rgba(74, 222, 128, 0.7);
 }
 
-.testnet-links {
+.mainnet-links {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 14px;
 }
 
-.testnet-links a {
+.mainnet-links a {
   min-height: 190px;
   padding: 22px;
   transition: border-color 160ms ease, transform 160ms ease;
 }
 
-.testnet-links a:hover {
+.mainnet-links a:hover {
   border-color: rgba(32, 184, 255, 0.58);
   transform: translateY(-2px);
 }
 
-.testnet-links span {
+.mainnet-links span {
   display: block;
   margin-bottom: 26px;
   color: var(--cyan);
@@ -451,7 +451,7 @@ h3 {
   text-transform: uppercase;
 }
 
-.testnet-links strong {
+.mainnet-links strong {
   display: block;
   color: #e8f8ff;
   font-size: 18px;
@@ -1008,8 +1008,8 @@ td strong {
   .resource-grid,
   .compute-layout,
   .characteristics-grid,
-  .testnet-layout,
-  .testnet-links,
+  .mainnet-layout,
+  .mainnet-links,
   .explorer-metrics,
   .network-summary,
   .validator-grid {
@@ -1111,8 +1111,8 @@ td strong {
   .resource-grid,
   .compute-layout,
   .characteristics-grid,
-  .testnet-layout,
-  .testnet-links,
+  .mainnet-layout,
+  .mainnet-links,
   .explorer-metrics,
   .network-summary,
   .validator-grid {

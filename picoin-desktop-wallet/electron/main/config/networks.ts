@@ -1,8 +1,8 @@
 import type { NetworkConfig, NetworkId } from "../../../shared/types";
 
 export const DEFAULT_API_URLS: Record<NetworkId, string> = {
-  testnet: "https://api.picoin.science",
-  mainnet: "https://mainnet-api.picoin.science",
+  testnet: "https://testnet-api.picoin.science",
+  mainnet: "https://api.picoin.science",
 };
 
 export function networkConfig(network: NetworkId, apiUrl?: string): NetworkConfig {
