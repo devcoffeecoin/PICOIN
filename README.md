@@ -71,6 +71,137 @@ PICOIN_SCIENCE_RESERVE_AUTHORIZED_SIGNERS=<signer-1>,<signer-2>
 
 Miner and validator signatures include `network_id` and `chain_id`. If a worker falls back to `local` or a testnet chain ID, commits will be rejected with signature errors.
 
+## Quick Start
+
+Use this path for a clean mainnet server. The detailed sections below explain every variable and role.
+
+### 1. Clone The Repository
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git python3 python3-venv python3-pip nginx ufw
+
+mkdir -p /opt/picoin/src
+cd /opt/picoin/src
+git clone https://github.com/devcoffeecoin/PICOIN.git
+cd /opt/picoin/src/PICOIN
+```
+
+### 2. Install Picoin Runtime
+
+```bash
+SOURCE_DIR=/opt/picoin/src/PICOIN/picoin-proof-of-pi
+
+PICOIN_SOURCE_DIR="$SOURCE_DIR" \
+PICOIN_REPO_DIR=/opt/picoin/picoin-proof-of-pi \
+PICOIN_DATA_DIR=/var/lib/picoin/data \
+bash "$SOURCE_DIR/deploy/scripts/refresh-code.sh"
+
+cd /opt/picoin/picoin-proof-of-pi
+python3 -m venv .venv
+.venv/bin/pip install --upgrade pip
+.venv/bin/pip install -r requirements.txt
+```
+
+### 3. Create Mainnet Env
+
+```bash
+sudo cp /opt/picoin/picoin-proof-of-pi/deploy/mainnet.env.example /etc/picoin/picoin.env
+sudo chown root:picoin /etc/picoin/picoin.env
+sudo chmod 0640 /etc/picoin/picoin.env
+sudo nano /etc/picoin/picoin.env
+```
+
+At minimum, replace the genesis, treasury, governance, node address, API domain, reward wallet, and signer placeholders. Before starting services:
+
+```bash
+sudo grep -n "CHANGE_ME" /etc/picoin/picoin.env
+```
+
+That command must return no unresolved production values.
+
+### 4. Start And Verify A Node
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl start picoin-node
+sudo systemctl status picoin-node --no-pager
+
+cd /opt/picoin/picoin-proof-of-pi
+.venv/bin/python -m picoin node mainnet-preflight --server http://127.0.0.1:8000 --verbose
+curl -s http://127.0.0.1:8000/audit/full | python3 -m json.tool
+```
+
+### 5. Add A Miner
+
+Set these values in `/etc/picoin/picoin.env` on the miner machine:
+
+```env
+PICOIN_MINER_SERVER=https://api.picoin.science
+PICOIN_MINER_IDENTITY=/var/lib/picoin/data/mainnet/identities/miner-mainnet.json
+PICOIN_MINER_REWARD_ADDRESS=<canonical-PI-reward-wallet>
+PICOIN_MINER_WORKERS=1
+```
+
+Register and test:
+
+```bash
+cd /opt/picoin/picoin-proof-of-pi
+set -a
+source /etc/picoin/picoin.env
+set +a
+
+.venv/bin/python -m picoin miner --server "$PICOIN_MINER_SERVER" --identity "$PICOIN_MINER_IDENTITY" register --name miner-mainnet-1 --overwrite
+.venv/bin/python -m picoin miner --server "$PICOIN_MINER_SERVER" --identity "$PICOIN_MINER_IDENTITY" mine --once --workers "$PICOIN_MINER_WORKERS"
+```
+
+Then run it continuously:
+
+```bash
+sudo systemctl start picoin-miner
+sudo journalctl -u picoin-miner -f
+```
+
+### 6. Add A Validator
+
+Set these values in `/etc/picoin/picoin.env` on the validator machine:
+
+```env
+PICOIN_VALIDATOR_SERVER=https://api.picoin.science
+PICOIN_VALIDATOR_NODE_SERVER=http://127.0.0.1:8000
+PICOIN_VALIDATOR_NODE_ADDRESS=https://validator.example.com
+PICOIN_VALIDATOR_IDENTITY=/var/lib/picoin/data/mainnet/identities/validator-mainnet.json
+PICOIN_VALIDATOR_REWARD_ADDRESS=<canonical-PI-reward-wallet>
+```
+
+Register, stake, and test:
+
+```bash
+cd /opt/picoin/picoin-proof-of-pi
+set -a
+source /etc/picoin/picoin.env
+set +a
+
+.venv/bin/python -m picoin validator --server "$PICOIN_VALIDATOR_SERVER" --identity "$PICOIN_VALIDATOR_IDENTITY" register --name validator-mainnet-1 --overwrite
+
+.venv/bin/python -m picoin tx --server https://api.picoin.science send \
+  --wallet /secure/validator-owner.json \
+  --type stake \
+  --stake-type validator \
+  --validator-id validator_xxxxxxxxxxxxxxxx \
+  --amount 31.416 \
+  --fee 0.001
+
+.venv/bin/python -m picoin validator --server "$PICOIN_VALIDATOR_SERVER" --identity "$PICOIN_VALIDATOR_IDENTITY" validate --once --node-server "$PICOIN_VALIDATOR_NODE_SERVER"
+```
+
+Then run it continuously:
+
+```bash
+sudo systemctl start picoin-validator
+sudo journalctl -u picoin-validator -f
+```
+
 ## Install
 
 The production examples assume Ubuntu 22.04 or 24.04.
