@@ -1,20 +1,33 @@
 # picoin-proof-of-pi
 
+> Mainnet operator documentation now lives in the repository root `README.md`.
+> This file is a core developer/protocol reference and still contains historical
+> public-testnet notes for maintenance and replay context.
+
 Functional MVP of **Proof of Pi** with an L1 extension called **Science Compute Access Layer**. A coordinator assigns small ranges of hexadecimal digits of pi, a miner calculates the segment with BBP, the validator recalculates it independently and the server records accepted blocks with a simulated reward. The Science layer prepares the network for a future L2 marketplace for scientific computing and AI.
 
-This project does not execute heavy AI/scientific computing. Since v0.18 it includes a Public Testnet Deployment Kit to run nodes on droplets/real servers with a public env, systemd, health checks, and backups. On L1 it coordinates stake, access, jobs, hashes, reserve, and verified payments to prepare a future evolution.
+This project does not execute heavy AI/scientific computing. It includes deployment tooling to run nodes on droplets/real servers with env templates, systemd, health checks, and backups. On L1 it coordinates stake, access, jobs, hashes, reserve, and verified payments to prepare a future evolution.
 
-## Public Testnet
+## Mainnet And Testnet Guides
 
-The public testnet is live on HTTPS at `https://api.picoin.science` with `network_id=public-testnet`, `chain_id=picoin-public-testnet-v018`, and `protocol_version=0.18`. Public onboarding, systemd deployment, miner and validator templates, health checks, and troubleshooting commands live in `deploy/README-public-testnet.md`.
+The official operator guide is the repository root `README.md`.
 
-Use `https://api.picoin.science` directly for public miners and validators. Avoid the HTTP version of that endpoint, because redirects can break validator submissions.
+Mainnet v1 uses:
 
-Mainnet readiness is tracked in `MAINNET_READINESS.md`; launch parameter decisions are tracked in `MAINNET_PARAMETERS.md`.
+```text
+network_id = picoin-mainnet-v1
+chain_id = 314159
+protocol_version = 1.0
+public_api = https://api.picoin.science
+```
 
-## Protocol v0.18
+Mainnet deployment details live in `deploy/README-mainnet.md`. Historical public-testnet onboarding, miner and validator templates, health checks, and troubleshooting commands live in `deploy/README-public-testnet.md`.
 
-Current parameters:
+## Developer Local/Testnet Protocol Reference
+
+The values below document the local and historical testnet profile. For current mainnet operator values, use the root `README.md` and `deploy/mainnet.env.example`.
+
+Reference parameters:
 
 ```text
 protocol_version = 0.18

@@ -1,575 +1,504 @@
 # PICOIN
-Useful-compute blockchain protocol.
 
-Picoin is an early distributed public testnet implementing:
+Official mainnet and node operator guide.
 
-* Proof of Pi mining
-* probabilistic validation
-* validator quorum
-* retroactive audits
-* signed transactions
-* deterministic replay
-* distributed networking
-* scientific compute accounting
-* treasury and reserve coordination
+Picoin is a useful-compute blockchain protocol based on Proof of Pi. Miners compute deterministic hexadecimal ranges of pi, validators independently verify the work, accepted jobs settle into blocks, and protocol accounting records wallet balances, validator rewards, the Science Compute Reserve, and the Scientific Development Treasury.
 
-The protocol explores a blockchain architecture where deterministic mathematical computation replaces arbitrary hashing.
+This README is the entry point for running Picoin infrastructure. It explains how to configure a node, miner, validator, wallets, genesis, and the environment files used by the repository.
 
----
+## Mainnet Profile
 
-# Current Status
+| Parameter | Mainnet value |
+| --- | --- |
+| Network ID | `picoin-mainnet-v1` |
+| Chain ID | `314159` |
+| Protocol version | `1.0` |
+| Public API | `https://api.picoin.science` |
+| Wallet symbol | `PI` |
+| Mining algorithm | `bbp_hex_v1` |
+| Wallet cryptography | Ed25519 |
+| Address format | `PI...` |
+| Base block reward | `3.1416 PI` |
+| Miner allocation | `80%` |
+| Validator allocation | `10%` |
+| Science Compute Reserve allocation | `7%` |
+| Scientific Development Treasury allocation | `3%` |
+| Validator quorum | `3 approvals` |
+| Minimum validator wallet stake | `31.416 PI` |
+| Retroactive audit interval | Every `314` blocks |
+| Retroactive audit reward | `0 PI` security event, no extra emission |
+| Mainnet genesis supply | `300 PI` |
+| Faucet | Disabled |
 
-| Parameter                  | Value                                         |
-| -------------------------- | --------------------------------------------- |
-| Protocol Version           | v0.18                                         |
-| Network Status             | Early Public Testnet                          |
-| Consensus Model            | Proof of Pi + Validators + Retroactive Audits |
-| Mining Algorithm           | bbp_hex_v1                                    |
-| Block Time Target          | 60 seconds                                    |
-| Validation Mode            | external_commit_reveal                        |
-| Validator Quorum           | 3 approvals                                   |
-| Validation Samples         | 32                                            |
-| Retroactive Audit Samples  | 64                                            |
-| Retroactive Audit Interval | every 314 blocks                              |
-| Wallet Cryptography        | Ed25519                                       |
-| Address Format             | PI...                                         |
-| State Validation           | state_root + tx_merkle_root                   |
-| Science Marketplace        | Disabled                                      |
-| Science Reserve Status     | RESERVE_LOCKED                                |
-| Treasury Model             | Time-Locked                                   |
-| Mainnet Status             | NOT LAUNCHED                                  |
+The public testnet has been used for launch rehearsals and can still be studied from its deployment guide, but production configuration must use the mainnet values above.
 
----
+## Repository Layout
 
-# Architecture
+| Path | Purpose |
+| --- | --- |
+| `picoin-proof-of-pi/` | Core protocol, API, CLI, node, miner, validator, tests, deploy scripts |
+| `picoin-proof-of-pi/deploy/` | Production runbooks, systemd services, env templates |
+| `picoin-web/` | Web explorer and web wallet frontend |
+| `picoin-desktop-wallet/` | Desktop wallet, API based, no embedded node |
+| `picoin-desktop-miner-source/` | Desktop miner UI and packaged mining client |
+| `api/` | Supporting API/frontend glue used by deployments |
 
-Picoin separates protocol coordination from future compute execution.
+## Environment Files
 
-## L1 Responsibilities
+There are three tracked env examples. Treat them as the source of truth.
 
-The current L1 handles:
+| File | Use it for | Notes |
+| --- | --- | --- |
+| `picoin-proof-of-pi/deploy/mainnet.env.example` | Mainnet nodes, miners, validators | Production template. Every `CHANGE_ME` value must be replaced before services start. |
+| `picoin-proof-of-pi/deploy/public-testnet.env.example` | Historical public-testnet rehearsal only | Keeps the old `public-testnet` and `picoin-public-testnet-v018` values for reference. Do not use for mainnet. |
+| `picoin-proof-of-pi/.env.example` | Local development only | Uses `local` and `picoin-local-testnet`; useful for tests and isolated dev nodes. |
 
-* consensus
-* accounting
-* validator coordination
-* treasury accounting
-* reserve accounting
-* staking
-* transaction settlement
-* scientific job registration
-* replayable blockchain state
+Critical mainnet variables:
 
-## Future L2 Responsibilities
-
-Future compute infrastructure is expected to handle:
-
-* AI inference
-* distributed GPU compute
-* scientific workloads
-* compute scheduling
-* distributed execution
-
-The L2 is not currently active.
-
----
-
-# Consensus Model
-
-Picoin combines:
-
-* Proof of Pi computation
-* validator approvals
-* probabilistic validation
-* retroactive audits
-
-## Mining Flow
-
-```text
-task assignment
-→ deterministic computation
-→ commit
-→ reveal
-→ validator approvals
-→ block acceptance
-→ retroactive audits
+```env
+PICOIN_NETWORK=picoin-mainnet-v1
+PICOIN_CHAIN_ID=314159
+PICOIN_PROTOCOL_VERSION=1.0
+PICOIN_GENESIS_ALLOCATIONS_FILE=/absolute/path/to/mainnet-genesis.allocations.final.json
+PICOIN_GENESIS_HASH=<published-mainnet-genesis-hash>
+PICOIN_TREASURY_WALLET=<canonical-PI-treasury-wallet>
+PICOIN_GOVERNANCE_WALLET=<canonical-PI-governance-wallet>
+PICOIN_NODE_ADDRESS=https://api.picoin.science
+PICOIN_MINER_SERVER=https://api.picoin.science
+PICOIN_VALIDATOR_SERVER=https://api.picoin.science
+PICOIN_SCIENCE_RESERVE_AUTHORIZED_SIGNERS=<signer-1>,<signer-2>
 ```
 
----
+Miner and validator signatures include `network_id` and `chain_id`. If a worker falls back to `local` or a testnet chain ID, commits will be rejected with signature errors.
 
-# Proof of Pi
+## Install
 
-Picoin miners compute deterministic hexadecimal ranges of π using:
-
-```text
-bbp_hex_v1
-```
-
-The protocol uses the Bailey–Borwein–Plouffe formula for direct hexadecimal digit computation.
-
-## BBP Formula
-
-```text
-π = Σ (1 / 16^k) × (
-    4 / (8k + 1)
-  - 2 / (8k + 4)
-  - 1 / (8k + 5)
-  - 1 / (8k + 6)
-)
-```
-
-The BBP algorithm allows direct access to distant hexadecimal digits without computing all previous digits.
-
-This property makes distributed probabilistic verification practical.
-
----
-
-# Difficulty Adjustment
-
-Picoin difficulty regulates computational workload rather than token issuance.
-
-Difficulty depends on:
-
-* segment size
-* validation sample count
-* maximum Pi position range
-
-## Current Formula
-
-```text
-difficulty =
-  (segment_size / 64)
-  * (sample_count / 8)
-  * (log10(max_pi_position) / log10(10000))
-```
-
-Current retarget configuration:
-
-```text
-epoch_blocks = 5
-target_block_ms = 60000
-tolerance = 20%
-max_adjustment_factor = 1.25
-```
-
-The protocol adjusts future task difficulty based on observed block timing.
-
----
-
-# Segment Length
-
-Mining tasks contain finite hexadecimal computation ranges.
-
-Example:
-
-```text
-positions 3667..3746
-segment_length = 80
-algorithm = bbp_hex_v1
-```
-
-Longer segments increase:
-
-* miner compute time
-* verification complexity
-* Merkle tree size
-* audit coverage
-
-The protocol stores:
-
-* result hash
-* Merkle root
-* validation samples
-* proofs
-* validator approvals
-
-The protocol does not store all computed digits.
-
----
-
-# Security
-
-Picoin currently uses multiple security layers:
-
-* commit-reveal
-* deterministic validation samples
-* Merkle proofs
-* validator quorum
-* retroactive audits
-* replayable state verification
-
----
-
-# Commit-Reveal
-
-Mining uses a two-phase workflow.
-
-## Commit Phase
-
-The miner submits:
-
-* result hash
-* Merkle root
-* metadata
-
-## Reveal Phase
-
-The protocol generates deterministic validation samples.
-
-The miner must reveal:
-
-* requested positions
-* values
-* Merkle proofs
-
-This reduces selective computation attacks.
-
----
-
-# Validation Samples
-
-Current validation configuration:
-
-```text
-32 validation samples
-3 validator approvals required
-```
-
-Validators independently verify sample correctness.
-
----
-
-# Retroactive Audits
-
-Picoin executes automatic retroactive audits every:
-
-```text
-314 accepted blocks
-```
-
-The protocol randomly selects a previously accepted historical block and recalculates:
-
-```text
-64 audit samples
-```
-
-If the audit succeeds, the protocol records a security event and generates no additional emission:
-
-```text
-0 PI
-```
-
-Current audit reward:
-
-```text
-0 PI
-```
-
-Future auditor incentives must be funded from an existing reserve or treasury, not by minting extra PI.
-
----
-
-# Transactions
-
-Picoin supports signed deterministic transactions.
-
-Current transaction types include:
-
-* transfer
-* stake
-* unstake
-* science_job_create
-* governance_action
-* treasury_claim
-
-Transactions include:
-
-* tx_hash
-* sender
-* nonce
-* signature
-* timestamp
-* fee
-
-Wallet cryptography uses:
-
-```text
-Ed25519
-```
-
----
-
-# Mempool
-
-The protocol includes a distributed mempool supporting:
-
-* pending transactions
-* propagation
-* replay protection
-* nonce validation
-* duplicate rejection
-
----
-
-# Networking
-
-Picoin is evolving toward distributed peer-to-peer networking.
-
-Current networking features include:
-
-* peer synchronization
-* block propagation
-* transaction propagation
-* gossip messaging
-* checkpoints
-* snapshot synchronization
-* replayable state rebuild
-
----
-
-# Fork Choice
-
-The protocol includes deterministic fork-choice handling.
-
-Competing proposals may be evaluated using:
-
-* approval weight
-* rejection weight
-* proposal age
-* deterministic hash tie-breaks
-
----
-
-# Science Compute Layer
-
-Picoin includes a reserved scientific compute accounting layer.
-
-Current L1 functionality includes:
-
-* staking
-* reserve accounting
-* job registration
-* treasury coordination
-
-The compute marketplace remains disabled.
-
-## Reserve Status
-
-```text
-science_reserve_status = RESERVE_LOCKED
-payouts_enabled = false
-```
-
-This prevents premature compute payouts before distributed compute verification infrastructure is fully implemented.
-
----
-
-# Reward Distribution
-
-Current protocol reward allocation:
-
-| Allocation                  | Percentage |
-| --------------------------- | ---------- |
-| Miners                      | 67%        |
-| Science Compute Reserve     | 20%        |
-| Validators & Auditors       | 10%        |
-| Scientific Development Fund | 3%         |
-
----
-
-# Emission Model
-
-| Time Period | Total Blocks | Mining Rewards (PI) | Retroactive Audits | Audit Rewards (PI) | Total PI Issued |
-| ----------- | -----------: | ------------------: | -----------------: | -----------------: | --------------: |
-| 1 Year      |      525,600 |        1,651,848.96 |           1,673.89 |           1,051.50 |    1,652,900.46 |
-| 10 Years    |    5,256,000 |       16,518,489.60 |          16,738.85 |          10,515.00 |   16,529,004.60 |
-| 20 Years    |   10,512,000 |       33,036,979.20 |          33,477.71 |          21,030.00 |   33,058,009.20 |
-| 40 Years    |   21,024,000 |       66,073,958.40 |          66,955.41 |          42,060.00 |   66,116,018.40 |
-
----
-
-# Quick Start
-
-## Clone Repository
+The production examples assume Ubuntu 22.04 or 24.04.
 
 ```bash
+sudo apt-get update
+sudo apt-get install -y git python3 python3-venv python3-pip nginx ufw
+
+mkdir -p /opt/picoin/src
+cd /opt/picoin/src
 git clone https://github.com/devcoffeecoin/PICOIN.git
-cd PICOIN/picoin-proof-of-pi
+cd /opt/picoin/src/PICOIN
 ```
 
-## Create Virtual Environment
+Install or refresh the runtime tree:
 
 ```bash
-python -m venv .venv
+SOURCE_DIR=/opt/picoin/src/PICOIN/picoin-proof-of-pi
+
+PICOIN_SOURCE_DIR="$SOURCE_DIR" \
+PICOIN_REPO_DIR=/opt/picoin/picoin-proof-of-pi \
+PICOIN_DATA_DIR=/var/lib/picoin/data \
+bash "$SOURCE_DIR/deploy/scripts/refresh-code.sh"
 ```
 
-## Activate Environment
-
-### Windows
-
-```powershell
-.\.venv\Scripts\activate
-```
-
-### Linux / macOS
+Install Python dependencies:
 
 ```bash
-source .venv/bin/activate
+cd /opt/picoin/picoin-proof-of-pi
+python3 -m venv .venv
+.venv/bin/pip install --upgrade pip
+.venv/bin/pip install -r requirements.txt
+.venv/bin/python -m picoin --help
 ```
 
-## Install Dependencies
+`PyNaCl` is required for Ed25519 signatures and is included in `requirements.txt`.
+
+## Mainnet Env Setup
+
+Copy the mainnet template and edit it:
 
 ```bash
-pip install -r requirements.txt
+sudo cp /opt/picoin/picoin-proof-of-pi/deploy/mainnet.env.example /etc/picoin/picoin.env
+sudo chown root:picoin /etc/picoin/picoin.env
+sudo chmod 0640 /etc/picoin/picoin.env
+sudo nano /etc/picoin/picoin.env
 ```
 
----
-
-# Run API
+Before launch, this command must return no unresolved launch placeholders except comments:
 
 ```bash
-uvicorn app.main:app --reload
+sudo grep -n "CHANGE_ME" /etc/picoin/picoin.env
 ```
 
----
+Use service-specific reward addresses only on machines that actually mine or validate. A plain bootstrap node does not need miner or validator reward wallet variables.
 
-# Run Local Testnet
+## Wallets Before Mainnet
+
+Generate mainnet wallets before the first block. Keep private wallet JSON files offline when they control treasury, governance, or reserve authority.
 
 ```bash
-python -m picoin testnet continuous --miners 3 --loops 3 --workers 1
+cd /opt/picoin/picoin-proof-of-pi
+PY=.venv/bin/python
+
+$PY -m picoin wallet create \
+  --name treasury-mainnet \
+  --network picoin-mainnet-v1 \
+  --chain-id 314159 \
+  --output /secure/offline/treasury-mainnet.json
+
+$PY -m picoin wallet create \
+  --name governance-mainnet \
+  --network picoin-mainnet-v1 \
+  --chain-id 314159 \
+  --output /secure/offline/governance-mainnet.json
+
+$PY -m picoin wallet address --wallet /secure/offline/treasury-mainnet.json
+$PY -m picoin wallet address --wallet /secure/offline/governance-mainnet.json
 ```
 
----
-
-# Mining Commands
-
-## Mine Once
+Create separate reward wallets for miners and validators:
 
 ```bash
-python -m picoin mine once
+$PY -m picoin wallet create \
+  --name miner-reward-mainnet \
+  --network picoin-mainnet-v1 \
+  --chain-id 314159 \
+  --output /secure/offline/miner-reward-mainnet.json
+
+$PY -m picoin wallet create \
+  --name validator-reward-mainnet \
+  --network picoin-mainnet-v1 \
+  --chain-id 314159 \
+  --output /secure/offline/validator-reward-mainnet.json
+
+$PY -m picoin wallet address --wallet /secure/offline/miner-reward-mainnet.json
+$PY -m picoin wallet address --wallet /secure/offline/validator-reward-mainnet.json
 ```
 
-## Continuous Mining
+Only copy the public `PI...` addresses into `/etc/picoin/picoin.env`. Do not put private wallet JSON files on public servers unless that machine must sign transactions.
+
+## Genesis
+
+Mainnet requires a final allocation file and a canonical genesis hash. The final allocation file must be identical on all launch nodes.
+
+1. Create `deploy/mainnet-genesis.allocations.final.json` from the final launch plan.
+2. Use canonical `PI...` wallet addresses only.
+3. Keep total allocation equal to the configured mainnet genesis supply: `300 PI`.
+4. Compute the hash:
 
 ```bash
-python -m picoin mine continuous
+cd /opt/picoin/picoin-proof-of-pi
+.venv/bin/python -m picoin node genesis-hash \
+  --file deploy/mainnet-genesis.allocations.final.json \
+  --mainnet
 ```
 
----
+5. Set these values in `/etc/picoin/picoin.env`:
 
-# Science Commands
+```env
+PICOIN_GENESIS_ALLOCATIONS_FILE=/opt/picoin/picoin-proof-of-pi/deploy/mainnet-genesis.allocations.final.json
+PICOIN_GENESIS_HASH=<hash printed by genesis-hash>
+```
 
-## Stake
+If `PICOIN_GENESIS_HASH` is blank, the node computes it from the file. For launch, publish and pin the final hash to make mismatches obvious.
+
+## Run A Node
+
+A node exposes the Picoin API, keeps local chain state, handles mempool, consensus, peers, replay, and health endpoints.
+
+Required node config:
+
+```env
+PICOIN_NETWORK=picoin-mainnet-v1
+PICOIN_CHAIN_ID=314159
+PICOIN_PROTOCOL_VERSION=1.0
+PICOIN_NODE_ID=<unique-node-id>
+PICOIN_NODE_TYPE=bootstrap
+PICOIN_NODE_ADDRESS=https://api.picoin.science
+PICOIN_HOST=0.0.0.0
+PICOIN_PORT=8000
+PICOIN_SERVER=http://127.0.0.1:8000
+PICOIN_DB_PATH=/var/lib/picoin/data/picoin.sqlite3
+PICOIN_BOOTSTRAP_PEERS=
+```
+
+For a non-bootstrap node, set `PICOIN_NODE_TYPE=full` or `validator`, set `PICOIN_NODE_ADDRESS` to that node's public HTTPS URL, and put the bootstrap URL in `PICOIN_BOOTSTRAP_PEERS`.
+
+Start manually:
 
 ```bash
-python -m picoin science stake --amount 31416
+cd /opt/picoin/picoin-proof-of-pi
+set -a
+source /etc/picoin/picoin.env
+set +a
+
+.venv/bin/python -m picoin node start --host "$PICOIN_HOST" --port "$PICOIN_PORT"
 ```
 
-## Create Scientific Job
+Start with systemd:
 
 ```bash
-python -m picoin science create-job --type ai_inference
+sudo systemctl daemon-reload
+sudo systemctl start picoin-node
+sudo systemctl status picoin-node --no-pager
 ```
 
-## View Jobs
+Verify:
 
 ```bash
-python -m picoin science jobs
+SERVER=http://127.0.0.1:8000
+
+curl -s "$SERVER/protocol" | python3 -m json.tool
+curl -s "$SERVER/node/sync-status" | python3 -m json.tool
+curl -s "$SERVER/node/peers" | python3 -m json.tool
+
+cd /opt/picoin/picoin-proof-of-pi
+.venv/bin/python -m picoin node mainnet-preflight --server "$SERVER" --verbose
+.venv/bin/python -m picoin node audit --server "$SERVER"
 ```
 
----
+The node must not start mainnet with placeholder treasury, governance, genesis, or chain values.
 
-# Treasury Commands
+## Run A Miner
 
-## Treasury Status
+A miner receives tasks from the API, computes pi ranges, signs commits locally, reveals results, and receives rewards to its configured reward wallet.
+
+Required miner config:
+
+```env
+PICOIN_NETWORK=picoin-mainnet-v1
+PICOIN_CHAIN_ID=314159
+PICOIN_MINER_SERVER=https://api.picoin.science
+PICOIN_MINER_IDENTITY=/var/lib/picoin/data/mainnet/identities/miner-mainnet.json
+PICOIN_MINER_REWARD_ADDRESS=<canonical-PI-reward-wallet>
+PICOIN_MINER_WORKERS=1
+PICOIN_MINER_LOOPS=1
+PICOIN_MINER_SLEEP=5
+```
+
+Register or refresh the miner identity:
 
 ```bash
-python -m picoin treasury status
+cd /opt/picoin/picoin-proof-of-pi
+set -a
+source /etc/picoin/picoin.env
+set +a
+
+.venv/bin/python -m picoin miner \
+  --server "$PICOIN_MINER_SERVER" \
+  --identity "$PICOIN_MINER_IDENTITY" \
+  register \
+  --name miner-mainnet-1 \
+  --overwrite
 ```
 
-## Treasury Claim
+Run one mining attempt:
 
 ```bash
-python -m picoin treasury claim
+.venv/bin/python -m picoin miner \
+  --server "$PICOIN_MINER_SERVER" \
+  --identity "$PICOIN_MINER_IDENTITY" \
+  mine \
+  --once \
+  --workers "$PICOIN_MINER_WORKERS"
 ```
 
----
+Run as a service:
 
-# Health Checks
+```bash
+sudo systemctl start picoin-miner
+sudo journalctl -u picoin-miner -f
+```
 
-The protocol includes integrated chain verification and health checks.
+Miner troubleshooting:
 
-Current checks include:
+| Symptom | Check |
+| --- | --- |
+| `invalid miner signature` | `PICOIN_NETWORK`, `PICOIN_CHAIN_ID`, `PyNaCl`, identity file, and exact server URL |
+| No tasks | API health, miner registration, node sync status, validator availability |
+| Rewards not reaching wallet | `PICOIN_MINER_REWARD_ADDRESS` and block ledger entries |
+| Very slow pi calculation | Worker count, CPU limits, and dynamic task expiration from `/protocol` |
 
-* blockchain integrity
-* balance consistency
-* validator availability
-* reserve accounting
-* treasury accounting
-* replay validation
+## Run A Validator
 
----
+A validator verifies miner work, signs liveness heartbeats, participates in quorum, and earns validator rewards. Mainnet validator eligibility is backed by wallet stake, not only legacy internal stake.
 
-# Docker Testnet
+Required validator config:
 
-Future versions are expected to support distributed Docker orchestration with:
+```env
+PICOIN_NETWORK=picoin-mainnet-v1
+PICOIN_CHAIN_ID=314159
+PICOIN_VALIDATOR_SERVER=https://api.picoin.science
+PICOIN_VALIDATOR_NODE_SERVER=http://127.0.0.1:8000
+PICOIN_VALIDATOR_NODE_ADDRESS=https://validator.example.com
+PICOIN_VALIDATOR_IDENTITY=/var/lib/picoin/data/mainnet/identities/validator-mainnet.json
+PICOIN_VALIDATOR_REWARD_ADDRESS=<canonical-PI-reward-wallet>
+PICOIN_VALIDATOR_LOOPS=1
+PICOIN_VALIDATOR_SLEEP=5
+```
 
-* bootstrap nodes
-* miner nodes
-* validator nodes
-* auditor nodes
+The validator machine must run a synced local node. `PICOIN_VALIDATOR_NODE_ADDRESS` must be reachable by the network if that validator advertises liveness publicly.
 
----
+Register or refresh validator identity:
 
-# Development Status
+```bash
+cd /opt/picoin/picoin-proof-of-pi
+set -a
+source /etc/picoin/picoin.env
+set +a
 
-## Implemented
+.venv/bin/python -m picoin validator \
+  --server "$PICOIN_VALIDATOR_SERVER" \
+  --identity "$PICOIN_VALIDATOR_IDENTITY" \
+  register \
+  --name validator-mainnet-1 \
+  --overwrite
+```
 
-* Proof of Pi mining
-* commit-reveal
-* validator quorum
-* retroactive audits
-* mempool
-* signed transactions
-* deterministic replay
-* checkpoints
-* snapshots
-* treasury accounting
-* reserve accounting
-* scientific job accounting
-* gossip networking
-* fork-choice
-* state validation
+Stake the validator from a wallet that owns PI:
 
-## In Progress
+```bash
+SERVER=https://api.picoin.science
+VALIDATOR_ID=validator_xxxxxxxxxxxxxxxx
+OWNER_WALLET=/secure/offline-or-operator/validator-owner.json
 
-* distributed networking hardening
-* peer reputation
-* validator decentralization
-* distributed auditor nodes
-* snapshot synchronization
-* governance improvements
+.venv/bin/python -m picoin tx --server "$SERVER" send \
+  --wallet "$OWNER_WALLET" \
+  --type stake \
+  --stake-type validator \
+  --validator-id "$VALIDATOR_ID" \
+  --amount 31.416 \
+  --fee 0.001
+```
 
-## Planned
+Run one validation loop:
 
-* public distributed validators
-* slashing
-* multisig governance
-* L2 compute execution
-* AI inference coordination
-* distributed GPU compute
-* scientific compute marketplace
+```bash
+.venv/bin/python -m picoin validator \
+  --server "$PICOIN_VALIDATOR_SERVER" \
+  --identity "$PICOIN_VALIDATOR_IDENTITY" \
+  validate \
+  --once \
+  --node-server "$PICOIN_VALIDATOR_NODE_SERVER"
+```
 
----
+Run as a service:
 
-# Disclaimer
+```bash
+sudo systemctl start picoin-validator
+sudo journalctl -u picoin-validator -f
+```
 
-Picoin is experimental software under active development.
+Verify validator status:
 
-Current versions operate as:
+```bash
+curl -s https://api.picoin.science/validators/status | python3 -m json.tool
+```
 
-* research infrastructure
-* distributed systems experimentation
-* early blockchain testnet software
+A mainnet validator should show:
 
-The protocol should not be considered production-ready infrastructure.
+```text
+online_status = online
+sync_status = synced
+eligible = true
+reward_address = PI...
+wallet_stake_locked >= 31.416
+```
 
+## Wallet And Transaction Checks
+
+Query nonce:
+
+```bash
+ADDRESS=PI...
+curl -s "https://api.picoin.science/wallet/$ADDRESS/nonce" | python3 -m json.tool
+```
+
+Send PI:
+
+```bash
+.venv/bin/python -m picoin tx --server https://api.picoin.science send \
+  --wallet /secure/wallet.json \
+  --to PI_RECIPIENT_ADDRESS \
+  --amount 1.0 \
+  --fee 0.001
+```
+
+Check transaction:
+
+```bash
+TX_HASH=<tx-hash>
+curl -s "https://api.picoin.science/tx/$TX_HASH" | python3 -m json.tool
+```
+
+If a transaction fails with `invalid nonce`, query the wallet nonce and use the returned `next_nonce`.
+
+## Routine Health Checks
+
+```bash
+SERVER=https://api.picoin.science
+
+curl -s "$SERVER/protocol" | python3 -m json.tool
+curl -s "$SERVER/node/sync-status" | python3 -m json.tool
+curl -s "$SERVER/mempool/status" | python3 -m json.tool
+curl -s "$SERVER/validators/status" | python3 -m json.tool
+curl -s "$SERVER/audit/full" | python3 -m json.tool
+curl -s "$SERVER/transactions/recent?limit=20" | python3 -m json.tool
+```
+
+Local service checks:
+
+```bash
+systemctl status picoin-node picoin-miner picoin-validator picoin-reconciler picoin-auditor --no-pager
+journalctl -u picoin-node -n 100 --no-pager
+journalctl -u picoin-miner -n 100 --no-pager
+journalctl -u picoin-validator -n 100 --no-pager
+```
+
+## Launch Checklist
+
+Before mainnet starts:
+
+```text
+[ ] Final mainnet commit selected and tagged
+[ ] Tests pass on a clean install
+[ ] Treasury wallet generated offline
+[ ] Governance wallet generated offline
+[ ] Miner reward wallet generated
+[ ] Validator reward wallets generated
+[ ] Final genesis allocation file created
+[ ] Final genesis hash computed and published
+[ ] /etc/picoin/picoin.env has no CHANGE_ME values
+[ ] PICOIN_NETWORK=picoin-mainnet-v1
+[ ] PICOIN_CHAIN_ID=314159
+[ ] PICOIN_PROTOCOL_VERSION=1.0
+[ ] PICOIN_TREASURY_WALLET is canonical and unique
+[ ] PICOIN_GOVERNANCE_WALLET is canonical and unique
+[ ] PICOIN_SCIENCE_RESERVE_AUTHORIZED_SIGNERS set
+[ ] api.picoin.science DNS points to the mainnet bootstrap node
+[ ] TLS certificate installed for api.picoin.science
+[ ] picoin-node mainnet-preflight passes
+[ ] audit/full returns valid=true
+[ ] Initial validators are online, synced, staked, and eligible
+[ ] Limited mining starts only after validators are healthy
+```
+
+## Security Rules
+
+Do not commit:
+
+```text
+/etc/picoin/picoin.env
+wallet JSON files
+miner or validator identity JSON files
+private keys
+server backups
+SQLite production databases
+```
+
+Use separate wallets for treasury, governance, miner rewards, validator rewards, and operational testing. Keep treasury and governance keys offline. Public servers should normally receive only public `PI...` reward addresses.
+
+## More Documentation
+
+| Document | Purpose |
+| --- | --- |
+| `picoin-proof-of-pi/deploy/README-mainnet.md` | Mainnet deployment runbook |
+| `picoin-proof-of-pi/deploy/README-public-testnet.md` | Historical public-testnet deployment guide |
+| `picoin-proof-of-pi/README.md` | Core developer and protocol reference |
+| `picoin-desktop-wallet/README.md` | Desktop wallet build and usage |
+| `picoin-web/README.md` | Web explorer and wallet frontend |
