@@ -18,9 +18,11 @@
         <a href="./index.html">Home</a>
         <a href="./wallet.html">Web Wallet</a>
         <a href="#network">Network</a>
+        <a href="#mining">Mining</a>
         <a href="#blocks">Blocks</a>
         <a href="#transactions">Txs</a>
         <a href="#validators">Validators</a>
+        <a href="./miner.html">Miner Search</a>
         <a href="#events">Events</a>
         <a href="https://solvency.gitbook.io/picoin" target="_blank" rel="noreferrer">Docs</a>
       </nav>
@@ -34,7 +36,7 @@
           <span id="apiStatus" class="status-pill warn">Connecting</span>
         </div>
         <div class="explorer-search" role="search">
-          <input id="lookupInput" type="search" placeholder="Search block height or transaction hash" autocomplete="off" />
+          <input id="lookupInput" type="search" placeholder="Search block height, transaction hash, miner ID or reward wallet" autocomplete="off" />
           <button id="lookupButton" type="button">Search</button>
         </div>
         <div id="lookupResult" class="lookup-result" aria-live="polite"></div>
@@ -58,6 +60,14 @@
           <article>
             <span>Active Miners</span>
             <strong id="metricActiveMiners">-</strong>
+          </article>
+          <article>
+            <span>Mining Rate</span>
+            <strong id="metricHashRate">-</strong>
+          </article>
+          <article>
+            <span>Difficulty</span>
+            <strong id="metricDifficulty">-</strong>
           </article>
           <article>
             <span>Active Validators</span>
@@ -103,6 +113,42 @@
               </thead>
               <tbody id="nodesTable">
                 <tr><td colspan="7" class="empty">Waiting for peers</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section id="mining" class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Mining</p>
+          <h2>Hash rate and difficulty</h2>
+          <a class="section-link" href="./miner.html">Open miner search</a>
+        </div>
+        <div class="mining-layout">
+          <article class="chart-panel">
+            <div id="miningChartSummary" class="chart-summary">
+              <div class="empty">Waiting for mining metrics</div>
+            </div>
+            <div id="miningChart" class="mining-chart" aria-label="Mining hash rate and difficulty chart">
+              <div class="empty">Waiting for accepted blocks</div>
+            </div>
+          </article>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Miner</th>
+                  <th>Reward Wallet</th>
+                  <th>Blocks</th>
+                  <th>Rewards</th>
+                  <th>Avg Rate</th>
+                  <th>Avg Task</th>
+                  <th>Last Block</th>
+                </tr>
+              </thead>
+              <tbody id="minerLeaderboard">
+                <tr><td colspan="7" class="empty">Waiting for miner data</td></tr>
               </tbody>
             </table>
           </div>

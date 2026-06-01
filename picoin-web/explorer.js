@@ -21,6 +21,8 @@ const state = {
   audit: null,
   consensus: null,
   protocol: null,
+  difficultyStatus: null,
+  miningMetrics: null,
   reserve: null,
   treasury: null,
   validatorsStatus: null,
@@ -54,6 +56,15 @@ function txDetailHref(hash) {
 function linkedTx(hash, label = null) {
   if (!hash) return "-";
   return `<a class="hash-link" href="${txDetailHref(hash)}" title="${escapeHtml(hash)}">${escapeHtml(label || shortHash(hash))}</a>`;
+}
+
+function minerDetailHref(query) {
+  return query ? `./miner.html?q=${encodeURIComponent(query)}` : "./miner.html";
+}
+
+function linkedMiner(query, label = null) {
+  if (!query) return "-";
+  return `<a class="hash-link" href="${minerDetailHref(query)}" title="${escapeHtml(query)}">${escapeHtml(label || shortHash(query))}</a>`;
 }
 
 function txId(tx) {
@@ -96,6 +107,20 @@ function formatDate(value) {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return "-";
   return date.toLocaleString();
+}
+
+function fmtMs(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
+  const ms = Number(value);
+  if (ms >= 1000) return `${fmt(ms / 1000, 2)} s`;
+  return `${fmt(ms, 0)} ms`;
+}
+
+function fmtRate(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
+  const rate = Number(value);
+  if (rate >= 1000) return `${fmt(rate / 1000, 2)} kH/s`;
+  return `${fmt(rate, 2)} H/s`;
 }
 
 function asArray(value, keys = []) {
@@ -249,6 +274,8 @@ async function loadExplorer() {
     loadEndpoint("audit", "/audit/full", null),
     loadEndpoint("consensus", "/consensus/status", null),
     loadEndpoint("protocol", "/protocol", null),
+    loadEndpoint("difficultyStatus", "/difficulty", null),
+    loadEndpoint("miningMetrics", "/mining/metrics?limit=120", null),
     loadEndpoint("reserve", "/reserve/status", null),
     loadEndpoint("treasury", "/treasury/status", null),
     loadEndpoint("validatorsStatus", "/validators/status", null),
@@ -300,6 +327,7 @@ function explorerReady() {
 function render() {
   renderStatus();
   renderNetwork();
+  renderMining();
   renderBlocks();
   renderTransactions();
   renderValidators();
@@ -330,6 +358,9 @@ function renderStatus() {
   setMetric("metricSupply", state.audit?.supply?.actual_total_balances ?? state.stats?.circulating_supply, 5);
   setMetric("metricValidators", state.validatorsStatus?.counts?.total ?? state.health?.database?.validators, 0);
   setMetric("metricActiveMiners", state.minersStatus?.counts?.online ?? state.health?.database?.miners, 0);
+  const hashRateEl = $("metricHashRate");
+  if (hashRateEl) hashRateEl.textContent = fmtRate(state.miningMetrics?.summary?.avg_work_rate_hps);
+  setMetric("metricDifficulty", state.miningMetrics?.summary?.latest_difficulty ?? state.difficultyStatus?.active_difficulty ?? state.protocol?.difficulty, 4);
   setMetric("metricActiveValidators", state.validatorsStatus?.counts?.online, 0);
   setMetric("metricEligibleValidators", state.validatorsStatus?.eligible_validators ?? state.health?.database?.eligible_validators, 0);
   
@@ -404,6 +435,123 @@ function renderNetwork() {
     .join("");
 }
 
+function renderMining() {
+  const metrics = state.miningMetrics || {};
+  const summary = metrics.summary || {};
+  const blocks = asArray(metrics.blocks, ["blocks", "items", "results"]);
+  const summaryEl = $("miningChartSummary");
+  if (summaryEl) {
+    summaryEl.innerHTML = `
+      <article>
+        <span>Avg Rate</span>
+        <strong>${escapeHtml(fmtRate(summary.avg_work_rate_hps))}</strong>
+      </article>
+      <article>
+        <span>Difficulty</span>
+        <strong>${fmt(summary.latest_difficulty ?? state.difficultyStatus?.active_difficulty ?? state.protocol?.difficulty, 4)}</strong>
+      </article>
+      <article>
+        <span>Avg Block</span>
+        <strong>${escapeHtml(fmtMs(summary.avg_total_block_ms))}</strong>
+      </article>
+      <article>
+        <span>Sample</span>
+        <strong>${fmt(summary.blocks_sampled, 0)} blocks</strong>
+      </article>
+    `;
+  }
+
+  const chart = $("miningChart");
+  if (chart) {
+    chart.innerHTML = renderMiningChart(blocks);
+  }
+
+  const table = $("minerLeaderboard");
+  if (!table) return;
+  const miners = asArray(metrics.top_miners, ["miners", "items", "results"]);
+  if (!miners.length) {
+    table.innerHTML = `<tr><td colspan="7" class="empty">Waiting for miner data</td></tr>`;
+    return;
+  }
+  table.innerHTML = miners
+    .map(
+      (miner) => `
+        <tr>
+          <td class="mono">${linkedMiner(miner.miner_id, miner.miner_id)}</td>
+          <td class="hash">${linkedMiner(miner.miner_reward_address, miner.miner_reward_address ? shortHash(miner.miner_reward_address) : "-")}</td>
+          <td>${fmt(miner.accepted_blocks, 0)}</td>
+          <td>${fmt(miner.total_rewards, 5)} PI</td>
+          <td>${escapeHtml(fmtRate(miner.avg_work_rate_hps))}</td>
+          <td>${escapeHtml(fmtMs(miner.avg_total_task_ms))}</td>
+          <td>${fmt(miner.latest_block_height, 0)}</td>
+        </tr>
+      `
+    )
+    .join("");
+}
+
+function renderMiningChart(blocks) {
+  const rows = blocks.filter((block) => Number(block.height) > 0);
+  if (!rows.length) {
+    return `<div class="empty">Waiting for accepted blocks</div>`;
+  }
+  const width = 960;
+  const height = 320;
+  const pad = { top: 28, right: 62, bottom: 48, left: 58 };
+  const innerWidth = width - pad.left - pad.right;
+  const innerHeight = height - pad.top - pad.bottom;
+  const xFor = (index) => pad.left + (rows.length === 1 ? innerWidth / 2 : (index / (rows.length - 1)) * innerWidth);
+  const rateValues = rows.map((block) => Number(block.work_rate_hps || block.hashrate_hps || 0));
+  const difficultyValues = rows.map((block) => Number(block.difficulty || 0));
+  const maxRate = Math.max(...rateValues, 1);
+  const maxDifficulty = Math.max(...difficultyValues, 1);
+  const yRate = (value) => pad.top + innerHeight - (Number(value || 0) / maxRate) * innerHeight;
+  const yDifficulty = (value) => pad.top + innerHeight - (Number(value || 0) / maxDifficulty) * innerHeight;
+  const ratePoints = rows.map((block, index) => `${xFor(index)},${yRate(block.work_rate_hps || block.hashrate_hps)}`).join(" ");
+  const difficultyPoints = rows.map((block, index) => `${xFor(index)},${yDifficulty(block.difficulty)}`).join(" ");
+  const bars = rows
+    .map((block, index) => {
+      const x = xFor(index);
+      const y = yRate(block.work_rate_hps || block.hashrate_hps);
+      const barWidth = Math.max(3, Math.min(12, innerWidth / Math.max(rows.length, 1) - 3));
+      return `<rect x="${x - barWidth / 2}" y="${y}" width="${barWidth}" height="${pad.top + innerHeight - y}" rx="2" />`;
+    })
+    .join("");
+  const first = rows[0];
+  const last = rows[rows.length - 1];
+  const latestRate = last.work_rate_hps || last.hashrate_hps;
+  return `
+    <svg class="mining-chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Accepted block work rate and difficulty">
+      <defs>
+        <linearGradient id="rateFill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stop-color="#21c7ff" stop-opacity="0.42" />
+          <stop offset="100%" stop-color="#21c7ff" stop-opacity="0.05" />
+        </linearGradient>
+      </defs>
+      <g class="chart-grid">
+        <line x1="${pad.left}" y1="${pad.top}" x2="${pad.left}" y2="${pad.top + innerHeight}" />
+        <line x1="${pad.left}" y1="${pad.top + innerHeight}" x2="${pad.left + innerWidth}" y2="${pad.top + innerHeight}" />
+        <line x1="${pad.left}" y1="${pad.top + innerHeight * 0.66}" x2="${pad.left + innerWidth}" y2="${pad.top + innerHeight * 0.66}" />
+        <line x1="${pad.left}" y1="${pad.top + innerHeight * 0.33}" x2="${pad.left + innerWidth}" y2="${pad.top + innerHeight * 0.33}" />
+      </g>
+      <g class="rate-bars">${bars}</g>
+      <polyline class="rate-line" points="${ratePoints}" />
+      <polyline class="difficulty-line" points="${difficultyPoints}" />
+      <g class="chart-labels">
+        <text x="${pad.left}" y="${height - 16}">#${fmt(first.height, 0)}</text>
+        <text x="${pad.left + innerWidth}" y="${height - 16}" text-anchor="end">#${fmt(last.height, 0)}</text>
+        <text x="${pad.left}" y="18">Rate max ${escapeHtml(fmtRate(maxRate))}</text>
+        <text x="${pad.left + innerWidth}" y="18" text-anchor="end">Difficulty max ${fmt(maxDifficulty, 4)}</text>
+        <text x="${pad.left + innerWidth}" y="${pad.top + innerHeight - 8}" text-anchor="end">Latest ${escapeHtml(fmtRate(latestRate))}</text>
+      </g>
+    </svg>
+    <div class="chart-legend">
+      <span><i class="legend-rate"></i>Work rate</span>
+      <span><i class="legend-difficulty"></i>Difficulty</span>
+    </div>
+  `;
+}
+
 function renderBlocks() {
   const blocks = asArray(state.blocks, ["blocks", "items", "results"])
     .sort((a, b) => Number(b.height || 0) - Number(a.height || 0))
@@ -421,7 +569,7 @@ function renderBlocks() {
           <td>${fmt(block.height, 0)}</td>
           <td class="hash" title="${escapeHtml(block.block_hash)}">${escapeHtml(shortHash(block.block_hash))}</td>
           <td class="hash" title="${escapeHtml(block.previous_hash)}">${escapeHtml(shortHash(block.previous_hash))}</td>
-          <td class="mono">${escapeHtml(block.miner_id)}</td>
+          <td class="mono">${linkedMiner(block.miner_id, block.miner_id)}</td>
           <td>${fmt(block.range_start, 0)}..${fmt(block.range_end, 0)}</td>
           <td title="Miner share: ${escapeHtml(fmt(block.reward, 5))}">${escapeHtml(formatBlockReward(block))}</td>
           <td>${escapeHtml(formatDate(block.timestamp))}</td>
@@ -578,7 +726,11 @@ async function runLookup() {
       `;
       return;
     }
-    result.innerHTML = `<div class="api-error">Enter a block height or 64-character transaction hash.</div>`;
+    if (/^miner_[a-z0-9]+$/i.test(value) || /^PI[A-Z0-9]{20,}$/i.test(value)) {
+      window.location.href = minerDetailHref(value);
+      return;
+    }
+    result.innerHTML = `<div class="api-error">Enter a block height, transaction hash, miner ID or PI reward wallet.</div>`;
   } catch (error) {
     result.innerHTML = `<div class="api-error">${escapeHtml(error.message)}</div>`;
   }

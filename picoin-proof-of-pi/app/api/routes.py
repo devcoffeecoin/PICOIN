@@ -167,6 +167,7 @@ from app.services.mining import (
     get_blocks,
     get_ledger_entries,
     get_miners_status,
+    get_mining_metrics,
     get_network_participation_status,
     get_miner,
     get_node_status,
@@ -183,6 +184,7 @@ from app.services.mining import (
     get_validator,
     get_validators,
     get_validators_status,
+    lookup_miner_activity,
     prune_stale_miners,
     prune_stale_validators,
     record_miner_heartbeat,
@@ -987,6 +989,19 @@ def miner_heartbeat(payload: MinerHeartbeatRequest, request: Request) -> dict:
 @router.get("/miners/status")
 def miners_status(limit: int = Query(500, ge=1, le=1000)) -> dict:
     return get_miners_status(limit)
+
+
+@router.get("/mining/metrics")
+def mining_metrics(limit: int = Query(120, ge=1, le=500)) -> dict:
+    return get_mining_metrics(limit)
+
+
+@router.get("/miners/lookup/{query}")
+def miner_lookup(query: str, limit: int = Query(25, ge=1, le=100)) -> dict:
+    try:
+        return lookup_miner_activity(query, limit)
+    except MiningError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.post("/miners/{miner_id}/enable")

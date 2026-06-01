@@ -4,6 +4,7 @@ from app.api.routes import router
 from app.core.signatures import generate_keypair
 from app.db.database import DATABASE_PATH, get_connection, init_db
 from app.services.mining import register_miner
+from app.services.wallet import create_wallet
 
 
 def _build_test_client(tmp_path, monkeypatch) -> TestClient:
@@ -46,3 +47,62 @@ def test_tasks_next_endpoint_does_not_502_when_protocol_params_has_retarget_fiel
 
     assert response.status_code == 200
     assert response.json()["task_id"].startswith("task_")
+
+
+def test_mining_metrics_endpoint_handles_empty_chain(tmp_path, monkeypatch) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+    response = client.get("/mining/metrics")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["summary"]["blocks_sampled"] == 0
+    assert payload["blocks"] == []
+    assert payload["top_miners"] == []
+
+
+def test_miner_lookup_returns_reward_wallet_activity(tmp_path, monkeypatch) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+    reward_wallet = create_wallet("api-miner-reward")
+    miner = register_miner("lookup-miner", generate_keypair()["public_key"], reward_wallet["address"])
+    with get_connection() as connection:
+        protocol_params_id = connection.execute("SELECT id FROM protocol_params WHERE active = 1").fetchone()["id"]
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at, submitted_at
+            )
+            VALUES ('task_lookup_1', ?, 1, 64, 'bbp_hex_v1', 'accepted', ?, '2026-06-01T00:00:00+00:00', '2026-06-01T00:00:02+00:00')
+            """,
+            (miner["miner_id"], protocol_params_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO blocks (
+                height, previous_hash, miner_id, range_start, range_end, algorithm,
+                result_hash, samples, timestamp, block_hash, reward, miner_reward_address,
+                difficulty, task_id, protocol_params_id, protocol_version, validation_mode,
+                total_task_ms, total_block_ms, validation_ms
+            )
+            VALUES (
+                1, ?, ?, 1, 64, 'bbp_hex_v1',
+                ?, '[]', '2026-06-01T00:00:03+00:00', ?, 2.51328, ?,
+                4.0, 'task_lookup_1', ?, '1.0', 'external_commit_reveal',
+                2000, 3000, 500
+            )
+            """,
+            ("0" * 64, miner["miner_id"], "a" * 64, "b" * 64, reward_wallet["address"], protocol_params_id),
+        )
+
+    metrics_response = client.get("/mining/metrics?limit=10")
+    assert metrics_response.status_code == 200
+    metrics = metrics_response.json()
+    assert metrics["summary"]["blocks_sampled"] == 1
+    assert metrics["blocks"][0]["work_rate_hps"] == 32.0
+
+    lookup_response = client.get(f"/miners/lookup/{reward_wallet['address']}")
+    assert lookup_response.status_code == 200
+    lookup = lookup_response.json()
+    assert lookup["found"] is True
+    assert lookup["summary"]["accepted_blocks"] == 1
+    assert lookup["recent_blocks"][0]["result_hash"] == "a" * 64

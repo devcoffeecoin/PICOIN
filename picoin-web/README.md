@@ -9,6 +9,7 @@ The home page is informational. Live protocol statistics belong in `explorer.htm
 Current public links:
 
 - Explorer page: `explorer.html`
+- Miner lookup page: `miner.html`
 - Docs: https://solvency.gitbook.io/picoin
 - X: https://x.com/Picoin_science
 - GitHub: https://github.com/devcoffeecoin/PICOIN
@@ -28,7 +29,7 @@ window.PICOIN_EXPLORER_CONFIG = {
 };
 ```
 
-`apiBaseUrl` is the primary read API for blocks, validators, events, mempool and lookup. `nodes` powers the public network comparison table and should list the public API URL for every mainnet node you want visitors to see.
+`apiBaseUrl` is the primary read API for blocks, mining metrics, miners, validators, events, mempool and lookup. `nodes` powers the public network comparison table and should list the public API URL for every mainnet node you want visitors to see.
 
 The public Vercel deployment can use the included same-origin proxies:
 
@@ -58,6 +59,8 @@ Open:
 
 ```text
 http://127.0.0.1:8080
+http://127.0.0.1:8080/explorer.html
+http://127.0.0.1:8080/miner.html
 http://127.0.0.1:8080/wallet.html
 ```
 
@@ -79,4 +82,4 @@ It is not served by `api.picoin.science`. The wallet generates Ed25519 keys in t
 https://api.picoin.science
 ```
 
-The Vercel rewrite in `vercel.json` maps `/wallet` to `wallet.html`.
+The Vercel rewrite in `vercel.json` maps `/wallet` to `wallet.html`, `/explorer` to `explorer.html`, and `/miner` to `miner.html`.

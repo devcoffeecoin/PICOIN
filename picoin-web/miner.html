@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Picoin Miner Search</title>
+    <meta name="description" content="Search Picoin mainnet miners and reward wallets." />
+    <link rel="icon" href="./assets/picoin-logo.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body class="explorer-page miner-page">
+    <header class="site-header">
+      <a class="brand" href="./index.html" aria-label="Picoin home">
+        <img src="./assets/picoin-logo.png" alt="Picoin logo" />
+        <span>Picoin</span>
+      </a>
+      <nav aria-label="Miner navigation">
+        <a href="./index.html">Home</a>
+        <a href="./explorer.html">Explorer</a>
+        <a href="./explorer.html#mining">Mining</a>
+        <a href="./wallet.html">Web Wallet</a>
+        <a href="https://solvency.gitbook.io/picoin" target="_blank" rel="noreferrer">Docs</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="explorer-hero section">
+        <div class="section-heading">
+          <p class="eyebrow">Miner Search</p>
+          <h1>Miner and reward wallet lookup</h1>
+          <span id="minerStatusBadge" class="status-pill warn">Ready</span>
+        </div>
+        <div class="explorer-search" role="search">
+          <input id="minerLookupInput" type="search" placeholder="Miner ID or PI reward wallet" autocomplete="off" />
+          <button id="minerLookupButton" type="button">Search</button>
+        </div>
+        <div id="minerError" class="api-errors" aria-live="polite"></div>
+      </section>
+
+      <section class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Overview</p>
+          <h2 id="minerTitle">Waiting for search</h2>
+        </div>
+        <div id="minerSummary" class="miner-summary-grid">
+          <div class="empty">Search a miner ID or reward wallet.</div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Registered Miners</p>
+          <h2>Identity and liveness</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Miner</th>
+                <th>Status</th>
+                <th>Reward Wallet</th>
+                <th>Blocks</th>
+                <th>Rewards</th>
+                <th>Balance</th>
+                <th>Last Task</th>
+                <th>Last Seen</th>
+              </tr>
+            </thead>
+            <tbody id="minerTable">
+              <tr><td colspan="8" class="empty">No miner selected</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Accepted Blocks</p>
+          <h2>Recent mining results</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Height</th>
+                <th>Block Hash</th>
+                <th>Result Hash</th>
+                <th>Miner</th>
+                <th>Range</th>
+                <th>Difficulty</th>
+                <th>Rate</th>
+                <th>Reward</th>
+                <th>Timestamp</th>
+              </tr>
+            </thead>
+            <tbody id="minerBlocksTable">
+              <tr><td colspan="9" class="empty">No accepted blocks loaded</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>Picoin Explorer</span>
+      <span>Miner Lookup</span>
+    </footer>
+
+    <script src="./explorer-config.js"></script>
+    <script src="./miner.js"></script>
+  </body>
+</html>

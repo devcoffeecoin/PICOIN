@@ -756,6 +756,14 @@ h3 {
   font-size: 13px;
 }
 
+.section-link {
+  color: var(--cyan-2);
+  font-size: 13px;
+  font-weight: 800;
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
 .network-layout {
   display: grid;
   gap: 14px;
@@ -770,6 +778,132 @@ h3 {
 .network-summary article {
   min-height: 104px;
   padding: 18px;
+}
+
+.mining-layout {
+  display: grid;
+  gap: 14px;
+}
+
+.chart-panel,
+.miner-summary-grid article {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  box-shadow: var(--shadow);
+}
+
+.chart-panel {
+  display: grid;
+  gap: 14px;
+  padding: 16px;
+}
+
+.chart-summary,
+.miner-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.chart-summary article,
+.miner-summary-grid article {
+  min-height: 92px;
+  border: 1px solid rgba(139, 211, 255, 0.12);
+  border-radius: 8px;
+  background: var(--panel-soft);
+  padding: 14px;
+}
+
+.chart-summary span,
+.miner-summary-grid span,
+.miner-summary-grid small {
+  display: block;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.chart-summary strong,
+.miner-summary-grid strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 20px;
+  overflow-wrap: anywhere;
+}
+
+.miner-summary-grid small {
+  margin-top: 8px;
+}
+
+.mining-chart {
+  min-height: 320px;
+  overflow-x: auto;
+}
+
+.mining-chart-svg {
+  display: block;
+  min-width: 760px;
+  width: 100%;
+  height: auto;
+}
+
+.chart-grid line {
+  stroke: rgba(139, 211, 255, 0.18);
+  stroke-width: 1;
+}
+
+.rate-bars rect {
+  fill: url(#rateFill);
+}
+
+.rate-line,
+.difficulty-line {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 3;
+}
+
+.rate-line {
+  stroke: var(--cyan);
+}
+
+.difficulty-line {
+  stroke: var(--amber);
+}
+
+.chart-labels text {
+  fill: var(--muted);
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.chart-legend span {
+  align-items: center;
+  display: inline-flex;
+  gap: 8px;
+}
+
+.chart-legend i {
+  width: 20px;
+  height: 4px;
+  border-radius: 999px;
+}
+
+.legend-rate {
+  background: var(--cyan);
+}
+
+.legend-difficulty {
+  background: var(--amber);
 }
 
 .good-text {
@@ -1012,6 +1146,8 @@ td strong {
   .mainnet-links,
   .explorer-metrics,
   .network-summary,
+  .chart-summary,
+  .miner-summary-grid,
   .validator-grid {
     grid-template-columns: 1fr 1fr;
   }
@@ -1115,6 +1251,8 @@ td strong {
   .mainnet-links,
   .explorer-metrics,
   .network-summary,
+  .chart-summary,
+  .miner-summary-grid,
   .validator-grid {
     grid-template-columns: 1fr;
   }

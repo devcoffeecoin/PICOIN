@@ -9,6 +9,10 @@
       "destination": "/explorer.html"
     },
     {
+      "source": "/miner",
+      "destination": "/miner.html"
+    },
+    {
       "source": "/transaction",
       "destination": "/transaction.html"
     },
