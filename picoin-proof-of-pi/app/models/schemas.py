@@ -877,6 +877,7 @@ class ProtocolResponse(BaseModel):
     project: str
     protocol_version: str
     network_id: str
+    chain_id: str | int
     algorithm: str
     validation_mode: str
     required_validator_approvals: int
@@ -923,6 +924,9 @@ class ProtocolResponse(BaseModel):
     fraud_validator_invalid_results: int
     fraud_cooldown_seconds: int
     faucet_enabled: bool
+    min_validator_stake: float
+    validator_eligibility_stake_field: str
+    validator_eligibility_stake_source: str
     validator_selection_mode: str
     penalty_invalid_result: int
     penalty_duplicate: int
