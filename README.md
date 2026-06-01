@@ -14,6 +14,7 @@ This README is the entry point for running Picoin infrastructure. It explains ho
 | Chain ID | `314159` |
 | Protocol version | `1.0` |
 | Public API | `https://api.picoin.science` |
+| Genesis hash | `da286143167d14044c053fbb23fcf4673bb11bcd34fb1a11e5510ee8f8edb6e7` |
 | Wallet symbol | `PI` |
 | Mining algorithm | `bbp_hex_v1` |
 | Wallet cryptography | Ed25519 |
@@ -29,6 +30,13 @@ This README is the entry point for running Picoin infrastructure. It explains ho
 | Retroactive audit reward | `0 PI` security event, no extra emission |
 | Mainnet genesis supply | `300 PI` |
 | Faucet | Disabled |
+
+Canonical mainnet treasury and governance wallets:
+
+```text
+Scientific Development Treasury: PIE1EE818AA165EECC3F0CCF058F4FF7BC04517F8CD07385
+Governance Wallet:              PI251078EE911B17EDC747DB5BDF505649ECAF60F787AA23
+```
 
 The public testnet has been used for launch rehearsals and can still be studied from its deployment guide, but production configuration must use the mainnet values above.
 
@@ -60,9 +68,9 @@ PICOIN_NETWORK=picoin-mainnet-v1
 PICOIN_CHAIN_ID=314159
 PICOIN_PROTOCOL_VERSION=1.0
 PICOIN_GENESIS_ALLOCATIONS_FILE=/absolute/path/to/mainnet-genesis.allocations.final.json
-PICOIN_GENESIS_HASH=<published-mainnet-genesis-hash>
-PICOIN_TREASURY_WALLET=<canonical-PI-treasury-wallet>
-PICOIN_GOVERNANCE_WALLET=<canonical-PI-governance-wallet>
+PICOIN_GENESIS_HASH=da286143167d14044c053fbb23fcf4673bb11bcd34fb1a11e5510ee8f8edb6e7
+PICOIN_TREASURY_WALLET=PIE1EE818AA165EECC3F0CCF058F4FF7BC04517F8CD07385
+PICOIN_GOVERNANCE_WALLET=PI251078EE911B17EDC747DB5BDF505649ECAF60F787AA23
 PICOIN_NODE_ADDRESS=https://api.picoin.science
 PICOIN_MINER_SERVER=https://api.picoin.science
 PICOIN_VALIDATOR_SERVER=https://api.picoin.science
@@ -70,6 +78,8 @@ PICOIN_SCIENCE_RESERVE_AUTHORIZED_SIGNERS=<signer-1>,<signer-2>
 ```
 
 Miner and validator signatures include `network_id` and `chain_id`. If a worker falls back to `local` or a testnet chain ID, commits will be rejected with signature errors.
+
+Use `https://api.picoin.science` for miners and validators. `http://api.picoin.science` redirects to HTTPS and can break POST requests such as `/tasks/commit`, causing `405 Method Not Allowed`.
 
 ## Quick Start
 
@@ -137,6 +147,13 @@ curl -s http://127.0.0.1:8000/audit/full | python3 -m json.tool
 Set these values in `/etc/picoin/picoin.env` on the miner machine:
 
 ```env
+PICOIN_NETWORK=picoin-mainnet-v1
+PICOIN_CHAIN_ID=314159
+PICOIN_PROTOCOL_VERSION=1.0
+PICOIN_GENESIS_HASH=da286143167d14044c053fbb23fcf4673bb11bcd34fb1a11e5510ee8f8edb6e7
+PICOIN_TREASURY_WALLET=PIE1EE818AA165EECC3F0CCF058F4FF7BC04517F8CD07385
+PICOIN_GOVERNANCE_WALLET=PI251078EE911B17EDC747DB5BDF505649ECAF60F787AA23
+PICOIN_FAUCET_ALLOWED_NETWORKS=
 PICOIN_MINER_SERVER=https://api.picoin.science
 PICOIN_MINER_IDENTITY=/var/lib/picoin/data/mainnet/identities/miner-mainnet.json
 PICOIN_MINER_REWARD_ADDRESS=<canonical-PI-reward-wallet>
@@ -421,12 +438,68 @@ Required miner config:
 ```env
 PICOIN_NETWORK=picoin-mainnet-v1
 PICOIN_CHAIN_ID=314159
+PICOIN_PROTOCOL_VERSION=1.0
+PICOIN_GENESIS_HASH=da286143167d14044c053fbb23fcf4673bb11bcd34fb1a11e5510ee8f8edb6e7
+PICOIN_TREASURY_WALLET=PIE1EE818AA165EECC3F0CCF058F4FF7BC04517F8CD07385
+PICOIN_GOVERNANCE_WALLET=PI251078EE911B17EDC747DB5BDF505649ECAF60F787AA23
+PICOIN_FAUCET_ALLOWED_NETWORKS=
 PICOIN_MINER_SERVER=https://api.picoin.science
 PICOIN_MINER_IDENTITY=/var/lib/picoin/data/mainnet/identities/miner-mainnet.json
 PICOIN_MINER_REWARD_ADDRESS=<canonical-PI-reward-wallet>
 PICOIN_MINER_WORKERS=1
 PICOIN_MINER_LOOPS=1
 PICOIN_MINER_SLEEP=5
+```
+
+### Linux Command-Line Miner
+
+Use this path for a clean Ubuntu/Linux miner. Replace `YOUR_PI_WALLET_ADDRESS` with a wallet address you control. The wallet file itself is not needed on the miner; the miner only needs the public reward address.
+
+```bash
+sudo apt-get update
+sudo apt-get install -y git python3 python3-venv python3-pip
+
+git clone https://github.com/devcoffeecoin/PICOIN.git
+cd PICOIN/picoin-proof-of-pi
+
+python3 -m venv .venv
+. .venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+
+export PICOIN_NETWORK=picoin-mainnet-v1
+export PICOIN_CHAIN_ID=314159
+export PICOIN_PROTOCOL_VERSION=1.0
+export PICOIN_GENESIS_HASH=da286143167d14044c053fbb23fcf4673bb11bcd34fb1a11e5510ee8f8edb6e7
+export PICOIN_TREASURY_WALLET=PIE1EE818AA165EECC3F0CCF058F4FF7BC04517F8CD07385
+export PICOIN_GOVERNANCE_WALLET=PI251078EE911B17EDC747DB5BDF505649ECAF60F787AA23
+export PICOIN_FAUCET_ALLOWED_NETWORKS=
+export PICOIN_MINER_REWARD_ADDRESS=YOUR_PI_WALLET_ADDRESS
+
+.venv/bin/python -m picoin miner \
+  --server https://api.picoin.science \
+  --identity ./miner-mainnet.json \
+  register \
+  --name miner-mainnet-1 \
+  --overwrite
+
+.venv/bin/python -m picoin miner \
+  --server https://api.picoin.science \
+  --identity ./miner-mainnet.json \
+  mine \
+  --loops 999999 \
+  --sleep 1 \
+  --workers 1
+```
+
+Healthy mining logs should include:
+
+```text
+Task assigned
+Commit accepted
+Reveal accepted
+Waiting for an external validator to approve the block
+Done. accepted=1 attempts=1
 ```
 
 Register or refresh the miner identity:
@@ -468,6 +541,9 @@ Miner troubleshooting:
 | Symptom | Check |
 | --- | --- |
 | `invalid miner signature` | `PICOIN_NETWORK`, `PICOIN_CHAIN_ID`, `PyNaCl`, identity file, and exact server URL |
+| `mainnet PICOIN_TREASURY_WALLET is required` | Export the canonical mainnet treasury and governance variables above |
+| `mainnet genesis allocations must fund wallet accounts only` | Do not provide a genesis allocations file for a normal miner; if running a node, every genesis allocation must use `account_type: wallet` |
+| `405 Method Not Allowed` on `/tasks/commit` | Use `https://api.picoin.science`, not `http://api.picoin.science` |
 | No tasks | API health, miner registration, node sync status, validator availability |
 | Rewards not reaching wallet | `PICOIN_MINER_REWARD_ADDRESS` and block ledger entries |
 | Very slow pi calculation | Worker count, CPU limits, and dynamic task expiration from `/protocol` |
