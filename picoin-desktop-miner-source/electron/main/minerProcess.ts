@@ -5,8 +5,12 @@ import os from "os";
 import fs from "fs";
 
 // 1. Constantes y Configuración Global
-const DEFAULT_NETWORK_ID = "public-testnet";
-const DEFAULT_CHAIN_ID = "picoin-public-testnet-v018";
+const DEFAULT_NETWORK_ID = "picoin-mainnet-v1";
+const DEFAULT_CHAIN_ID = "314159";
+const DEFAULT_PROTOCOL_VERSION = "1.0";
+const MAINNET_GENESIS_HASH = "da286143167d14044c053fbb23fcf4673bb11bcd34fb1a11e5510ee8f8edb6e7";
+const MAINNET_TREASURY_WALLET = "PIE1EE818AA165EECC3F0CCF058F4FF7BC04517F8CD07385";
+const MAINNET_GOVERNANCE_WALLET = "PI251078EE911B17EDC747DB5BDF505649ECAF60F787AA23";
 const MAX_LOG_LINES = 15;
 
 // 2. Variables de Estado del Minero
@@ -155,6 +159,11 @@ export function startMiner(config: {
       PICOIN_MINER_REWARD_ADDRESS: config.rewardWallet,
       PICOIN_NETWORK: networkId,
       PICOIN_CHAIN_ID: chainId,
+      PICOIN_PROTOCOL_VERSION: DEFAULT_PROTOCOL_VERSION,
+      PICOIN_GENESIS_HASH: MAINNET_GENESIS_HASH,
+      PICOIN_TREASURY_WALLET: MAINNET_TREASURY_WALLET,
+      PICOIN_GOVERNANCE_WALLET: MAINNET_GOVERNANCE_WALLET,
+      PICOIN_FAUCET_ALLOWED_NETWORKS: "",
       PICOIN_AUTO_REGISTER_IDENTITY: "1",
       PYTHONUNBUFFERED: "1",
     };
@@ -338,6 +347,11 @@ export function registerMiner(config: {
     PICOIN_MINER_NAME: config.minerName,
     PICOIN_NETWORK: networkId,
     PICOIN_CHAIN_ID: chainId,
+    PICOIN_PROTOCOL_VERSION: DEFAULT_PROTOCOL_VERSION,
+    PICOIN_GENESIS_HASH: MAINNET_GENESIS_HASH,
+    PICOIN_TREASURY_WALLET: MAINNET_TREASURY_WALLET,
+    PICOIN_GOVERNANCE_WALLET: MAINNET_GOVERNANCE_WALLET,
+    PICOIN_FAUCET_ALLOWED_NETWORKS: "",
     PICOIN_AUTO_REGISTER_IDENTITY: "1",
     PYTHONUNBUFFERED: "1",
   };
@@ -346,6 +360,9 @@ export function registerMiner(config: {
 
   if (!fs.existsSync(corePath)) {
     throw new Error(`Picoin core path not found: ${corePath}`);
+  }
+  if (!fs.existsSync(path.join(corePath, "client.py"))) {
+    throw new Error(`client.py not found in: ${corePath}`);
   }
 
   addLog(`Register core path: ${corePath}`);
@@ -358,8 +375,7 @@ export function registerMiner(config: {
     pythonExecutable,
     [
       "-u",
-      "-m",
-      "miner.client",
+      "client.py",
       "--server",
       config.apiNodeUrl,
       "--identity",

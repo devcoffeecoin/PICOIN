@@ -1,6 +1,6 @@
 {
   "name": "picoin-desktop-wallet",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Picoin Desktop Wallet V1",
   "author": "Picoin",
   "main": "dist-electron/electron/main/main.js",

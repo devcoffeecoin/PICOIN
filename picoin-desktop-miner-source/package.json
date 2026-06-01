@@ -1,6 +1,6 @@
 {
   "name": "picoin-desktop-miner",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "private": true,
   "main": "dist-electron/electron/main/main.js",
   "scripts": {
@@ -9,9 +9,8 @@
     "start": "electron .",
     "dist": "npm run build && electron-builder"
   },
- "dependencies": {
+  "dependencies": {
     "axios": "latest",
-    "electron-squirrel-startup": "^1.0.1",
     "lucide-react": "^1.16.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
@@ -49,7 +48,9 @@
       "target": [
         {
           "target": "nsis",
-          "arch": ["x64"]
+          "arch": [
+            "x64"
+          ]
         }
       ],
       "icon": "resources/icons/logopi.ico"

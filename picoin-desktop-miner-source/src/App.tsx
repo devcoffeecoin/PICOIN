@@ -33,12 +33,15 @@ type SavedMinerIdentity = {
 
 const MAX_LOG_LINES = 15;
 const SETTINGS_STORAGE_KEY = "picoin-desktop-miner-settings";
+const MAINNET_NETWORK_ID = "picoin-mainnet-v1";
+const MAINNET_CHAIN_ID = "314159";
+const CANONICAL_MAINNET_API = "https://api.picoin.science";
 const DEFAULT_SETTINGS: MinerSettings = {
   minerName: "Picoin Desktop Miner",
   rewardWallet: "",
-  apiUrl: "https://api.picoin.science",
-  networkId: "public-testnet",
-  chainId: "picoin-public-testnet-v018",
+  apiUrl: CANONICAL_MAINNET_API,
+  networkId: MAINNET_NETWORK_ID,
+  chainId: MAINNET_CHAIN_ID,
   miningIntensity: 75,
 };
 
@@ -322,12 +325,12 @@ async function registerMiner() {
 
               <label className="form-row">
                 <span>network_id</span>
-                <input value={networkId} onChange={(e) => setNetworkId(e.target.value)} placeholder="public-testnet" />
+                <input value={networkId} onChange={(e) => setNetworkId(e.target.value)} placeholder="picoin-mainnet-v1" />
               </label>
 
               <label className="form-row">
                 <span>chain_id</span>
-                <input value={chainId} onChange={(e) => setChainId(e.target.value)} placeholder="picoin-public-testnet-v018" />
+                <input value={chainId} onChange={(e) => setChainId(e.target.value)} placeholder="314159" />
               </label>
               
               <label className="form-row">
@@ -409,11 +412,26 @@ function loadSavedSettings(): MinerSettings {
     const raw = window.localStorage.getItem(SETTINGS_STORAGE_KEY);
     if (!raw) return DEFAULT_SETTINGS;
     const saved = JSON.parse(raw) as Partial<MinerSettings>;
-    return {
+    const merged = {
       ...DEFAULT_SETTINGS,
       ...saved,
       miningIntensity: Number(saved.miningIntensity || DEFAULT_SETTINGS.miningIntensity),
     };
+
+    const apiUrl = String(merged.apiUrl || "").trim().replace(/\/$/, "");
+    const usesLegacyTestnet =
+      merged.networkId === "public-testnet" || merged.chainId === "picoin-public-testnet-v018";
+    const pointsAtCanonicalMainnet = apiUrl.toLowerCase() === CANONICAL_MAINNET_API;
+
+    if (usesLegacyTestnet && pointsAtCanonicalMainnet) {
+      return {
+        ...merged,
+        networkId: MAINNET_NETWORK_ID,
+        chainId: MAINNET_CHAIN_ID,
+      };
+    }
+
+    return merged;
   } catch {
     return DEFAULT_SETTINGS;
   }

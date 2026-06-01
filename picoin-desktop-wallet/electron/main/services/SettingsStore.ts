@@ -5,6 +5,11 @@ import type { AppSettings, NetworkId } from "../../../shared/types";
 import { DEFAULT_API_URLS, normalizeApiUrl } from "../config/networks";
 
 const SETTINGS_FILE = "settings.json";
+const LEGACY_TESTNET_API_URLS = new Set([
+  "https://api.picoin.science",
+  "https://testnet-api.picoin.science",
+]);
+const LEGACY_MAINNET_API_URL = "https://mainnet-api.picoin.science";
 
 function defaultSettings(): AppSettings {
   return {
@@ -38,14 +43,14 @@ export class SettingsStore {
       const savedMainnetApi = savedApiUrls.mainnet ? normalizeApiUrl(savedApiUrls.mainnet) : "";
       const legacyTestnetSelection =
         selectedNetwork === "testnet" &&
-        (!savedTestnetApi || savedTestnetApi === "https://api.picoin.science") &&
-        (!savedMainnetApi || savedMainnetApi === "https://mainnet-api.picoin.science");
+        (!savedTestnetApi || LEGACY_TESTNET_API_URLS.has(savedTestnetApi)) &&
+        (!savedMainnetApi || savedMainnetApi === LEGACY_MAINNET_API_URL);
       return {
         selectedNetwork: legacyTestnetSelection ? "mainnet" : selectedNetwork,
         apiUrls: {
           testnet: normalizeApiUrl(savedApiUrls.testnet || fallback.apiUrls.testnet),
           mainnet: normalizeApiUrl(
-            savedMainnetApi === "https://mainnet-api.picoin.science"
+            savedMainnetApi === LEGACY_MAINNET_API_URL
               ? fallback.apiUrls.mainnet
               : savedApiUrls.mainnet || fallback.apiUrls.mainnet,
           ),
