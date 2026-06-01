@@ -49,6 +49,11 @@ function fmtRate(value) {
   return `${fmt(rate, 2)} H/s`;
 }
 
+function minerComputeRate(miner, segmentSize = 64) {
+  const computeMs = Number(miner?.last_compute_ms ?? miner?.avg_compute_ms ?? 0);
+  return computeMs > 0 ? Number(segmentSize || 64) / (computeMs / 1000) : 0;
+}
+
 function statusClass(status) {
   if (status === "online") return "ok";
   if (status === "stale" || status === "known") return "warn";
@@ -128,7 +133,7 @@ function renderSummary(result) {
     ${summaryCard("Status", status, `${fmt(result.online_miners, 0)} online miner(s)`)}
     ${summaryCard("Accepted Blocks", fmt(summary.accepted_blocks, 0), `first ${summary.first_block_height || "-"}`)}
     ${summaryCard("Total Rewards", `${fmt(summary.total_rewards, 5)} PI`, `balance ${fmt(account.balance, 5)} PI`)}
-    ${summaryCard("Avg Rate", fmtRate(summary.avg_work_rate_hps), `task ${fmtMs(summary.avg_total_task_ms)}`)}
+    ${summaryCard("Avg Rate", fmtRate(summary.avg_work_rate_hps), `compute ${fmtMs(summary.avg_compute_ms ?? summary.avg_total_task_ms)}`)}
     ${summaryCard("Avg Difficulty", fmt(summary.avg_difficulty, 4), `latest block ${summary.latest_block_height || "-"}`)}
     ${summaryCard("Last Activity", formatDate(summary.latest_block_at), `checked ${formatDate(result.checked_at)}`)}
   `;
@@ -218,11 +223,13 @@ async function fallbackMinerLookup(value) {
       const rangeStart = Number(block.range_start || 0);
       const rangeEnd = Number(block.range_end || rangeStart);
       const segmentSize = Math.max(1, rangeEnd - rangeStart + 1);
-      const taskMs = Number(block.total_task_ms || block.total_block_ms || 0);
-      const workRate = taskMs > 0 ? segmentSize / (taskMs / 1000) : 0;
+      const computeMs = Number(block.compute_ms || block.total_task_ms || block.total_block_ms || 0);
+      const taskMs = Number(block.total_task_ms || computeMs || block.total_block_ms || 0);
+      const workRate = computeMs > 0 ? segmentSize / (computeMs / 1000) : 0;
       return {
         ...block,
         segment_size: segmentSize,
+        compute_ms: computeMs,
         total_task_ms: taskMs,
         work_rate_hps: workRate,
         hashrate_hps: workRate,
@@ -238,6 +245,12 @@ async function fallbackMinerLookup(value) {
   const latest = recentBlocks[0];
   const first = recentBlocks[recentBlocks.length - 1];
   const onlineMiners = miners.filter((miner) => miner.online_status === "online").length;
+  const segmentSize = Number(recentBlocks[0]?.segment_size || 64);
+  const liveRates = miners
+    .filter((miner) => miner.online_status === "online")
+    .map((miner) => minerComputeRate(miner, segmentSize))
+    .filter((rate) => rate > 0);
+  const liveRate = liveRates.reduce((total, rate) => total + rate, 0);
   return {
     query,
     found: Boolean(miners.length || recentBlocks.length || account),
@@ -253,7 +266,7 @@ async function fallbackMinerLookup(value) {
       avg_total_task_ms: avgTask,
       avg_total_block_ms: avgTask,
       avg_difficulty: avgDifficulty,
-      avg_work_rate_hps: avgTask > 0 ? 64 / (avgTask / 1000) : 0,
+      avg_work_rate_hps: liveRate || (avgTask > 0 ? segmentSize / (avgTask / 1000) : 0),
       first_block_height: first?.height || null,
       latest_block_height: latest?.height || null,
       latest_block_at: latest?.timestamp || null,

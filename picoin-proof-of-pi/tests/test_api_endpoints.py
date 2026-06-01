@@ -70,9 +70,9 @@ def test_miner_lookup_returns_reward_wallet_activity(tmp_path, monkeypatch) -> N
             """
             INSERT INTO tasks (
                 task_id, miner_id, range_start, range_end, algorithm, status,
-                protocol_params_id, created_at, submitted_at
+                protocol_params_id, created_at, submitted_at, compute_ms
             )
-            VALUES ('task_lookup_1', ?, 1, 64, 'bbp_hex_v1', 'accepted', ?, '2026-06-01T00:00:00+00:00', '2026-06-01T00:00:02+00:00')
+            VALUES ('task_lookup_1', ?, 1, 64, 'bbp_hex_v1', 'accepted', ?, '2026-06-01T00:00:00+00:00', '2026-06-01T00:00:02+00:00', 1000)
             """,
             (miner["miner_id"], protocol_params_id),
         )
@@ -93,16 +93,23 @@ def test_miner_lookup_returns_reward_wallet_activity(tmp_path, monkeypatch) -> N
             """,
             ("0" * 64, miner["miner_id"], "a" * 64, "b" * 64, reward_wallet["address"], protocol_params_id),
         )
+        connection.execute(
+            "UPDATE miners SET online_status = 'online', last_compute_ms = 500 WHERE miner_id = ?",
+            (miner["miner_id"],),
+        )
 
     metrics_response = client.get("/mining/metrics?limit=10")
     assert metrics_response.status_code == 200
     metrics = metrics_response.json()
     assert metrics["summary"]["blocks_sampled"] == 1
-    assert metrics["blocks"][0]["work_rate_hps"] == 32.0
+    assert metrics["blocks"][0]["work_rate_hps"] == 64.0
+    assert metrics["summary"]["avg_accepted_block_work_rate_hps"] == 64.0
+    assert metrics["summary"]["network_compute_rate_hps"] == 128.0
 
     lookup_response = client.get(f"/miners/lookup/{reward_wallet['address']}")
     assert lookup_response.status_code == 200
     lookup = lookup_response.json()
     assert lookup["found"] is True
     assert lookup["summary"]["accepted_blocks"] == 1
+    assert lookup["summary"]["avg_work_rate_hps"] == 64.0
     assert lookup["recent_blocks"][0]["result_hash"] == "a" * 64

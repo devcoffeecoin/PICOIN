@@ -123,6 +123,23 @@ function fmtRate(value) {
   return `${fmt(rate, 2)} H/s`;
 }
 
+function minerComputeRate(miner, segmentSize = 64) {
+  const computeMs = Number(miner?.last_compute_ms ?? miner?.avg_compute_ms ?? 0);
+  return computeMs > 0 ? Number(segmentSize || 64) / (computeMs / 1000) : 0;
+}
+
+function activeNetworkCompute(segmentSize = 64) {
+  const miners = asArray(state.minersStatus?.miners, ["miners", "items", "results"]);
+  const onlineRates = miners
+    .filter((miner) => miner.online_status === "online")
+    .map((miner) => minerComputeRate(miner, segmentSize))
+    .filter((rate) => rate > 0);
+  return {
+    online_compute_miners: onlineRates.length,
+    network_compute_rate_hps: onlineRates.reduce((total, rate) => total + rate, 0),
+  };
+}
+
 function asArray(value, keys = []) {
   if (Array.isArray(value)) return value;
   if (!value || typeof value !== "object") return [];
@@ -370,7 +387,10 @@ function renderStatus() {
   setMetric("metricValidators", state.validatorsStatus?.counts?.total ?? state.health?.database?.validators, 0);
   setMetric("metricActiveMiners", state.minersStatus?.counts?.online ?? state.health?.database?.miners, 0);
   const hashRateEl = $("metricHashRate");
-  if (hashRateEl) hashRateEl.textContent = fmtRate(state.miningMetrics?.summary?.avg_work_rate_hps);
+  if (hashRateEl) {
+    const miningSummary = (state.miningMetrics || deriveMiningMetrics()).summary || {};
+    hashRateEl.textContent = fmtRate(miningSummary.network_compute_rate_hps ?? miningSummary.avg_work_rate_hps);
+  }
   setMetric("metricDifficulty", state.miningMetrics?.summary?.latest_difficulty ?? state.difficultyStatus?.active_difficulty ?? state.protocol?.difficulty, 4);
   setMetric("metricActiveValidators", state.validatorsStatus?.counts?.online, 0);
   setMetric("metricEligibleValidators", state.validatorsStatus?.eligible_validators ?? state.health?.database?.eligible_validators, 0);
@@ -449,25 +469,31 @@ function renderNetwork() {
 function renderMining() {
   const metrics = state.miningMetrics || deriveMiningMetrics();
   const summary = metrics.summary || {};
+  const networkRate = summary.network_compute_rate_hps ?? summary.avg_work_rate_hps;
+  const blockComputeRate = summary.avg_accepted_block_work_rate_hps ?? summary.avg_work_rate_hps;
   const blocks = asArray(metrics.blocks, ["blocks", "items", "results"]);
   const summaryEl = $("miningChartSummary");
   if (summaryEl) {
     summaryEl.innerHTML = `
       <article>
-        <span>Avg Rate</span>
-        <strong>${escapeHtml(fmtRate(summary.avg_work_rate_hps))}</strong>
+        <span>Network Rate</span>
+        <strong>${escapeHtml(fmtRate(networkRate))}</strong>
+        <small>${fmt(summary.online_compute_miners ?? summary.active_miners, 0)} live samples</small>
+      </article>
+      <article>
+        <span>Block Compute</span>
+        <strong>${escapeHtml(fmtRate(blockComputeRate))}</strong>
+        <small>accepted blocks</small>
+      </article>
+      <article>
+        <span>Avg Finalized</span>
+        <strong>${escapeHtml(fmtMs(summary.avg_total_block_ms))}</strong>
+        <small>compute + queue</small>
       </article>
       <article>
         <span>Difficulty</span>
         <strong>${fmt(summary.latest_difficulty ?? state.difficultyStatus?.active_difficulty ?? state.protocol?.difficulty, 4)}</strong>
-      </article>
-      <article>
-        <span>Avg Block</span>
-        <strong>${escapeHtml(fmtMs(summary.avg_total_block_ms))}</strong>
-      </article>
-      <article>
-        <span>Sample</span>
-        <strong>${fmt(summary.blocks_sampled, 0)} blocks</strong>
+        <small>${fmt(summary.blocks_sampled, 0)} blocks</small>
       </article>
     `;
   }
@@ -509,12 +535,14 @@ function deriveMiningMetrics() {
       const rangeStart = Number(block.range_start || 0);
       const rangeEnd = Number(block.range_end || rangeStart);
       const segmentSize = Math.max(1, rangeEnd - rangeStart + 1);
-      const taskMs = Number(block.total_task_ms || block.total_block_ms || 0);
+      const computeMs = Number(block.compute_ms || block.total_task_ms || block.total_block_ms || 0);
+      const taskMs = Number(block.total_task_ms || computeMs || block.total_block_ms || 0);
       const blockMs = Number(block.total_block_ms || block.total_task_ms || 0);
-      const workRate = taskMs > 0 ? segmentSize / (taskMs / 1000) : 0;
+      const workRate = computeMs > 0 ? segmentSize / (computeMs / 1000) : 0;
       return {
         ...block,
         segment_size: segmentSize,
+        compute_ms: computeMs,
         total_task_ms: taskMs,
         total_block_ms: blockMs,
         validation_ms: Number(block.validation_ms || 0),
@@ -526,6 +554,8 @@ function deriveMiningMetrics() {
   const workRates = blocks.map((block) => Number(block.work_rate_hps || 0)).filter((value) => value > 0);
   const blockTimes = blocks.map((block) => Number(block.total_block_ms || 0)).filter((value) => value > 0);
   const latest = blocks[blocks.length - 1];
+  const segmentSize = Number(state.protocol?.segment_size || latest?.segment_size || 64);
+  const networkCompute = activeNetworkCompute(segmentSize);
   const minerGroups = new Map();
   for (const block of blocks) {
     const minerId = block.miner_id || "-";
@@ -534,6 +564,7 @@ function deriveMiningMetrics() {
       miner_reward_address: block.miner_reward_address || null,
       accepted_blocks: 0,
       total_rewards: 0,
+      compute_ms: 0,
       total_task_ms: 0,
       avg_difficulty: 0,
       latest_block_height: 0,
@@ -541,6 +572,7 @@ function deriveMiningMetrics() {
     };
     existing.accepted_blocks += 1;
     existing.total_rewards += Number(block.reward || 0);
+    existing.compute_ms += Number(block.compute_ms || block.total_task_ms || 0);
     existing.total_task_ms += Number(block.total_task_ms || 0);
     existing.avg_difficulty += Number(block.difficulty || 0);
     if (Number(block.height || 0) >= existing.latest_block_height) {
@@ -550,31 +582,63 @@ function deriveMiningMetrics() {
     }
     minerGroups.set(minerId, existing);
   }
+  const minerStatusById = new Map(
+    asArray(state.minersStatus?.miners, ["miners", "items", "results"])
+      .filter((miner) => miner.miner_id)
+      .map((miner) => [miner.miner_id, miner])
+  );
   const topMiners = Array.from(minerGroups.values())
     .map((miner) => {
+      const liveMiner = minerStatusById.get(miner.miner_id);
+      const liveRate = minerComputeRate(liveMiner, segmentSize);
+      const avgCompute = miner.accepted_blocks ? miner.compute_ms / miner.accepted_blocks : 0;
       const avgTask = miner.accepted_blocks ? miner.total_task_ms / miner.accepted_blocks : 0;
       return {
         ...miner,
+        online_status: liveMiner?.online_status,
         total_rewards: Number(miner.total_rewards.toFixed(8)),
+        avg_compute_ms: Number(liveMiner?.last_compute_ms || avgCompute || 0),
         avg_total_task_ms: avgTask,
         avg_difficulty: miner.accepted_blocks ? miner.avg_difficulty / miner.accepted_blocks : 0,
-        avg_work_rate_hps: avgTask > 0 ? 64 / (avgTask / 1000) : 0,
+        avg_work_rate_hps: liveRate || (avgCompute > 0 ? segmentSize / (avgCompute / 1000) : 0),
       };
     })
     .sort((a, b) => Number(b.accepted_blocks || 0) - Number(a.accepted_blocks || 0))
     .slice(0, 12);
+  const statusMiners = asArray(state.minersStatus?.miners, ["miners", "items", "results"])
+    .map((miner) => ({
+      miner_id: miner.miner_id,
+      miner_reward_address: miner.reward_address,
+      online_status: miner.online_status,
+      accepted_blocks: Number(miner.accepted_blocks || 0),
+      total_rewards: Number(miner.total_rewards || 0),
+      avg_compute_ms: Number(miner.last_compute_ms || 0),
+      avg_total_task_ms: Number(miner.last_compute_ms || 0),
+      avg_difficulty: latest?.difficulty ?? state.difficultyStatus?.active_difficulty ?? state.protocol?.difficulty,
+      avg_work_rate_hps: minerComputeRate(miner, segmentSize),
+      latest_block_height: Number(miner.last_block_height || 0),
+      latest_block_at: miner.last_seen_at || miner.last_heartbeat_at || null,
+    }))
+    .filter((miner) => miner.miner_id && (miner.avg_work_rate_hps > 0 || miner.online_status === "online"))
+    .sort((a, b) => Number(b.avg_work_rate_hps || 0) - Number(a.avg_work_rate_hps || 0))
+    .slice(0, 12);
+  const avgBlockComputeRate = workRates.length ? workRates.reduce((a, b) => a + b, 0) / workRates.length : 0;
   return {
     summary: {
       current_height: latest?.height || 0,
       latest_block_hash: latest?.block_hash || "",
       latest_difficulty: latest?.difficulty ?? state.difficultyStatus?.active_difficulty ?? state.protocol?.difficulty,
       active_difficulty: state.difficultyStatus?.active_difficulty ?? state.protocol?.difficulty,
-      avg_work_rate_hps: workRates.length ? workRates.reduce((a, b) => a + b, 0) / workRates.length : 0,
+      network_compute_rate_hps: networkCompute.network_compute_rate_hps,
+      avg_work_rate_hps: networkCompute.network_compute_rate_hps || avgBlockComputeRate,
+      avg_accepted_block_work_rate_hps: avgBlockComputeRate,
       avg_total_block_ms: blockTimes.length ? blockTimes.reduce((a, b) => a + b, 0) / blockTimes.length : 0,
       blocks_sampled: blocks.length,
+      online_compute_miners: networkCompute.online_compute_miners,
+      active_miners: state.minersStatus?.counts?.online,
     },
     blocks,
-    top_miners: topMiners.length ? topMiners : asArray(state.minersStatus?.miners, ["miners"]).slice(0, 12),
+    top_miners: topMiners.length ? topMiners : statusMiners,
   };
 }
 
@@ -609,7 +673,7 @@ function renderMiningChart(blocks) {
   const last = rows[rows.length - 1];
   const latestRate = last.work_rate_hps || last.hashrate_hps;
   return `
-    <svg class="mining-chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Accepted block work rate and difficulty">
+    <svg class="mining-chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Accepted block compute rate and difficulty">
       <defs>
         <linearGradient id="rateFill" x1="0" y1="0" x2="0" y2="1">
           <stop offset="0%" stop-color="#21c7ff" stop-opacity="0.42" />
@@ -628,13 +692,13 @@ function renderMiningChart(blocks) {
       <g class="chart-labels">
         <text x="${pad.left}" y="${height - 16}">#${fmt(first.height, 0)}</text>
         <text x="${pad.left + innerWidth}" y="${height - 16}" text-anchor="end">#${fmt(last.height, 0)}</text>
-        <text x="${pad.left}" y="18">Rate max ${escapeHtml(fmtRate(maxRate))}</text>
+        <text x="${pad.left}" y="18">Block compute max ${escapeHtml(fmtRate(maxRate))}</text>
         <text x="${pad.left + innerWidth}" y="18" text-anchor="end">Difficulty max ${fmt(maxDifficulty, 4)}</text>
         <text x="${pad.left + innerWidth}" y="${pad.top + innerHeight - 8}" text-anchor="end">Latest ${escapeHtml(fmtRate(latestRate))}</text>
       </g>
     </svg>
     <div class="chart-legend">
-      <span><i class="legend-rate"></i>Work rate</span>
+      <span><i class="legend-rate"></i>Block compute rate</span>
       <span><i class="legend-difficulty"></i>Difficulty</span>
     </div>
   `;

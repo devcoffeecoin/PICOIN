@@ -969,11 +969,12 @@ def _mining_metric_from_row(row: Any) -> dict[str, Any]:
     range_start = int(row["range_start"] or 0)
     range_end = int(row["range_end"] or range_start)
     segment_size = int(row["segment_size"] or max(1, range_end - range_start + 1))
-    task_ms = int(row["total_task_ms"] or row["total_block_ms"] or 0)
+    compute_ms = int(row["compute_ms"] or row["total_task_ms"] or row["total_block_ms"] or 0)
+    task_ms = int(row["total_task_ms"] or compute_ms or row["total_block_ms"] or 0)
     block_ms = int(row["total_block_ms"] or row["total_task_ms"] or 0)
-    task_seconds = task_ms / 1000 if task_ms > 0 else 0
+    compute_seconds = compute_ms / 1000 if compute_ms > 0 else 0
     block_seconds = block_ms / 1000 if block_ms > 0 else 0
-    work_rate_hps = round(segment_size / task_seconds, 4) if task_seconds > 0 else 0.0
+    work_rate_hps = round(segment_size / compute_seconds, 4) if compute_seconds > 0 else 0.0
     block_rate_hps = round(segment_size / block_seconds, 4) if block_seconds > 0 else 0.0
     return {
         "height": int(row["height"]),
@@ -987,6 +988,7 @@ def _mining_metric_from_row(row: Any) -> dict[str, Any]:
         "segment_size": segment_size,
         "reward": round(float(row["reward"] or 0), 8),
         "difficulty": round(float(row["difficulty"] or 0), 8),
+        "compute_ms": compute_ms,
         "total_task_ms": task_ms,
         "total_block_ms": block_ms,
         "validation_ms": int(row["validation_ms"] or 0),
@@ -1014,12 +1016,14 @@ def get_mining_metrics(limit: int = 120) -> dict[str, Any]:
                 blocks.range_end,
                 blocks.reward,
                 COALESCE(blocks.difficulty, protocol_params.difficulty, 0) AS difficulty,
+                tasks.compute_ms AS compute_ms,
                 blocks.total_task_ms,
                 blocks.total_block_ms,
                 blocks.validation_ms,
                 COALESCE(protocol_params.segment_size, blocks.range_end - blocks.range_start + 1) AS segment_size
             FROM blocks
             LEFT JOIN protocol_params ON protocol_params.id = blocks.protocol_params_id
+            LEFT JOIN tasks ON tasks.task_id = blocks.task_id
             ORDER BY blocks.height DESC
             LIMIT ?
             """,
@@ -1032,15 +1036,29 @@ def get_mining_metrics(limit: int = 120) -> dict[str, Any]:
                 blocks.miner_reward_address,
                 COUNT(*) AS accepted_blocks,
                 COALESCE(SUM(blocks.reward), 0) AS total_rewards,
+                COALESCE(AVG(tasks.compute_ms), AVG(blocks.total_task_ms), 0) AS avg_compute_ms,
                 COALESCE(AVG(blocks.total_task_ms), 0) AS avg_total_task_ms,
                 COALESCE(AVG(blocks.total_block_ms), 0) AS avg_total_block_ms,
                 COALESCE(AVG(blocks.difficulty), 0) AS avg_difficulty,
+                MAX(miners.last_compute_ms) AS last_compute_ms,
+                MAX(miners.online_status) AS online_status,
                 MAX(blocks.height) AS latest_block_height,
                 MAX(blocks.timestamp) AS latest_block_at
             FROM blocks
+            LEFT JOIN tasks ON tasks.task_id = blocks.task_id
+            LEFT JOIN miners ON miners.miner_id = blocks.miner_id
             GROUP BY blocks.miner_id, blocks.miner_reward_address
             ORDER BY accepted_blocks DESC, total_rewards DESC, blocks.miner_id ASC
             LIMIT 12
+            """
+        ).fetchall()
+        active_compute_rows = connection.execute(
+            """
+            SELECT miner_id, online_status, last_compute_ms
+            FROM miners
+            WHERE enabled = 1
+              AND online_status = 'online'
+              AND COALESCE(last_compute_ms, 0) > 0
             """
         ).fetchall()
         miner_counts = connection.execute(
@@ -1060,20 +1078,35 @@ def get_mining_metrics(limit: int = 120) -> dict[str, Any]:
     blocks.reverse()
     work_rates = [block["work_rate_hps"] for block in blocks if block["work_rate_hps"] > 0]
     block_times = [block["total_block_ms"] for block in blocks if block["total_block_ms"] > 0]
+    segment_size = float(params["segment_size"] or 64)
+    active_rates = []
+    active_compute_ms = []
+    for row in active_compute_rows:
+        compute_ms = int(row["last_compute_ms"] or 0)
+        if compute_ms <= 0:
+            continue
+        active_compute_ms.append(compute_ms)
+        active_rates.append(segment_size / (compute_ms / 1000))
+    network_compute_rate = round(sum(active_rates), 4) if active_rates else 0.0
+    avg_block_compute_rate = round(sum(work_rates) / len(work_rates), 4) if work_rates else 0.0
     latest = blocks[-1] if blocks else None
     top_miners = []
     for row in miner_rows:
-        avg_ms = blocks_or_zero(row["avg_total_task_ms"] or row["avg_total_block_ms"])
-        avg_work_rate = round(float(params["segment_size"]) / (avg_ms / 1000), 4) if avg_ms > 0 else 0.0
+        avg_compute_ms = blocks_or_zero(row["avg_compute_ms"] or row["avg_total_task_ms"] or row["avg_total_block_ms"])
+        avg_task_ms = blocks_or_zero(row["avg_total_task_ms"] or row["avg_total_block_ms"])
+        avg_work_rate = round(segment_size / (avg_compute_ms / 1000), 4) if avg_compute_ms > 0 else 0.0
         top_miners.append(
             {
                 "miner_id": row["miner_id"],
                 "miner_reward_address": row["miner_reward_address"],
+                "online_status": row["online_status"],
                 "accepted_blocks": int(row["accepted_blocks"] or 0),
                 "total_rewards": round(float(row["total_rewards"] or 0), 8),
-                "avg_total_task_ms": round(avg_ms, 2),
+                "avg_compute_ms": round(avg_compute_ms, 2),
+                "avg_total_task_ms": round(avg_task_ms, 2),
                 "avg_total_block_ms": round(blocks_or_zero(row["avg_total_block_ms"]), 2),
                 "avg_difficulty": round(float(row["avg_difficulty"] or 0), 8),
+                "last_compute_ms": int(row["last_compute_ms"] or 0),
                 "avg_work_rate_hps": avg_work_rate,
                 "latest_block_height": int(row["latest_block_height"] or 0),
                 "latest_block_at": row["latest_block_at"],
@@ -1089,9 +1122,13 @@ def get_mining_metrics(limit: int = 120) -> dict[str, Any]:
             "latest_difficulty": latest["difficulty"] if latest else calculate_difficulty(params),
             "active_difficulty": calculate_difficulty(params),
             "target_block_ms": params.get("target_block_time_ms") or RETARGET_TARGET_BLOCK_MS,
-            "avg_work_rate_hps": round(sum(work_rates) / len(work_rates), 4) if work_rates else 0.0,
+            "network_compute_rate_hps": network_compute_rate,
+            "avg_work_rate_hps": network_compute_rate or avg_block_compute_rate,
+            "avg_accepted_block_work_rate_hps": avg_block_compute_rate,
+            "avg_compute_ms": round(sum(active_compute_ms) / len(active_compute_ms), 2) if active_compute_ms else 0.0,
             "avg_total_block_ms": round(sum(block_times) / len(block_times), 2) if block_times else 0.0,
             "blocks_sampled": len(blocks),
+            "online_compute_miners": len(active_compute_ms),
             "active_miners": int(miner_counts["online"] or 0),
             "total_miners": int(miner_counts["total"] or 0),
         },
@@ -1128,24 +1165,26 @@ def lookup_miner_activity(query: str, limit: int = 25) -> dict[str, Any]:
         ).fetchall()
         miner_ids = [row["miner_id"] for row in miner_rows]
         params: list[Any] = []
-        where_parts = ["miner_id = ?", "UPPER(COALESCE(miner_reward_address, '')) = ?"]
+        where_parts = ["blocks.miner_id = ?", "UPPER(COALESCE(blocks.miner_reward_address, '')) = ?"]
         params.extend([search, normalized_wallet])
         if miner_ids:
-            where_parts.append(f"miner_id IN ({','.join('?' for _ in miner_ids)})")
+            where_parts.append(f"blocks.miner_id IN ({','.join('?' for _ in miner_ids)})")
             params.extend(miner_ids)
         where_sql = " OR ".join(where_parts)
         aggregate = connection.execute(
             f"""
             SELECT
                 COUNT(*) AS accepted_blocks,
-                COALESCE(SUM(reward), 0) AS total_rewards,
-                COALESCE(AVG(total_task_ms), 0) AS avg_total_task_ms,
-                COALESCE(AVG(total_block_ms), 0) AS avg_total_block_ms,
-                COALESCE(AVG(difficulty), 0) AS avg_difficulty,
-                MIN(height) AS first_block_height,
-                MAX(height) AS latest_block_height,
-                MAX(timestamp) AS latest_block_at
+                COALESCE(SUM(blocks.reward), 0) AS total_rewards,
+                COALESCE(AVG(tasks.compute_ms), AVG(blocks.total_task_ms), 0) AS avg_compute_ms,
+                COALESCE(AVG(blocks.total_task_ms), 0) AS avg_total_task_ms,
+                COALESCE(AVG(blocks.total_block_ms), 0) AS avg_total_block_ms,
+                COALESCE(AVG(blocks.difficulty), 0) AS avg_difficulty,
+                MIN(blocks.height) AS first_block_height,
+                MAX(blocks.height) AS latest_block_height,
+                MAX(blocks.timestamp) AS latest_block_at
             FROM blocks
+            LEFT JOIN tasks ON tasks.task_id = blocks.task_id
             WHERE {where_sql}
             """,
             tuple(params),
@@ -1163,12 +1202,14 @@ def lookup_miner_activity(query: str, limit: int = 25) -> dict[str, Any]:
                 blocks.range_end,
                 blocks.reward,
                 COALESCE(blocks.difficulty, protocol_params.difficulty, 0) AS difficulty,
+                tasks.compute_ms AS compute_ms,
                 blocks.total_task_ms,
                 blocks.total_block_ms,
                 blocks.validation_ms,
                 COALESCE(protocol_params.segment_size, blocks.range_end - blocks.range_start + 1) AS segment_size
             FROM blocks
             LEFT JOIN protocol_params ON protocol_params.id = blocks.protocol_params_id
+            LEFT JOIN tasks ON tasks.task_id = blocks.task_id
             WHERE {where_sql}
             ORDER BY blocks.height DESC
             LIMIT ?
@@ -1179,9 +1220,12 @@ def lookup_miner_activity(query: str, limit: int = 25) -> dict[str, Any]:
 
     miners = [enrich_miner(row_to_dict(row)) for row in miner_rows]
     recent_blocks = [_mining_metric_from_row(row) for row in block_rows]
+    avg_compute_ms = blocks_or_zero(
+        aggregate["avg_compute_ms"] or aggregate["avg_total_task_ms"] or aggregate["avg_total_block_ms"]
+    )
     avg_task_ms = blocks_or_zero(aggregate["avg_total_task_ms"] or aggregate["avg_total_block_ms"])
     segment_size = recent_blocks[0]["segment_size"] if recent_blocks else 0
-    avg_work_rate = round(segment_size / (avg_task_ms / 1000), 4) if segment_size and avg_task_ms > 0 else 0.0
+    avg_work_rate = round(segment_size / (avg_compute_ms / 1000), 4) if segment_size and avg_compute_ms > 0 else 0.0
     online_miners = sum(1 for miner in miners if miner.get("online_status") == "online")
     return {
         "query": search,
@@ -1195,6 +1239,7 @@ def lookup_miner_activity(query: str, limit: int = 25) -> dict[str, Any]:
         "summary": {
             "accepted_blocks": int(aggregate["accepted_blocks"] or 0),
             "total_rewards": round(float(aggregate["total_rewards"] or 0), 8),
+            "avg_compute_ms": round(avg_compute_ms, 2),
             "avg_total_task_ms": round(avg_task_ms, 2),
             "avg_total_block_ms": round(blocks_or_zero(aggregate["avg_total_block_ms"]), 2),
             "avg_difficulty": round(float(aggregate["avg_difficulty"] or 0), 8),
