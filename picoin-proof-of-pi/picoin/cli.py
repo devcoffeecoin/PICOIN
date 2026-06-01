@@ -1157,6 +1157,17 @@ def command_node_genesis_hash(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_node_bootstrap_validator_stake(args: argparse.Namespace) -> int:
+    from app.services.mainnet_bootstrap import MainnetBootstrapError, apply_bootstrap_validator_stakes
+
+    try:
+        print_json(apply_bootstrap_validator_stakes(args.file, dry_run=args.dry_run))
+        return 0
+    except MainnetBootstrapError as exc:
+        print(f"Mainnet bootstrap error: {exc}")
+        return 2
+
+
 def command_wallet_create(args: argparse.Namespace) -> int:
     wallet = create_wallet(args.name, network_id=args.network, chain_id=args.chain_id)
     output = args.output or DEFAULT_WALLET_PATH
@@ -1790,6 +1801,14 @@ def add_node_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Validate the allocation file against mainnet launch rules before printing the hash",
     )
     genesis_hash_parser.set_defaults(func=command_node_genesis_hash)
+
+    bootstrap_stake_parser = node_subparsers.add_parser(
+        "bootstrap-validator-stake",
+        help="Apply canonical pre-launch wallet-backed validator stake at height 0",
+    )
+    bootstrap_stake_parser.add_argument("--file", type=Path, required=True)
+    bootstrap_stake_parser.add_argument("--dry-run", action="store_true")
+    bootstrap_stake_parser.set_defaults(func=command_node_bootstrap_validator_stake)
 
 
 def add_wallet_parser(subparsers: argparse._SubParsersAction) -> None:

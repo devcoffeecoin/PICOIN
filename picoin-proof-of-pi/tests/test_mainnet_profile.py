@@ -166,6 +166,146 @@ print(json.dumps(payload, sort_keys=True))
     assert payload["faucet_error"]["status_code"] == 403
 
 
+def test_mainnet_bootstrap_validator_stakes_are_wallet_backed_and_auditable(tmp_path) -> None:
+    db_path = tmp_path / "mainnet-bootstrap-stake.sqlite3"
+    genesis_file = tmp_path / "mainnet-genesis.allocations.json"
+    stake_file = tmp_path / "mainnet-validator-stakes.json"
+    genesis_file.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "network_id": "picoin-mainnet-v1",
+                "chain_id": 314159,
+                "created_at": "2026-06-01T00:00:00+00:00",
+                "allocations": [
+                    {
+                        "account_id": MAINNET_TREASURY_WALLET,
+                        "account_type": "wallet",
+                        "amount": 200.0,
+                    },
+                    {
+                        "account_id": MAINNET_GOVERNANCE_WALLET,
+                        "account_type": "wallet",
+                        "amount": 100.0,
+                    },
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    code = """
+import json
+import os
+from pathlib import Path
+
+from app.core import settings
+from app.core.signatures import generate_keypair, sign_payload
+from app.db.database import init_db
+from app.services.mainnet_bootstrap import apply_bootstrap_validator_stakes
+from app.services.mining import (
+    get_balance,
+    get_full_economic_audit,
+    get_validators,
+    get_validators_status,
+    record_validator_heartbeat,
+    register_validator,
+)
+
+init_db()
+validators = []
+for index in range(3):
+    keys = generate_keypair()
+    validator = register_validator(
+        f"mainnet-validator-{index + 1}",
+        keys["public_key"],
+        os.environ["MAINNET_GOVERNANCE_WALLET"],
+    )
+    heartbeat = {
+        "validator_id": validator["validator_id"],
+        "node_id": f"mainnet-validator-node-{index + 1}",
+        "public_key": keys["public_key"],
+        "address": f"http://validator-{index + 1}.node:8000",
+        "local_height": 0,
+        "effective_height": 0,
+        "latest_block_hash": settings.GENESIS_HASH,
+        "pending_replay_blocks": 0,
+        "sync_lag": 0,
+        "version": settings.PROTOCOL_VERSION,
+    }
+    heartbeat["signature"] = sign_payload(keys["private_key"], heartbeat)
+    record_validator_heartbeat(heartbeat)
+    validators.append(validator)
+
+stake_file = Path(os.environ["PICOIN_BOOTSTRAP_STAKES_FILE"])
+stake_file.write_text(
+    json.dumps(
+        {
+            "version": 1,
+            "network_id": settings.NETWORK_ID,
+            "chain_id": settings.CHAIN_ID,
+            "stakes": [
+                {
+                    "validator_id": validator["validator_id"],
+                    "stake_owner_address": os.environ["MAINNET_GOVERNANCE_WALLET"],
+                    "amount": settings.MIN_VALIDATOR_STAKE,
+                }
+                for validator in validators
+            ],
+        }
+    ),
+    encoding="utf-8",
+)
+result = apply_bootstrap_validator_stakes(stake_file)
+audit = get_full_economic_audit()
+status = get_validators_status()
+payload = {
+    "result": result,
+    "audit_valid": audit["valid"],
+    "issue_codes": [issue["code"] for issue in audit["issues"]],
+    "validators_audit": audit["validators"],
+    "eligible_count": len(get_validators(eligible_only=True)),
+    "eligible_status": [
+        {
+            "validator_id": item["validator_id"],
+            "wallet_stake_locked": item["wallet_stake_locked"],
+            "eligibility_stake_source": item["eligibility_stake_source"],
+            "eligible": item["eligible"],
+        }
+        for item in status["validators"]
+        if item["eligible"] is True
+    ],
+    "governance_balance": get_balance(os.environ["MAINNET_GOVERNANCE_WALLET"])["balance"],
+}
+print(json.dumps(payload, sort_keys=True))
+"""
+    result = _run_isolated(
+        code,
+        {
+            "PICOIN_NETWORK": "picoin-mainnet-v1",
+            "PICOIN_DB_PATH": str(db_path),
+            "PICOIN_DATA_DIR": str(tmp_path),
+            "PICOIN_GENESIS_ALLOCATIONS_FILE": str(genesis_file),
+            "PICOIN_BOOTSTRAP_STAKES_FILE": str(stake_file),
+            "MAINNET_GOVERNANCE_WALLET": MAINNET_GOVERNANCE_WALLET,
+            **_mainnet_wallet_env(),
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = json.loads(result.stdout)
+    assert payload["result"]["status"] == "applied"
+    assert payload["result"]["applied_count"] == 3
+    assert payload["result"]["total_amount"] == 94.248
+    assert payload["audit_valid"] is True
+    assert "mainnet_legacy_validator_stake" not in payload["issue_codes"]
+    assert payload["validators_audit"]["stake_locked"] == 94.248
+    assert payload["validators_audit"]["wallet_stake_locked"] == 94.248
+    assert payload["validators_audit"]["legacy_unbacked_stake_locked"] == 0.0
+    assert payload["eligible_count"] == 3
+    assert [item["eligibility_stake_source"] for item in payload["eligible_status"]] == ["wallet", "wallet", "wallet"]
+    assert payload["governance_balance"] == 5.752
+
+
 def test_mainnet_rejects_chain_id_override() -> None:
     result = _run_isolated(
         "import app.core.settings",

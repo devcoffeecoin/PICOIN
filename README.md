@@ -183,6 +183,33 @@ source /etc/picoin/picoin.env
 set +a
 
 .venv/bin/python -m picoin validator --server "$PICOIN_VALIDATOR_SERVER" --identity "$PICOIN_VALIDATOR_IDENTITY" register --name validator-mainnet-1 --overwrite
+```
+
+For the first mainnet validator set only, register the initial validators first, then apply their wallet-backed stake on the bootstrap node before block `1`. This is a local launch command, not a public API endpoint:
+
+```json
+{
+  "version": 1,
+  "network_id": "picoin-mainnet-v1",
+  "chain_id": 314159,
+  "stakes": [
+    {
+      "validator_id": "validator_xxxxxxxxxxxxxxxx",
+      "stake_owner_address": "PI...",
+      "amount": 31.416
+    }
+  ]
+}
+```
+
+```bash
+.venv/bin/python -m picoin node bootstrap-validator-stake --file /etc/picoin/mainnet-validator-stakes.json
+.venv/bin/python -m picoin node mainnet-preflight --server http://127.0.0.1:8000 --verbose
+```
+
+After launch, validators stake through normal signed wallet transactions:
+
+```bash
 
 .venv/bin/python -m picoin tx --server https://api.picoin.science send \
   --wallet /secure/validator-owner.json \
