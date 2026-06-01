@@ -471,6 +471,11 @@ function renderMining() {
   const summary = metrics.summary || {};
   const networkRate = summary.network_compute_rate_hps ?? summary.avg_work_rate_hps;
   const blockComputeRate = summary.avg_accepted_block_work_rate_hps ?? summary.avg_work_rate_hps;
+  const rateSource = summary.network_compute_rate_source || "miner_heartbeat";
+  const rateDetail =
+    rateSource === "accepted_block_estimate"
+      ? `${fmt(summary.active_miners, 0)} active miners est.`
+      : `${fmt(summary.online_compute_miners ?? summary.active_miners, 0)} live samples`;
   const blocks = asArray(metrics.blocks, ["blocks", "items", "results"]);
   const summaryEl = $("miningChartSummary");
   if (summaryEl) {
@@ -478,7 +483,7 @@ function renderMining() {
       <article>
         <span>Network Rate</span>
         <strong>${escapeHtml(fmtRate(networkRate))}</strong>
-        <small>${fmt(summary.online_compute_miners ?? summary.active_miners, 0)} live samples</small>
+        <small>${escapeHtml(rateDetail)}</small>
       </article>
       <article>
         <span>Block Compute</span>
@@ -623,19 +628,24 @@ function deriveMiningMetrics() {
     .sort((a, b) => Number(b.avg_work_rate_hps || 0) - Number(a.avg_work_rate_hps || 0))
     .slice(0, 12);
   const avgBlockComputeRate = workRates.length ? workRates.reduce((a, b) => a + b, 0) / workRates.length : 0;
+  const activeMiners = Number(state.minersStatus?.counts?.online || 0);
+  const networkRate =
+    networkCompute.network_compute_rate_hps ||
+    (avgBlockComputeRate > 0 && activeMiners > 0 ? avgBlockComputeRate * activeMiners : 0);
   return {
     summary: {
       current_height: latest?.height || 0,
       latest_block_hash: latest?.block_hash || "",
       latest_difficulty: latest?.difficulty ?? state.difficultyStatus?.active_difficulty ?? state.protocol?.difficulty,
       active_difficulty: state.difficultyStatus?.active_difficulty ?? state.protocol?.difficulty,
-      network_compute_rate_hps: networkCompute.network_compute_rate_hps,
-      avg_work_rate_hps: networkCompute.network_compute_rate_hps || avgBlockComputeRate,
+      network_compute_rate_hps: networkRate,
+      avg_work_rate_hps: networkRate || avgBlockComputeRate,
       avg_accepted_block_work_rate_hps: avgBlockComputeRate,
       avg_total_block_ms: blockTimes.length ? blockTimes.reduce((a, b) => a + b, 0) / blockTimes.length : 0,
       blocks_sampled: blocks.length,
       online_compute_miners: networkCompute.online_compute_miners,
-      active_miners: state.minersStatus?.counts?.online,
+      network_compute_rate_source: networkCompute.network_compute_rate_hps ? "miner_heartbeat" : (networkRate ? "accepted_block_estimate" : "none"),
+      active_miners: activeMiners,
     },
     blocks,
     top_miners: topMiners.length ? topMiners : statusMiners,

@@ -1087,8 +1087,14 @@ def get_mining_metrics(limit: int = 120) -> dict[str, Any]:
             continue
         active_compute_ms.append(compute_ms)
         active_rates.append(segment_size / (compute_ms / 1000))
-    network_compute_rate = round(sum(active_rates), 4) if active_rates else 0.0
     avg_block_compute_rate = round(sum(work_rates) / len(work_rates), 4) if work_rates else 0.0
+    online_miners = int(miner_counts["online"] or 0)
+    if active_rates:
+        network_compute_rate = round(sum(active_rates), 4)
+    elif avg_block_compute_rate > 0 and online_miners > 0:
+        network_compute_rate = round(avg_block_compute_rate * online_miners, 4)
+    else:
+        network_compute_rate = 0.0
     latest = blocks[-1] if blocks else None
     top_miners = []
     for row in miner_rows:
@@ -1129,7 +1135,8 @@ def get_mining_metrics(limit: int = 120) -> dict[str, Any]:
             "avg_total_block_ms": round(sum(block_times) / len(block_times), 2) if block_times else 0.0,
             "blocks_sampled": len(blocks),
             "online_compute_miners": len(active_compute_ms),
-            "active_miners": int(miner_counts["online"] or 0),
+            "network_compute_rate_source": "miner_heartbeat" if active_rates else ("accepted_block_estimate" if network_compute_rate else "none"),
+            "active_miners": online_miners,
             "total_miners": int(miner_counts["total"] or 0),
         },
         "blocks": blocks,
