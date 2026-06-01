@@ -1,0 +1,76 @@
+{
+  "name": "picoin-desktop-validator",
+  "version": "0.1.1",
+  "private": true,
+  "description": "Picoin Desktop Validator V1",
+  "author": "Picoin",
+  "main": "dist-electron/electron/main/main.js",
+  "scripts": {
+    "dev": "concurrently \"vite\" \"tsc -p tsconfig.electron.json --watch\" \"wait-on http://localhost:5173 && cross-env VITE_DEV_SERVER_URL=http://localhost:5173 electron .\"",
+    "build": "tsc -p tsconfig.electron.json && vite build",
+    "electron:dev": "npm run dev",
+    "start": "electron .",
+    "dist": "npm run build && electron-builder"
+  },
+  "dependencies": {
+    "lucide-react": "^1.16.0",
+    "react": "^19.2.6",
+    "react-dom": "^19.2.6"
+  },
+  "devDependencies": {
+    "@types/node": "^25.9.1",
+    "@types/react": "^19.2.15",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^6.0.2",
+    "concurrently": "^9.2.1",
+    "cross-env": "^10.1.0",
+    "electron": "^42.2.0",
+    "electron-builder": "^26.8.1",
+    "typescript": "^6.0.3",
+    "vite": "^8.0.14",
+    "wait-on": "^9.0.10"
+  },
+  "build": {
+    "appId": "science.picoin.validator",
+    "productName": "Picoin Validator",
+    "copyright": "Copyright © 2026 Picoin",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      "backend/**",
+      {
+        "from": "resources/icons",
+        "to": "icons",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "icon": "resources/icons/logopi.ico",
+      "artifactName": "Picoin-Validator-Setup-${version}.${ext}",
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Picoin Validator"
+    }
+  }
+}

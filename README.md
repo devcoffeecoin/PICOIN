@@ -49,6 +49,7 @@ The public testnet has been used for launch rehearsals and can still be studied 
 | `picoin-web/` | Web explorer and web wallet frontend |
 | `picoin-desktop-wallet/` | Desktop wallet, API based, no embedded node |
 | `picoin-desktop-miner-source/` | Desktop miner UI and packaged mining client |
+| `picoin-desktop-validator/` | Desktop validator UI with embedded local node and validator stake flow |
 | `api/` | Supporting API/frontend glue used by deployments |
 
 ## Environment Files
@@ -735,4 +736,5 @@ Use separate wallets for treasury, governance, miner rewards, validator rewards,
 | `picoin-proof-of-pi/deploy/README-public-testnet.md` | Historical public-testnet deployment guide |
 | `picoin-proof-of-pi/README.md` | Core developer and protocol reference |
 | `picoin-desktop-wallet/README.md` | Desktop wallet build and usage |
+| `picoin-desktop-validator/README.md` | Desktop validator build, embedded node and stake flow |
 | `picoin-web/README.md` | Web explorer and wallet frontend |
