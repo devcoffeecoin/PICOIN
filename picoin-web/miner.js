@@ -67,6 +67,23 @@ async function fetchJson(path) {
   return payload;
 }
 
+function asArray(value, keys = []) {
+  if (Array.isArray(value)) return value;
+  if (!value || typeof value !== "object") return [];
+  for (const key of keys) {
+    if (Array.isArray(value[key])) return value[key];
+  }
+  return [];
+}
+
+async function fetchOptional(path, fallback) {
+  try {
+    return await fetchJson(path);
+  } catch {
+    return fallback;
+  }
+}
+
 function readQueryFromUrl() {
   const params = new URLSearchParams(window.location.search);
   return (params.get("q") || params.get("miner") || params.get("wallet") || "").trim();
@@ -166,6 +183,86 @@ function renderBlocks(blocks) {
     .join("");
 }
 
+async function fetchMinerLookup(value) {
+  try {
+    return await fetchJson(`/miners/lookup/${encodeURIComponent(value)}?limit=50`);
+  } catch (error) {
+    if (!/not found|404/i.test(error.message)) throw error;
+    return fallbackMinerLookup(value);
+  }
+}
+
+async function fallbackMinerLookup(value) {
+  const query = String(value || "").trim();
+  const normalized = query.toUpperCase();
+  const [minersPayload, blocksPayload, account] = await Promise.all([
+    fetchOptional("/miners/status?limit=1000", { miners: [] }),
+    fetchOptional("/blocks", []),
+    normalized.startsWith("PI") ? fetchOptional(`/accounts/${encodeURIComponent(normalized)}`, null) : Promise.resolve(null),
+  ]);
+  const miners = asArray(minersPayload, ["miners", "items", "results"]).filter((miner) => {
+    return miner.miner_id === query || String(miner.reward_address || "").toUpperCase() === normalized;
+  });
+  const minerIds = new Set(miners.map((miner) => miner.miner_id));
+  const recentBlocks = asArray(blocksPayload, ["blocks", "items", "results"])
+    .filter((block) => {
+      return (
+        block.miner_id === query ||
+        minerIds.has(block.miner_id) ||
+        String(block.miner_reward_address || "").toUpperCase() === normalized
+      );
+    })
+    .sort((a, b) => Number(b.height || 0) - Number(a.height || 0))
+    .slice(0, 50)
+    .map((block) => {
+      const rangeStart = Number(block.range_start || 0);
+      const rangeEnd = Number(block.range_end || rangeStart);
+      const segmentSize = Math.max(1, rangeEnd - rangeStart + 1);
+      const taskMs = Number(block.total_task_ms || block.total_block_ms || 0);
+      const workRate = taskMs > 0 ? segmentSize / (taskMs / 1000) : 0;
+      return {
+        ...block,
+        segment_size: segmentSize,
+        total_task_ms: taskMs,
+        work_rate_hps: workRate,
+        hashrate_hps: workRate,
+      };
+    });
+  const totalRewards = recentBlocks.reduce((total, block) => total + Number(block.reward || 0), 0);
+  const avgTask = recentBlocks.length
+    ? recentBlocks.reduce((total, block) => total + Number(block.total_task_ms || 0), 0) / recentBlocks.length
+    : 0;
+  const avgDifficulty = recentBlocks.length
+    ? recentBlocks.reduce((total, block) => total + Number(block.difficulty || 0), 0) / recentBlocks.length
+    : 0;
+  const latest = recentBlocks[0];
+  const first = recentBlocks[recentBlocks.length - 1];
+  const onlineMiners = miners.filter((miner) => miner.online_status === "online").length;
+  return {
+    query,
+    found: Boolean(miners.length || recentBlocks.length || account),
+    type: normalized.startsWith("PI") ? "reward_wallet" : "miner",
+    status: onlineMiners ? "online" : miners.length || account ? "known" : "not_found",
+    online_miners: onlineMiners,
+    miner_count: miners.length,
+    miners,
+    account,
+    summary: {
+      accepted_blocks: recentBlocks.length,
+      total_rewards: totalRewards,
+      avg_total_task_ms: avgTask,
+      avg_total_block_ms: avgTask,
+      avg_difficulty: avgDifficulty,
+      avg_work_rate_hps: avgTask > 0 ? 64 / (avgTask / 1000) : 0,
+      first_block_height: first?.height || null,
+      latest_block_height: latest?.height || null,
+      latest_block_at: latest?.timestamp || null,
+    },
+    recent_blocks: recentBlocks,
+    checked_at: new Date().toISOString(),
+  };
+}
+
 async function searchMiner(query) {
   const value = String(query || "").trim();
   if (!value) {
@@ -178,7 +275,7 @@ async function searchMiner(query) {
   badge.className = "status-pill warn";
   $("minerLookupInput").value = value;
   updateUrl(value);
-  const result = await fetchJson(`/miners/lookup/${encodeURIComponent(value)}?limit=50`);
+  const result = await fetchMinerLookup(value);
   if (!result.found) {
     badge.textContent = "Not found";
     badge.className = "status-pill bad";

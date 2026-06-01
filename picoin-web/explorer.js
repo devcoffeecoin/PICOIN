@@ -210,6 +210,17 @@ async function loadEndpoint(key, path, fallback) {
   }
 }
 
+async function loadMiningMetrics() {
+  try {
+    state.miningMetrics = await fetchJson("/mining/metrics?limit=120");
+  } catch (error) {
+    state.miningMetrics = null;
+    if (!/not found|404/i.test(error.message)) {
+      state.errors.push({ path: "/mining/metrics?limit=120", message: error.message });
+    }
+  }
+}
+
 async function loadNodeState(node) {
   try {
     const [health, sync] = await Promise.all([
@@ -275,7 +286,7 @@ async function loadExplorer() {
     loadEndpoint("consensus", "/consensus/status", null),
     loadEndpoint("protocol", "/protocol", null),
     loadEndpoint("difficultyStatus", "/difficulty", null),
-    loadEndpoint("miningMetrics", "/mining/metrics?limit=120", null),
+    loadMiningMetrics(),
     loadEndpoint("reserve", "/reserve/status", null),
     loadEndpoint("treasury", "/treasury/status", null),
     loadEndpoint("validatorsStatus", "/validators/status", null),
@@ -436,7 +447,7 @@ function renderNetwork() {
 }
 
 function renderMining() {
-  const metrics = state.miningMetrics || {};
+  const metrics = state.miningMetrics || deriveMiningMetrics();
   const summary = metrics.summary || {};
   const blocks = asArray(metrics.blocks, ["blocks", "items", "results"]);
   const summaryEl = $("miningChartSummary");
@@ -488,6 +499,83 @@ function renderMining() {
       `
     )
     .join("");
+}
+
+function deriveMiningMetrics() {
+  const blocks = asArray(state.blocks, ["blocks", "items", "results"])
+    .sort((a, b) => Number(a.height || 0) - Number(b.height || 0))
+    .slice(-120)
+    .map((block) => {
+      const rangeStart = Number(block.range_start || 0);
+      const rangeEnd = Number(block.range_end || rangeStart);
+      const segmentSize = Math.max(1, rangeEnd - rangeStart + 1);
+      const taskMs = Number(block.total_task_ms || block.total_block_ms || 0);
+      const blockMs = Number(block.total_block_ms || block.total_task_ms || 0);
+      const workRate = taskMs > 0 ? segmentSize / (taskMs / 1000) : 0;
+      return {
+        ...block,
+        segment_size: segmentSize,
+        total_task_ms: taskMs,
+        total_block_ms: blockMs,
+        validation_ms: Number(block.validation_ms || 0),
+        work_rate_hps: workRate,
+        hashrate_hps: workRate,
+        block_rate_hps: blockMs > 0 ? segmentSize / (blockMs / 1000) : 0,
+      };
+    });
+  const workRates = blocks.map((block) => Number(block.work_rate_hps || 0)).filter((value) => value > 0);
+  const blockTimes = blocks.map((block) => Number(block.total_block_ms || 0)).filter((value) => value > 0);
+  const latest = blocks[blocks.length - 1];
+  const minerGroups = new Map();
+  for (const block of blocks) {
+    const minerId = block.miner_id || "-";
+    const existing = minerGroups.get(minerId) || {
+      miner_id: minerId,
+      miner_reward_address: block.miner_reward_address || null,
+      accepted_blocks: 0,
+      total_rewards: 0,
+      total_task_ms: 0,
+      avg_difficulty: 0,
+      latest_block_height: 0,
+      latest_block_at: null,
+    };
+    existing.accepted_blocks += 1;
+    existing.total_rewards += Number(block.reward || 0);
+    existing.total_task_ms += Number(block.total_task_ms || 0);
+    existing.avg_difficulty += Number(block.difficulty || 0);
+    if (Number(block.height || 0) >= existing.latest_block_height) {
+      existing.latest_block_height = Number(block.height || 0);
+      existing.latest_block_at = block.timestamp;
+      existing.miner_reward_address = block.miner_reward_address || existing.miner_reward_address;
+    }
+    minerGroups.set(minerId, existing);
+  }
+  const topMiners = Array.from(minerGroups.values())
+    .map((miner) => {
+      const avgTask = miner.accepted_blocks ? miner.total_task_ms / miner.accepted_blocks : 0;
+      return {
+        ...miner,
+        total_rewards: Number(miner.total_rewards.toFixed(8)),
+        avg_total_task_ms: avgTask,
+        avg_difficulty: miner.accepted_blocks ? miner.avg_difficulty / miner.accepted_blocks : 0,
+        avg_work_rate_hps: avgTask > 0 ? 64 / (avgTask / 1000) : 0,
+      };
+    })
+    .sort((a, b) => Number(b.accepted_blocks || 0) - Number(a.accepted_blocks || 0))
+    .slice(0, 12);
+  return {
+    summary: {
+      current_height: latest?.height || 0,
+      latest_block_hash: latest?.block_hash || "",
+      latest_difficulty: latest?.difficulty ?? state.difficultyStatus?.active_difficulty ?? state.protocol?.difficulty,
+      active_difficulty: state.difficultyStatus?.active_difficulty ?? state.protocol?.difficulty,
+      avg_work_rate_hps: workRates.length ? workRates.reduce((a, b) => a + b, 0) / workRates.length : 0,
+      avg_total_block_ms: blockTimes.length ? blockTimes.reduce((a, b) => a + b, 0) / blockTimes.length : 0,
+      blocks_sampled: blocks.length,
+    },
+    blocks,
+    top_miners: topMiners.length ? topMiners : asArray(state.minersStatus?.miners, ["miners"]).slice(0, 12),
+  };
 }
 
 function renderMiningChart(blocks) {

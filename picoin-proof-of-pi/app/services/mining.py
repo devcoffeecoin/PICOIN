@@ -1128,8 +1128,8 @@ def lookup_miner_activity(query: str, limit: int = 25) -> dict[str, Any]:
         ).fetchall()
         miner_ids = [row["miner_id"] for row in miner_rows]
         params: list[Any] = []
-        where_parts = ["UPPER(COALESCE(miner_reward_address, '')) = ?"]
-        params.append(normalized_wallet)
+        where_parts = ["miner_id = ?", "UPPER(COALESCE(miner_reward_address, '')) = ?"]
+        params.extend([search, normalized_wallet])
         if miner_ids:
             where_parts.append(f"miner_id IN ({','.join('?' for _ in miner_ids)})")
             params.extend(miner_ids)
