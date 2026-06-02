@@ -833,7 +833,8 @@ def get_validation_jobs_health(stale_after_seconds: int = VALIDATION_JOB_ASSIGNM
             ORDER BY validation_jobs.created_at ASC
             """
         ).fetchall()
-        eligible = len(_eligible_validator_rows(connection))
+        eligible_rows = _eligible_validator_rows(connection)
+        eligible = len(eligible_rows)
         active_required = _effective_required_validator_approvals(connection)
 
         jobs: list[dict[str, Any]] = []
@@ -853,6 +854,25 @@ def get_validation_jobs_health(stale_after_seconds: int = VALIDATION_JOB_ASSIGNM
             approvals = vote_counts["approvals"]
             rejections = vote_counts["rejections"]
             total_votes = approvals + rejections
+            voted_validator_ids = {
+                str(vote_row["validator_id"])
+                for vote_row in connection.execute(
+                    "SELECT validator_id FROM validation_votes WHERE job_id = ?",
+                    (job["job_id"],),
+                ).fetchall()
+            }
+            missing_eligible_validators = [
+                {
+                    "validator_id": str(validator["validator_id"]),
+                    "node_id": validator.get("node_id"),
+                    "online_status": validator.get("online_status"),
+                    "sync_status": validator.get("sync_status"),
+                    "effective_height": int(validator.get("effective_height") or 0),
+                    "sync_lag": int(validator.get("sync_lag") or 0),
+                }
+                for validator in eligible_rows
+                if str(validator["validator_id"]) not in voted_validator_ids
+            ]
             job_age_seconds = age_seconds(job.get("job_created_at") or job.get("created_at"))
             assigned_age_seconds = age_seconds(job.get("assigned_at"))
             quorum_reached = approvals >= required or rejections >= required
@@ -891,6 +911,11 @@ def get_validation_jobs_health(stale_after_seconds: int = VALIDATION_JOB_ASSIGNM
                     "total_votes": total_votes,
                     "required_approvals": required,
                     "missing_approvals": max(0, required - approvals),
+                    "voted_validator_ids": sorted(voted_validator_ids),
+                    "missing_eligible_validator_ids": [
+                        validator["validator_id"] for validator in missing_eligible_validators
+                    ],
+                    "missing_eligible_validators": missing_eligible_validators,
                     "health": health,
                     "first_vote_at": job.get("first_vote_at"),
                     "second_vote_at": job.get("second_vote_at"),

@@ -268,6 +268,9 @@ def test_validation_jobs_health_reports_stuck_partial_quorum(tmp_path, monkeypat
     assert health["counts"]["stuck_waiting_for_quorum"] == 1
     assert health["jobs"][0]["job_id"] == "job_health_stuck"
     assert health["jobs"][0]["health"] == "stuck_waiting_for_quorum"
+    assert health["jobs"][0]["voted_validator_ids"] == [first["validator_id"]]
+    assert health["jobs"][0]["missing_eligible_validator_ids"] == [second["validator_id"]]
+    assert health["jobs"][0]["missing_eligible_validators"][0]["node_id"] == "node-two"
 
 
 def test_validation_jobs_health_treats_recent_pending_as_healthy(tmp_path, monkeypatch) -> None:
@@ -309,6 +312,8 @@ def test_validation_jobs_health_treats_recent_pending_as_healthy(tmp_path, monke
     assert health["pending_count"] == 1
     assert health["stuck_count"] == 0
     assert health["counts"]["pending_recent"] == 1
+    assert health["jobs"][0]["voted_validator_ids"] == []
+    assert health["jobs"][0]["missing_eligible_validator_ids"] == [validator["validator_id"]]
 
 
 def test_revealed_task_does_not_expire_while_quorum_can_still_advance(tmp_path, monkeypatch) -> None:
