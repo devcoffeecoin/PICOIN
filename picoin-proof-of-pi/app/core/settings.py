@@ -135,10 +135,10 @@ REQUIRED_VALIDATOR_APPROVALS = _int_env(
 if NETWORK_PROFILE.name == "mainnet" and REQUIRED_VALIDATOR_APPROVALS != NETWORK_PROFILE.required_validator_approvals:
     raise RuntimeError("mainnet validator quorum is frozen at 3 approvals")
 RANGE_ASSIGNMENT_MODE = "pseudo_random"
-MINING_TASK_MODE = os.getenv("PICOIN_MINING_TASK_MODE", "assigned").strip().lower()
+MINING_TASK_MODE = os.getenv("PICOIN_MINING_TASK_MODE", "competitive_round").strip().lower()
 if MINING_TASK_MODE not in {"assigned", "competitive_round"}:
     raise RuntimeError("PICOIN_MINING_TASK_MODE must be assigned or competitive_round")
-BLOCK_MATURITY_DEPTH = int(os.getenv("PICOIN_BLOCK_MATURITY_DEPTH", "0"))
+BLOCK_MATURITY_DEPTH = int(os.getenv("PICOIN_BLOCK_MATURITY_DEPTH", "2"))
 if BLOCK_MATURITY_DEPTH < 0:
     raise RuntimeError("PICOIN_BLOCK_MATURITY_DEPTH must be zero or greater")
 MAX_PI_POSITION = 10_000

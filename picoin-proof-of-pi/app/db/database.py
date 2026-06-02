@@ -85,12 +85,22 @@ TASK_COLUMNS = (
     "status",
     "assignment_seed",
     "assignment_mode",
+    "competitive_round_height",
+    "competitive_round_previous_hash",
     "assignment_ms",
     "compute_ms",
     "protocol_params_id",
     "created_at",
     "expires_at",
     "submitted_at",
+    "stale_at",
+    "stale_reason",
+    "mempool_snapshot_id",
+    "selected_tx_hashes",
+    "tx_merkle_root",
+    "tx_count",
+    "tx_fee_total_units",
+    "selected_tx_hashes_hash",
 )
 
 
@@ -104,12 +114,22 @@ CREATE TABLE tasks (
     status TEXT NOT NULL,
     assignment_seed TEXT,
     assignment_mode TEXT,
+    competitive_round_height INTEGER,
+    competitive_round_previous_hash TEXT,
     assignment_ms INTEGER,
     compute_ms INTEGER,
     protocol_params_id INTEGER,
     created_at TEXT NOT NULL,
     expires_at TEXT,
     submitted_at TEXT,
+    stale_at TEXT,
+    stale_reason TEXT,
+    mempool_snapshot_id TEXT,
+    selected_tx_hashes TEXT NOT NULL DEFAULT '[]',
+    tx_merkle_root TEXT NOT NULL DEFAULT '',
+    tx_count INTEGER NOT NULL DEFAULT 0,
+    tx_fee_total_units INTEGER NOT NULL DEFAULT 0,
+    selected_tx_hashes_hash TEXT,
     FOREIGN KEY(miner_id) REFERENCES miners(miner_id),
     FOREIGN KEY(protocol_params_id) REFERENCES protocol_params(id)
 )
@@ -224,12 +244,16 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 status TEXT NOT NULL,
                 assignment_seed TEXT,
                 assignment_mode TEXT,
+                competitive_round_height INTEGER,
+                competitive_round_previous_hash TEXT,
                 assignment_ms INTEGER,
                 compute_ms INTEGER,
                 protocol_params_id INTEGER,
                 created_at TEXT NOT NULL,
                 expires_at TEXT,
                 submitted_at TEXT,
+                stale_at TEXT,
+                stale_reason TEXT,
                 mempool_snapshot_id TEXT,
                 selected_tx_hashes TEXT NOT NULL DEFAULT '[]',
                 tx_merkle_root TEXT NOT NULL DEFAULT '',
@@ -860,6 +884,10 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "tasks", "tx_count", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "tasks", "tx_fee_total_units", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "tasks", "selected_tx_hashes_hash", "TEXT")
+        _ensure_column(connection, "tasks", "competitive_round_height", "INTEGER")
+        _ensure_column(connection, "tasks", "competitive_round_previous_hash", "TEXT")
+        _ensure_column(connection, "tasks", "stale_at", "TEXT")
+        _ensure_column(connection, "tasks", "stale_reason", "TEXT")
         _ensure_column(connection, "commitments", "tx_merkle_root", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(connection, "commitments", "mempool_snapshot_id", "TEXT")
         _ensure_column(connection, "commitments", "selected_tx_hashes_hash", "TEXT")
@@ -1159,6 +1187,18 @@ def _ensure_tasks_range_constraints(connection: sqlite3.Connection) -> None:
     if _tasks_have_global_range_unique(connection):
         _rebuild_tasks_without_global_range_unique(connection)
     connection.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_tasks_competitive_round
+        ON tasks(assignment_mode, assignment_seed, status)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_tasks_competitive_height
+        ON tasks(competitive_round_height, assignment_mode, status)
+        """
+    )
     connection.execute("DROP INDEX IF EXISTS idx_tasks_active_range_unique")
     connection.execute("DROP INDEX IF EXISTS idx_tasks_protected_range_start_unique")
     connection.execute(

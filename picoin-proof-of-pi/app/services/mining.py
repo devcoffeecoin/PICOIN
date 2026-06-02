@@ -1480,10 +1480,11 @@ def create_next_task(
             """
             INSERT INTO tasks (
                 task_id, miner_id, range_start, range_end, algorithm, status,
-                assignment_seed, assignment_mode, assignment_ms, protocol_params_id,
+                assignment_seed, assignment_mode, competitive_round_height,
+                competitive_round_previous_hash, assignment_ms, protocol_params_id,
                 created_at, expires_at
             )
-            VALUES (?, ?, ?, ?, ?, 'assigned', ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, 'assigned', ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 task_id,
@@ -1493,13 +1494,15 @@ def create_next_task(
                 params["algorithm"],
                 assignment["assignment_seed"],
                 assignment_mode,
+                assignment.get("round_height"),
+                assignment.get("previous_hash"),
                 assignment_ms,
                 params["id"],
                 now,
                 expires_at,
             ),
         )
-        next_height = _latest_chain_tip_in_connection(connection)["height"] + 1
+        next_height = int(assignment.get("round_height") or (_latest_chain_tip_in_connection(connection)["height"] + 1))
         tx_snapshot = freeze_transactions_for_task(
             connection,
             task_id=task_id,
@@ -1716,7 +1719,19 @@ def _competitive_round_assignment(connection: Any, params: dict[str, Any]) -> di
             }
         )
     )
-    range_start = min_start + (int(assignment_seed, 16) % candidate_count)
+    range_start = None
+    max_attempts = max(1, int(params.get("range_assignment_max_attempts") or RANGE_ASSIGNMENT_MAX_ATTEMPTS))
+    for attempt in range(max_attempts):
+        attempt_seed = assignment_seed if attempt == 0 else sha256_text(f"{assignment_seed}:{attempt}")
+        candidate_start = min_start + (int(attempt_seed, 16) % candidate_count)
+        candidate_end = candidate_start + segment_size - 1
+        if not _range_start_is_accepted(connection, candidate_start, params["algorithm"]):
+            range_start = candidate_start
+            range_end = candidate_end
+            break
+    else:
+        raise MiningError(409, "no assignable competitive range available in active window")
+    assert range_start is not None
     range_end = range_start + segment_size - 1
     return {
         "range_start": range_start,
@@ -1731,10 +1746,24 @@ def _is_competitive_task(task: dict[str, Any] | None) -> bool:
     return bool(task and task.get("assignment_mode") == COMPETITIVE_ROUND_ASSIGNMENT_MODE)
 
 
+def _task_competitive_round_height(task: dict[str, Any]) -> int | None:
+    try:
+        value = task.get("competitive_round_height")
+        return int(value) if value is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
 def _competitive_task_matches_current_round(connection: Any, task: dict[str, Any], params: dict[str, Any]) -> bool:
     if not _is_competitive_task(task):
         return True
     assignment = _competitive_round_assignment(connection, params)
+    stored_round_height = _task_competitive_round_height(task)
+    stored_previous_hash = task.get("competitive_round_previous_hash")
+    if stored_round_height is not None and stored_round_height != int(assignment["round_height"]):
+        return False
+    if stored_previous_hash and str(stored_previous_hash) != str(assignment["previous_hash"]):
+        return False
     return (
         str(task.get("assignment_seed") or "") == assignment["assignment_seed"]
         and int(task.get("range_start") or 0) == int(assignment["range_start"])
@@ -1742,18 +1771,144 @@ def _competitive_task_matches_current_round(connection: Any, task: dict[str, Any
     )
 
 
-def _expire_stale_competitive_task(connection: Any, task: dict[str, Any], params: dict[str, Any]) -> bool:
+def _mark_competitive_task_stale(
+    connection: Any,
+    task_id: str,
+    reason: str,
+    timestamp: str | None = None,
+) -> bool:
+    timestamp = timestamp or utc_now()
+    cursor = connection.execute(
+        """
+        UPDATE tasks
+        SET status = 'stale',
+            submitted_at = COALESCE(submitted_at, ?),
+            stale_at = ?,
+            stale_reason = ?
+        WHERE task_id = ?
+          AND status IN ('assigned', 'committed', 'revealed')
+        """,
+        (timestamp, timestamp, reason, task_id),
+    )
+    changed = max(0, cursor.rowcount) > 0
+    release_selected_transactions(connection, task_id, reason, timestamp)
+    connection.execute(
+        """
+        UPDATE validation_jobs
+        SET status = 'rejected',
+            result_reason = ?,
+            completed_at = COALESCE(completed_at, ?),
+            finalized_at = COALESCE(finalized_at, ?)
+        WHERE task_id = ?
+          AND status = 'pending'
+        """,
+        (reason, timestamp, timestamp, task_id),
+    )
+    return changed
+
+
+def _expire_stale_competitive_task(
+    connection: Any,
+    task: dict[str, Any],
+    params: dict[str, Any],
+    reason: str = "competitive round closed",
+) -> bool:
     if not _is_competitive_task(task):
         return False
     if _competitive_task_matches_current_round(connection, task, params):
         return False
-    timestamp = utc_now()
-    connection.execute(
-        "UPDATE tasks SET status = 'expired', submitted_at = ? WHERE task_id = ?",
-        (timestamp, task["task_id"]),
-    )
-    release_selected_transactions(connection, task["task_id"], "competitive round closed", timestamp)
-    return True
+    return _mark_competitive_task_stale(connection, task["task_id"], reason)
+
+
+def _competitive_round_winner(connection: Any, task: dict[str, Any]) -> dict[str, Any] | None:
+    if not _is_competitive_task(task):
+        return None
+    assignment_seed = str(task.get("assignment_seed") or "").strip()
+    if not assignment_seed:
+        return None
+    row = connection.execute(
+        """
+        SELECT blocks.height, blocks.task_id, blocks.block_hash, blocks.miner_id
+        FROM blocks
+        JOIN tasks ON tasks.task_id = blocks.task_id
+        WHERE tasks.assignment_mode = ?
+          AND tasks.assignment_seed = ?
+        ORDER BY blocks.height ASC
+        LIMIT 1
+        """,
+        (COMPETITIVE_ROUND_ASSIGNMENT_MODE, assignment_seed),
+    ).fetchone()
+    return row_to_dict(row)
+
+
+def _ensure_competitive_task_can_finalize(connection: Any, task: dict[str, Any], params: dict[str, Any]) -> None:
+    if not _is_competitive_task(task):
+        return
+    if _expire_stale_competitive_task(connection, task, params):
+        raise TransactionExecutionError("competitive round closed")
+    winner = _competitive_round_winner(connection, task)
+    if winner is not None and winner["task_id"] != task["task_id"]:
+        reason = f"competitive round already won by {winner['task_id']} at block {winner['height']}"
+        _mark_competitive_task_stale(connection, task["task_id"], reason)
+        raise TransactionExecutionError(reason)
+
+
+def _close_competitive_round_after_block(
+    connection: Any,
+    task: dict[str, Any],
+    block_height: int,
+    timestamp: str,
+) -> dict[str, Any]:
+    if not _is_competitive_task(task):
+        return {"closed": False, "stale_tasks": 0, "stale_task_ids": []}
+    assignment_seed = str(task.get("assignment_seed") or "").strip()
+    if not assignment_seed:
+        return {"closed": False, "stale_tasks": 0, "stale_task_ids": []}
+    rows = connection.execute(
+        """
+        SELECT task_id
+        FROM tasks
+        WHERE assignment_mode = ?
+          AND assignment_seed = ?
+          AND task_id != ?
+          AND status IN ('assigned', 'committed', 'revealed')
+        ORDER BY created_at ASC, task_id ASC
+        """,
+        (COMPETITIVE_ROUND_ASSIGNMENT_MODE, assignment_seed, task["task_id"]),
+    ).fetchall()
+    stale_task_ids = [row["task_id"] for row in rows]
+    reason = f"competitive round won by {task['task_id']} at block {block_height}"
+    for stale_task_id in stale_task_ids:
+        _mark_competitive_task_stale(connection, stale_task_id, reason, timestamp)
+    return {
+        "closed": True,
+        "assignment_seed": assignment_seed,
+        "winner_task_id": task["task_id"],
+        "winner_block_height": block_height,
+        "stale_tasks": len(stale_task_ids),
+        "stale_task_ids": stale_task_ids,
+    }
+
+
+def _stale_competitive_response(
+    connection: Any,
+    task_id: str,
+    miner_id: str,
+    result_hash: str,
+    signature: str | None,
+    segment: str,
+    reason: str = "competitive round closed",
+) -> dict[str, Any]:
+    _mark_competitive_task_stale(connection, task_id, reason)
+    if _miner_exists(connection, miner_id):
+        _record_submission(connection, task_id, miner_id, result_hash, segment, signature, False, reason)
+    return {
+        "accepted": False,
+        "status": "stale",
+        "message": reason,
+        "block": None,
+        "validation": {"reason": reason},
+    }
 
 
 def submit_task(
@@ -1800,6 +1955,16 @@ def submit_task(
                 segment,
             )
 
+        if task["status"] == "stale":
+            return _stale_competitive_response(
+                connection,
+                task_id,
+                miner_id,
+                result_hash,
+                signature,
+                segment,
+                task.get("stale_reason") or "competitive round closed",
+            )
         if task["status"] != "assigned":
             return _reject_in_connection(
                 connection,
@@ -1818,16 +1983,14 @@ def submit_task(
             task,
             params,
         ):
-            return _reject_in_connection(
+            return _stale_competitive_response(
                 connection,
-                "competitive round closed",
                 task_id,
                 miner_id,
                 result_hash,
-                {},
-                PENALTY_DUPLICATE,
                 signature,
                 segment,
+                "competitive round closed",
             )
 
         expires_at = parse_iso(task["expires_at"])
@@ -1937,6 +2100,18 @@ def submit_task(
         next_height = tip["height"] + 1
         previous_hash = tip["block_hash"]
         timestamp = utc_now()
+        try:
+            _ensure_competitive_task_can_finalize(connection, task, params)
+        except TransactionExecutionError as exc:
+            return _stale_competitive_response(
+                connection,
+                task_id,
+                miner_id,
+                result_hash,
+                signature,
+                segment,
+                str(exc),
+            )
 
         created_at = parse_iso(task.get("created_at"))
         total_block_ms = int((utc_now_dt() - created_at).total_seconds() * 1000) if created_at else None
@@ -2040,6 +2215,7 @@ def submit_task(
         )
         record_science_reserve_for_block(connection, next_height, total_block_reward)
         record_scientific_development_treasury_for_block(connection, next_height, total_block_reward)
+        competitive_round = _close_competitive_round_after_block(connection, task, next_height, timestamp)
         matured_rewards = mature_block_rewards(connection, current_height=next_height, timestamp=timestamp)
         _refresh_trust_score(connection, miner_id)
         _maybe_retarget_after_block(connection, next_height)
@@ -2069,6 +2245,7 @@ def submit_task(
             "transactions": block_transactions,
             "transaction_execution": tx_execution,
             "reward_maturity": {**reward_maturity, **matured_rewards},
+            "competitive_round": competitive_round,
             "difficulty": difficulty,
             "protocol_params_id": params["id"],
             "protocol_version": params["protocol_version"],
@@ -2137,6 +2314,18 @@ def commit_task(
                     "challenge_seed": existing["challenge_seed"],
                     "samples": json.loads(existing["samples"]),
                 }
+        if task["status"] == "stale":
+            _record_submission(
+                connection,
+                task_id,
+                miner_id,
+                result_hash,
+                "",
+                signature,
+                False,
+                task.get("stale_reason") or "competitive round closed",
+            )
+            return _commit_stale(task.get("stale_reason") or "competitive round closed")
         if task["status"] != "assigned":
             return _commit_rejected(f"task is not active: {task['status']}")
         params = _protocol_params_for_task(connection, task)
@@ -2145,7 +2334,8 @@ def commit_task(
             task,
             params,
         ):
-            return _commit_rejected("competitive round closed")
+            _record_submission(connection, task_id, miner_id, result_hash, "", signature, False, "competitive round closed")
+            return _commit_stale("competitive round closed")
         snapshot = get_task_tx_snapshot(connection, task_id)
         if snapshot is None:
             return _commit_rejected("tx snapshot not found for task")
@@ -2335,6 +2525,16 @@ def reveal_task(
                 signature,
                 "",
             )
+        if task["status"] == "stale":
+            return _stale_competitive_response(
+                connection,
+                task_id,
+                miner_id,
+                commitment["result_hash"],
+                signature,
+                "",
+                task.get("stale_reason") or "competitive round closed",
+            )
         if task["status"] != "committed":
             return _reject_in_connection(
                 connection,
@@ -2353,16 +2553,14 @@ def reveal_task(
             task,
             params,
         ):
-            return _reject_in_connection(
+            return _stale_competitive_response(
                 connection,
-                "competitive round closed",
                 task_id,
                 miner_id,
                 commitment["result_hash"],
-                {},
-                PENALTY_DUPLICATE,
                 signature,
                 "",
+                "competitive round closed",
             )
         snapshot = get_task_tx_snapshot(connection, task_id)
         if snapshot is None:
@@ -2981,18 +3179,26 @@ def submit_validation_result(
                 )
             except TransactionExecutionError as exc:
                 finalized_at = utc_now()
-                reason_text = f"transaction finalization failed: {exc}"
+                raw_reason = str(exc)
+                is_competitive_stale = raw_reason.startswith("competitive round")
+                reason_text = raw_reason if is_competitive_stale else f"transaction finalization failed: {exc}"
                 logger.error(
                     "validation finalization failed job_id=%s task_id=%s reason=%s",
                     job_id,
                     job["task_id"],
                     reason_text,
                 )
-                connection.execute(
-                    "UPDATE tasks SET status = 'rejected', submitted_at = ? WHERE task_id = ?",
-                    (finalized_at, job["task_id"]),
+                current_task = row_to_dict(
+                    connection.execute("SELECT status FROM tasks WHERE task_id = ?", (job["task_id"],)).fetchone()
                 )
-                release_selected_transactions(connection, job["task_id"], reason_text, finalized_at)
+                if is_competitive_stale:
+                    _mark_competitive_task_stale(connection, job["task_id"], reason_text, finalized_at)
+                elif current_task is None or current_task.get("status") != "stale":
+                    connection.execute(
+                        "UPDATE tasks SET status = 'rejected', submitted_at = ? WHERE task_id = ?",
+                        (finalized_at, job["task_id"]),
+                    )
+                    release_selected_transactions(connection, job["task_id"], reason_text, finalized_at)
                 _mark_validation_job_finalized(connection, job_id=job_id, finalized_at=finalized_at)
                 connection.execute(
                     """
@@ -3005,7 +3211,7 @@ def submit_validation_result(
                 )
                 return {
                     "accepted": False,
-                    "status": "rejected",
+                    "status": "stale" if is_competitive_stale else "rejected",
                     "message": reason_text,
                     "block": None,
                     "approvals": counts["approvals"],
@@ -4828,7 +5034,8 @@ def _node_counts(connection: Any, params: dict[str, Any]) -> dict[str, Any]:
             COALESCE(SUM(CASE WHEN status = 'committed' THEN 1 ELSE 0 END), 0) AS committed,
             COALESCE(SUM(CASE WHEN status = 'revealed' THEN 1 ELSE 0 END), 0) AS revealed,
             COALESCE(SUM(CASE WHEN status = 'accepted' THEN 1 ELSE 0 END), 0) AS accepted,
-            COALESCE(SUM(CASE WHEN status = 'expired' THEN 1 ELSE 0 END), 0) AS expired
+            COALESCE(SUM(CASE WHEN status = 'expired' THEN 1 ELSE 0 END), 0) AS expired,
+            COALESCE(SUM(CASE WHEN status = 'stale' THEN 1 ELSE 0 END), 0) AS stale
         FROM tasks
         """
     ).fetchone()
@@ -4861,6 +5068,7 @@ def _node_counts(connection: Any, params: dict[str, Any]) -> dict[str, Any]:
             "revealed": int(tasks["revealed"]),
             "accepted": int(tasks["accepted"]),
             "expired": int(tasks["expired"]),
+            "stale": int(tasks["stale"]),
         },
         "validation_jobs": {
             "total": int(validation_jobs["total"]),
@@ -5784,6 +5992,16 @@ def _commit_rejected(reason: str) -> dict[str, Any]:
     }
 
 
+def _commit_stale(reason: str) -> dict[str, Any]:
+    return {
+        "accepted": False,
+        "status": "stale",
+        "message": reason,
+        "challenge_seed": None,
+        "samples": [],
+    }
+
+
 def _latest_block_hash(connection: Any) -> str:
     latest = connection.execute("SELECT block_hash FROM blocks ORDER BY height DESC LIMIT 1").fetchone()
     return GENESIS_HASH if latest is None else latest["block_hash"]
@@ -6045,6 +6263,27 @@ def _range_start_is_protected(connection: Any, range_start: int, algorithm: str)
         WHERE algorithm = ?
         AND status IN ('assigned', 'committed', 'revealed', 'accepted')
         AND range_start = ?
+        LIMIT 1
+        """,
+        (algorithm, range_start),
+    ).fetchone()
+    return row is not None
+
+
+def _range_start_is_accepted(connection: Any, range_start: int, algorithm: str) -> bool:
+    row = connection.execute(
+        """
+        SELECT 1
+        FROM (
+            SELECT range_start, algorithm
+            FROM tasks
+            WHERE status = 'accepted'
+            UNION ALL
+            SELECT range_start, algorithm
+            FROM blocks
+        )
+        WHERE algorithm = ?
+          AND range_start = ?
         LIMIT 1
         """,
         (algorithm, range_start),
@@ -6401,6 +6640,7 @@ def _accept_block_in_connection(
 ) -> dict[str, Any]:
     if params is None:
         params = _protocol_params_for_task(connection, task)
+    _ensure_competitive_task_can_finalize(connection, task, params)
     total_block_reward = calculate_reward(params)
     reward = calculate_miner_reward(params)
     difficulty = calculate_difficulty(params)
@@ -6527,6 +6767,7 @@ def _accept_block_in_connection(
             block_height=next_height,
             params=params,
         )
+    competitive_round = _close_competitive_round_after_block(connection, task, next_height, timestamp)
     matured_rewards = mature_block_rewards(connection, current_height=next_height, timestamp=timestamp)
     _refresh_trust_score(connection, miner_id)
     _maybe_retarget_after_block(connection, next_height)
@@ -6558,6 +6799,7 @@ def _accept_block_in_connection(
         "transaction_execution": tx_execution,
         "validator_reward": validator_reward,
         "reward_maturity": {**reward_maturity, **matured_rewards},
+        "competitive_round": competitive_round,
         "difficulty": difficulty,
         "protocol_params_id": params["id"],
         "protocol_version": params["protocol_version"],

@@ -2,11 +2,21 @@ import sqlite3
 
 import pytest
 
-from app.core.signatures import generate_keypair, sign_payload
+from app.core.crypto import hash_result
+from app.core.pi import calculate_pi_segment
+from app.core.signatures import build_submission_signature_payload, generate_keypair, sign_payload
 from app.db.database import get_connection
 from app.db.database import init_db
 from app.services import mining as mining_service
-from app.services.mining import MiningError, create_next_task, get_validation_job, record_validator_heartbeat, register_miner
+from app.services.mining import (
+    MiningError,
+    create_next_task,
+    get_full_economic_audit,
+    get_validation_job,
+    record_validator_heartbeat,
+    register_miner,
+    submit_task,
+)
 
 
 def _heartbeat_validator(
@@ -32,10 +42,28 @@ def _heartbeat_validator(
     record_validator_heartbeat(payload)
 
 
+def _submit_legacy_task(task: dict, miner_id: str, private_key: str) -> dict:
+    segment = calculate_pi_segment(task["range_start"], task["range_end"], task["algorithm"])
+    result_hash = hash_result(segment, task["range_start"], task["range_end"], task["algorithm"])
+    signed_at = "2026-05-18T00:00:00+00:00"
+    payload = build_submission_signature_payload(
+        task_id=task["task_id"],
+        miner_id=miner_id,
+        range_start=task["range_start"],
+        range_end=task["range_end"],
+        algorithm=task["algorithm"],
+        result_hash=result_hash,
+        signed_at=signed_at,
+    )
+    signature = sign_payload(private_key, payload)
+    return submit_task(task["task_id"], miner_id, result_hash, segment, signature, signed_at)
+
+
 def test_pseudo_random_assignment_returns_non_sequential_ranges(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "assignment.sqlite3"
     monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
     monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr(mining_service, "MINING_TASK_MODE", "assigned")
     init_db(db_path)
 
     first_keys = generate_keypair()
@@ -77,6 +105,58 @@ def test_competitive_round_assignment_gives_miners_same_round_range(tmp_path, mo
     assert first_task["assignment_seed"] == second_task["assignment_seed"]
     assert first_task["range_start"] == second_task["range_start"]
     assert first_task["range_end"] == second_task["range_end"]
+    assert first_task["competitive_round_height"] == 1
+    assert second_task["competitive_round_height"] == 1
+    assert first_task["competitive_round_previous_hash"] == second_task["competitive_round_previous_hash"]
+
+
+def test_competitive_round_accepts_one_winner_and_marks_late_task_stale(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-competitive-winner.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr(mining_service, "MINING_TASK_MODE", "competitive_round")
+    monkeypatch.setattr("app.services.rewards.BLOCK_MATURITY_DEPTH", 2)
+    monkeypatch.setattr("app.services.mining.BLOCK_MATURITY_DEPTH", 2)
+    init_db(db_path)
+
+    first_keys = generate_keypair()
+    second_keys = generate_keypair()
+    first_miner = register_miner("competitive-winner", first_keys["public_key"])
+    second_miner = register_miner("competitive-late", second_keys["public_key"])
+
+    first_task = create_next_task(first_miner["miner_id"])
+    second_task = create_next_task(second_miner["miner_id"])
+
+    assert first_task["assignment_seed"] == second_task["assignment_seed"]
+    assert first_task["range_start"] == second_task["range_start"]
+    assert first_task["range_end"] == second_task["range_end"]
+
+    first_response = _submit_legacy_task(first_task, first_miner["miner_id"], first_keys["private_key"])
+    assert first_response["accepted"] is True
+    assert first_response["block"]["height"] == 1
+    assert first_response["block"]["competitive_round"]["stale_task_ids"] == [second_task["task_id"]]
+
+    late_response = _submit_legacy_task(second_task, second_miner["miner_id"], second_keys["private_key"])
+    assert late_response["accepted"] is False
+    assert late_response["status"] == "stale"
+    assert "competitive round won by" in late_response["message"]
+
+    with get_connection() as connection:
+        rows = connection.execute(
+            "SELECT task_id, status, stale_reason FROM tasks ORDER BY task_id ASC"
+        ).fetchall()
+        blocks = connection.execute("SELECT COUNT(*) AS count FROM blocks").fetchone()["count"]
+        rewards = connection.execute(
+            "SELECT status, COUNT(*) AS count FROM rewards GROUP BY status ORDER BY status"
+        ).fetchall()
+    by_task = {row["task_id"]: dict(row) for row in rows}
+
+    assert by_task[first_task["task_id"]]["status"] == "accepted"
+    assert by_task[second_task["task_id"]]["status"] == "stale"
+    assert "competitive round won by" in by_task[second_task["task_id"]]["stale_reason"]
+    assert blocks == 1
+    assert {row["status"]: row["count"] for row in rewards} == {"immature": 1}
+    assert get_full_economic_audit()["valid"] is True
 
 
 def test_task_assignment_restores_known_miner_identity_after_db_restore(tmp_path, monkeypatch) -> None:
