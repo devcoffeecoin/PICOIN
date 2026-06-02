@@ -674,6 +674,7 @@ def apply_imported_snapshot_state(snapshot_hash: str, *, replace_existing: bool 
         connection.execute("DELETE FROM account_nonces")
         if validators:
             connection.execute("DELETE FROM validators")
+        validators_by_id = {validator["validator_id"]: validator for validator in validators}
         for item in balances:
             balance_units = int(item["balance_units"])
             balance = units_to_float(balance_units)
@@ -684,25 +685,13 @@ def apply_imported_snapshot_state(snapshot_hash: str, *, replace_existing: bool 
                 """,
                 (item["account_id"], item["account_type"], balance, balance_units, timestamp),
             )
-            connection.execute(
-                """
-                INSERT INTO ledger_entries (
-                    account_id, account_type, amount, amount_units, balance_after, balance_after_units, entry_type,
-                    block_height, related_id, description, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, 'snapshot_state_import', ?, ?, 'canonical snapshot state import', ?)
-                """,
-                (
-                    item["account_id"],
-                    item["account_type"],
-                    balance,
-                    balance_units,
-                    balance,
-                    balance_units,
-                    checkpoint["height"],
-                    snapshot_hash,
-                    timestamp,
-                ),
+            _restore_snapshot_balance_ledger_entries(
+                connection,
+                item,
+                validators_by_id,
+                int(checkpoint["height"]),
+                snapshot_hash,
+                timestamp,
             )
         for item in nonces:
             connection.execute(
@@ -1011,6 +1000,108 @@ def _restore_snapshot_validator(connection: Any, validator: dict[str, Any], time
             validator["is_banned"],
             validator["enabled"],
             validator["protocol_version"],
+        ),
+    )
+
+
+def _restore_snapshot_balance_ledger_entries(
+    connection: Any,
+    item: dict[str, Any],
+    validators_by_id: dict[str, dict[str, Any]],
+    block_height: int,
+    snapshot_hash: str,
+    timestamp: str,
+) -> None:
+    account_id = item["account_id"]
+    account_type = item["account_type"]
+    balance_units = int(item["balance_units"])
+    balance = units_to_float(balance_units)
+    if account_type != "validator":
+        _insert_snapshot_balance_ledger_entry(
+            connection,
+            account_id,
+            account_type,
+            balance_units,
+            balance_units,
+            "snapshot_state_import",
+            block_height,
+            snapshot_hash,
+            "canonical snapshot state import",
+            timestamp,
+        )
+        return
+
+    validator = validators_by_id.get(account_id)
+    wallet_stake_units = min(
+        balance_units,
+        int(validator.get("wallet_stake_locked_units") or 0) if validator else 0,
+    )
+    remaining_units = balance_units - wallet_stake_units
+    running_balance_units = 0
+    if wallet_stake_units:
+        running_balance_units += wallet_stake_units
+        _insert_snapshot_balance_ledger_entry(
+            connection,
+            account_id,
+            account_type,
+            wallet_stake_units,
+            running_balance_units,
+            "validator_stake_lock",
+            block_height,
+            snapshot_hash,
+            "canonical snapshot validator wallet stake import",
+            timestamp,
+        )
+    if remaining_units:
+        running_balance_units += remaining_units
+        _insert_snapshot_balance_ledger_entry(
+            connection,
+            account_id,
+            account_type,
+            remaining_units,
+            running_balance_units,
+            "snapshot_state_import",
+            block_height,
+            snapshot_hash,
+            "canonical snapshot validator state import",
+            timestamp,
+        )
+
+
+def _insert_snapshot_balance_ledger_entry(
+    connection: Any,
+    account_id: str,
+    account_type: str,
+    amount_units: int,
+    balance_after_units: int,
+    entry_type: str,
+    block_height: int,
+    snapshot_hash: str,
+    description: str,
+    timestamp: str,
+) -> None:
+    amount = units_to_float(amount_units)
+    balance_after = units_to_float(balance_after_units)
+    connection.execute(
+        """
+        INSERT INTO ledger_entries (
+            account_id, account_type, amount, amount_units, balance_after, balance_after_units, entry_type,
+            block_height, related_id, description, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            account_id,
+            account_type,
+            amount,
+            amount_units,
+            balance_after,
+            balance_after_units,
+            entry_type,
+            block_height,
+            snapshot_hash,
+            description,
+            timestamp,
         ),
     )
 

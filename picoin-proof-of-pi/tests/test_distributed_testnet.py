@@ -1052,24 +1052,44 @@ def test_apply_snapshot_state_restores_validator_registry_for_replay(tmp_path, m
 
     miner_key = generate_keypair()
     validator_key = generate_keypair()
+    miner = register_miner("snapshot-validator-miner", miner_key["public_key"])
     reward_wallet = create_wallet("snapshot-validator-reward")
     stake_owner = create_wallet("snapshot-validator-owner")
     validator = register_validator("snapshot-validator", validator_key["public_key"], reward_wallet["address"])
+    _fund_wallet_from_genesis(stake_owner["address"], 40.0)
     with get_connection() as connection:
         connection.execute(
             """
             UPDATE validators
-            SET stake_locked = 31.416,
-                wallet_stake_locked = 31.416,
-                stake_owner_address = ?,
-                accepted_jobs = 7,
+            SET stake_locked = 0,
+                wallet_stake_locked = 0,
+                stake_owner_address = NULL
+            WHERE validator_id = ?
+            """,
+            (validator["validator_id"],),
+        )
+    stake_tx = sign_transaction(
+        private_key=stake_owner["private_key"],
+        public_key=stake_owner["public_key"],
+        tx_type="stake",
+        sender=stake_owner["address"],
+        amount=31.416,
+        nonce=1,
+        fee=0.01,
+        payload={"stake_type": "validator", "validator_id": validator["validator_id"]},
+    )
+    submit_transaction(stake_tx)
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE validators
+            SET accepted_jobs = 7,
                 total_validation_ms = 1234
             WHERE validator_id = ?
             """,
-            (stake_owner["address"], validator["validator_id"]),
+            (validator["validator_id"],),
         )
-    miner = register_miner("snapshot-validator-miner", miner_key["public_key"])
-    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
 
     snapshot = export_canonical_snapshot(height=1)
     validation = validate_snapshot_document(snapshot)
@@ -1095,6 +1115,7 @@ def test_apply_snapshot_state_restores_validator_registry_for_replay(tmp_path, m
         ).fetchone()
 
     assert applied["validators_applied"] == snapshot["checkpoint"]["validators_count"]
+    assert get_full_economic_audit()["valid"] is True
     assert restored is not None
     assert restored["public_key"] == validator_key["public_key"]
     assert restored["reward_address"] == reward_wallet["address"]
