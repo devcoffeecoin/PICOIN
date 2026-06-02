@@ -1,6 +1,8 @@
 import { app, dialog } from "electron";
 import { ChildProcessWithoutNullStreams, spawn } from "child_process";
+import crypto from "crypto";
 import fs from "fs";
+import os from "os";
 import path from "path";
 
 const DEFAULT_NETWORK_ID = "picoin-mainnet-v1";
@@ -30,6 +32,7 @@ type ValidatorConfig = {
 
 type StakeConfig = ValidatorConfig & {
   walletPath: string;
+  walletPassword?: string;
   amount: string;
   fee: string;
 };
@@ -538,30 +541,32 @@ export async function stakeValidator(config: StakeConfig) {
   }
   await seedLocalValidatorIdentity(config);
   const env = buildEnv(config);
-  const output = await runPythonOnce(
-    config.pythonCmd || "python",
-    [
-      "-u",
-      "-m",
-      "picoin",
-      "tx",
-      "--server",
-      normalizeApiUrl(config.apiUrl),
-      "send",
-      "--wallet",
-      config.walletPath,
-      "--type",
-      "stake",
-      "--stake-type",
-      "validator",
-      "--validator-id",
-      identity.validatorId,
-      "--amount",
-      configValue(config.amount, MIN_VALIDATOR_STAKE),
-      "--fee",
-      configValue(config.fee, "0.001"),
-    ],
-    env,
+  const output = await withCliWallet(config, (walletPath) =>
+    runPythonOnce(
+      config.pythonCmd || "python",
+      [
+        "-u",
+        "-m",
+        "picoin",
+        "tx",
+        "--server",
+        normalizeApiUrl(config.apiUrl),
+        "send",
+        "--wallet",
+        walletPath,
+        "--type",
+        "stake",
+        "--stake-type",
+        "validator",
+        "--validator-id",
+        identity.validatorId,
+        "--amount",
+        configValue(config.amount, MIN_VALIDATOR_STAKE),
+        "--fee",
+        configValue(config.fee, "0.001"),
+      ],
+      env,
+    ),
   );
   return { ok: true, message: "Stake transaction submitted", result: parseJsonOutput(output) };
 }
@@ -577,32 +582,140 @@ export async function unstakeValidator(config: StakeConfig) {
   }
   await seedLocalValidatorIdentity(config);
   const env = buildEnv(config);
-  const output = await runPythonOnce(
-    config.pythonCmd || "python",
-    [
-      "-u",
-      "-m",
-      "picoin",
-      "tx",
-      "--server",
-      normalizeApiUrl(config.apiUrl),
-      "send",
-      "--wallet",
-      config.walletPath,
-      "--type",
-      "unstake",
-      "--stake-type",
-      "validator",
-      "--validator-id",
-      identity.validatorId,
-      "--amount",
-      configValue(config.amount, MIN_VALIDATOR_STAKE),
-      "--fee",
-      configValue(config.fee, "0.001"),
-    ],
-    env,
+  const output = await withCliWallet(config, (walletPath) =>
+    runPythonOnce(
+      config.pythonCmd || "python",
+      [
+        "-u",
+        "-m",
+        "picoin",
+        "tx",
+        "--server",
+        normalizeApiUrl(config.apiUrl),
+        "send",
+        "--wallet",
+        walletPath,
+        "--type",
+        "unstake",
+        "--stake-type",
+        "validator",
+        "--validator-id",
+        identity.validatorId,
+        "--amount",
+        configValue(config.amount, MIN_VALIDATOR_STAKE),
+        "--fee",
+        configValue(config.fee, "0.001"),
+      ],
+      env,
+    ),
   );
   return { ok: true, message: "Unstake transaction submitted", result: parseJsonOutput(output) };
+}
+
+async function withCliWallet(config: StakeConfig, action: (walletPath: string) => Promise<string>): Promise<string> {
+  const wallet = readWalletJson(config.walletPath);
+  const legacyWallet = normalizeLegacyWallet(wallet);
+  if (legacyWallet) {
+    if (legacyWallet === wallet) return action(config.walletPath);
+    return withTemporaryWalletFile(legacyWallet, action);
+  }
+
+  const encryptedWallet = decryptPicoinKeystore(wallet, config.walletPassword || "");
+  return withTemporaryWalletFile(encryptedWallet, action);
+}
+
+function readWalletJson(walletPath: string): Record<string, any> {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(walletPath, "utf-8"));
+    if (!parsed || typeof parsed !== "object") {
+      throw new Error("wallet JSON must be an object");
+    }
+    return parsed as Record<string, any>;
+  } catch (error) {
+    throw new Error(`Unable to read wallet JSON: ${errorMessage(error)}`);
+  }
+}
+
+function normalizeLegacyWallet(wallet: Record<string, any>): Record<string, any> | null {
+  const privateKey = wallet.private_key || wallet.privateKey;
+  const publicKey = wallet.public_key || wallet.publicKey;
+  const address = wallet.address;
+  if (!privateKey || !publicKey || !address) return null;
+  if (wallet.private_key && wallet.public_key) return wallet;
+  return {
+    ...wallet,
+    address,
+    private_key: privateKey,
+    public_key: publicKey,
+  };
+}
+
+function decryptPicoinKeystore(wallet: Record<string, any>, password: string): Record<string, any> {
+  if (!looksLikePicoinKeystore(wallet)) {
+    throw new Error(
+      "Selected wallet is not a CLI wallet and not an encrypted Picoin Wallet keystore. Select a wallet with private_key or an exported Picoin keystore.",
+    );
+  }
+  if (!password) {
+    throw new Error("Wallet password is required for encrypted Picoin Wallet keystores.");
+  }
+  try {
+    const key = crypto.pbkdf2Sync(
+      password,
+      Buffer.from(String(wallet.salt), "base64url"),
+      Number(wallet.iterations),
+      32,
+      "sha256",
+    );
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(String(wallet.iv), "base64url"));
+    decipher.setAuthTag(Buffer.from(String(wallet.tag), "base64url"));
+    const plaintext = Buffer.concat([
+      decipher.update(Buffer.from(String(wallet.ciphertext), "base64url")),
+      decipher.final(),
+    ]).toString("utf-8");
+    const secrets = JSON.parse(plaintext);
+    if (!secrets.privateKey) {
+      throw new Error("keystore does not contain a private key");
+    }
+    return {
+      address: wallet.address,
+      public_key: wallet.publicKey,
+      private_key: secrets.privateKey,
+      network_id: wallet.network,
+      chain_id: wallet.chainId,
+    };
+  } catch (error) {
+    throw new Error(`Unable to unlock wallet keystore: ${errorMessage(error)}`);
+  }
+}
+
+function looksLikePicoinKeystore(wallet: Record<string, any>): boolean {
+  return (
+    wallet.version === 1 &&
+    wallet.cipher === "aes-256-gcm" &&
+    wallet.kdf === "pbkdf2-sha256" &&
+    Boolean(wallet.salt) &&
+    Boolean(wallet.iv) &&
+    Boolean(wallet.tag) &&
+    Boolean(wallet.ciphertext) &&
+    Boolean(wallet.address) &&
+    Boolean(wallet.publicKey)
+  );
+}
+
+async function withTemporaryWalletFile(wallet: Record<string, any>, action: (walletPath: string) => Promise<string>): Promise<string> {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "picoin-validator-wallet-"));
+  const walletPath = path.join(tempDir, "wallet.json");
+  try {
+    fs.writeFileSync(walletPath, JSON.stringify(wallet, null, 2), { encoding: "utf-8", mode: 0o600 });
+    return await action(walletPath);
+  } finally {
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {
+      // Best-effort cleanup only.
+    }
+  }
 }
 
 export async function updateValidatorRewardWallet(config: ValidatorConfig) {
