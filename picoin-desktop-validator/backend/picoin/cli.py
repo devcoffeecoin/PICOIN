@@ -60,6 +60,7 @@ from app.services.state import (
     import_canonical_snapshot,
     restore_imported_snapshot_state,
     validate_snapshot_document,
+    validator_snapshot,
 )
 from app.services.wallet import address_from_public_key, address_matches_public_key, create_wallet, is_valid_address, sign_transaction
 
@@ -1087,6 +1088,8 @@ def _snapshot_from_sqlite(path: Path, height: int | None) -> dict[str, Any]:
             for item in balances
         ]
         balances_hash = sha256_text(canonical_json({"height": height, "balances": balances}))
+        validators = validator_snapshot(connection)
+        validators_hash = sha256_text(canonical_json({"height": height, "validators": validators}))
         ledger_entries_count = int(
             connection.execute(
                 """
@@ -1111,6 +1114,8 @@ def _snapshot_from_sqlite(path: Path, height: int | None) -> dict[str, Any]:
             "state_root": state_root,
             "balances_hash": balances_hash,
             "balances_count": len(balances),
+            "validators_hash": validators_hash,
+            "validators_count": len(validators),
             "ledger_entries_count": ledger_entries_count,
             "total_balance": total_balance,
             "total_balance_units": total_balance_units,
@@ -1122,6 +1127,7 @@ def _snapshot_from_sqlite(path: Path, height: int | None) -> dict[str, Any]:
             "exported_at": datetime.now(timezone.utc).isoformat(),
             "checkpoint": checkpoint,
             "balances": export_balances,
+            "validators": validators,
         }
     finally:
         connection.close()

@@ -6,6 +6,8 @@ Electron + React desktop validator for Picoin mainnet.
 
 - Runs a local Picoin node.
 - Registers or loads a local validator identity.
+- Restores a canonical snapshot before validation when the local node is empty or divergent.
+- Catches up the local node before entering the validation loop.
 - Validates jobs through the configured Picoin API.
 - Shows node sync, replay, validator eligibility, quorum and logs.
 - Submits wallet-backed validator stake from a selected Picoin wallet JSON.
@@ -57,3 +59,4 @@ Electron installs Python requirements using the detected Python 3.10+ runtime be
 - The validator desktop intentionally embeds a local node. A validator should not vote from API data alone.
 - The default local RPC port is `8131` to avoid colliding with server-side Picoin nodes on `8000`.
 - Stake submission uses the selected wallet JSON through the Picoin CLI and does not expose the wallet private key to React.
+- If replay becomes divergent or the validator process exits with a sync error, the app attempts a snapshot restore and restarts validation.
