@@ -33,6 +33,7 @@ from app.core.signatures import (
 )
 from app.core.settings import (
     CHAIN_ID,
+    BLOCK_MATURITY_DEPTH,
     COOLDOWN_AFTER_REJECTIONS,
     COOLDOWN_SECONDS,
     FAUCET_ALLOWED_NETWORKS,
@@ -47,6 +48,7 @@ from app.core.settings import (
     GENESIS_SUPPLY,
     MAX_TRANSACTIONS_PER_BLOCK,
     MIN_VALIDATOR_STAKE,
+    MINING_TASK_MODE,
     NETWORK_ID,
     NETWORK_PROFILE,
     NODE_TYPE,
@@ -108,6 +110,11 @@ from app.core.settings import (
 )
 from app.db.database import get_connection, row_to_dict
 from app.services.consensus import record_local_block_proposal
+from app.services.rewards import (
+    immature_reward_total_for_account,
+    mature_block_rewards,
+    record_miner_block_reward,
+)
 from app.services.science import record_science_reserve_for_block, science_events_for_node
 from app.services.state import (
     active_snapshot_base,
@@ -135,6 +142,7 @@ from validator.proof import validate_submission
 logger = logging.getLogger(__name__)
 GENESIS_HASH = "0" * 64
 ECONOMIC_AUDIT_TOLERANCE = 0.000001
+COMPETITIVE_ROUND_ASSIGNMENT_MODE = "competitive_round"
 PARTICIPANT_ONLINE_SECONDS = 120
 PARTICIPANT_OFFLINE_SECONDS = 300
 VALIDATOR_SYNC_LAG_BLOCKS = 3
@@ -1418,13 +1426,20 @@ def create_next_task(
         ).fetchone()
         if active_task is not None:
             task = row_to_dict(active_task)
-            RETARGET_MAX_PI_POSITION_value = _resolve_RETARGET_MAX_PI_POSITION(params)
-            if int(task["range_end"]) > RETARGET_MAX_PI_POSITION_value:
-                raise MiningError(
-                    409,
-                    f"active task exceeds RETARGET_MAX_PI_POSITION={RETARGET_MAX_PI_POSITION_value}",
-                )
-            return task
+            if MINING_TASK_MODE == COMPETITIVE_ROUND_ASSIGNMENT_MODE and _expire_stale_competitive_task(
+                connection,
+                task,
+                params,
+            ):
+                task = None
+            else:
+                RETARGET_MAX_PI_POSITION_value = _resolve_RETARGET_MAX_PI_POSITION(params)
+                if int(task["range_end"]) > RETARGET_MAX_PI_POSITION_value:
+                    raise MiningError(
+                        409,
+                        f"active task exceeds RETARGET_MAX_PI_POSITION={RETARGET_MAX_PI_POSITION_value}",
+                    )
+                return task
 
         recent_assignments = connection.execute(
             """
@@ -1445,12 +1460,18 @@ def create_next_task(
         if active_count >= params["max_active_tasks_per_miner"]:
             raise MiningError(429, "miner has too many active tasks")
 
-        pooled_task = _claim_global_task_for_miner(connection, miner_id, params)
-        if pooled_task is not None:
-            return pooled_task
+        if MINING_TASK_MODE != COMPETITIVE_ROUND_ASSIGNMENT_MODE:
+            pooled_task = _claim_global_task_for_miner(connection, miner_id, params)
+            if pooled_task is not None:
+                return pooled_task
 
         task_id = f"task_{uuid.uuid4().hex[:16]}"
-        assignment = _assign_pseudo_random_range(connection, miner_id, task_id, params)
+        if MINING_TASK_MODE == COMPETITIVE_ROUND_ASSIGNMENT_MODE:
+            assignment = _competitive_round_assignment(connection, params)
+            assignment_mode = COMPETITIVE_ROUND_ASSIGNMENT_MODE
+        else:
+            assignment = _assign_pseudo_random_range(connection, miner_id, task_id, params)
+            assignment_mode = params["range_assignment_mode"]
         assignment_ms = elapsed_ms(started)
         now = utc_now()
         expires_at = iso_at(_task_expiration_seconds_for_position(params, assignment["range_end"]))
@@ -1471,7 +1492,7 @@ def create_next_task(
                 assignment["range_end"],
                 params["algorithm"],
                 assignment["assignment_seed"],
-                params["range_assignment_mode"],
+                assignment_mode,
                 assignment_ms,
                 params["id"],
                 now,
@@ -1673,6 +1694,68 @@ def _claim_global_task_for_miner(
     return row_to_dict(connection.execute("SELECT * FROM tasks WHERE task_id = ?", (row["task_id"],)).fetchone())
 
 
+def _competitive_round_assignment(connection: Any, params: dict[str, Any]) -> dict[str, Any]:
+    tip = _latest_chain_tip_in_connection(connection)
+    next_height = int(tip["height"]) + 1
+    window = _range_assignment_window(connection, params)
+    segment_size = int(params["segment_size"])
+    min_start = int(window["min_start"])
+    max_start = int(window["max_start"])
+    candidate_count = max(1, max_start - min_start + 1)
+    assignment_seed = sha256_text(
+        canonical_json(
+            {
+                "mode": COMPETITIVE_ROUND_ASSIGNMENT_MODE,
+                "network_id": NETWORK_ID,
+                "chain_id": CHAIN_ID,
+                "height": next_height,
+                "previous_hash": tip["block_hash"],
+                "algorithm": params["algorithm"],
+                "segment_size": segment_size,
+                "protocol_params_id": params["id"],
+            }
+        )
+    )
+    range_start = min_start + (int(assignment_seed, 16) % candidate_count)
+    range_end = range_start + segment_size - 1
+    return {
+        "range_start": range_start,
+        "range_end": range_end,
+        "assignment_seed": assignment_seed,
+        "round_height": next_height,
+        "previous_hash": tip["block_hash"],
+    }
+
+
+def _is_competitive_task(task: dict[str, Any] | None) -> bool:
+    return bool(task and task.get("assignment_mode") == COMPETITIVE_ROUND_ASSIGNMENT_MODE)
+
+
+def _competitive_task_matches_current_round(connection: Any, task: dict[str, Any], params: dict[str, Any]) -> bool:
+    if not _is_competitive_task(task):
+        return True
+    assignment = _competitive_round_assignment(connection, params)
+    return (
+        str(task.get("assignment_seed") or "") == assignment["assignment_seed"]
+        and int(task.get("range_start") or 0) == int(assignment["range_start"])
+        and int(task.get("range_end") or 0) == int(assignment["range_end"])
+    )
+
+
+def _expire_stale_competitive_task(connection: Any, task: dict[str, Any], params: dict[str, Any]) -> bool:
+    if not _is_competitive_task(task):
+        return False
+    if _competitive_task_matches_current_round(connection, task, params):
+        return False
+    timestamp = utc_now()
+    connection.execute(
+        "UPDATE tasks SET status = 'expired', submitted_at = ? WHERE task_id = ?",
+        (timestamp, task["task_id"]),
+    )
+    release_selected_transactions(connection, task["task_id"], "competitive round closed", timestamp)
+    return True
+
+
 def submit_task(
     task_id: str,
     miner_id: str,
@@ -1725,6 +1808,23 @@ def submit_task(
                 miner_id,
                 result_hash,
                 {"task_status": task["status"]},
+                PENALTY_DUPLICATE,
+                signature,
+                segment,
+            )
+        params = _protocol_params_for_task(connection, task)
+        if MINING_TASK_MODE == COMPETITIVE_ROUND_ASSIGNMENT_MODE and _expire_stale_competitive_task(
+            connection,
+            task,
+            params,
+        ):
+            return _reject_in_connection(
+                connection,
+                "competitive round closed",
+                task_id,
+                miner_id,
+                result_hash,
+                {},
                 PENALTY_DUPLICATE,
                 signature,
                 segment,
@@ -1830,7 +1930,6 @@ def submit_task(
                 segment,
             )
 
-        params = _protocol_params_for_task(connection, task)
         total_block_reward = calculate_reward(params)
         reward = calculate_miner_reward(params)
         difficulty = calculate_difficulty(params)
@@ -1919,22 +2018,17 @@ def submit_task(
             (timestamp, task_id),
         )
         _record_submission(connection, task_id, miner_id, result_hash, segment, signature, True, "accepted")
-        connection.execute(
-            """
-            INSERT INTO rewards (miner_id, block_height, amount, amount_units, reason, created_at)
-            VALUES (?, ?, ?, ?, 'block accepted', ?)
-            """,
-            (miner_id, next_height, reward, to_units(reward), timestamp),
-        )
-        _apply_ledger_entry(
+        reward_maturity = record_miner_block_reward(
             connection,
+            miner_id=miner_id,
             account_id=miner_reward_account,
             account_type=miner_reward_account_type,
-            amount=reward,
-            entry_type="block_reward",
             block_height=next_height,
+            amount=reward,
+            reason="block accepted",
             related_id=task_id,
             description="miner block reward",
+            timestamp=timestamp,
         )
         tx_execution = apply_block_transactions(
             connection,
@@ -1946,6 +2040,7 @@ def submit_task(
         )
         record_science_reserve_for_block(connection, next_height, total_block_reward)
         record_scientific_development_treasury_for_block(connection, next_height, total_block_reward)
+        matured_rewards = mature_block_rewards(connection, current_height=next_height, timestamp=timestamp)
         _refresh_trust_score(connection, miner_id)
         _maybe_retarget_after_block(connection, next_height)
         _maybe_run_scheduled_retroactive_audit(connection, next_height)
@@ -1973,6 +2068,7 @@ def submit_task(
             "checkpoint": checkpoint,
             "transactions": block_transactions,
             "transaction_execution": tx_execution,
+            "reward_maturity": {**reward_maturity, **matured_rewards},
             "difficulty": difficulty,
             "protocol_params_id": params["id"],
             "protocol_version": params["protocol_version"],
@@ -2043,6 +2139,13 @@ def commit_task(
                 }
         if task["status"] != "assigned":
             return _commit_rejected(f"task is not active: {task['status']}")
+        params = _protocol_params_for_task(connection, task)
+        if MINING_TASK_MODE == COMPETITIVE_ROUND_ASSIGNMENT_MODE and _expire_stale_competitive_task(
+            connection,
+            task,
+            params,
+        ):
+            return _commit_rejected("competitive round closed")
         snapshot = get_task_tx_snapshot(connection, task_id)
         if snapshot is None:
             return _commit_rejected("tx snapshot not found for task")
@@ -2138,7 +2241,6 @@ def commit_task(
                 }
             )
         )
-        params = _active_protocol_params(connection)
         samples = _build_challenge_samples(
             task["range_start"],
             task["range_end"],
@@ -2241,6 +2343,23 @@ def reveal_task(
                 miner_id,
                 commitment["result_hash"],
                 {"task_status": task["status"]},
+                PENALTY_DUPLICATE,
+                signature,
+                "",
+            )
+        params = _protocol_params_for_task(connection, task)
+        if MINING_TASK_MODE == COMPETITIVE_ROUND_ASSIGNMENT_MODE and _expire_stale_competitive_task(
+            connection,
+            task,
+            params,
+        ):
+            return _reject_in_connection(
+                connection,
+                "competitive round closed",
+                task_id,
+                miner_id,
+                commitment["result_hash"],
+                {},
                 PENALTY_DUPLICATE,
                 signature,
                 "",
@@ -2400,7 +2519,6 @@ def reveal_task(
                 expected_snapshot_id,
                 expected_fee_units,
             )
-            params = _protocol_params_for_task(connection, task)
             validation_expires_at = iso_at(_task_expiration_seconds_for_position(params, task["range_end"]))
             connection.execute(
                 "UPDATE tasks SET status = 'revealed', expires_at = ? WHERE task_id = ?",
@@ -2815,6 +2933,38 @@ def submit_validation_result(
                 counts["approvals"],
                 required,
             )
+            duplicate_block = connection.execute(
+                "SELECT height FROM blocks WHERE result_hash = ? OR task_id = ?",
+                (job["result_hash"], job["task_id"]),
+            ).fetchone()
+            if duplicate_block is not None:
+                finalized_at = utc_now()
+                reason_text = f"duplicate competitive result already accepted at block {duplicate_block['height']}"
+                connection.execute(
+                    "UPDATE tasks SET status = 'rejected', submitted_at = ? WHERE task_id = ?",
+                    (finalized_at, job["task_id"]),
+                )
+                release_selected_transactions(connection, job["task_id"], reason_text, finalized_at)
+                _mark_validation_job_finalized(connection, job_id=job_id, finalized_at=finalized_at)
+                connection.execute(
+                    """
+                    UPDATE validation_jobs
+                    SET status = 'rejected', assigned_validator_id = ?, result_reason = ?,
+                        validator_signature = ?, validation_ms = ?, completed_at = ?
+                    WHERE job_id = ?
+                    """,
+                    (validator_id, reason_text, signature, validation_ms, finalized_at, job_id),
+                )
+                return {
+                    "accepted": False,
+                    "status": "rejected",
+                    "message": reason_text,
+                    "block": None,
+                    "approvals": counts["approvals"],
+                    "rejections": counts["rejections"],
+                    "required_approvals": required,
+                    "required_rejections": required,
+                }
             try:
                 block = _accept_block_in_connection(
                     connection=connection,
@@ -3012,7 +3162,22 @@ def get_stats() -> dict[str, Any]:
 def get_balance(account_id: str) -> dict[str, Any] | None:
     with get_connection() as connection:
         row = connection.execute("SELECT * FROM balances WHERE account_id = ?", (account_id,)).fetchone()
-    return row_to_dict(row)
+        immature = immature_reward_total_for_account(connection, account_id)
+    result = row_to_dict(row)
+    if result is None:
+        if immature["immature_reward_count"] == 0:
+            return None
+        result = {
+            "account_id": account_id,
+            "account_type": "unknown",
+            "balance": 0.0,
+            "balance_units": 0,
+            "updated_at": None,
+        }
+    result["available_balance"] = round(float(result.get("balance") or 0), 8)
+    result.update(immature)
+    result["total_balance"] = round(result["available_balance"] + float(immature["immature_rewards"]), 8)
+    return result
 
 
 def get_balances(limit: int = 100) -> list[dict[str, Any]]:
@@ -3217,6 +3382,22 @@ def get_full_economic_audit() -> dict[str, Any]:
         economic_base_total = snapshot_base_total if snapshot_base_total > 0 else GENESIS_SUPPLY
 
         block_rewards = _sum_query(connection, "SELECT COALESCE(SUM(reward), 0) AS total FROM blocks")
+        mature_block_rewards_total = _sum_query(
+            connection,
+            """
+            SELECT COALESCE(SUM(amount), 0) AS total
+            FROM rewards
+            WHERE COALESCE(status, 'mature') = 'mature'
+            """,
+        )
+        immature_block_rewards = _sum_query(
+            connection,
+            """
+            SELECT COALESCE(SUM(amount), 0) AS total
+            FROM rewards
+            WHERE status = 'immature'
+            """,
+        )
         validator_rewards = _sum_query(
             connection,
             "SELECT COALESCE(SUM(amount), 0) AS total FROM ledger_entries WHERE entry_type = 'validator_reward'",
@@ -3296,7 +3477,7 @@ def get_full_economic_audit() -> dict[str, Any]:
 
     expected_total_balances = round(
         economic_base_total
-        + block_rewards
+        + mature_block_rewards_total
         + validator_rewards
         + audit_rewards
         + science_reserve_rewards
@@ -3313,14 +3494,14 @@ def get_full_economic_audit() -> dict[str, Any]:
     _audit_equal(
         issues,
         code="total_balances_mismatch",
-        message="sum(balances) must equal genesis supply plus minted miner, validator, audit, science reserve and scientific treasury rewards",
+        message="sum(balances) must equal genesis supply plus mature miner, validator, audit, science reserve and scientific treasury rewards",
         expected=expected_total_balances,
         actual=actual_total_balances,
     )
     _audit_equal(
         issues,
         code="ledger_total_mismatch",
-        message="sum(ledger_entries.amount) must equal genesis supply plus minted miner, validator, audit, science reserve and scientific treasury rewards",
+        message="sum(ledger_entries.amount) must equal genesis supply plus mature miner, validator, audit, science reserve and scientific treasury rewards",
         expected=expected_ledger_total,
         actual=ledger_total_amount,
     )
@@ -3334,8 +3515,8 @@ def get_full_economic_audit() -> dict[str, Any]:
     _audit_equal(
         issues,
         code="ledger_block_rewards_mismatch",
-        message="block_reward ledger entries must equal accepted block rewards",
-        expected=block_rewards,
+        message="block_reward ledger entries must equal mature block rewards",
+        expected=mature_block_rewards_total,
         actual=ledger_block_rewards,
     )
     _audit_equal(
@@ -3428,6 +3609,9 @@ def get_full_economic_audit() -> dict[str, Any]:
         "rewards": {
             "accepted_blocks": accepted_blocks,
             "block_reward_total": block_rewards,
+            "mature_block_reward_total": mature_block_rewards_total,
+            "immature_block_reward_total": immature_block_rewards,
+            "block_maturity_depth": BLOCK_MATURITY_DEPTH,
             "validator_reward_total": validator_rewards,
             "audit_reward_total": audit_rewards,
             "science_reserve_total": science_reserve_rewards,
@@ -3481,6 +3665,8 @@ def repair_missing_block_rewards() -> dict[str, Any]:
                 blocks.task_id,
                 blocks.timestamp,
                 rewards.id AS reward_id,
+                rewards.status AS reward_status,
+                rewards.related_id AS reward_related_id,
                 ledger_entries.id AS ledger_entry_id
             FROM blocks
             LEFT JOIN rewards
@@ -3488,11 +3674,15 @@ def repair_missing_block_rewards() -> dict[str, Any]:
                AND rewards.miner_id = blocks.miner_id
                AND ABS(rewards.amount - blocks.reward) <= ?
             LEFT JOIN ledger_entries
-                ON ledger_entries.block_height = blocks.height
-               AND ledger_entries.account_id = COALESCE(blocks.miner_reward_address, blocks.miner_id)
+                ON ledger_entries.account_id = COALESCE(blocks.miner_reward_address, blocks.miner_id)
                AND ledger_entries.entry_type = 'block_reward'
                AND ABS(ledger_entries.amount - blocks.reward) <= ?
-            WHERE rewards.id IS NULL OR ledger_entries.id IS NULL
+               AND (
+                   ledger_entries.related_id = COALESCE(rewards.related_id, blocks.task_id)
+                   OR ledger_entries.block_height = blocks.height
+               )
+            WHERE rewards.id IS NULL
+               OR (COALESCE(rewards.status, 'mature') = 'mature' AND ledger_entries.id IS NULL)
             ORDER BY blocks.height ASC
             """,
             (ECONOMIC_AUDIT_TOLERANCE, ECONOMIC_AUDIT_TOLERANCE),
@@ -3505,12 +3695,28 @@ def repair_missing_block_rewards() -> dict[str, Any]:
             if _ensure_historical_miner(connection, str(row["miner_id"]), row["timestamp"] or timestamp):
                 miners_restored.add(str(row["miner_id"]))
             if row["reward_id"] is None:
+                repair_account = row["miner_reward_address"] or row["miner_id"]
+                repair_account_type = "wallet" if row["miner_reward_address"] else "miner"
                 connection.execute(
                     """
-                    INSERT INTO rewards (miner_id, block_height, amount, amount_units, reason, created_at)
-                    VALUES (?, ?, ?, ?, 'block reward repair', ?)
+                    INSERT INTO rewards (
+                        miner_id, block_height, amount, amount_units, account_id, account_type,
+                        status, matures_at_height, matured_at, related_id, reason, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, 'mature', ?, ?, ?, 'block reward repair', ?)
                     """,
-                    (row["miner_id"], height, reward, to_units(reward), row["timestamp"] or timestamp),
+                    (
+                        row["miner_id"],
+                        height,
+                        reward,
+                        to_units(reward),
+                        repair_account,
+                        repair_account_type,
+                        height,
+                        row["timestamp"] or timestamp,
+                        row["task_id"],
+                        row["timestamp"] or timestamp,
+                    ),
                 )
                 rewards_inserted += 1
             if row["ledger_entry_id"] is None:
@@ -4027,6 +4233,7 @@ def _protocol_payload(params: dict[str, Any]) -> dict[str, Any]:
         "chain_id": CHAIN_ID,
         "algorithm": params["algorithm"],
         "validation_mode": params["validation_mode"],
+        "mining_task_mode": MINING_TASK_MODE,
         "required_validator_approvals": params["required_validator_approvals"],
         "range_assignment_mode": params["range_assignment_mode"],
         "max_pi_position": params["max_pi_position"],
@@ -4039,6 +4246,7 @@ def _protocol_payload(params: dict[str, Any]) -> dict[str, Any]:
         "sample_count": params["sample_count"],
         "task_expiration_seconds": params["task_expiration_seconds"],
         "max_active_tasks_per_miner": params["max_active_tasks_per_miner"],
+        "block_maturity_depth": BLOCK_MATURITY_DEPTH,
         "base_reward": params["base_reward"],
         "difficulty": calculate_difficulty(params),
         "target_block_time_ms": params.get("target_block_time_ms") or RETARGET_TARGET_BLOCK_MS,
@@ -6289,22 +6497,17 @@ def _accept_block_in_connection(
         (timestamp, task["task_id"]),
     )
     _record_submission(connection, task["task_id"], miner_id, result_hash, "", signature, True, submission_reason)
-    connection.execute(
-        """
-        INSERT INTO rewards (miner_id, block_height, amount, amount_units, reason, created_at)
-        VALUES (?, ?, ?, ?, 'block accepted', ?)
-        """,
-        (miner_id, next_height, reward, to_units(reward), timestamp),
-    )
-    _apply_ledger_entry(
+    reward_maturity = record_miner_block_reward(
         connection,
+        miner_id=miner_id,
         account_id=miner_reward_account,
         account_type=miner_reward_account_type,
-        amount=reward,
-        entry_type="block_reward",
         block_height=next_height,
+        amount=reward,
+        reason="block accepted",
         related_id=task["task_id"],
         description="miner block reward",
+        timestamp=timestamp,
     )
     tx_execution = apply_block_transactions(
         connection,
@@ -6324,6 +6527,7 @@ def _accept_block_in_connection(
             block_height=next_height,
             params=params,
         )
+    matured_rewards = mature_block_rewards(connection, current_height=next_height, timestamp=timestamp)
     _refresh_trust_score(connection, miner_id)
     _maybe_retarget_after_block(connection, next_height)
     _maybe_run_scheduled_retroactive_audit(connection, next_height)
@@ -6353,6 +6557,7 @@ def _accept_block_in_connection(
         "transactions": block_transactions,
         "transaction_execution": tx_execution,
         "validator_reward": validator_reward,
+        "reward_maturity": {**reward_maturity, **matured_rewards},
         "difficulty": difficulty,
         "protocol_params_id": params["id"],
         "protocol_version": params["protocol_version"],

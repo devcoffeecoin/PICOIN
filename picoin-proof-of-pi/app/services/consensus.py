@@ -38,6 +38,7 @@ from app.core.settings import (
 )
 from app.core.signatures import verify_payload_signature
 from app.db.database import get_connection, row_to_dict
+from app.services.rewards import mature_block_rewards, record_miner_block_reward
 from app.services.science import record_science_reserve_for_block
 from app.services.state import (
     active_snapshot_base_in_connection,
@@ -1725,23 +1726,17 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
             None,
         ),
     )
-    connection.execute(
-        """
-        INSERT INTO rewards (miner_id, block_height, amount, amount_units, reason, created_at)
-        VALUES (?, ?, ?, ?, 'distributed block finalized', ?)
-        """,
-        (block["miner_id"], block["height"], block["reward"], to_units(block["reward"]), timestamp),
-    )
-    _apply_account_delta(
+    record_miner_block_reward(
         connection,
-        block.get("miner_reward_address") or block["miner_id"],
-        "wallet" if block.get("miner_reward_address") else "miner",
-        block["reward"],
-        "block_reward",
-        block["height"],
-        proposal_id,
-        "distributed finalized miner reward",
-        timestamp,
+        miner_id=block["miner_id"],
+        account_id=block.get("miner_reward_address") or block["miner_id"],
+        account_type="wallet" if block.get("miner_reward_address") else "miner",
+        block_height=block["height"],
+        amount=block["reward"],
+        reason="distributed block finalized",
+        related_id=proposal_id,
+        description="distributed finalized miner reward",
+        timestamp=timestamp,
     )
     if transactions:
         apply_block_transactions(
@@ -1757,6 +1752,7 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
     record_science_reserve_for_block(connection, block["height"], total_block_reward)
     record_scientific_development_treasury_for_block(connection, block["height"], total_block_reward)
     _apply_distributed_validator_rewards(connection, block, proposal_id, total_block_reward_units, timestamp)
+    mature_block_rewards(connection, current_height=block["height"], timestamp=timestamp)
     from app.services.mining import _maybe_run_scheduled_retroactive_audit
 
     _maybe_run_scheduled_retroactive_audit(connection, block["height"])

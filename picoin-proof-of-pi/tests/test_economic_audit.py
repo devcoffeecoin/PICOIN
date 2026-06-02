@@ -6,6 +6,7 @@ from app.core.signatures import build_submission_signature_payload, build_valida
 from app.db.database import get_connection, init_db
 from app.services.mining import (
     create_next_task,
+    get_balance,
     get_balance_amount,
     get_block,
     get_full_economic_audit,
@@ -119,6 +120,49 @@ def test_miner_reward_address_receives_new_block_rewards(tmp_path, monkeypatch) 
     assert get_balance_amount(reward_wallet["address"]) == pytest.approx(block["reward"])
     assert get_balance_amount(miner["miner_id"]) == pytest.approx(0)
     assert audit["valid"] is True
+
+
+def test_block_rewards_can_mature_after_configured_depth(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "economic-block-maturity.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.services.rewards.BLOCK_MATURITY_DEPTH", 2)
+    monkeypatch.setattr("app.services.mining.BLOCK_MATURITY_DEPTH", 2)
+    init_db(db_path)
+
+    miner, miner_keys = _register_miner_with_keys("maturity-miner")
+
+    _mine_legacy_block(miner["miner_id"], miner_keys["private_key"])
+    first_balance = get_balance(miner["miner_id"])
+    first_audit = get_full_economic_audit()
+
+    assert first_balance is not None
+    assert first_balance["available_balance"] == pytest.approx(0)
+    assert first_balance["immature_rewards"] == pytest.approx(2.51328)
+    assert first_audit["valid"] is True
+    assert first_audit["rewards"]["mature_block_reward_total"] == pytest.approx(0)
+    assert first_audit["rewards"]["immature_block_reward_total"] == pytest.approx(2.51328)
+
+    _mine_legacy_block(miner["miner_id"], miner_keys["private_key"])
+    second_balance = get_balance(miner["miner_id"])
+
+    assert second_balance is not None
+    assert second_balance["available_balance"] == pytest.approx(0)
+    assert second_balance["immature_rewards"] == pytest.approx(5.02656)
+
+    _mine_legacy_block(miner["miner_id"], miner_keys["private_key"])
+    third_balance = get_balance(miner["miner_id"])
+    final_audit = get_full_economic_audit()
+
+    assert third_balance is not None
+    assert third_balance["available_balance"] == pytest.approx(2.51328)
+    assert third_balance["immature_rewards"] == pytest.approx(5.02656)
+    assert third_balance["total_balance"] == pytest.approx(7.53984)
+    assert final_audit["valid"] is True
+    assert final_audit["rewards"]["block_maturity_depth"] == 2
+    assert final_audit["rewards"]["block_reward_total"] == pytest.approx(7.53984)
+    assert final_audit["rewards"]["mature_block_reward_total"] == pytest.approx(2.51328)
+    assert final_audit["rewards"]["immature_block_reward_total"] == pytest.approx(5.02656)
 
 
 def test_validator_reward_address_receives_new_validator_rewards(tmp_path, monkeypatch) -> None:

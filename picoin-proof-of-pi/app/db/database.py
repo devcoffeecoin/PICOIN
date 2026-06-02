@@ -369,6 +369,14 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 block_height INTEGER NOT NULL,
                 amount REAL NOT NULL,
                 amount_units INTEGER NOT NULL DEFAULT 0,
+                account_id TEXT,
+                account_type TEXT,
+                status TEXT NOT NULL DEFAULT 'mature',
+                matures_at_height INTEGER,
+                matured_at TEXT,
+                orphaned_at TEXT,
+                orphan_reason TEXT,
+                related_id TEXT,
                 reason TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(miner_id) REFERENCES miners(miner_id),
@@ -894,6 +902,15 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "validation_jobs", "waiting_for_quorum_ms", "INTEGER")
         _ensure_column(connection, "validation_jobs", "finalization_ms", "INTEGER")
         _ensure_column(connection, "validation_votes", "submit_result_latency_ms", "INTEGER")
+        _ensure_column(connection, "rewards", "account_id", "TEXT")
+        _ensure_column(connection, "rewards", "account_type", "TEXT")
+        _ensure_column(connection, "rewards", "status", "TEXT NOT NULL DEFAULT 'mature'")
+        _ensure_column(connection, "rewards", "matures_at_height", "INTEGER")
+        _ensure_column(connection, "rewards", "matured_at", "TEXT")
+        _ensure_column(connection, "rewards", "orphaned_at", "TEXT")
+        _ensure_column(connection, "rewards", "orphan_reason", "TEXT")
+        _ensure_column(connection, "rewards", "related_id", "TEXT")
+        _backfill_reward_maturity_fields(connection)
         connection.execute("UPDATE validation_jobs SET job_created_at = created_at WHERE job_created_at IS NULL")
         _ensure_default_protocol_params(connection)
         _backfill_protocol_difficulty_fields(connection)
@@ -911,6 +928,44 @@ def _ensure_column(connection: sqlite3.Connection, table_name: str, column_name:
     }
     if column_name.lower() not in columns:
         connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+
+def _backfill_reward_maturity_fields(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        UPDATE rewards
+        SET account_id = COALESCE(
+            (
+                SELECT blocks.miner_reward_address
+                FROM blocks
+                WHERE blocks.height = rewards.block_height
+                  AND blocks.miner_id = rewards.miner_id
+                LIMIT 1
+            ),
+            miner_id
+        )
+        WHERE account_id IS NULL OR account_id = ''
+        """
+    )
+    connection.execute(
+        """
+        UPDATE rewards
+        SET account_type = CASE
+            WHEN account_id LIKE 'PI%' THEN 'wallet'
+            ELSE 'miner'
+        END
+        WHERE account_type IS NULL OR account_type = ''
+        """
+    )
+    connection.execute("UPDATE rewards SET status = 'mature' WHERE status IS NULL OR status = ''")
+    connection.execute("UPDATE rewards SET matures_at_height = block_height WHERE matures_at_height IS NULL")
+    connection.execute(
+        """
+        UPDATE rewards
+        SET matured_at = created_at
+        WHERE status = 'mature' AND matured_at IS NULL
+        """
+    )
 
 
 def _backfill_protocol_difficulty_fields(connection: sqlite3.Connection) -> None:
@@ -1105,11 +1160,12 @@ def _ensure_tasks_range_constraints(connection: sqlite3.Connection) -> None:
         _rebuild_tasks_without_global_range_unique(connection)
     connection.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
     connection.execute("DROP INDEX IF EXISTS idx_tasks_active_range_unique")
+    connection.execute("DROP INDEX IF EXISTS idx_tasks_protected_range_start_unique")
     connection.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_protected_range_start_unique
         ON tasks(range_start, algorithm)
-        WHERE status IN ('assigned', 'committed', 'revealed', 'accepted')
+        WHERE status IN ('accepted')
         """
     )
 
