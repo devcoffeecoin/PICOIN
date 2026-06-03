@@ -1188,6 +1188,21 @@ def _load_wallet_file(path: Path | None) -> dict[str, Any]:
     return json.loads(wallet_path.read_text(encoding="utf-8"))
 
 
+def _wallet_signing_fields(wallet: dict[str, Any]) -> tuple[str, str, str]:
+    private_key = wallet.get("private_key") or wallet.get("privateKey")
+    public_key = wallet.get("public_key") or wallet.get("publicKey")
+    address = wallet.get("address")
+    if not address:
+        raise SystemExit("wallet file is missing address")
+    if not public_key:
+        raise SystemExit("wallet file is missing public_key")
+    if not private_key:
+        raise SystemExit(
+            "wallet file is missing private_key; select an exported CLI wallet or unlock an encrypted Picoin Wallet keystore"
+        )
+    return str(address), str(public_key), str(private_key)
+
+
 def command_wallet_import(args: argparse.Namespace) -> int:
     wallet = json.loads(args.file.read_text(encoding="utf-8"))
     if "address" not in wallet and "public_key" in wallet:
@@ -1233,18 +1248,19 @@ def command_wallet_nonce(args: argparse.Namespace) -> int:
 
 def command_tx_send(args: argparse.Namespace) -> int:
     wallet = _load_wallet_file(args.wallet)
+    wallet_address, public_key, private_key = _wallet_signing_fields(wallet)
     payload = json.loads(args.payload) if args.payload else {}
     if getattr(args, "stake_type", None):
         payload = {**payload, "stake_type": args.stake_type}
     if getattr(args, "validator_id", None):
         payload = {**payload, "stake_type": "validator", "validator_id": args.validator_id}
-    sender = args.sender or wallet["address"]
+    sender = args.sender or wallet_address
     nonce = args.nonce
     if nonce is None:
         nonce = int(get_json(args.server, f"/wallet/{sender}/nonce")["next_nonce"])
     tx = sign_transaction(
-        private_key=wallet["private_key"],
-        public_key=wallet["public_key"],
+        private_key=private_key,
+        public_key=public_key,
         tx_type=args.type,
         sender=sender,
         recipient=args.to,
@@ -1577,15 +1593,15 @@ def command_testnet_continuous(args: argparse.Namespace) -> int:
 def command_testnet_fund_wallet(args: argparse.Namespace) -> int:
     if args.wallet:
         wallet = json.loads(args.wallet.read_text(encoding="utf-8"))
-        public_key = wallet["public_key"]
-        sender = wallet.get("address") or address_from_public_key(public_key)
+        wallet_address, public_key, private_key = _wallet_signing_fields(wallet)
+        sender = wallet_address or address_from_public_key(public_key)
         if not address_matches_public_key(sender, public_key):
             sender = address_from_public_key(public_key)
         nonce = args.nonce
         if nonce is None:
             nonce = int(get_json(args.server, f"/wallet/{sender}/nonce")["next_nonce"])
         tx = sign_transaction(
-            private_key=wallet["private_key"],
+            private_key=private_key,
             public_key=public_key,
             tx_type="faucet",
             sender=sender,

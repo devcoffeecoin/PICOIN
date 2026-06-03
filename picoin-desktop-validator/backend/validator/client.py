@@ -15,7 +15,7 @@ from app.core.pi import calculate_pi_segment
 from app.core.signatures import build_validation_result_signature_payload, generate_keypair, sign_payload, verify_payload_signature
 from app.core.settings import CHAIN_ID, NETWORK_ID
 from app.services.transactions import selected_tx_hashes_hash, transaction_commitment
-from app.services.wallet import transaction_hash, unsigned_transaction_payload
+from app.services.wallet import matching_transaction_signature_payload, unsigned_transaction_payload
 
 
 DEFAULT_IDENTITY_PATH = Path("validator_identity.json")
@@ -23,6 +23,46 @@ AUTO_REGISTER_IDENTITY = os.getenv("PICOIN_AUTO_REGISTER_IDENTITY", "1").strip()
 VALIDATOR_REWARD_ADDRESS = os.getenv("PICOIN_VALIDATOR_REWARD_ADDRESS", "").strip()
 DEFAULT_NODE_SERVER = os.getenv("PICOIN_VALIDATOR_NODE_SERVER", os.getenv("PICOIN_NODE_SERVER", "http://127.0.0.1:8000"))
 VALIDATOR_NODE_ADDRESS = os.getenv("PICOIN_VALIDATOR_NODE_ADDRESS", "").strip().rstrip("/")
+RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
+def http_timeout_seconds(default: float = 60.0) -> float:
+    value = os.getenv("PICOIN_HTTP_TIMEOUT_SECONDS", str(default))
+    try:
+        return max(5.0, float(value))
+    except ValueError:
+        return default
+
+
+def http_max_retries() -> int:
+    value = os.getenv("PICOIN_HTTP_MAX_RETRIES", "3")
+    try:
+        return max(1, int(value))
+    except ValueError:
+        return 3
+
+
+def request_with_retries(method: str, url: str, **kwargs: Any) -> requests.Response:
+    timeout = kwargs.pop("timeout", http_timeout_seconds())
+    max_retries = http_max_retries()
+    last_error: requests.RequestException | None = None
+    for attempt in range(max_retries):
+        try:
+            response = requests.request(method, url, timeout=timeout, **kwargs)
+            if response.status_code in RETRY_STATUS_CODES and attempt + 1 < max_retries:
+                time.sleep(min(1.5 * (attempt + 1), 5.0))
+                continue
+            response.raise_for_status()
+            return response
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            last_error = exc
+            if attempt + 1 >= max_retries:
+                raise
+            print(f"Network/API transient error: {exc}; retrying {attempt + 2}/{max_retries}", file=sys.stderr)
+            time.sleep(min(1.5 * (attempt + 1), 5.0))
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Network/API request failed without a response")
 
 
 def utc_now() -> str:
@@ -71,12 +111,11 @@ def register(server_url: str, name: str, identity_path: Path, overwrite: bool) -
         raise FileExistsError(f"identity already exists: {identity_path}")
 
     keypair = generate_keypair()
-    response = requests.post(
+    response = request_with_retries(
+        "POST",
         f"{server_url}/validators/register",
         json={"name": name, "public_key": keypair["public_key"], "reward_address": VALIDATOR_REWARD_ADDRESS or None},
-        timeout=20,
     )
-    response.raise_for_status()
     validator = response.json()
     identity = {
         "validator_id": validator["validator_id"],
@@ -102,8 +141,7 @@ def get_job(server_url: str, identity: dict[str, Any] | str) -> dict[str, Any] |
             "reward_address": identity.get("reward_address"),
         }
         params = {key: value for key, value in params.items() if value}
-    response = requests.get(f"{server_url}/validation/jobs", params=params, timeout=20)
-    response.raise_for_status()
+    response = request_with_retries("GET", f"{server_url}/validation/jobs", params=params)
     if not response.content or response.text == "null":
         return None
     return response.json()
@@ -118,13 +156,15 @@ def send_validator_heartbeat(
 ) -> dict[str, Any]:
     node_server = node_server_url.rstrip("/")
     coordinator = server_url.rstrip("/")
-    local_response = requests.get(f"{node_server}/node/sync-status", timeout=timeout)
-    local_response.raise_for_status()
+    local_response = request_with_retries("GET", f"{node_server}/node/sync-status", timeout=max(timeout, http_timeout_seconds()))
     local_status = local_response.json()
 
     try:
-        remote_response = requests.get(f"{coordinator}/node/sync-status", timeout=timeout)
-        remote_response.raise_for_status()
+        remote_response = request_with_retries(
+            "GET",
+            f"{coordinator}/node/sync-status",
+            timeout=max(timeout, http_timeout_seconds()),
+        )
         remote_status = remote_response.json()
         remote_height = int(
             remote_status.get("effective_latest_block_height")
@@ -162,8 +202,12 @@ def send_validator_heartbeat(
         "version": local_status.get("protocol_version") or "0.18",
     }
     payload["signature"] = sign_payload(identity["private_key"], payload)
-    response = requests.post(f"{coordinator}/validators/heartbeat", json=payload, timeout=timeout)
-    response.raise_for_status()
+    response = request_with_retries(
+        "POST",
+        f"{coordinator}/validators/heartbeat",
+        json=payload,
+        timeout=max(timeout, http_timeout_seconds()),
+    )
     return response.json()
 
 
@@ -195,9 +239,14 @@ def validate_job(job: dict[str, Any]) -> tuple[bool, str]:
             )
             if str(unsigned["chain_id"]) != str(CHAIN_ID) or unsigned["network_id"] != NETWORK_ID:
                 return False, "invalid_tx_payload"
-            if transaction_hash(unsigned, tx.get("public_key", "")) != tx.get("tx_hash"):
+            signature_payload = matching_transaction_signature_payload(
+                unsigned,
+                tx.get("public_key", ""),
+                tx.get("tx_hash", ""),
+            )
+            if signature_payload is None:
                 return False, "invalid_tx_payload"
-            if not verify_payload_signature(tx.get("public_key", ""), unsigned, tx.get("signature", "")):
+            if not verify_payload_signature(tx.get("public_key", ""), signature_payload, tx.get("signature", "")):
                 return False, "invalid_tx_signature"
         commitment = transaction_commitment(transactions)
         if commitment["tx_merkle_root"] != (job.get("tx_merkle_root") or ""):
@@ -226,7 +275,8 @@ def submit_result(server_url: str, identity: dict[str, Any], job: dict[str, Any]
         signed_at=signed_at,
     )
     signature = sign_payload(identity["private_key"], payload)
-    response = requests.post(
+    response = request_with_retries(
+        "POST",
         f"{server_url}/validation/results",
         json={
             "job_id": job["job_id"],
@@ -236,9 +286,7 @@ def submit_result(server_url: str, identity: dict[str, Any], job: dict[str, Any]
             "signature": signature,
             "signed_at": signed_at,
         },
-        timeout=20,
     )
-    response.raise_for_status()
     return response.json()
 
 

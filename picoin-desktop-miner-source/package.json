@@ -1,6 +1,6 @@
 {
   "name": "picoin-desktop-miner",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "private": true,
   "main": "dist-electron/electron/main/main.js",
   "scripts": {
@@ -53,7 +53,9 @@
           ]
         }
       ],
-      "icon": "resources/icons/logopi.ico"
+      "icon": "resources/icons/logopi.ico",
+      "artifactName": "Picoin-Miner-Setup-${version}.${ext}",
+      "signAndEditExecutable": false
     },
     "nsis": {
       "oneClick": false,

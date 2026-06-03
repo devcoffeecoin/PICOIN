@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -42,8 +43,73 @@ from app.core.money import to_units
 from app.services.genesis import load_genesis_allocations, validate_mainnet_genesis_allocations
 
 
+_DB_WRITE_LOCK = threading.RLock()
+_WRITE_SQL_PREFIXES = (
+    "alter",
+    "begin exclusive",
+    "begin immediate",
+    "create",
+    "delete",
+    "drop",
+    "insert",
+    "replace",
+    "update",
+    "vacuum",
+)
+
+
+def _needs_write_lock(sql: str) -> bool:
+    normalized = sql.lstrip().lower()
+    return normalized.startswith(_WRITE_SQL_PREFIXES)
+
+
 class PicoinConnection(sqlite3.Connection):
-    """SQLite connection that closes when used as a context manager."""
+    """SQLite connection that closes cleanly and serializes write transactions."""
+
+    def _write_lock_held(self) -> bool:
+        return bool(getattr(self, "_picoin_write_lock_acquired", False))
+
+    def _acquire_write_lock_if_needed(self, sql: str) -> None:
+        if self._write_lock_held() or not _needs_write_lock(sql):
+            return
+        _DB_WRITE_LOCK.acquire()
+        self._picoin_write_lock_acquired = True
+
+    def _release_write_lock_if_held(self) -> None:
+        if not self._write_lock_held():
+            return
+        self._picoin_write_lock_acquired = False
+        _DB_WRITE_LOCK.release()
+
+    def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
+        self._acquire_write_lock_if_needed(sql)
+        return super().execute(sql, parameters)
+
+    def executemany(self, sql: str, parameters: Any, /) -> sqlite3.Cursor:
+        self._acquire_write_lock_if_needed(sql)
+        return super().executemany(sql, parameters)
+
+    def executescript(self, sql_script: str, /) -> sqlite3.Cursor:
+        self._acquire_write_lock_if_needed(sql_script)
+        return super().executescript(sql_script)
+
+    def commit(self) -> None:
+        try:
+            super().commit()
+        finally:
+            self._release_write_lock_if_held()
+
+    def rollback(self) -> None:
+        try:
+            super().rollback()
+        finally:
+            self._release_write_lock_if_held()
+
+    def close(self) -> None:
+        try:
+            super().close()
+        finally:
+            self._release_write_lock_if_held()
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool | None:
         try:
@@ -85,12 +151,22 @@ TASK_COLUMNS = (
     "status",
     "assignment_seed",
     "assignment_mode",
+    "competitive_round_height",
+    "competitive_round_previous_hash",
     "assignment_ms",
     "compute_ms",
     "protocol_params_id",
     "created_at",
     "expires_at",
     "submitted_at",
+    "stale_at",
+    "stale_reason",
+    "mempool_snapshot_id",
+    "selected_tx_hashes",
+    "tx_merkle_root",
+    "tx_count",
+    "tx_fee_total_units",
+    "selected_tx_hashes_hash",
 )
 
 
@@ -104,12 +180,22 @@ CREATE TABLE tasks (
     status TEXT NOT NULL,
     assignment_seed TEXT,
     assignment_mode TEXT,
+    competitive_round_height INTEGER,
+    competitive_round_previous_hash TEXT,
     assignment_ms INTEGER,
     compute_ms INTEGER,
     protocol_params_id INTEGER,
     created_at TEXT NOT NULL,
     expires_at TEXT,
     submitted_at TEXT,
+    stale_at TEXT,
+    stale_reason TEXT,
+    mempool_snapshot_id TEXT,
+    selected_tx_hashes TEXT NOT NULL DEFAULT '[]',
+    tx_merkle_root TEXT NOT NULL DEFAULT '',
+    tx_count INTEGER NOT NULL DEFAULT 0,
+    tx_fee_total_units INTEGER NOT NULL DEFAULT 0,
+    selected_tx_hashes_hash TEXT,
     FOREIGN KEY(miner_id) REFERENCES miners(miner_id),
     FOREIGN KEY(protocol_params_id) REFERENCES protocol_params(id)
 )
@@ -224,12 +310,16 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 status TEXT NOT NULL,
                 assignment_seed TEXT,
                 assignment_mode TEXT,
+                competitive_round_height INTEGER,
+                competitive_round_previous_hash TEXT,
                 assignment_ms INTEGER,
                 compute_ms INTEGER,
                 protocol_params_id INTEGER,
                 created_at TEXT NOT NULL,
                 expires_at TEXT,
                 submitted_at TEXT,
+                stale_at TEXT,
+                stale_reason TEXT,
                 mempool_snapshot_id TEXT,
                 selected_tx_hashes TEXT NOT NULL DEFAULT '[]',
                 tx_merkle_root TEXT NOT NULL DEFAULT '',
@@ -369,6 +459,14 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 block_height INTEGER NOT NULL,
                 amount REAL NOT NULL,
                 amount_units INTEGER NOT NULL DEFAULT 0,
+                account_id TEXT,
+                account_type TEXT,
+                status TEXT NOT NULL DEFAULT 'mature',
+                matures_at_height INTEGER,
+                matured_at TEXT,
+                orphaned_at TEXT,
+                orphan_reason TEXT,
+                related_id TEXT,
                 reason TEXT NOT NULL,
                 created_at TEXT NOT NULL,
                 FOREIGN KEY(miner_id) REFERENCES miners(miner_id),
@@ -782,6 +880,10 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "tasks", "assignment_ms", "INTEGER")
         _ensure_column(connection, "tasks", "compute_ms", "INTEGER")
         _ensure_column(connection, "tasks", "protocol_params_id", "INTEGER")
+        _ensure_column(connection, "tasks", "competitive_round_height", "INTEGER")
+        _ensure_column(connection, "tasks", "competitive_round_previous_hash", "TEXT")
+        _ensure_column(connection, "tasks", "stale_at", "TEXT")
+        _ensure_column(connection, "tasks", "stale_reason", "TEXT")
         _ensure_column(connection, "protocol_params", "difficulty", "REAL")
         _ensure_column(connection, "protocol_params", "target_block_time_ms", "INTEGER")
         _ensure_column(connection, "protocol_params", "retarget_reason", "TEXT")
@@ -894,6 +996,15 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "validation_jobs", "waiting_for_quorum_ms", "INTEGER")
         _ensure_column(connection, "validation_jobs", "finalization_ms", "INTEGER")
         _ensure_column(connection, "validation_votes", "submit_result_latency_ms", "INTEGER")
+        _ensure_column(connection, "rewards", "account_id", "TEXT")
+        _ensure_column(connection, "rewards", "account_type", "TEXT")
+        _ensure_column(connection, "rewards", "status", "TEXT NOT NULL DEFAULT 'mature'")
+        _ensure_column(connection, "rewards", "matures_at_height", "INTEGER")
+        _ensure_column(connection, "rewards", "matured_at", "TEXT")
+        _ensure_column(connection, "rewards", "orphaned_at", "TEXT")
+        _ensure_column(connection, "rewards", "orphan_reason", "TEXT")
+        _ensure_column(connection, "rewards", "related_id", "TEXT")
+        _backfill_reward_maturity_fields(connection)
         connection.execute("UPDATE validation_jobs SET job_created_at = created_at WHERE job_created_at IS NULL")
         _ensure_default_protocol_params(connection)
         _backfill_protocol_difficulty_fields(connection)
@@ -911,6 +1022,44 @@ def _ensure_column(connection: sqlite3.Connection, table_name: str, column_name:
     }
     if column_name.lower() not in columns:
         connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+
+def _backfill_reward_maturity_fields(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        UPDATE rewards
+        SET account_id = COALESCE(
+            (
+                SELECT blocks.miner_reward_address
+                FROM blocks
+                WHERE blocks.height = rewards.block_height
+                  AND blocks.miner_id = rewards.miner_id
+                LIMIT 1
+            ),
+            miner_id
+        )
+        WHERE account_id IS NULL OR account_id = ''
+        """
+    )
+    connection.execute(
+        """
+        UPDATE rewards
+        SET account_type = CASE
+            WHEN account_id LIKE 'PI%' THEN 'wallet'
+            ELSE 'miner'
+        END
+        WHERE account_type IS NULL OR account_type = ''
+        """
+    )
+    connection.execute("UPDATE rewards SET status = 'mature' WHERE status IS NULL OR status = ''")
+    connection.execute("UPDATE rewards SET matures_at_height = block_height WHERE matures_at_height IS NULL")
+    connection.execute(
+        """
+        UPDATE rewards
+        SET matured_at = created_at
+        WHERE status = 'mature' AND matured_at IS NULL
+        """
+    )
 
 
 def _backfill_protocol_difficulty_fields(connection: sqlite3.Connection) -> None:
@@ -1101,17 +1250,36 @@ def _tasks_have_global_range_unique(connection: sqlite3.Connection) -> bool:
 
 
 def _ensure_tasks_range_constraints(connection: sqlite3.Connection) -> None:
+    _ensure_task_competitive_round_columns(connection)
     if _tasks_have_global_range_unique(connection):
         _rebuild_tasks_without_global_range_unique(connection)
     connection.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_tasks_competitive_round
+        ON tasks(assignment_mode, assignment_seed, status)
+        """
+    )
+    connection.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_tasks_competitive_height
+        ON tasks(competitive_round_height, assignment_mode, status)
+        """
+    )
     connection.execute("DROP INDEX IF EXISTS idx_tasks_active_range_unique")
+    connection.execute("DROP INDEX IF EXISTS idx_tasks_protected_range_start_unique")
     connection.execute(
         """
         CREATE UNIQUE INDEX IF NOT EXISTS idx_tasks_protected_range_start_unique
         ON tasks(range_start, algorithm)
-        WHERE status IN ('assigned', 'committed', 'revealed', 'accepted')
+        WHERE status IN ('accepted')
         """
     )
+
+
+def _ensure_task_competitive_round_columns(connection: sqlite3.Connection) -> None:
+    _ensure_column(connection, "tasks", "competitive_round_height", "INTEGER")
+    _ensure_column(connection, "tasks", "competitive_round_previous_hash", "TEXT")
 
 
 def _rebuild_tasks_without_global_range_unique(connection: sqlite3.Connection) -> None:

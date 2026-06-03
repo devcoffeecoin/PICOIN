@@ -14,6 +14,7 @@ const MAINNET_GOVERNANCE_WALLET = "PI251078EE911B17EDC747DB5BDF505649ECAF60F787A
 const MIN_VALIDATOR_STAKE = "31.416";
 const MAX_LOG_LINES = 20;
 const NODE_HTTP_TIMEOUT_SECONDS = "60";
+const HTTP_MAX_RETRIES = "3";
 
 type NodeStatus = "stopped" | "starting" | "running" | "error";
 type ValidatorStatus = "stopped" | "starting" | "validating" | "error";
@@ -45,6 +46,7 @@ let currentTask = "Idle";
 let lastLogs: string[] = [];
 let nodeStopRequested = false;
 let validatorStopRequested = false;
+let validatorRecoveryStopRequested = false;
 let autoRecoveryInProgress = false;
 
 function addLog(line: string) {
@@ -133,6 +135,7 @@ function buildEnv(config: ValidatorConfig): NodeJS.ProcessEnv {
     PICOIN_VALIDATOR_REWARD_ADDRESS: config.rewardWallet,
     PICOIN_AUTO_REGISTER_IDENTITY: "1",
     PICOIN_HTTP_TIMEOUT_SECONDS: NODE_HTTP_TIMEOUT_SECONDS,
+    PICOIN_HTTP_MAX_RETRIES: HTTP_MAX_RETRIES,
     PYTHONUNBUFFERED: "1",
   };
 }
@@ -235,11 +238,35 @@ async function autoRecoverValidator(config: ValidatorConfig, reason: string) {
   }
 }
 
+function validatorLineNeedsRecovery(line: string): boolean {
+  return (
+    /Validator node heartbeat accepted but not eligible:\s*validator (out of sync|stale)/i.test(line) ||
+    /Local node replay is divergent/i.test(line) ||
+    /Picoin replay divergence/i.test(line)
+  );
+}
+
+function handleValidatorOutputLine(config: ValidatorConfig, line: string) {
+  addLog(line);
+  const clean = line.trim();
+  if (!clean || validatorStopRequested || autoRecoveryInProgress) return;
+  if (!validatorLineNeedsRecovery(clean)) return;
+
+  addLog("Validator loop paused for automatic Fast Sync recovery.");
+  if (validatorProcess) {
+    validatorRecoveryStopRequested = true;
+    validatorProcess.kill();
+    validatorProcess = null;
+  }
+  void autoRecoverValidator(config, clean);
+}
+
 function spawnPython(
   pythonCmd: string,
   args: string[],
   env: NodeJS.ProcessEnv,
   onClose: (code: number | null) => void,
+  onLine: (line: string) => void = addLog,
 ) {
   const corePath = getCorePath();
   const child = spawn(pythonCmd || "python", args, {
@@ -247,8 +274,8 @@ function spawnPython(
     env,
     shell: false,
   });
-  child.stdout.on("data", (data) => String(data).split(/\r?\n/).forEach(addLog));
-  child.stderr.on("data", (data) => String(data).split(/\r?\n/).forEach((line) => addLog(`ERROR: ${line}`)));
+  child.stdout.on("data", (data) => String(data).split(/\r?\n/).forEach(onLine));
+  child.stderr.on("data", (data) => String(data).split(/\r?\n/).forEach((line) => onLine(`ERROR: ${line}`)));
   child.on("close", onClose);
   child.on("error", (error) => {
     addLog(`Process error: ${error.message}`);
@@ -447,13 +474,15 @@ export async function startValidator(config: ValidatorConfig) {
     (code) => {
       addLog(`Validator process exited with code ${code}`);
       validatorProcess = null;
-      const requestedStop = validatorStopRequested;
+      const requestedStop = validatorStopRequested || validatorRecoveryStopRequested;
       validatorStopRequested = false;
-      validatorStatus = requestedStop ? "stopped" : code === 0 ? "stopped" : "error";
+      validatorRecoveryStopRequested = false;
+      validatorStatus = requestedStop ? (autoRecoveryInProgress ? "starting" : "stopped") : code === 0 ? "stopped" : "error";
       if (!requestedStop && code !== 0) {
         void autoRecoverValidator(config, `process exited with code ${code}`);
       }
     },
+    (line) => handleValidatorOutputLine(config, line),
   );
 
   validatorStatus = "validating";

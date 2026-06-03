@@ -60,6 +60,54 @@ def validator_snapshot(connection: Any) -> list[dict[str, Any]]:
     return [_normalize_validator_snapshot_row(row) for row in rows]
 
 
+def protocol_params_snapshot(connection: Any) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT
+            id, protocol_version, algorithm, validation_mode, required_validator_approvals,
+            range_assignment_mode, max_pi_position, range_assignment_max_attempts,
+            segment_size, sample_count, task_expiration_seconds, max_active_tasks_per_miner,
+            base_reward, difficulty, RETARGET_MAX_PI_POSITION, target_block_time_ms,
+            retarget_reason, retarget_source_window, retarget_source_details,
+            previous_protocol_params_id, active, created_at
+        FROM protocol_params
+        ORDER BY id ASC
+        """
+    ).fetchall()
+    return [_normalize_protocol_params_snapshot_row(row) for row in rows]
+
+
+def retarget_events_snapshot(connection: Any) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT
+            id, previous_protocol_params_id, new_protocol_params_id, epoch_start_height,
+            epoch_end_height, epoch_block_count, average_block_ms, target_block_ms,
+            old_difficulty, new_difficulty, adjustment_factor, action, reason, created_at
+        FROM retarget_events
+        ORDER BY id ASC
+        """
+    ).fetchall()
+    return [_normalize_retarget_event_snapshot_row(row) for row in rows]
+
+
+def pending_rewards_snapshot(connection: Any, block_height: int) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT
+            id, miner_id, block_height, amount, amount_units, account_id, account_type,
+            status, matures_at_height, matured_at, orphaned_at, orphan_reason,
+            related_id, reason, created_at
+        FROM rewards
+        WHERE status = 'immature'
+          AND block_height <= ?
+        ORDER BY matures_at_height ASC, id ASC
+        """,
+        (block_height,),
+    ).fetchall()
+    return [_normalize_pending_reward_snapshot_row(row) for row in rows]
+
+
 def canonical_balance_snapshot(connection: Any, block_height: int, block_timestamp: str | None = None) -> list[dict[str, Any]]:
     if block_height < 0:
         raise ValueError("block_height must be >= 0")
@@ -163,6 +211,12 @@ def create_canonical_checkpoint_in_connection(
     nonces_hash = sha256_text(canonical_json({"height": height, "nonces": nonces}))
     validators = validator_snapshot(connection)
     validators_hash = sha256_text(canonical_json({"height": height, "validators": validators}))
+    protocol_params = protocol_params_snapshot(connection)
+    protocol_params_hash = sha256_text(canonical_json({"height": height, "protocol_params": protocol_params}))
+    retarget_events = retarget_events_snapshot(connection)
+    retarget_events_hash = sha256_text(canonical_json({"height": height, "retarget_events": retarget_events}))
+    pending_rewards = pending_rewards_snapshot(connection, height)
+    pending_rewards_hash = sha256_text(canonical_json({"height": height, "pending_rewards": pending_rewards}))
     ledger_entries_count = int(
         connection.execute(
             """
@@ -191,6 +245,12 @@ def create_canonical_checkpoint_in_connection(
         "nonces_count": len(nonces),
         "validators_hash": validators_hash,
         "validators_count": len(validators),
+        "protocol_params_hash": protocol_params_hash,
+        "protocol_params_count": len(protocol_params),
+        "retarget_events_hash": retarget_events_hash,
+        "retarget_events_count": len(retarget_events),
+        "pending_rewards_hash": pending_rewards_hash,
+        "pending_rewards_count": len(pending_rewards),
         "ledger_entries_count": ledger_entries_count,
         "total_balance": total_balance,
         "total_balance_units": total_balance_units,
@@ -308,6 +368,12 @@ def verify_checkpoint(height: int) -> dict[str, Any]:
         nonces_hash = sha256_text(canonical_json({"height": height, "nonces": nonces}))
         validators = validator_snapshot(connection)
         validators_hash = sha256_text(canonical_json({"height": height, "validators": validators}))
+        protocol_params = protocol_params_snapshot(connection)
+        protocol_params_hash = sha256_text(canonical_json({"height": height, "protocol_params": protocol_params}))
+        retarget_events = retarget_events_snapshot(connection)
+        retarget_events_hash = sha256_text(canonical_json({"height": height, "retarget_events": retarget_events}))
+        pending_rewards = pending_rewards_snapshot(connection, height)
+        pending_rewards_hash = sha256_text(canonical_json({"height": height, "pending_rewards": pending_rewards}))
         state_root = calculate_state_root(connection, height, block["timestamp"])
         ledger_entries_count = int(
             connection.execute(
@@ -344,6 +410,15 @@ def verify_checkpoint(height: int) -> dict[str, Any]:
         if checkpoint_payload.get("validators_hash"):
             payload["validators_hash"] = validators_hash
             payload["validators_count"] = len(validators)
+        if checkpoint_payload.get("protocol_params_hash"):
+            payload["protocol_params_hash"] = protocol_params_hash
+            payload["protocol_params_count"] = len(protocol_params)
+        if checkpoint_payload.get("retarget_events_hash"):
+            payload["retarget_events_hash"] = retarget_events_hash
+            payload["retarget_events_count"] = len(retarget_events)
+        if checkpoint_payload.get("pending_rewards_hash"):
+            payload["pending_rewards_hash"] = pending_rewards_hash
+            payload["pending_rewards_count"] = len(pending_rewards)
         snapshot_hash = sha256_text(canonical_json(payload))
         issues = []
         if checkpoint["block_hash"] != block["block_hash"]:
@@ -372,6 +447,24 @@ def verify_checkpoint(height: int) -> dict[str, Any]:
             stored_validators_count = checkpoint_payload.get("validators_count")
             if stored_validators_count is None or int(stored_validators_count) != len(validators):
                 issues.append("validators_count mismatch")
+        if checkpoint_payload.get("protocol_params_hash") and checkpoint_payload.get("protocol_params_hash") != protocol_params_hash:
+            issues.append("protocol_params_hash mismatch")
+        if checkpoint_payload.get("protocol_params_hash"):
+            stored_protocol_params_count = checkpoint_payload.get("protocol_params_count")
+            if stored_protocol_params_count is None or int(stored_protocol_params_count) != len(protocol_params):
+                issues.append("protocol_params_count mismatch")
+        if checkpoint_payload.get("retarget_events_hash") and checkpoint_payload.get("retarget_events_hash") != retarget_events_hash:
+            issues.append("retarget_events_hash mismatch")
+        if checkpoint_payload.get("retarget_events_hash"):
+            stored_retarget_events_count = checkpoint_payload.get("retarget_events_count")
+            if stored_retarget_events_count is None or int(stored_retarget_events_count) != len(retarget_events):
+                issues.append("retarget_events_count mismatch")
+        if checkpoint_payload.get("pending_rewards_hash") and checkpoint_payload.get("pending_rewards_hash") != pending_rewards_hash:
+            issues.append("pending_rewards_hash mismatch")
+        if checkpoint_payload.get("pending_rewards_hash"):
+            stored_pending_rewards_count = checkpoint_payload.get("pending_rewards_count")
+            if stored_pending_rewards_count is None or int(stored_pending_rewards_count) != len(pending_rewards):
+                issues.append("pending_rewards_count mismatch")
         if checkpoint["snapshot_hash"] != snapshot_hash:
             issues.append("snapshot_hash mismatch")
         if not issues:
@@ -390,6 +483,12 @@ def verify_checkpoint(height: int) -> dict[str, Any]:
             "snapshot_hash": snapshot_hash,
             "nonces_hash": nonces_hash if checkpoint_payload.get("nonces_hash") else None,
             "nonces_count": len(nonces) if checkpoint_payload.get("nonces_hash") else None,
+            "protocol_params_hash": protocol_params_hash if checkpoint_payload.get("protocol_params_hash") else None,
+            "protocol_params_count": len(protocol_params) if checkpoint_payload.get("protocol_params_hash") else None,
+            "retarget_events_hash": retarget_events_hash if checkpoint_payload.get("retarget_events_hash") else None,
+            "retarget_events_count": len(retarget_events) if checkpoint_payload.get("retarget_events_hash") else None,
+            "pending_rewards_hash": pending_rewards_hash if checkpoint_payload.get("pending_rewards_hash") else None,
+            "pending_rewards_count": len(pending_rewards) if checkpoint_payload.get("pending_rewards_hash") else None,
         },
     }
 
@@ -399,22 +498,26 @@ def export_canonical_snapshot(height: int | None = None) -> dict[str, Any]:
         if height is None:
             latest = connection.execute("SELECT COALESCE(MAX(height), 0) AS height FROM blocks").fetchone()
             height = int(latest["height"] if latest else 0)
-        checkpoint = get_checkpoint_in_connection(connection, int(height))
-        if checkpoint is None or not (checkpoint.get("payload") or {}).get("nonces_hash"):
-            checkpoint = create_canonical_checkpoint_in_connection(
-                connection,
-                int(height),
-                trusted=True,
-                source="export",
-            )
         block = row_to_dict(
             connection.execute("SELECT timestamp FROM blocks WHERE height = ?", (int(height),)).fetchone()
         )
         if block is None:
             raise StateError(404, "block not found for snapshot export")
+        # Validator registry/reputation and account nonces can change after a
+        # checkpoint was first created. Rebuild the checkpoint at export time so
+        # the signed hashes match the exact state included in this snapshot.
+        checkpoint = create_canonical_checkpoint_in_connection(
+            connection,
+            int(height),
+            trusted=True,
+            source="export",
+        )
         balances = balance_snapshot(connection, int(height), block["timestamp"])
         nonces = account_nonce_snapshot(connection)
         validators = validator_snapshot(connection)
+        protocol_params = protocol_params_snapshot(connection)
+        retarget_events = retarget_events_snapshot(connection)
+        pending_rewards = pending_rewards_snapshot(connection, int(height))
         account_types = {
             row["account_id"]: row["account_type"]
             for row in connection.execute("SELECT account_id, account_type FROM balances").fetchall()
@@ -434,6 +537,9 @@ def export_canonical_snapshot(height: int | None = None) -> dict[str, Any]:
         "balances": export_balances,
         "nonces": nonces,
         "validators": validators,
+        "protocol_params": protocol_params,
+        "retarget_events": retarget_events,
+        "pending_rewards": pending_rewards,
     }
     validation = validate_snapshot_document(document)
     document["valid"] = validation["valid"]
@@ -495,6 +601,9 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
     balances = document.get("balances") or []
     nonces = document.get("nonces") or []
     validators = document.get("validators") or []
+    protocol_params = document.get("protocol_params") or []
+    retarget_events = document.get("retarget_events") or []
+    pending_rewards = document.get("pending_rewards") or []
     if not isinstance(balances, list):
         balances = []
         issues.append("balances must be a list")
@@ -504,6 +613,15 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(validators, list):
         validators = []
         issues.append("validators must be a list")
+    if not isinstance(protocol_params, list):
+        protocol_params = []
+        issues.append("protocol_params must be a list")
+    if not isinstance(retarget_events, list):
+        retarget_events = []
+        issues.append("retarget_events must be a list")
+    if not isinstance(pending_rewards, list):
+        pending_rewards = []
+        issues.append("pending_rewards must be a list")
     required = {
         "chain_id",
         "network_id",
@@ -544,9 +662,31 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
     except ValueError as exc:
         normalized_validators = []
         issues.append(str(exc))
+    try:
+        normalized_protocol_params = _normalize_snapshot_protocol_params(protocol_params)
+    except ValueError as exc:
+        normalized_protocol_params = []
+        issues.append(str(exc))
+    try:
+        normalized_retarget_events = _normalize_snapshot_retarget_events(retarget_events)
+    except ValueError as exc:
+        normalized_retarget_events = []
+        issues.append(str(exc))
+    try:
+        normalized_pending_rewards = _normalize_snapshot_pending_rewards(pending_rewards)
+    except ValueError as exc:
+        normalized_pending_rewards = []
+        issues.append(str(exc))
+    for reward in normalized_pending_rewards:
+        if int(reward["matures_at_height"] or 0) <= height:
+            issues.append("pending reward matures_at_height must be after snapshot height")
+            break
     balances_hash = sha256_text(canonical_json({"height": height, "balances": normalized_balances}))
     nonces_hash = sha256_text(canonical_json({"height": height, "nonces": normalized_nonces}))
     validators_hash = sha256_text(canonical_json({"height": height, "validators": normalized_validators}))
+    protocol_params_hash = sha256_text(canonical_json({"height": height, "protocol_params": normalized_protocol_params}))
+    retarget_events_hash = sha256_text(canonical_json({"height": height, "retarget_events": normalized_retarget_events}))
+    pending_rewards_hash = sha256_text(canonical_json({"height": height, "pending_rewards": normalized_pending_rewards}))
     total_balance_units = sum(int(item["balance_units"]) for item in normalized_balances)
     total_balance = units_to_float(total_balance_units)
     payload = {
@@ -570,6 +710,15 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
     if checkpoint.get("validators_hash") or normalized_validators:
         payload["validators_hash"] = validators_hash
         payload["validators_count"] = len(normalized_validators)
+    if checkpoint.get("protocol_params_hash") or normalized_protocol_params:
+        payload["protocol_params_hash"] = protocol_params_hash
+        payload["protocol_params_count"] = len(normalized_protocol_params)
+    if checkpoint.get("retarget_events_hash") or normalized_retarget_events:
+        payload["retarget_events_hash"] = retarget_events_hash
+        payload["retarget_events_count"] = len(normalized_retarget_events)
+    if checkpoint.get("pending_rewards_hash") or normalized_pending_rewards:
+        payload["pending_rewards_hash"] = pending_rewards_hash
+        payload["pending_rewards_count"] = len(normalized_pending_rewards)
     snapshot_hash = sha256_text(canonical_json(payload))
     if checkpoint.get("balances_hash") != balances_hash:
         issues.append("balances_hash mismatch")
@@ -589,6 +738,24 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
         stored_validators_count = checkpoint.get("validators_count")
         if stored_validators_count is None or int(stored_validators_count) != len(normalized_validators):
             issues.append("validators_count mismatch")
+    if checkpoint.get("protocol_params_hash") and checkpoint.get("protocol_params_hash") != protocol_params_hash:
+        issues.append("protocol_params_hash mismatch")
+    if checkpoint.get("protocol_params_hash"):
+        stored_protocol_params_count = checkpoint.get("protocol_params_count")
+        if stored_protocol_params_count is None or int(stored_protocol_params_count) != len(normalized_protocol_params):
+            issues.append("protocol_params_count mismatch")
+    if checkpoint.get("retarget_events_hash") and checkpoint.get("retarget_events_hash") != retarget_events_hash:
+        issues.append("retarget_events_hash mismatch")
+    if checkpoint.get("retarget_events_hash"):
+        stored_retarget_events_count = checkpoint.get("retarget_events_count")
+        if stored_retarget_events_count is None or int(stored_retarget_events_count) != len(normalized_retarget_events):
+            issues.append("retarget_events_count mismatch")
+    if checkpoint.get("pending_rewards_hash") and checkpoint.get("pending_rewards_hash") != pending_rewards_hash:
+        issues.append("pending_rewards_hash mismatch")
+    if checkpoint.get("pending_rewards_hash"):
+        stored_pending_rewards_count = checkpoint.get("pending_rewards_count")
+        if stored_pending_rewards_count is None or int(stored_pending_rewards_count) != len(normalized_pending_rewards):
+            issues.append("pending_rewards_count mismatch")
     if int(checkpoint.get("total_balance_units") or to_units(checkpoint.get("total_balance") or 0)) != total_balance_units:
         issues.append("total_balance mismatch")
     if checkpoint.get("snapshot_hash") != snapshot_hash:
@@ -610,6 +777,24 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
             "validators_count": int(
                 checkpoint["validators_count"] if checkpoint.get("validators_count") is not None else len(normalized_validators)
             ),
+            "protocol_params_hash": checkpoint.get("protocol_params_hash") or (protocol_params_hash if normalized_protocol_params else None),
+            "protocol_params_count": int(
+                checkpoint["protocol_params_count"]
+                if checkpoint.get("protocol_params_count") is not None
+                else len(normalized_protocol_params)
+            ),
+            "retarget_events_hash": checkpoint.get("retarget_events_hash") or (retarget_events_hash if normalized_retarget_events else None),
+            "retarget_events_count": int(
+                checkpoint["retarget_events_count"]
+                if checkpoint.get("retarget_events_count") is not None
+                else len(normalized_retarget_events)
+            ),
+            "pending_rewards_hash": checkpoint.get("pending_rewards_hash") or (pending_rewards_hash if normalized_pending_rewards else None),
+            "pending_rewards_count": int(
+                checkpoint["pending_rewards_count"]
+                if checkpoint.get("pending_rewards_count") is not None
+                else len(normalized_pending_rewards)
+            ),
         },
         "computed": {
             "balances_hash": balances_hash,
@@ -622,6 +807,12 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
             "nonces_count": len(normalized_nonces),
             "validators_hash": validators_hash if normalized_validators else None,
             "validators_count": len(normalized_validators),
+            "protocol_params_hash": protocol_params_hash if normalized_protocol_params else None,
+            "protocol_params_count": len(normalized_protocol_params),
+            "retarget_events_hash": retarget_events_hash if normalized_retarget_events else None,
+            "retarget_events_count": len(normalized_retarget_events),
+            "pending_rewards_hash": pending_rewards_hash if normalized_pending_rewards else None,
+            "pending_rewards_count": len(normalized_pending_rewards),
         },
     }
 
@@ -666,9 +857,19 @@ def apply_imported_snapshot_state(snapshot_hash: str, *, replace_existing: bool 
         balances = _normalize_snapshot_balances_with_type(document.get("balances") or [])
         nonces = _normalize_snapshot_nonces(document.get("nonces") or [])
         validators = _normalize_snapshot_validators(document.get("validators") or [])
+        protocol_params = _normalize_snapshot_protocol_params(document.get("protocol_params") or [])
+        retarget_events = _normalize_snapshot_retarget_events(document.get("retarget_events") or [])
+        pending_rewards = _normalize_snapshot_pending_rewards(document.get("pending_rewards") or [])
         checkpoint = validation["checkpoint"]
 
+        if pending_rewards:
+            connection.execute("PRAGMA foreign_keys = OFF")
         cleared = _clear_local_chain_state_for_snapshot_restore(connection) if replace_existing else {}
+        if protocol_params:
+            connection.execute("DELETE FROM difficulty_bucket_metrics")
+            connection.execute("DELETE FROM retarget_events")
+            connection.execute("DELETE FROM protocol_params")
+        connection.execute("DELETE FROM rewards")
         connection.execute("DELETE FROM ledger_entries")
         connection.execute("DELETE FROM balances")
         connection.execute("DELETE FROM account_nonces")
@@ -701,6 +902,12 @@ def apply_imported_snapshot_state(snapshot_hash: str, *, replace_existing: bool 
                 """,
                 (item["account_id"], int(item["nonce"]), timestamp),
             )
+        for params in protocol_params:
+            _restore_snapshot_protocol_params(connection, params)
+        for event in retarget_events:
+            _restore_snapshot_retarget_event(connection, event)
+        for reward in pending_rewards:
+            _restore_snapshot_pending_reward(connection, reward)
         for validator in validators:
             _restore_snapshot_validator(connection, validator, timestamp)
         connection.execute("UPDATE canonical_snapshot_imports SET active = 0")
@@ -724,6 +931,9 @@ def apply_imported_snapshot_state(snapshot_hash: str, *, replace_existing: bool 
         "balances_applied": len(balances),
         "nonces_applied": len(nonces),
         "validators_applied": len(validators),
+        "protocol_params_applied": len(protocol_params),
+        "retarget_events_applied": len(retarget_events),
+        "pending_rewards_applied": len(pending_rewards),
         "cleared": cleared,
         "snapshot": applied,
     }
@@ -908,6 +1118,43 @@ def _normalize_snapshot_validators(validators: list[dict[str, Any]]) -> list[dic
     return [normalized[key] for key in sorted(normalized)]
 
 
+def _normalize_snapshot_protocol_params(protocol_params: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: dict[int, dict[str, Any]] = {}
+    active_count = 0
+    for item in protocol_params:
+        params = _normalize_protocol_params_snapshot_row(item)
+        params_id = int(params["id"])
+        if params_id in normalized:
+            raise ValueError(f"protocol params snapshot has duplicate id {params_id}")
+        normalized[params_id] = params
+        active_count += int(params["active"])
+    if normalized and active_count != 1:
+        raise ValueError("protocol params snapshot must contain exactly one active row")
+    return [normalized[key] for key in sorted(normalized)]
+
+
+def _normalize_snapshot_retarget_events(retarget_events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: dict[int, dict[str, Any]] = {}
+    for item in retarget_events:
+        event = _normalize_retarget_event_snapshot_row(item)
+        event_id = int(event["id"])
+        if event_id in normalized:
+            raise ValueError(f"retarget event snapshot has duplicate id {event_id}")
+        normalized[event_id] = event
+    return [normalized[key] for key in sorted(normalized)]
+
+
+def _normalize_snapshot_pending_rewards(pending_rewards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: dict[int, dict[str, Any]] = {}
+    for item in pending_rewards:
+        reward = _normalize_pending_reward_snapshot_row(item)
+        reward_id = int(reward["id"])
+        if reward_id in normalized:
+            raise ValueError(f"pending reward snapshot has duplicate id {reward_id}")
+        normalized[reward_id] = reward
+    return [normalized[key] for key in sorted(normalized)]
+
+
 def _normalize_validator_snapshot_row(row: Any) -> dict[str, Any]:
     item = dict(row)
     validator_id = str(item.get("validator_id") or "").strip()
@@ -939,6 +1186,222 @@ def _normalize_validator_snapshot_row(row: Any) -> dict[str, Any]:
         "enabled": 1 if bool(item.get("enabled", 1)) else 0,
         "protocol_version": str(item.get("protocol_version") or PROTOCOL_VERSION).strip() or PROTOCOL_VERSION,
     }
+
+
+def _normalize_protocol_params_snapshot_row(row: Any) -> dict[str, Any]:
+    item = row_to_dict(row) if not isinstance(row, dict) else dict(row)
+    params_id = _snapshot_required_int(item, "id", "protocol params snapshot entry missing id")
+    if params_id <= 0:
+        raise ValueError("protocol params snapshot entry missing id")
+    return {
+        "id": params_id,
+        "protocol_version": str(item.get("protocol_version") or PROTOCOL_VERSION).strip() or PROTOCOL_VERSION,
+        "algorithm": str(item.get("algorithm") or "").strip(),
+        "validation_mode": str(item.get("validation_mode") or "").strip(),
+        "required_validator_approvals": _snapshot_required_int(item, "required_validator_approvals"),
+        "range_assignment_mode": str(item.get("range_assignment_mode") or "").strip(),
+        "max_pi_position": _snapshot_required_int(item, "max_pi_position"),
+        "range_assignment_max_attempts": _snapshot_required_int(item, "range_assignment_max_attempts"),
+        "segment_size": _snapshot_required_int(item, "segment_size"),
+        "sample_count": _snapshot_required_int(item, "sample_count"),
+        "task_expiration_seconds": _snapshot_required_int(item, "task_expiration_seconds"),
+        "max_active_tasks_per_miner": _snapshot_required_int(item, "max_active_tasks_per_miner"),
+        "base_reward": _snapshot_required_float(item, "base_reward"),
+        "difficulty": _snapshot_optional_float(item.get("difficulty")),
+        "RETARGET_MAX_PI_POSITION": _snapshot_optional_int(item.get("RETARGET_MAX_PI_POSITION")),
+        "target_block_time_ms": _snapshot_optional_int(item.get("target_block_time_ms")),
+        "retarget_reason": str(item.get("retarget_reason") or "").strip() or None,
+        "retarget_source_window": _snapshot_optional_int(item.get("retarget_source_window")),
+        "retarget_source_details": str(item.get("retarget_source_details") or "").strip() or None,
+        "previous_protocol_params_id": _snapshot_optional_int(item.get("previous_protocol_params_id")),
+        "active": 1 if _snapshot_bool(item.get("active", 1)) else 0,
+        "created_at": str(item.get("created_at") or "").strip(),
+    }
+
+
+def _normalize_retarget_event_snapshot_row(row: Any) -> dict[str, Any]:
+    item = row_to_dict(row) if not isinstance(row, dict) else dict(row)
+    event_id = _snapshot_required_int(item, "id", "retarget event snapshot entry missing id")
+    if event_id <= 0:
+        raise ValueError("retarget event snapshot entry missing id")
+    return {
+        "id": event_id,
+        "previous_protocol_params_id": _snapshot_optional_int(item.get("previous_protocol_params_id")),
+        "new_protocol_params_id": _snapshot_optional_int(item.get("new_protocol_params_id")),
+        "epoch_start_height": _snapshot_required_int(item, "epoch_start_height"),
+        "epoch_end_height": _snapshot_required_int(item, "epoch_end_height"),
+        "epoch_block_count": _snapshot_required_int(item, "epoch_block_count"),
+        "average_block_ms": _snapshot_required_float(item, "average_block_ms"),
+        "target_block_ms": _snapshot_required_int(item, "target_block_ms"),
+        "old_difficulty": _snapshot_required_float(item, "old_difficulty"),
+        "new_difficulty": _snapshot_required_float(item, "new_difficulty"),
+        "adjustment_factor": _snapshot_required_float(item, "adjustment_factor"),
+        "action": str(item.get("action") or "").strip(),
+        "reason": str(item.get("reason") or "").strip(),
+        "created_at": str(item.get("created_at") or "").strip(),
+    }
+
+
+def _normalize_pending_reward_snapshot_row(row: Any) -> dict[str, Any]:
+    item = row_to_dict(row) if not isinstance(row, dict) else dict(row)
+    reward_id = _snapshot_required_int(item, "id", "pending reward snapshot entry missing id")
+    if reward_id <= 0:
+        raise ValueError("pending reward snapshot entry missing id")
+    miner_id = str(item.get("miner_id") or "").strip()
+    if not miner_id:
+        raise ValueError("pending reward snapshot entry missing miner_id")
+    block_height = _snapshot_required_int(item, "block_height")
+    amount_units = units_from_db(item.get("amount") or 0, item.get("amount_units"))
+    account_id = str(item.get("account_id") or "").strip() or None
+    account_type = str(item.get("account_type") or "").strip() or None
+    related_id = str(item.get("related_id") or "").strip() or None
+    return {
+        "id": reward_id,
+        "miner_id": miner_id,
+        "block_height": block_height,
+        "amount": canonical_amount(amount_units),
+        "amount_units": amount_units,
+        "account_id": account_id,
+        "account_type": account_type,
+        "status": "immature",
+        "matures_at_height": _snapshot_required_int(item, "matures_at_height"),
+        "matured_at": None,
+        "orphaned_at": str(item.get("orphaned_at") or "").strip() or None,
+        "orphan_reason": str(item.get("orphan_reason") or "").strip() or None,
+        "related_id": related_id,
+        "reason": str(item.get("reason") or "block reward").strip() or "block reward",
+        "created_at": str(item.get("created_at") or "").strip(),
+    }
+
+
+def _snapshot_bool(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _snapshot_optional_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    return int(value)
+
+
+def _snapshot_required_int(item: dict[str, Any], key: str, message: str | None = None) -> int:
+    value = item.get(key)
+    if value is None or value == "":
+        raise ValueError(message or f"protocol snapshot entry missing {key}")
+    return int(value)
+
+
+def _snapshot_optional_float(value: Any) -> float | None:
+    if value is None or value == "":
+        return None
+    return round(float(value), 8)
+
+
+def _snapshot_required_float(item: dict[str, Any], key: str) -> float:
+    value = item.get(key)
+    if value is None or value == "":
+        raise ValueError(f"protocol snapshot entry missing {key}")
+    return round(float(value), 8)
+
+
+def _restore_snapshot_protocol_params(connection: Any, params: dict[str, Any]) -> None:
+    connection.execute(
+        """
+        INSERT INTO protocol_params (
+            id, protocol_version, algorithm, validation_mode, required_validator_approvals,
+            range_assignment_mode, max_pi_position, range_assignment_max_attempts,
+            segment_size, sample_count, task_expiration_seconds, max_active_tasks_per_miner,
+            base_reward, difficulty, RETARGET_MAX_PI_POSITION, target_block_time_ms,
+            retarget_reason, retarget_source_window, retarget_source_details,
+            previous_protocol_params_id, active, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            params["id"],
+            params["protocol_version"],
+            params["algorithm"],
+            params["validation_mode"],
+            params["required_validator_approvals"],
+            params["range_assignment_mode"],
+            params["max_pi_position"],
+            params["range_assignment_max_attempts"],
+            params["segment_size"],
+            params["sample_count"],
+            params["task_expiration_seconds"],
+            params["max_active_tasks_per_miner"],
+            params["base_reward"],
+            params["difficulty"],
+            params["RETARGET_MAX_PI_POSITION"],
+            params["target_block_time_ms"],
+            params["retarget_reason"],
+            params["retarget_source_window"],
+            params["retarget_source_details"],
+            params["previous_protocol_params_id"],
+            params["active"],
+            params["created_at"] or _now(),
+        ),
+    )
+
+
+def _restore_snapshot_retarget_event(connection: Any, event: dict[str, Any]) -> None:
+    connection.execute(
+        """
+        INSERT INTO retarget_events (
+            id, previous_protocol_params_id, new_protocol_params_id,
+            epoch_start_height, epoch_end_height, epoch_block_count,
+            average_block_ms, target_block_ms, old_difficulty, new_difficulty,
+            adjustment_factor, action, reason, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            event["id"],
+            event["previous_protocol_params_id"],
+            event["new_protocol_params_id"],
+            event["epoch_start_height"],
+            event["epoch_end_height"],
+            event["epoch_block_count"],
+            event["average_block_ms"],
+            event["target_block_ms"],
+            event["old_difficulty"],
+            event["new_difficulty"],
+            event["adjustment_factor"],
+            event["action"],
+            event["reason"],
+            event["created_at"] or _now(),
+        ),
+    )
+
+
+def _restore_snapshot_pending_reward(connection: Any, reward: dict[str, Any]) -> None:
+    connection.execute(
+        """
+        INSERT INTO rewards (
+            id, miner_id, block_height, amount, amount_units, account_id, account_type,
+            status, matures_at_height, matured_at, orphaned_at, orphan_reason,
+            related_id, reason, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'immature', ?, NULL, ?, ?, ?, ?, ?)
+        """,
+        (
+            reward["id"],
+            reward["miner_id"],
+            reward["block_height"],
+            units_to_float(int(reward["amount_units"])),
+            reward["amount_units"],
+            reward["account_id"],
+            reward["account_type"],
+            reward["matures_at_height"],
+            reward["orphaned_at"],
+            reward["orphan_reason"],
+            reward["related_id"],
+            reward["reason"],
+            reward["created_at"] or _now(),
+        ),
+    )
 
 
 def _restore_snapshot_validator(connection: Any, validator: dict[str, Any], timestamp: str) -> None:

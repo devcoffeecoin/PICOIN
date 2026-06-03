@@ -27,6 +27,46 @@ from app.core.settings import CHAIN_ID, NETWORK_ID
 DEFAULT_IDENTITY_PATH = Path("miner_identity.json")
 AUTO_REGISTER_IDENTITY = os.getenv("PICOIN_AUTO_REGISTER_IDENTITY", "1").strip().lower() not in {"0", "false", "no"}
 MINER_REWARD_ADDRESS = os.getenv("PICOIN_MINER_REWARD_ADDRESS", "").strip()
+RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
+
+
+def http_timeout_seconds() -> float:
+    value = os.getenv("PICOIN_HTTP_TIMEOUT_SECONDS", "60")
+    try:
+        return max(5.0, float(value))
+    except ValueError:
+        return 60.0
+
+
+def http_max_retries() -> int:
+    value = os.getenv("PICOIN_HTTP_MAX_RETRIES", "3")
+    try:
+        return max(1, int(value))
+    except ValueError:
+        return 3
+
+
+def request_with_retries(method: str, url: str, **kwargs: Any) -> requests.Response:
+    timeout = kwargs.pop("timeout", http_timeout_seconds())
+    max_retries = http_max_retries()
+    last_error: requests.RequestException | None = None
+    for attempt in range(max_retries):
+        try:
+            response = requests.request(method, url, timeout=timeout, **kwargs)
+            if response.status_code in RETRY_STATUS_CODES and attempt + 1 < max_retries:
+                time.sleep(min(1.5 * (attempt + 1), 5.0))
+                continue
+            response.raise_for_status()
+            return response
+        except (requests.Timeout, requests.ConnectionError) as exc:
+            last_error = exc
+            if attempt + 1 >= max_retries:
+                raise
+            print(f"Network/API transient error: {exc}; retrying {attempt + 2}/{max_retries}", file=sys.stderr)
+            time.sleep(min(1.5 * (attempt + 1), 5.0))
+    if last_error is not None:
+        raise last_error
+    raise RuntimeError("Network/API request failed without a response")
 
 
 def utc_now() -> str:
@@ -81,10 +121,10 @@ def register(server_url: str, name: str, identity_path: Path, overwrite: bool) -
         raise FileExistsError(f"identity already exists: {identity_path}")
 
     keypair = generate_keypair()
-    response = requests.post(
+    response = request_with_retries(
+        "POST",
         f"{server_url}/miners/register",
         json={"name": name, "public_key": keypair["public_key"], "reward_address": MINER_REWARD_ADDRESS or None},
-        timeout=20,
     )
     response.raise_for_status()
     miner = response.json()
@@ -102,8 +142,7 @@ def register(server_url: str, name: str, identity_path: Path, overwrite: bool) -
 
 
 def get_task(server_url: str, miner_id: str) -> dict[str, Any]:
-    response = requests.get(f"{server_url}/tasks/next", params={"miner_id": miner_id}, timeout=20)
-    response.raise_for_status()
+    response = request_with_retries("GET", f"{server_url}/tasks/next", params={"miner_id": miner_id})
     return response.json()
 
 
@@ -115,14 +154,12 @@ def get_task_for_identity(server_url: str, identity: dict[str, Any]) -> dict[str
         "reward_address": identity.get("reward_address"),
     }
     params = {key: value for key, value in params.items() if value}
-    response = requests.get(f"{server_url}/tasks/next", params=params, timeout=20)
-    response.raise_for_status()
+    response = request_with_retries("GET", f"{server_url}/tasks/next", params=params)
     return response.json()
 
 
 def get_miner(server_url: str, miner_id: str) -> dict[str, Any]:
-    response = requests.get(f"{server_url}/miners/{miner_id}", timeout=20)
-    response.raise_for_status()
+    response = request_with_retries("GET", f"{server_url}/miners/{miner_id}")
     return response.json()
 
 
@@ -145,7 +182,8 @@ def submit_result(
     )
     signature = sign_payload(identity["private_key"], signature_payload)
 
-    response = requests.post(
+    response = request_with_retries(
+        "POST",
         f"{server_url}/tasks/submit",
         json={
             "task_id": task["task_id"],
@@ -155,9 +193,7 @@ def submit_result(
             "signature": signature,
             "signed_at": signed_at,
         },
-        timeout=20,
     )
-    response.raise_for_status()
     return response.json()
 
 
@@ -189,7 +225,8 @@ def commit_result(
     )
     signature = sign_payload(identity["private_key"], signature_payload)
 
-    response = requests.post(
+    response = request_with_retries(
+        "POST",
         f"{server_url}/tasks/commit",
         json={
             "task_id": task["task_id"],
@@ -205,9 +242,7 @@ def commit_result(
             "signature": signature,
             "signed_at": signed_at,
         },
-        timeout=20,
     )
-    response.raise_for_status()
     return response.json()
 
 
@@ -243,7 +278,8 @@ def reveal_samples(
     )
     signature = sign_payload(identity["private_key"], signature_payload)
 
-    response = requests.post(
+    response = request_with_retries(
+        "POST",
         f"{server_url}/tasks/reveal",
         json={
             "task_id": task["task_id"],
@@ -257,9 +293,7 @@ def reveal_samples(
             "signature": signature,
             "signed_at": signed_at,
         },
-        timeout=20,
     )
-    response.raise_for_status()
     return response.json()
 
 
