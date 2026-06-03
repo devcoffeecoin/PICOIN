@@ -147,6 +147,7 @@ PARTICIPANT_LIVENESS_INTERVAL_SECONDS = int(os.getenv("PICOIN_LIVENESS_INTERVAL_
 PARTICIPANT_LIVENESS_MIN_INTERVAL_SECONDS = int(
     os.getenv("PICOIN_LIVENESS_MIN_INTERVAL_SECONDS", str(max(5, PARTICIPANT_LIVENESS_INTERVAL_SECONDS)))
 )
+MINER_TASK_HEARTBEAT_MIN_INTERVAL_SECONDS = int(os.getenv("PICOIN_MINER_TASK_HEARTBEAT_MIN_INTERVAL_SECONDS", "60"))
 _PARTICIPANT_LIVENESS_TASK: asyncio.Task | None = None
 _PARTICIPANT_LIVENESS_LOCK = threading.Lock()
 _PARTICIPANT_LIVENESS_LAST_RUN_MONOTONIC = 0.0
@@ -1443,14 +1444,7 @@ def create_next_task(
             raise MiningError(403, "miner is banned")
         if not bool(miner.get("enabled", 1)):
             raise MiningError(403, "miner is disabled")
-        connection.execute(
-            """
-            UPDATE miners
-            SET last_seen_at = ?, last_heartbeat_at = ?, online_status = 'online'
-            WHERE miner_id = ?
-            """,
-            (utc_now(), utc_now(), miner_id),
-        )
+        _maybe_update_miner_task_poll(connection, miner)
 
         cooldown_until = parse_iso(miner["cooldown_until"])
         if cooldown_until is not None and cooldown_until > utc_now_dt():
@@ -1603,8 +1597,32 @@ def _update_miner_reward_address(connection: Any, miner_id: str, reward_address:
     reward_address = _normalize_reward_address(reward_address)
     if not reward_address:
         return
+    current = connection.execute("SELECT reward_address FROM miners WHERE miner_id = ?", (miner_id,)).fetchone()
+    if current is not None and str(current["reward_address"] or "") == reward_address:
+        return
     connection.execute("UPDATE miners SET reward_address = ? WHERE miner_id = ?", (reward_address, miner_id))
     _ensure_balance_account(connection, reward_address, "wallet")
+
+
+def _maybe_update_miner_task_poll(connection: Any, miner: dict[str, Any]) -> None:
+    now_dt = utc_now_dt()
+    last_seen = parse_iso(miner.get("last_heartbeat_at") or miner.get("last_seen_at"))
+    online_status = str(miner.get("online_status") or "")
+    if (
+        last_seen is not None
+        and (now_dt - last_seen).total_seconds() < MINER_TASK_HEARTBEAT_MIN_INTERVAL_SECONDS
+        and online_status == "online"
+    ):
+        return
+    timestamp = now_dt.isoformat()
+    connection.execute(
+        """
+        UPDATE miners
+        SET last_seen_at = ?, last_heartbeat_at = ?, online_status = 'online'
+        WHERE miner_id = ?
+        """,
+        (timestamp, timestamp, miner["miner_id"]),
+    )
 
 
 def _restore_validator_identity(
