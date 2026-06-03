@@ -3677,9 +3677,25 @@ def get_full_economic_audit() -> dict[str, Any]:
             if snapshot_base and snapshot_base.get("state_applied")
             else 0.0
         )
+        snapshot_base_height = (
+            int(snapshot_base.get("height") or 0)
+            if snapshot_base and snapshot_base.get("state_applied")
+            else 0
+        )
         economic_base_total = snapshot_base_total if snapshot_base_total > 0 else GENESIS_SUPPLY
 
         block_rewards = _sum_query(connection, "SELECT COALESCE(SUM(reward), 0) AS total FROM blocks")
+        accepted_blocks = int(connection.execute("SELECT COUNT(*) AS count FROM blocks").fetchone()["count"])
+        snapshot_pending_reward_rows = connection.execute(
+            """
+            SELECT COUNT(*) AS count, COALESCE(SUM(amount), 0) AS total
+            FROM rewards
+            WHERE block_height <= ?
+            """,
+            (snapshot_base_height,),
+        ).fetchone()
+        snapshot_pending_reward_count = int(snapshot_pending_reward_rows["count"] or 0)
+        snapshot_pending_reward_total = round(float(snapshot_pending_reward_rows["total"] or 0), 8)
         mature_block_rewards_total = _sum_query(
             connection,
             """
@@ -3721,11 +3737,12 @@ def get_full_economic_audit() -> dict[str, Any]:
         ).fetchone()
         reward_count = int(reward_rows["count"])
         rewards_table_total = round(float(reward_rows["total"]), 8)
+        expected_rewards_table_total = round(block_rewards + snapshot_pending_reward_total, 8)
+        expected_reward_count = accepted_blocks + snapshot_pending_reward_count
         ledger_block_rewards = _sum_query(
             connection,
             "SELECT COALESCE(SUM(amount), 0) AS total FROM ledger_entries WHERE entry_type = 'block_reward'",
         )
-        accepted_blocks = int(connection.execute("SELECT COUNT(*) AS count FROM blocks").fetchone()["count"])
 
         validators = connection.execute(
             """
@@ -3806,8 +3823,8 @@ def get_full_economic_audit() -> dict[str, Any]:
     _audit_equal(
         issues,
         code="rewards_table_mismatch",
-        message="rewards table total must equal accepted block rewards",
-        expected=block_rewards,
+        message="rewards table total must equal accepted block rewards plus imported pre-snapshot pending rewards",
+        expected=expected_rewards_table_total,
         actual=rewards_table_total,
     )
     _audit_equal(
@@ -3858,13 +3875,18 @@ def get_full_economic_audit() -> dict[str, Any]:
             }
         )
 
-    if accepted_blocks != reward_count:
+    if expected_reward_count != reward_count:
         issues.append(
             {
                 "code": "reward_count_mismatch",
                 "severity": "error",
-                "message": "accepted block count must match reward row count",
-                "details": {"accepted_blocks": accepted_blocks, "reward_rows": reward_count},
+                "message": "accepted block count plus imported pre-snapshot pending rewards must match reward row count",
+                "details": {
+                    "accepted_blocks": accepted_blocks,
+                    "snapshot_pending_reward_rows": snapshot_pending_reward_count,
+                    "expected_reward_rows": expected_reward_count,
+                    "reward_rows": reward_count,
+                },
             }
         )
 
@@ -3907,6 +3929,9 @@ def get_full_economic_audit() -> dict[str, Any]:
         "rewards": {
             "accepted_blocks": accepted_blocks,
             "block_reward_total": block_rewards,
+            "snapshot_pending_reward_total": snapshot_pending_reward_total,
+            "snapshot_pending_reward_rows": snapshot_pending_reward_count,
+            "expected_rewards_table_total": expected_rewards_table_total,
             "mature_block_reward_total": mature_block_rewards_total,
             "immature_block_reward_total": immature_block_rewards,
             "block_maturity_depth": BLOCK_MATURITY_DEPTH,

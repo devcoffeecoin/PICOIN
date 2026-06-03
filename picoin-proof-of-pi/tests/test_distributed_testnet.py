@@ -1111,6 +1111,42 @@ def test_snapshot_restore_preserves_retargeted_protocol_params_for_replay(tmp_pa
     assert chain["valid"] is True
 
 
+def test_snapshot_restore_preserves_pending_reward_maturity_for_replay(tmp_path, monkeypatch) -> None:
+    monkeypatch.setattr("app.services.rewards.BLOCK_MATURITY_DEPTH", 2)
+    monkeypatch.setattr("app.services.mining.BLOCK_MATURITY_DEPTH", 2)
+    _init_network_db(tmp_path, monkeypatch, "snapshot-pending-reward-source.sqlite3")
+
+    miner_key = generate_keypair()
+    miner = register_miner("snapshot-pending-reward-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    snapshot = export_canonical_snapshot(height=2)
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    next_block = get_blocks_since(2)["blocks"][0]
+    source_audit = get_full_economic_audit()
+
+    assert snapshot["valid"] is True
+    assert snapshot["checkpoint"]["pending_rewards_count"] == 2
+    assert [reward["matures_at_height"] for reward in snapshot["pending_rewards"]] == [3, 4]
+    assert source_audit["valid"] is True
+
+    _init_network_db(tmp_path, monkeypatch, "snapshot-pending-reward-target.sqlite3")
+    imported = import_canonical_snapshot(snapshot, source="peer-pending-rewards")
+    applied = apply_imported_snapshot_state(imported["snapshot"]["snapshot_hash"])
+    received = receive_block_header(next_block, source_peer_id="peer-pending-rewards")
+    replay = replay_finalized_blocks()
+    imported_block = get_block(next_block["height"])
+    target_audit = get_full_economic_audit()
+
+    assert applied["pending_rewards_applied"] == 2
+    assert received["status"] == "pending_replay"
+    assert replay["headers_imported"] == 1
+    assert replay["errors"] == []
+    assert imported_block["block_hash"] == next_block["block_hash"]
+    assert imported_block["state_root"] == next_block["state_root"]
+    assert target_audit["valid"] is True, target_audit["issues"]
+
+
 def test_active_snapshot_base_accepts_next_block_header(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "snapshot-active-source.sqlite3")
 

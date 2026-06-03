@@ -91,6 +91,23 @@ def retarget_events_snapshot(connection: Any) -> list[dict[str, Any]]:
     return [_normalize_retarget_event_snapshot_row(row) for row in rows]
 
 
+def pending_rewards_snapshot(connection: Any, block_height: int) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT
+            id, miner_id, block_height, amount, amount_units, account_id, account_type,
+            status, matures_at_height, matured_at, orphaned_at, orphan_reason,
+            related_id, reason, created_at
+        FROM rewards
+        WHERE status = 'immature'
+          AND block_height <= ?
+        ORDER BY matures_at_height ASC, id ASC
+        """,
+        (block_height,),
+    ).fetchall()
+    return [_normalize_pending_reward_snapshot_row(row) for row in rows]
+
+
 def canonical_balance_snapshot(connection: Any, block_height: int, block_timestamp: str | None = None) -> list[dict[str, Any]]:
     if block_height < 0:
         raise ValueError("block_height must be >= 0")
@@ -198,6 +215,8 @@ def create_canonical_checkpoint_in_connection(
     protocol_params_hash = sha256_text(canonical_json({"height": height, "protocol_params": protocol_params}))
     retarget_events = retarget_events_snapshot(connection)
     retarget_events_hash = sha256_text(canonical_json({"height": height, "retarget_events": retarget_events}))
+    pending_rewards = pending_rewards_snapshot(connection, height)
+    pending_rewards_hash = sha256_text(canonical_json({"height": height, "pending_rewards": pending_rewards}))
     ledger_entries_count = int(
         connection.execute(
             """
@@ -230,6 +249,8 @@ def create_canonical_checkpoint_in_connection(
         "protocol_params_count": len(protocol_params),
         "retarget_events_hash": retarget_events_hash,
         "retarget_events_count": len(retarget_events),
+        "pending_rewards_hash": pending_rewards_hash,
+        "pending_rewards_count": len(pending_rewards),
         "ledger_entries_count": ledger_entries_count,
         "total_balance": total_balance,
         "total_balance_units": total_balance_units,
@@ -351,6 +372,8 @@ def verify_checkpoint(height: int) -> dict[str, Any]:
         protocol_params_hash = sha256_text(canonical_json({"height": height, "protocol_params": protocol_params}))
         retarget_events = retarget_events_snapshot(connection)
         retarget_events_hash = sha256_text(canonical_json({"height": height, "retarget_events": retarget_events}))
+        pending_rewards = pending_rewards_snapshot(connection, height)
+        pending_rewards_hash = sha256_text(canonical_json({"height": height, "pending_rewards": pending_rewards}))
         state_root = calculate_state_root(connection, height, block["timestamp"])
         ledger_entries_count = int(
             connection.execute(
@@ -393,6 +416,9 @@ def verify_checkpoint(height: int) -> dict[str, Any]:
         if checkpoint_payload.get("retarget_events_hash"):
             payload["retarget_events_hash"] = retarget_events_hash
             payload["retarget_events_count"] = len(retarget_events)
+        if checkpoint_payload.get("pending_rewards_hash"):
+            payload["pending_rewards_hash"] = pending_rewards_hash
+            payload["pending_rewards_count"] = len(pending_rewards)
         snapshot_hash = sha256_text(canonical_json(payload))
         issues = []
         if checkpoint["block_hash"] != block["block_hash"]:
@@ -433,6 +459,12 @@ def verify_checkpoint(height: int) -> dict[str, Any]:
             stored_retarget_events_count = checkpoint_payload.get("retarget_events_count")
             if stored_retarget_events_count is None or int(stored_retarget_events_count) != len(retarget_events):
                 issues.append("retarget_events_count mismatch")
+        if checkpoint_payload.get("pending_rewards_hash") and checkpoint_payload.get("pending_rewards_hash") != pending_rewards_hash:
+            issues.append("pending_rewards_hash mismatch")
+        if checkpoint_payload.get("pending_rewards_hash"):
+            stored_pending_rewards_count = checkpoint_payload.get("pending_rewards_count")
+            if stored_pending_rewards_count is None or int(stored_pending_rewards_count) != len(pending_rewards):
+                issues.append("pending_rewards_count mismatch")
         if checkpoint["snapshot_hash"] != snapshot_hash:
             issues.append("snapshot_hash mismatch")
         if not issues:
@@ -455,6 +487,8 @@ def verify_checkpoint(height: int) -> dict[str, Any]:
             "protocol_params_count": len(protocol_params) if checkpoint_payload.get("protocol_params_hash") else None,
             "retarget_events_hash": retarget_events_hash if checkpoint_payload.get("retarget_events_hash") else None,
             "retarget_events_count": len(retarget_events) if checkpoint_payload.get("retarget_events_hash") else None,
+            "pending_rewards_hash": pending_rewards_hash if checkpoint_payload.get("pending_rewards_hash") else None,
+            "pending_rewards_count": len(pending_rewards) if checkpoint_payload.get("pending_rewards_hash") else None,
         },
     }
 
@@ -483,6 +517,7 @@ def export_canonical_snapshot(height: int | None = None) -> dict[str, Any]:
         validators = validator_snapshot(connection)
         protocol_params = protocol_params_snapshot(connection)
         retarget_events = retarget_events_snapshot(connection)
+        pending_rewards = pending_rewards_snapshot(connection, int(height))
         account_types = {
             row["account_id"]: row["account_type"]
             for row in connection.execute("SELECT account_id, account_type FROM balances").fetchall()
@@ -504,6 +539,7 @@ def export_canonical_snapshot(height: int | None = None) -> dict[str, Any]:
         "validators": validators,
         "protocol_params": protocol_params,
         "retarget_events": retarget_events,
+        "pending_rewards": pending_rewards,
     }
     validation = validate_snapshot_document(document)
     document["valid"] = validation["valid"]
@@ -567,6 +603,7 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
     validators = document.get("validators") or []
     protocol_params = document.get("protocol_params") or []
     retarget_events = document.get("retarget_events") or []
+    pending_rewards = document.get("pending_rewards") or []
     if not isinstance(balances, list):
         balances = []
         issues.append("balances must be a list")
@@ -582,6 +619,9 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(retarget_events, list):
         retarget_events = []
         issues.append("retarget_events must be a list")
+    if not isinstance(pending_rewards, list):
+        pending_rewards = []
+        issues.append("pending_rewards must be a list")
     required = {
         "chain_id",
         "network_id",
@@ -632,11 +672,21 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
     except ValueError as exc:
         normalized_retarget_events = []
         issues.append(str(exc))
+    try:
+        normalized_pending_rewards = _normalize_snapshot_pending_rewards(pending_rewards)
+    except ValueError as exc:
+        normalized_pending_rewards = []
+        issues.append(str(exc))
+    for reward in normalized_pending_rewards:
+        if int(reward["matures_at_height"] or 0) <= height:
+            issues.append("pending reward matures_at_height must be after snapshot height")
+            break
     balances_hash = sha256_text(canonical_json({"height": height, "balances": normalized_balances}))
     nonces_hash = sha256_text(canonical_json({"height": height, "nonces": normalized_nonces}))
     validators_hash = sha256_text(canonical_json({"height": height, "validators": normalized_validators}))
     protocol_params_hash = sha256_text(canonical_json({"height": height, "protocol_params": normalized_protocol_params}))
     retarget_events_hash = sha256_text(canonical_json({"height": height, "retarget_events": normalized_retarget_events}))
+    pending_rewards_hash = sha256_text(canonical_json({"height": height, "pending_rewards": normalized_pending_rewards}))
     total_balance_units = sum(int(item["balance_units"]) for item in normalized_balances)
     total_balance = units_to_float(total_balance_units)
     payload = {
@@ -666,6 +716,9 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
     if checkpoint.get("retarget_events_hash") or normalized_retarget_events:
         payload["retarget_events_hash"] = retarget_events_hash
         payload["retarget_events_count"] = len(normalized_retarget_events)
+    if checkpoint.get("pending_rewards_hash") or normalized_pending_rewards:
+        payload["pending_rewards_hash"] = pending_rewards_hash
+        payload["pending_rewards_count"] = len(normalized_pending_rewards)
     snapshot_hash = sha256_text(canonical_json(payload))
     if checkpoint.get("balances_hash") != balances_hash:
         issues.append("balances_hash mismatch")
@@ -697,6 +750,12 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
         stored_retarget_events_count = checkpoint.get("retarget_events_count")
         if stored_retarget_events_count is None or int(stored_retarget_events_count) != len(normalized_retarget_events):
             issues.append("retarget_events_count mismatch")
+    if checkpoint.get("pending_rewards_hash") and checkpoint.get("pending_rewards_hash") != pending_rewards_hash:
+        issues.append("pending_rewards_hash mismatch")
+    if checkpoint.get("pending_rewards_hash"):
+        stored_pending_rewards_count = checkpoint.get("pending_rewards_count")
+        if stored_pending_rewards_count is None or int(stored_pending_rewards_count) != len(normalized_pending_rewards):
+            issues.append("pending_rewards_count mismatch")
     if int(checkpoint.get("total_balance_units") or to_units(checkpoint.get("total_balance") or 0)) != total_balance_units:
         issues.append("total_balance mismatch")
     if checkpoint.get("snapshot_hash") != snapshot_hash:
@@ -730,6 +789,12 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
                 if checkpoint.get("retarget_events_count") is not None
                 else len(normalized_retarget_events)
             ),
+            "pending_rewards_hash": checkpoint.get("pending_rewards_hash") or (pending_rewards_hash if normalized_pending_rewards else None),
+            "pending_rewards_count": int(
+                checkpoint["pending_rewards_count"]
+                if checkpoint.get("pending_rewards_count") is not None
+                else len(normalized_pending_rewards)
+            ),
         },
         "computed": {
             "balances_hash": balances_hash,
@@ -746,6 +811,8 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
             "protocol_params_count": len(normalized_protocol_params),
             "retarget_events_hash": retarget_events_hash if normalized_retarget_events else None,
             "retarget_events_count": len(normalized_retarget_events),
+            "pending_rewards_hash": pending_rewards_hash if normalized_pending_rewards else None,
+            "pending_rewards_count": len(normalized_pending_rewards),
         },
     }
 
@@ -792,13 +859,17 @@ def apply_imported_snapshot_state(snapshot_hash: str, *, replace_existing: bool 
         validators = _normalize_snapshot_validators(document.get("validators") or [])
         protocol_params = _normalize_snapshot_protocol_params(document.get("protocol_params") or [])
         retarget_events = _normalize_snapshot_retarget_events(document.get("retarget_events") or [])
+        pending_rewards = _normalize_snapshot_pending_rewards(document.get("pending_rewards") or [])
         checkpoint = validation["checkpoint"]
 
+        if pending_rewards:
+            connection.execute("PRAGMA foreign_keys = OFF")
         cleared = _clear_local_chain_state_for_snapshot_restore(connection) if replace_existing else {}
         if protocol_params:
             connection.execute("DELETE FROM difficulty_bucket_metrics")
             connection.execute("DELETE FROM retarget_events")
             connection.execute("DELETE FROM protocol_params")
+        connection.execute("DELETE FROM rewards")
         connection.execute("DELETE FROM ledger_entries")
         connection.execute("DELETE FROM balances")
         connection.execute("DELETE FROM account_nonces")
@@ -835,6 +906,8 @@ def apply_imported_snapshot_state(snapshot_hash: str, *, replace_existing: bool 
             _restore_snapshot_protocol_params(connection, params)
         for event in retarget_events:
             _restore_snapshot_retarget_event(connection, event)
+        for reward in pending_rewards:
+            _restore_snapshot_pending_reward(connection, reward)
         for validator in validators:
             _restore_snapshot_validator(connection, validator, timestamp)
         connection.execute("UPDATE canonical_snapshot_imports SET active = 0")
@@ -860,6 +933,7 @@ def apply_imported_snapshot_state(snapshot_hash: str, *, replace_existing: bool 
         "validators_applied": len(validators),
         "protocol_params_applied": len(protocol_params),
         "retarget_events_applied": len(retarget_events),
+        "pending_rewards_applied": len(pending_rewards),
         "cleared": cleared,
         "snapshot": applied,
     }
@@ -1070,6 +1144,17 @@ def _normalize_snapshot_retarget_events(retarget_events: list[dict[str, Any]]) -
     return [normalized[key] for key in sorted(normalized)]
 
 
+def _normalize_snapshot_pending_rewards(pending_rewards: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: dict[int, dict[str, Any]] = {}
+    for item in pending_rewards:
+        reward = _normalize_pending_reward_snapshot_row(item)
+        reward_id = int(reward["id"])
+        if reward_id in normalized:
+            raise ValueError(f"pending reward snapshot has duplicate id {reward_id}")
+        normalized[reward_id] = reward
+    return [normalized[key] for key in sorted(normalized)]
+
+
 def _normalize_validator_snapshot_row(row: Any) -> dict[str, Any]:
     item = dict(row)
     validator_id = str(item.get("validator_id") or "").strip()
@@ -1153,6 +1238,38 @@ def _normalize_retarget_event_snapshot_row(row: Any) -> dict[str, Any]:
         "adjustment_factor": _snapshot_required_float(item, "adjustment_factor"),
         "action": str(item.get("action") or "").strip(),
         "reason": str(item.get("reason") or "").strip(),
+        "created_at": str(item.get("created_at") or "").strip(),
+    }
+
+
+def _normalize_pending_reward_snapshot_row(row: Any) -> dict[str, Any]:
+    item = row_to_dict(row) if not isinstance(row, dict) else dict(row)
+    reward_id = _snapshot_required_int(item, "id", "pending reward snapshot entry missing id")
+    if reward_id <= 0:
+        raise ValueError("pending reward snapshot entry missing id")
+    miner_id = str(item.get("miner_id") or "").strip()
+    if not miner_id:
+        raise ValueError("pending reward snapshot entry missing miner_id")
+    block_height = _snapshot_required_int(item, "block_height")
+    amount_units = units_from_db(item.get("amount") or 0, item.get("amount_units"))
+    account_id = str(item.get("account_id") or "").strip() or None
+    account_type = str(item.get("account_type") or "").strip() or None
+    related_id = str(item.get("related_id") or "").strip() or None
+    return {
+        "id": reward_id,
+        "miner_id": miner_id,
+        "block_height": block_height,
+        "amount": canonical_amount(amount_units),
+        "amount_units": amount_units,
+        "account_id": account_id,
+        "account_type": account_type,
+        "status": "immature",
+        "matures_at_height": _snapshot_required_int(item, "matures_at_height"),
+        "matured_at": None,
+        "orphaned_at": str(item.get("orphaned_at") or "").strip() or None,
+        "orphan_reason": str(item.get("orphan_reason") or "").strip() or None,
+        "related_id": related_id,
+        "reason": str(item.get("reason") or "block reward").strip() or "block reward",
         "created_at": str(item.get("created_at") or "").strip(),
     }
 
@@ -1255,6 +1372,34 @@ def _restore_snapshot_retarget_event(connection: Any, event: dict[str, Any]) -> 
             event["action"],
             event["reason"],
             event["created_at"] or _now(),
+        ),
+    )
+
+
+def _restore_snapshot_pending_reward(connection: Any, reward: dict[str, Any]) -> None:
+    connection.execute(
+        """
+        INSERT INTO rewards (
+            id, miner_id, block_height, amount, amount_units, account_id, account_type,
+            status, matures_at_height, matured_at, orphaned_at, orphan_reason,
+            related_id, reason, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'immature', ?, NULL, ?, ?, ?, ?, ?)
+        """,
+        (
+            reward["id"],
+            reward["miner_id"],
+            reward["block_height"],
+            units_to_float(int(reward["amount_units"])),
+            reward["amount_units"],
+            reward["account_id"],
+            reward["account_type"],
+            reward["matures_at_height"],
+            reward["orphaned_at"],
+            reward["orphan_reason"],
+            reward["related_id"],
+            reward["reason"],
+            reward["created_at"] or _now(),
         ),
     )
 
