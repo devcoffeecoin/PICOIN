@@ -2,11 +2,11 @@
   "rewrites": [
     {
       "source": "/api/bootstrap/:path*",
-      "destination": "/api/bootstrap-proxy?path=:path*"
+      "destination": "https://api.picoin.science/:path*"
     },
     {
       "source": "/api/validator/:path*",
-      "destination": "/api/validator-proxy?path=:path*"
+      "destination": "https://api.picoin.science/:path*"
     },
     {
       "source": "/wallet",
