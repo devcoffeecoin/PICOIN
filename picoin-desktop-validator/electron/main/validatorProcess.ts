@@ -15,6 +15,8 @@ const MIN_VALIDATOR_STAKE = "31.416";
 const MAX_LOG_LINES = 20;
 const NODE_HTTP_TIMEOUT_SECONDS = "60";
 const HTTP_MAX_RETRIES = "3";
+const AUTO_SYNC_INTERVAL_MS = 30_000;
+const AUTO_SYNC_MAX_HEALTHY_LAG = 1;
 
 type NodeStatus = "stopped" | "starting" | "running" | "error";
 type ValidatorStatus = "stopped" | "starting" | "validating" | "error";
@@ -48,6 +50,9 @@ let nodeStopRequested = false;
 let validatorStopRequested = false;
 let validatorRecoveryStopRequested = false;
 let autoRecoveryInProgress = false;
+let autoSyncTimer: NodeJS.Timeout | null = null;
+let autoSyncInProgress = false;
+let autoSyncConfig: ValidatorConfig | null = null;
 
 function addLog(line: string) {
   const clean = line.trim();
@@ -191,7 +196,114 @@ function nodeNeedsCatchUp(syncStatus: any): boolean {
     syncStatus?.effective_latest_block_height ?? syncStatus?.target_height ?? syncStatus?.latest_block_height ?? localHeight,
   );
   const pendingReplay = Number(syncStatus?.pending_replay_blocks ?? replay.queue_size ?? 0);
-  return localHeight <= 0 || pendingReplay > 0 || effectiveHeight - localHeight > 1;
+  return effectiveHeight <= 0 || pendingReplay > 0 || (localHeight > 0 && effectiveHeight - localHeight > 1);
+}
+
+function effectiveHeightFromStatus(syncStatus: any): number {
+  return Number(syncStatus?.effective_latest_block_height ?? syncStatus?.latest_block_height ?? syncStatus?.local_block_height ?? 0);
+}
+
+async function fetchRemoteSyncStatus(config: ValidatorConfig, timeoutMs = 30000): Promise<any | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${normalizeApiUrl(config.apiUrl)}/node/sync-status`, { signal: controller.signal });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function resolveSnapshotHeights(config: ValidatorConfig): Promise<number[]> {
+  const remote = await fetchRemoteSyncStatus(config);
+  const remoteHeight = effectiveHeightFromStatus(remote);
+  if (remoteHeight <= 0) return [];
+  return [remoteHeight, remoteHeight - 1, remoteHeight - 2].filter((height, index, heights) => height > 0 && heights.indexOf(height) === index);
+}
+
+async function runSnapshotRestore(config: ValidatorConfig, height: number | null) {
+  const env = buildEnv(config);
+  const args = [
+    "-u",
+    "-m",
+    "picoin",
+    "node",
+    "checkpoint",
+    "--server",
+    getLocalNodeUrl(config),
+    "restore-peer",
+    "--peer",
+    normalizeApiUrl(config.apiUrl),
+    "--source",
+    "desktop-validator",
+  ];
+  if (height !== null) {
+    args.push("--height", String(height));
+  }
+  return runPythonOnce(config.pythonCmd || "python", args, env, 180000);
+}
+
+async function runAutoSyncOnce(config: ValidatorConfig) {
+  if (!nodeProcess || autoSyncInProgress) return;
+  autoSyncInProgress = true;
+  try {
+    const syncStatus = await fetchLocalNodeJson(config, "/node/sync-status", 20000);
+    if (!syncStatus) return;
+
+    if (nodeNeedsSnapshotRestore(syncStatus)) {
+      addLog("Auto sync detected divergent local replay; restoring canonical snapshot.");
+      await restoreSnapshot(config);
+      return;
+    }
+
+    const remoteStatus = await fetchRemoteSyncStatus(config, 30000);
+    const localHeight = effectiveHeightFromStatus(syncStatus);
+    const remoteHeight = effectiveHeightFromStatus(remoteStatus);
+    const pendingReplay = Number(syncStatus?.pending_replay_blocks ?? syncStatus?.replay?.queue_size ?? 0);
+    const lag = remoteHeight > 0 ? Math.max(0, remoteHeight - localHeight) : 0;
+
+    if (pendingReplay > 0 || lag > AUTO_SYNC_MAX_HEALTHY_LAG || nodeNeedsCatchUp(syncStatus)) {
+      addLog(`Auto sync: local=${localHeight} remote=${remoteHeight || "unknown"} lag=${lag} pending=${pendingReplay}.`);
+      try {
+        await catchUpNode(config);
+      } catch (error) {
+        addLog(`Auto sync catch-up failed: ${errorMessage(error)}`);
+      }
+      const after = await fetchLocalNodeJson(config, "/node/sync-status", 20000);
+      if (after && nodeNeedsSnapshotRestore(after)) {
+        addLog("Auto sync catch-up produced divergence; restoring canonical snapshot.");
+        await restoreSnapshot(config);
+      } else if (!after) {
+        addLog("Auto sync could not read local status after catch-up; restoring canonical snapshot.");
+        await restoreSnapshot(config);
+      }
+    }
+  } catch (error) {
+    addLog(`Auto sync error: ${errorMessage(error)}`);
+  } finally {
+    autoSyncInProgress = false;
+  }
+}
+
+function startAutoSyncLoop(config: ValidatorConfig) {
+  autoSyncConfig = { ...config };
+  if (autoSyncTimer) return;
+  autoSyncTimer = setInterval(() => {
+    if (!autoSyncConfig) return;
+    void runAutoSyncOnce(autoSyncConfig);
+  }, AUTO_SYNC_INTERVAL_MS);
+}
+
+function stopAutoSyncLoop() {
+  if (autoSyncTimer) {
+    clearInterval(autoSyncTimer);
+    autoSyncTimer = null;
+  }
+  autoSyncConfig = null;
+  autoSyncInProgress = false;
 }
 
 async function ensureNodeReadyForValidation(config: ValidatorConfig) {
@@ -377,6 +489,7 @@ export async function startNode(config: ValidatorConfig) {
   await waitForRpc(localNodeUrl);
   nodeStatus = "running";
   currentTask = "Local node running.";
+  startAutoSyncLoop(config);
   return { ok: true, message: "Node started", localNodeUrl, dataDir: getRuntimeDir(), dbPath: getDbPath() };
 }
 
@@ -388,6 +501,7 @@ export function stopNode() {
   nodeStopRequested = true;
   nodeProcess.kill();
   nodeProcess = null;
+  stopAutoSyncLoop();
   nodeStatus = "stopped";
   addLog("Node stopped by user");
   return { ok: true, message: "Node stopped" };
@@ -428,6 +542,8 @@ export async function startValidator(config: ValidatorConfig) {
   }
   if (!nodeProcess) {
     await startNode(config);
+  } else {
+    startAutoSyncLoop(config);
   }
 
   const identityPath = getIdentityPath();
@@ -508,26 +624,23 @@ export async function restoreSnapshot(config: ValidatorConfig) {
   if (!nodeProcess) {
     await startNode(config);
   }
-  const env = buildEnv(config);
-  const output = await runPythonOnce(
-    config.pythonCmd || "python",
-    [
-      "-u",
-      "-m",
-      "picoin",
-      "node",
-      "checkpoint",
-      "--server",
-      getLocalNodeUrl(config),
-      "restore-peer",
-      "--peer",
-      normalizeApiUrl(config.apiUrl),
-      "--source",
-      "desktop-validator",
-    ],
-    env,
-    180000,
-  );
+  const heights = await resolveSnapshotHeights(config);
+  let lastError: unknown = null;
+  for (const height of heights) {
+    try {
+      addLog(`Restoring canonical snapshot at height ${height}.`);
+      const output = await runSnapshotRestore(config, height);
+      return { ok: true, message: `Snapshot restored at height ${height}`, result: parseJsonOutput(output) };
+    } catch (error) {
+      lastError = error;
+      addLog(`Snapshot restore at height ${height} failed: ${errorMessage(error)}`);
+    }
+  }
+  if (heights.length > 0 && lastError) {
+    throw lastError;
+  }
+  addLog("Restoring latest canonical snapshot.");
+  const output = await runSnapshotRestore(config, null);
   return { ok: true, message: "Snapshot restored", result: parseJsonOutput(output) };
 }
 
