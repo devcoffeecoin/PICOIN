@@ -17,6 +17,7 @@ const NODE_HTTP_TIMEOUT_SECONDS = "60";
 const HTTP_MAX_RETRIES = "3";
 const AUTO_SYNC_INTERVAL_MS = 30_000;
 const AUTO_SYNC_MAX_HEALTHY_LAG = 1;
+const AUTO_SYNC_SNAPSHOT_LAG = 6;
 
 type NodeStatus = "stopped" | "starting" | "running" | "error";
 type ValidatorStatus = "stopped" | "starting" | "validating" | "error";
@@ -217,11 +218,24 @@ async function fetchRemoteSyncStatus(config: ValidatorConfig, timeoutMs = 30000)
   }
 }
 
+async function getRemoteLag(config: ValidatorConfig, syncStatus: any): Promise<{ localHeight: number; remoteHeight: number; lag: number }> {
+  const remoteStatus = await fetchRemoteSyncStatus(config, 30000);
+  const localHeight = effectiveHeightFromStatus(syncStatus);
+  const remoteHeight = effectiveHeightFromStatus(remoteStatus);
+  return {
+    localHeight,
+    remoteHeight,
+    lag: remoteHeight > 0 ? Math.max(0, remoteHeight - localHeight) : 0,
+  };
+}
+
 async function resolveSnapshotHeights(config: ValidatorConfig): Promise<number[]> {
   const remote = await fetchRemoteSyncStatus(config);
   const remoteHeight = effectiveHeightFromStatus(remote);
   if (remoteHeight <= 0) return [];
-  return [remoteHeight, remoteHeight - 1, remoteHeight - 2].filter((height, index, heights) => height > 0 && heights.indexOf(height) === index);
+  return [remoteHeight - 1, remoteHeight - 2, remoteHeight - 3, remoteHeight - 5, remoteHeight].filter(
+    (height, index, heights) => height > 0 && heights.indexOf(height) === index,
+  );
 }
 
 async function runSnapshotRestore(config: ValidatorConfig, height: number | null) {
@@ -259,19 +273,22 @@ async function runAutoSyncOnce(config: ValidatorConfig) {
       return;
     }
 
-    const remoteStatus = await fetchRemoteSyncStatus(config, 30000);
-    const localHeight = effectiveHeightFromStatus(syncStatus);
-    const remoteHeight = effectiveHeightFromStatus(remoteStatus);
+    const { localHeight, remoteHeight, lag } = await getRemoteLag(config, syncStatus);
     const pendingReplay = Number(syncStatus?.pending_replay_blocks ?? syncStatus?.replay?.queue_size ?? 0);
-    const lag = remoteHeight > 0 ? Math.max(0, remoteHeight - localHeight) : 0;
 
     if (pendingReplay > 0 || lag > AUTO_SYNC_MAX_HEALTHY_LAG || nodeNeedsCatchUp(syncStatus)) {
       addLog(`Auto sync: local=${localHeight} remote=${remoteHeight || "unknown"} lag=${lag} pending=${pendingReplay}.`);
-      try {
-        await catchUpNode(config);
-      } catch (error) {
-        addLog(`Auto sync catch-up failed: ${errorMessage(error)}`);
+      if (lag > AUTO_SYNC_SNAPSHOT_LAG) {
+        addLog("Auto sync lag is high; restoring canonical snapshot before validation.");
+        await restoreSnapshot(config);
+      } else {
+        try {
+          await catchUpNode(config);
+        } catch (error) {
+          addLog(`Auto sync catch-up failed: ${errorMessage(error)}`);
+        }
       }
+
       const after = await fetchLocalNodeJson(config, "/node/sync-status", 20000);
       if (after && nodeNeedsSnapshotRestore(after)) {
         addLog("Auto sync catch-up produced divergence; restoring canonical snapshot.");
@@ -279,6 +296,21 @@ async function runAutoSyncOnce(config: ValidatorConfig) {
       } else if (!after) {
         addLog("Auto sync could not read local status after catch-up; restoring canonical snapshot.");
         await restoreSnapshot(config);
+      } else {
+        const finalLag = await getRemoteLag(config, after);
+        if (finalLag.lag > AUTO_SYNC_MAX_HEALTHY_LAG) {
+          addLog(`Auto sync still behind after repair: local=${finalLag.localHeight} remote=${finalLag.remoteHeight} lag=${finalLag.lag}; catching up once more.`);
+          try {
+            await catchUpNode(config);
+          } catch (error) {
+            addLog(`Auto sync final catch-up failed: ${errorMessage(error)}`);
+          }
+          const finalStatus = await fetchLocalNodeJson(config, "/node/sync-status", 20000);
+          if (!finalStatus || nodeNeedsSnapshotRestore(finalStatus)) {
+            addLog("Auto sync final catch-up did not produce a healthy node; restoring canonical snapshot.");
+            await restoreSnapshot(config);
+          }
+        }
       }
     }
   } catch (error) {
@@ -291,6 +323,7 @@ async function runAutoSyncOnce(config: ValidatorConfig) {
 function startAutoSyncLoop(config: ValidatorConfig) {
   autoSyncConfig = { ...config };
   if (autoSyncTimer) return;
+  void runAutoSyncOnce(autoSyncConfig);
   autoSyncTimer = setInterval(() => {
     if (!autoSyncConfig) return;
     void runAutoSyncOnce(autoSyncConfig);
@@ -320,14 +353,49 @@ async function ensureNodeReadyForValidation(config: ValidatorConfig) {
     syncStatus = await fetchLocalNodeJson(config, "/node/sync-status");
   }
 
+  if (syncStatus) {
+    const remoteLag = await getRemoteLag(config, syncStatus);
+    const pendingReplay = Number(syncStatus?.pending_replay_blocks ?? syncStatus?.replay?.queue_size ?? 0);
+    if (remoteLag.lag > AUTO_SYNC_SNAPSHOT_LAG) {
+      addLog(`Local node lag=${remoteLag.lag}; restoring snapshot before validation.`);
+      await restoreSnapshot(config);
+      syncStatus = await fetchLocalNodeJson(config, "/node/sync-status");
+    } else if (pendingReplay > 0 || remoteLag.lag > AUTO_SYNC_MAX_HEALTHY_LAG || nodeNeedsCatchUp(syncStatus)) {
+      addLog(`Catching up local node before validation: lag=${remoteLag.lag} pending=${pendingReplay}.`);
+      await catchUpNode(config);
+      syncStatus = await fetchLocalNodeJson(config, "/node/sync-status");
+    }
+  }
+
   if (syncStatus && nodeNeedsCatchUp(syncStatus)) {
-    addLog("Catching up local node before validation.");
+    addLog("Catching up local node replay queue before validation.");
     await catchUpNode(config);
     syncStatus = await fetchLocalNodeJson(config, "/node/sync-status");
   }
 
   if (syncStatus && nodeNeedsSnapshotRestore(syncStatus)) {
-    throw new Error("Local node replay is divergent after snapshot restore. Stop the validator and run Fast Sync again.");
+    addLog("Local node replay is divergent after catch-up; restoring snapshot.");
+    await restoreSnapshot(config);
+    syncStatus = await fetchLocalNodeJson(config, "/node/sync-status");
+  }
+
+  if (syncStatus) {
+    let finalLag = await getRemoteLag(config, syncStatus);
+    if (finalLag.lag > AUTO_SYNC_MAX_HEALTHY_LAG) {
+      addLog(`Local node still lag=${finalLag.lag}; doing one final catch-up before validation.`);
+      await catchUpNode(config);
+      syncStatus = await fetchLocalNodeJson(config, "/node/sync-status");
+      finalLag = await getRemoteLag(config, syncStatus);
+      if (syncStatus && nodeNeedsSnapshotRestore(syncStatus)) {
+        addLog("Local node diverged during final catch-up; restoring snapshot.");
+        await restoreSnapshot(config);
+        syncStatus = await fetchLocalNodeJson(config, "/node/sync-status");
+        finalLag = await getRemoteLag(config, syncStatus);
+      }
+    }
+    if (finalLag.lag > AUTO_SYNC_MAX_HEALTHY_LAG) {
+      throw new Error(`Local node is still ${finalLag.lag} block(s) behind after auto-sync.`);
+    }
   }
 }
 
@@ -473,11 +541,13 @@ export async function startNode(config: ValidatorConfig) {
   addLog(`Data dir: ${getRuntimeDir()}`);
   addLog(`DB path: ${getDbPath()}`);
 
-  nodeProcess = spawnPython(
+  let child: ChildProcessWithoutNullStreams;
+  child = spawnPython(
     pythonCmd,
     ["-u", "-m", "picoin", "node", "start", "--host", "127.0.0.1", "--port", String(port)],
     env,
     (code) => {
+      if (nodeProcess !== child) return;
       addLog(`Node process exited with code ${code}`);
       nodeProcess = null;
       const requestedStop = nodeStopRequested;
@@ -485,6 +555,7 @@ export async function startNode(config: ValidatorConfig) {
       nodeStatus = requestedStop ? "stopped" : code === 0 ? "stopped" : "error";
     },
   );
+  nodeProcess = child;
 
   await waitForRpc(localNodeUrl);
   nodeStatus = "running";
@@ -559,13 +630,15 @@ export async function startValidator(config: ValidatorConfig) {
   const sleep = normalizeSleep(config.validationSleep);
 
   validatorStopRequested = false;
+  validatorRecoveryStopRequested = false;
   validatorStatus = "starting";
   currentTask = "Starting validator loop...";
   addLog(`Starting validator against ${normalizeApiUrl(config.apiUrl)}`);
   addLog(`Local node: ${localNodeUrl}`);
   addLog(`Identity: ${identityPath}`);
 
-  validatorProcess = spawnPython(
+  let child: ChildProcessWithoutNullStreams;
+  child = spawnPython(
     config.pythonCmd || "python",
     [
       "-u",
@@ -588,6 +661,7 @@ export async function startValidator(config: ValidatorConfig) {
     ],
     env,
     (code) => {
+      if (validatorProcess !== child) return;
       addLog(`Validator process exited with code ${code}`);
       validatorProcess = null;
       const requestedStop = validatorStopRequested || validatorRecoveryStopRequested;
@@ -600,6 +674,7 @@ export async function startValidator(config: ValidatorConfig) {
     },
     (line) => handleValidatorOutputLine(config, line),
   );
+  validatorProcess = child;
 
   validatorStatus = "validating";
   currentTask = "Validator running.";
@@ -1001,6 +1076,8 @@ export function getValidatorProcessStatus() {
     logs: lastLogs,
     nodeRunning: nodeProcess !== null,
     validatorRunning: validatorProcess !== null,
+    autoSyncEnabled: autoSyncTimer !== null,
+    autoSyncInProgress,
     identity: getSavedValidatorIdentity(),
     dataDir: getRuntimeDir(),
     dbPath: getDbPath(),

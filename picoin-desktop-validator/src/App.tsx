@@ -51,6 +51,8 @@ type ProcessStatus = {
   logs?: string[];
   nodeRunning?: boolean;
   validatorRunning?: boolean;
+  autoSyncEnabled?: boolean;
+  autoSyncInProgress?: boolean;
   identity?: Identity;
   dataDir?: string;
   dbPath?: string;
@@ -306,6 +308,7 @@ export default function App() {
               <div className="metric-list">
                 <Metric icon={<Database />} label="Node" value={processStatus.nodeStatus || "stopped"} />
                 <Metric icon={<ShieldCheck />} label="Validator" value={processStatus.validatorStatus || "stopped"} />
+                <Metric icon={<RefreshCw />} label="Auto sync" value={processStatus.autoSyncInProgress ? "syncing" : processStatus.autoSyncEnabled ? "ready" : "off"} />
                 <Metric icon={<Activity />} label="Eligible" value={validatorRow ? String(Boolean(validatorRow.eligible)) : "unknown"} />
                 <Metric icon={<Network />} label="Quorum" value={`${validatorsStatus?.eligible_validators ?? "-"} / ${validatorsStatus?.required_validator_approvals ?? "-"}`} />
               </div>
