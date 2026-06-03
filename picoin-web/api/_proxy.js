@@ -7,7 +7,8 @@ function cleanTarget(value) {
 }
 
 function pathFromRequest(req) {
-  const rawParts = Array.isArray(req.query.path) ? req.query.path : [req.query.path].filter(Boolean);
+  const rawPath = req.query.path !== undefined ? req.query.path : req.query["...path"];
+  const rawParts = Array.isArray(rawPath) ? rawPath : [rawPath].filter(Boolean);
   const parts = rawParts.flatMap((part) => String(part || "").split("/").filter(Boolean));
   return `/${parts.map(encodeURIComponent).join("/")}`;
 }
@@ -15,7 +16,7 @@ function pathFromRequest(req) {
 function buildTargetUrl(req, target) {
   const url = new URL(pathFromRequest(req), `${cleanTarget(target)}/`);
   for (const [key, value] of Object.entries(req.query)) {
-    if (key === "path") continue;
+    if (key === "path" || key === "...path") continue;
     const values = Array.isArray(value) ? value : [value];
     for (const item of values) {
       if (item !== undefined) url.searchParams.append(key, item);
