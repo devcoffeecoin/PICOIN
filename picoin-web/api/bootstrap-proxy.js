@@ -1,4 +1,4 @@
-const { proxyHandler } = require("../_proxy");
+const { proxyHandler } = require("./_proxy");
 
 module.exports = async function handler(req, res) {
   return proxyHandler(req, res, {
