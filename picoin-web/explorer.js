@@ -13,6 +13,28 @@ const nodes = (configuredNodes.length ? configuredNodes : [{ label: "Primary", u
 const apiBaseUrl = cleanUrl(explorerConfig.apiBaseUrl || nodes[0]?.url || fallbackApiBaseUrl);
 const refreshMs = Number(explorerConfig.refreshMs || 30000);
 const transactionLimit = 20;
+const defaultFetchTimeoutMs = 12000;
+const defaultEndpointTtlMs = 10000;
+const endpointTtls = {
+  health: 5000,
+  stats: 20000,
+  sync: 5000,
+  audit: 300000,
+  consensus: 15000,
+  protocol: 60000,
+  difficultyStatus: 15000,
+  miningMetrics: 15000,
+  reserve: 60000,
+  treasury: 60000,
+  validatorsStatus: 15000,
+  minersStatus: 15000,
+  mempoolStatus: 10000,
+  blocks: 15000,
+  retroAudits: 300000,
+  validators: 60000,
+  events: 30000,
+  transactions: 15000,
+};
 
 const state = {
   health: null,
@@ -35,6 +57,7 @@ const state = {
   transactions: [],
   nodeStates: [],
   errors: [],
+  endpointLoadedAt: {},
 };
 
 const $ = (id) => document.getElementById(id);
@@ -255,13 +278,30 @@ function maturityText(block, context = {}) {
   return info.detail ? `${info.label} (${info.detail})` : info.label;
 }
 
-async function fetchJsonFrom(baseUrl, path) {
+function endpointFresh(key, ttlMs = defaultEndpointTtlMs) {
+  const loadedAt = Number(state.endpointLoadedAt[key] || 0);
+  return loadedAt > 0 && Date.now() - loadedAt < ttlMs;
+}
+
+function rememberEndpoint(key) {
+  state.endpointLoadedAt[key] = Date.now();
+}
+
+function rememberError(path, error, stale = false) {
+  state.errors.push({ path, message: error?.message || String(error), stale });
+}
+
+async function fetchJsonFrom(baseUrl, path, options = {}) {
+  const timeoutMs = Number(options.timeoutMs || defaultFetchTimeoutMs);
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
   try {
     const safePath = path.startsWith('/') ? path : `/${path}`;
     const url = `${cleanUrl(baseUrl)}${safePath}`;
     const response = await fetch(url, { 
       headers: { Accept: "application/json" },
-      mode: 'cors'
+      mode: 'cors',
+      signal: controller.signal,
     });
     let payload = {};
     const contentType = response.headers.get("content-type");
@@ -273,57 +313,76 @@ async function fetchJsonFrom(baseUrl, path) {
     }
     return payload;
   } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error(`Timeout after ${fmt(timeoutMs / 1000, 0)}s at ${baseUrl}${path}`);
+    }
     if (error.name === 'TypeError') {
       throw new Error(`CORS Blocked or Network Down at ${baseUrl}${path}`);
     }
     throw error;
+  } finally {
+    window.clearTimeout(timeout);
   }
 }
 
-async function fetchJson(path) {
-  return fetchJsonFrom(apiBaseUrl, path);
+async function fetchJson(path, options = {}) {
+  return fetchJsonFrom(apiBaseUrl, path, options);
 }
 
-async function loadEndpoint(key, path, fallback) {
+async function loadEndpoint(key, path, fallback, options = {}) {
+  const ttlMs = Number(options.ttlMs ?? endpointTtls[key] ?? defaultEndpointTtlMs);
+  if (endpointFresh(key, ttlMs)) return;
   try {
-    state[key] = await fetchJson(path);
+    state[key] = await fetchJson(path, options);
+    rememberEndpoint(key);
   } catch (error) {
+    if (state.endpointLoadedAt[key]) {
+      rememberError(path, error, true);
+      return;
+    }
     state[key] = fallback;
-    state.errors.push({ path, message: error.message });
+    rememberError(path, error);
   }
 }
 
 async function loadMiningMetrics() {
+  if (endpointFresh("miningMetrics", endpointTtls.miningMetrics)) return;
   try {
     state.miningMetrics = await fetchJson("/mining/metrics?limit=120");
+    rememberEndpoint("miningMetrics");
   } catch (error) {
-    state.miningMetrics = null;
     if (!/not found|404/i.test(error.message)) {
-      state.errors.push({ path: "/mining/metrics?limit=120", message: error.message });
+      if (state.endpointLoadedAt.miningMetrics) {
+        rememberError("/mining/metrics?limit=120", error, true);
+      } else {
+        state.miningMetrics = null;
+        rememberError("/mining/metrics?limit=120", error);
+      }
     }
   }
 }
 
 async function loadNodeState(node) {
+  const previous = state.nodeStates.find((item) => item.url === node.url);
   try {
     const [health, sync] = await Promise.all([
-      fetchJsonFrom(node.url, "/health"),
-      fetchJsonFrom(node.url, "/node/sync-status"),
+      fetchJsonFrom(node.url, "/health", { timeoutMs: 8000 }),
+      fetchJsonFrom(node.url, "/node/sync-status", { timeoutMs: 8000 }),
     ]);
     return { ...node, health, sync, ok: health.status === "ok", error: null };
   } catch (error) {
+    if (previous?.sync) {
+      return { ...previous, ok: false, stale: true, error: error.message };
+    }
     return { ...node, health: null, sync: null, ok: false, error: error.message };
   }
 }
 
 async function fetchTransactions() {
+  if (endpointFresh("transactions", endpointTtls.transactions)) return state.transactions;
   const endpoints = [
     `/transactions/recent?limit=${transactionLimit}`,
-    `/mempool?limit=${transactionLimit}`,
     `/mempool?status=pending&limit=${transactionLimit}`,
-    `/mempool?status=selected&limit=${transactionLimit}`,
-    `/mempool?status=confirmed&limit=${transactionLimit}`,
-    `/mempool?status=released&limit=${transactionLimit}`,
   ];
   let allTxs = [];
   const errors = [];
@@ -354,8 +413,15 @@ async function fetchTransactions() {
     .slice(0, transactionLimit);
 
   if (!transactions.length && errors.length) {
-    state.errors.push({ path: "transactions", message: errors.map((error) => `${error.path}: ${error.message}`).join("; ") });
+    const message = errors.map((error) => `${error.path}: ${error.message}`).join("; ");
+    if (state.endpointLoadedAt.transactions) {
+      rememberError("transactions", new Error(message), true);
+      return state.transactions;
+    }
+    rememberError("transactions", new Error(message));
   }
+  state.transactions = transactions;
+  rememberEndpoint("transactions");
   return transactions;
 }
 
@@ -383,8 +449,12 @@ async function loadExplorer() {
       try {
         state.transactions = await fetchTransactions();
       } catch (error) {
-        state.transactions = [];
-        state.errors.push({ path: "transactions", message: error.message });
+        if (state.endpointLoadedAt.transactions) {
+          rememberError("transactions", error, true);
+        } else {
+          state.transactions = [];
+          rememberError("transactions", error);
+        }
       }
     })(),
   ]);
@@ -916,8 +986,30 @@ function renderErrors() {
   }
   const nodeErrors = state.nodeStates
     .filter((node) => node.error)
-    .map((node) => ({ path: node.url, message: node.error }));
-  errEl.innerHTML = [...state.errors, ...nodeErrors]
+    .map((node) => ({ path: node.url, message: node.error, stale: Boolean(node.stale) }));
+  const uniqueErrors = [];
+  const seen = new Set();
+  for (const error of [...state.errors, ...nodeErrors]) {
+    const message = String(error.message || "");
+    const normalizedMessage = message.replace(/https?:\/\/[^/\s]+/g, "{host}");
+    const key = `${error.path}|${normalizedMessage}|${Boolean(error.stale)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniqueErrors.push(error);
+  }
+
+  const staleCount = uniqueErrors.filter((error) => error.stale).length;
+  const hardErrors = uniqueErrors.filter((error) => !error.stale).slice(0, 5);
+  const moreCount = Math.max(0, uniqueErrors.length - staleCount - hardErrors.length);
+  const staleNotice =
+    staleCount > 0
+      ? `
+        <div class="api-error">
+          <strong>Partial delay</strong>: ${fmt(staleCount, 0)} endpoint${staleCount === 1 ? "" : "s"} using last known data while the bootstrap responds slowly.
+        </div>
+      `
+      : "";
+  const hardNotice = hardErrors
     .map(
       (error) => `
         <div class="api-error">
@@ -926,6 +1018,11 @@ function renderErrors() {
       `
     )
     .join("");
+  const moreNotice =
+    moreCount > 0
+      ? `<div class="api-error"><strong>More</strong>: ${fmt(moreCount, 0)} additional temporary API error${moreCount === 1 ? "" : "s"} hidden.</div>`
+      : "";
+  errEl.innerHTML = `${staleNotice}${hardNotice}${moreNotice}`;
 }
 
 async function runLookup() {
