@@ -1025,6 +1025,11 @@ def get_miners_status(limit: int = 500) -> dict[str, Any]:
 
 
 def _mining_metric_from_row(row: Any) -> dict[str, Any]:
+    keys = set(row.keys()) if hasattr(row, "keys") else set()
+
+    def optional(name: str, default: Any = None) -> Any:
+        return row[name] if name in keys else default
+
     range_start = int(row["range_start"] or 0)
     range_end = int(row["range_end"] or range_start)
     segment_size = int(row["segment_size"] or max(1, range_end - range_start + 1))
@@ -1054,6 +1059,9 @@ def _mining_metric_from_row(row: Any) -> dict[str, Any]:
         "work_rate_hps": work_rate_hps,
         "hashrate_hps": work_rate_hps,
         "block_rate_hps": block_rate_hps,
+        "reward_status": optional("reward_status"),
+        "matures_at_height": optional("matures_at_height"),
+        "matured_at": optional("matured_at"),
     }
 
 
@@ -1079,14 +1087,20 @@ def get_mining_metrics(limit: int = 120) -> dict[str, Any]:
                 blocks.total_task_ms,
                 blocks.total_block_ms,
                 blocks.validation_ms,
-                COALESCE(protocol_params.segment_size, blocks.range_end - blocks.range_start + 1) AS segment_size
+                COALESCE(protocol_params.segment_size, blocks.range_end - blocks.range_start + 1) AS segment_size,
+                rewards.status AS reward_status,
+                rewards.matures_at_height AS matures_at_height,
+                rewards.matured_at AS matured_at
             FROM blocks
             LEFT JOIN protocol_params ON protocol_params.id = blocks.protocol_params_id
             LEFT JOIN tasks ON tasks.task_id = blocks.task_id
+            LEFT JOIN rewards ON rewards.block_height = blocks.height
+                AND rewards.miner_id = blocks.miner_id
+                AND ABS(COALESCE(rewards.amount, 0) - COALESCE(blocks.reward, 0)) <= ?
             ORDER BY blocks.height DESC
             LIMIT ?
             """,
-            (sample_limit,),
+            (ECONOMIC_AUDIT_TOLERANCE, sample_limit),
         ).fetchall()
         miner_rows = connection.execute(
             """
@@ -1197,6 +1211,7 @@ def get_mining_metrics(limit: int = 120) -> dict[str, Any]:
             "network_compute_rate_source": "miner_heartbeat" if active_rates else ("accepted_block_estimate" if network_compute_rate else "none"),
             "active_miners": online_miners,
             "total_miners": int(miner_counts["total"] or 0),
+            "block_maturity_depth": BLOCK_MATURITY_DEPTH,
         },
         "blocks": blocks,
         "top_miners": top_miners,
@@ -1272,17 +1287,24 @@ def lookup_miner_activity(query: str, limit: int = 25) -> dict[str, Any]:
                 blocks.total_task_ms,
                 blocks.total_block_ms,
                 blocks.validation_ms,
-                COALESCE(protocol_params.segment_size, blocks.range_end - blocks.range_start + 1) AS segment_size
+                COALESCE(protocol_params.segment_size, blocks.range_end - blocks.range_start + 1) AS segment_size,
+                rewards.status AS reward_status,
+                rewards.matures_at_height AS matures_at_height,
+                rewards.matured_at AS matured_at
             FROM blocks
             LEFT JOIN protocol_params ON protocol_params.id = blocks.protocol_params_id
             LEFT JOIN tasks ON tasks.task_id = blocks.task_id
+            LEFT JOIN rewards ON rewards.block_height = blocks.height
+                AND rewards.miner_id = blocks.miner_id
+                AND ABS(COALESCE(rewards.amount, 0) - COALESCE(blocks.reward, 0)) <= ?
             WHERE {where_sql}
             ORDER BY blocks.height DESC
             LIMIT ?
             """,
-            (*params, block_limit),
+            (ECONOMIC_AUDIT_TOLERANCE, *params, block_limit),
         ).fetchall()
         account = get_balance(normalized_wallet) if normalized_wallet.startswith("PI") else None
+        current_height = _latest_block_height(connection)
 
     miners = [enrich_miner(row_to_dict(row)) for row in miner_rows]
     recent_blocks = [_mining_metric_from_row(row) for row in block_rows]
@@ -1313,6 +1335,8 @@ def lookup_miner_activity(query: str, limit: int = 25) -> dict[str, Any]:
             "first_block_height": aggregate["first_block_height"],
             "latest_block_height": aggregate["latest_block_height"],
             "latest_block_at": aggregate["latest_block_at"],
+            "block_maturity_depth": BLOCK_MATURITY_DEPTH,
+            "current_height": current_height,
         },
         "recent_blocks": recent_blocks,
         "checked_at": utc_now(),

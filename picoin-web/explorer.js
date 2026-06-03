@@ -174,19 +174,85 @@ function effectiveHash(sync) {
   return sync?.latest_block_hash || "";
 }
 
-function blockBaseReward(block) {
-  const protocolReward = Number(state.protocol?.reward_per_block || 0);
-  if (protocolReward > 0) return protocolReward;
-
-  const minerReward = Number(block?.reward || 0);
-  const minerPercent = Number(state.protocol?.proof_of_pi_reward_percent || 0);
-  if (minerReward > 0 && minerPercent > 0) return minerReward / minerPercent;
-
-  return minerReward;
+function currentBlockHeight(context = {}) {
+  const candidates = [
+    context.current_height,
+    state.miningMetrics?.summary?.current_height,
+    effectiveHeight(state.sync),
+    state.audit?.rewards?.accepted_blocks,
+    state.stats?.accepted_blocks,
+  ]
+    .map((value) => Number(value || 0))
+    .filter((value) => value > 0);
+  return candidates.length ? Math.max(...candidates) : 0;
 }
 
-function formatBlockReward(block) {
-  return fmt(blockBaseReward(block), 5);
+function blockMaturityDepth(context = {}) {
+  const value =
+    context.block_maturity_depth ??
+    state.miningMetrics?.summary?.block_maturity_depth ??
+    state.audit?.rewards?.block_maturity_depth ??
+    state.protocol?.block_maturity_depth ??
+    0;
+  return Math.max(0, Number(value || 0));
+}
+
+function rewardMaturity(block, context = {}) {
+  if (!block) {
+    return { label: "-", detail: "", className: "warn", title: "No accepted block yet" };
+  }
+  const status = String(block.reward_status || "").toLowerCase();
+  const height = Number(block.height || 0);
+  const depth = blockMaturityDepth(context);
+  const currentHeight = currentBlockHeight(context);
+  let maturesAt = Number(block.matures_at_height || 0);
+  if (!maturesAt && height > 0 && depth > 0) {
+    maturesAt = height + depth;
+  }
+  const remaining = maturesAt > 0 ? Math.max(0, maturesAt - currentHeight) : 0;
+  const isMature =
+    status === "mature" ||
+    (status !== "immature" && depth === 0) ||
+    (maturesAt > 0 && currentHeight > 0 && remaining === 0);
+
+  if (isMature) {
+    return {
+      label: "Mature",
+      detail: maturesAt > 0 ? `at #${fmt(maturesAt, 0)}` : "confirmed",
+      className: "ok",
+      title: "Reward is spendable",
+    };
+  }
+
+  if (status === "immature" || maturesAt > 0) {
+    return {
+      label: "Immature",
+      detail: remaining > 0 ? `${fmt(remaining, 0)} block${remaining === 1 ? "" : "s"}` : `at #${fmt(maturesAt, 0)}`,
+      className: "warn",
+      title: maturesAt > 0 ? `Matures at block ${fmt(maturesAt, 0)}` : "Waiting for reward maturity",
+    };
+  }
+
+  return {
+    label: "Pending",
+    detail: depth > 0 ? `${fmt(depth, 0)} block maturity` : "",
+    className: "warn",
+    title: "Reward maturity status is not available yet",
+  };
+}
+
+function maturityBadge(block, context = {}) {
+  const info = rewardMaturity(block, context);
+  if (info.label === "-") return "-";
+  return `
+    <span class="status-pill ${info.className}" title="${escapeHtml(info.title)}">${escapeHtml(info.label)}</span>
+    ${info.detail ? `<div class="muted">${escapeHtml(info.detail)}</div>` : ""}
+  `;
+}
+
+function maturityText(block, context = {}) {
+  const info = rewardMaturity(block, context);
+  return info.detail ? `${info.label} (${info.detail})` : info.label;
 }
 
 async function fetchJsonFrom(baseUrl, path) {
@@ -511,24 +577,34 @@ function renderMining() {
   const table = $("minerLeaderboard");
   if (!table) return;
   const miners = asArray(metrics.top_miners, ["miners", "items", "results"]);
+  const latestBlockByMiner = new Map();
+  for (const block of blocks) {
+    const minerId = block.miner_id;
+    if (!minerId) continue;
+    const previous = latestBlockByMiner.get(minerId);
+    if (!previous || Number(block.height || 0) >= Number(previous.height || 0)) {
+      latestBlockByMiner.set(minerId, block);
+    }
+  }
   if (!miners.length) {
     table.innerHTML = `<tr><td colspan="7" class="empty">Waiting for miner data</td></tr>`;
     return;
   }
   table.innerHTML = miners
-    .map(
-      (miner) => `
+    .map((miner) => {
+      const latestMinerBlock = latestBlockByMiner.get(miner.miner_id);
+      return `
         <tr>
           <td class="mono">${linkedMiner(miner.miner_id, miner.miner_id)}</td>
           <td class="hash">${linkedMiner(miner.miner_reward_address, miner.miner_reward_address ? shortHash(miner.miner_reward_address) : "-")}</td>
           <td>${fmt(miner.accepted_blocks, 0)}</td>
-          <td>${fmt(miner.total_rewards, 5)} PI</td>
+          <td>${maturityBadge(latestMinerBlock)}</td>
           <td>${escapeHtml(fmtRate(miner.avg_work_rate_hps))}</td>
           <td>${escapeHtml(fmtMs(miner.avg_total_task_ms))}</td>
           <td>${fmt(miner.latest_block_height, 0)}</td>
         </tr>
-      `
-    )
+      `;
+    })
     .join("");
 }
 
@@ -568,7 +644,6 @@ function deriveMiningMetrics() {
       miner_id: minerId,
       miner_reward_address: block.miner_reward_address || null,
       accepted_blocks: 0,
-      total_rewards: 0,
       compute_ms: 0,
       total_task_ms: 0,
       avg_difficulty: 0,
@@ -576,7 +651,6 @@ function deriveMiningMetrics() {
       latest_block_at: null,
     };
     existing.accepted_blocks += 1;
-    existing.total_rewards += Number(block.reward || 0);
     existing.compute_ms += Number(block.compute_ms || block.total_task_ms || 0);
     existing.total_task_ms += Number(block.total_task_ms || 0);
     existing.avg_difficulty += Number(block.difficulty || 0);
@@ -601,7 +675,6 @@ function deriveMiningMetrics() {
       return {
         ...miner,
         online_status: liveMiner?.online_status,
-        total_rewards: Number(miner.total_rewards.toFixed(8)),
         avg_compute_ms: Number(liveMiner?.last_compute_ms || avgCompute || 0),
         avg_total_task_ms: avgTask,
         avg_difficulty: miner.accepted_blocks ? miner.avg_difficulty / miner.accepted_blocks : 0,
@@ -616,7 +689,6 @@ function deriveMiningMetrics() {
       miner_reward_address: miner.reward_address,
       online_status: miner.online_status,
       accepted_blocks: Number(miner.accepted_blocks || 0),
-      total_rewards: Number(miner.total_rewards || 0),
       avg_compute_ms: Number(miner.last_compute_ms || 0),
       avg_total_task_ms: Number(miner.last_compute_ms || 0),
       avg_difficulty: latest?.difficulty ?? state.difficultyStatus?.active_difficulty ?? state.protocol?.difficulty,
@@ -733,7 +805,7 @@ function renderBlocks() {
           <td class="hash" title="${escapeHtml(block.previous_hash)}">${escapeHtml(shortHash(block.previous_hash))}</td>
           <td class="mono">${linkedMiner(block.miner_id, block.miner_id)}</td>
           <td>${fmt(block.range_start, 0)}..${fmt(block.range_end, 0)}</td>
-          <td title="Miner share: ${escapeHtml(fmt(block.reward, 5))}">${escapeHtml(formatBlockReward(block))}</td>
+          <td>${maturityBadge(block)}</td>
           <td>${escapeHtml(formatDate(block.timestamp))}</td>
         </tr>
       `
@@ -872,7 +944,7 @@ async function runLookup() {
         <article class="lookup-card">
           <span>Block ${fmt(block.height, 0)}</span>
           <strong class="hash" title="${escapeHtml(block.block_hash)}">${escapeHtml(block.block_hash)}</strong>
-          <p>Miner ${escapeHtml(block.miner_id)} - reward ${escapeHtml(formatBlockReward(block))} - ${fmt(block.tx_count, 0)} tx - ${escapeHtml(formatDate(block.timestamp))}</p>
+          <p>Miner ${escapeHtml(block.miner_id)} - maturity ${escapeHtml(maturityText(block))} - ${fmt(block.tx_count, 0)} tx - ${escapeHtml(formatDate(block.timestamp))}</p>
         </article>
       `;
       return;
