@@ -82,6 +82,71 @@ def _init_network_db(tmp_path, monkeypatch, name: str) -> None:
     init_db(db_path)
 
 
+def _retarget_active_protocol_for_test(*, segment_size: int = 8, difficulty: float = 0.03125) -> int:
+    with get_connection() as connection:
+        current = connection.execute(
+            "SELECT * FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        assert current is not None
+        created_at = "2026-05-12T00:00:00+00:00"
+        connection.execute("UPDATE protocol_params SET active = 0 WHERE active = 1")
+        cursor = connection.execute(
+            """
+            INSERT INTO protocol_params (
+                protocol_version, algorithm, validation_mode, required_validator_approvals,
+                range_assignment_mode, max_pi_position, range_assignment_max_attempts,
+                segment_size, sample_count, task_expiration_seconds, max_active_tasks_per_miner,
+                base_reward, difficulty, RETARGET_MAX_PI_POSITION, target_block_time_ms,
+                retarget_reason, retarget_source_window, retarget_source_details,
+                previous_protocol_params_id, active, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+            """,
+            (
+                current["protocol_version"],
+                current["algorithm"],
+                current["validation_mode"],
+                current["required_validator_approvals"],
+                current["range_assignment_mode"],
+                current["max_pi_position"],
+                current["range_assignment_max_attempts"],
+                segment_size,
+                current["sample_count"],
+                current["task_expiration_seconds"],
+                current["max_active_tasks_per_miner"],
+                current["base_reward"],
+                difficulty,
+                current["RETARGET_MAX_PI_POSITION"],
+                current["target_block_time_ms"],
+                "test retarget",
+                20,
+                '{"test":true}',
+                current["id"],
+                created_at,
+            ),
+        )
+        new_params_id = int(cursor.lastrowid)
+        connection.execute(
+            """
+            INSERT INTO retarget_events (
+                previous_protocol_params_id, new_protocol_params_id, epoch_start_height,
+                epoch_end_height, epoch_block_count, average_block_ms, target_block_ms,
+                old_difficulty, new_difficulty, adjustment_factor, action, reason, created_at
+            )
+            VALUES (?, ?, 1, 20, 20, 150000.0, ?, ?, ?, 0.5, 'adjust', 'test retarget', ?)
+            """,
+            (
+                current["id"],
+                new_params_id,
+                current["target_block_time_ms"],
+                current["difficulty"],
+                difficulty,
+                created_at,
+            ),
+        )
+        return new_params_id
+
+
 def test_canonical_json_serialization_is_stable() -> None:
     payload = {"z": 1, "a": {"b": 2, "a": 1}, "list": [{"y": 2, "x": 1}]}
 
@@ -996,6 +1061,56 @@ def test_canonical_snapshot_exports_and_imports_into_fresh_node(tmp_path, monkey
     assert imports[0]["source"] == "peer-a"
 
 
+def test_snapshot_restore_preserves_retargeted_protocol_params_for_replay(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "snapshot-protocol-source.sqlite3")
+    active_protocol_params_id = _retarget_active_protocol_for_test(segment_size=8, difficulty=0.03125)
+
+    miner_key = generate_keypair()
+    miner = register_miner("snapshot-protocol-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    snapshot = export_canonical_snapshot(height=1)
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    next_block = get_blocks_since(1)["blocks"][0]
+
+    assert snapshot["valid"] is True
+    assert snapshot["checkpoint"]["protocol_params_count"] >= 2
+    assert snapshot["checkpoint"]["retarget_events_count"] == 1
+    assert any(
+        params["id"] == active_protocol_params_id
+        and params["active"] == 1
+        and params["segment_size"] == 8
+        and params["difficulty"] == pytest.approx(0.03125)
+        for params in snapshot["protocol_params"]
+    )
+    assert next_block["protocol_params_id"] == active_protocol_params_id
+
+    _init_network_db(tmp_path, monkeypatch, "snapshot-protocol-target.sqlite3")
+    imported = import_canonical_snapshot(snapshot, source="peer-retarget")
+    applied = apply_imported_snapshot_state(imported["snapshot"]["snapshot_hash"])
+    with get_connection() as connection:
+        active = connection.execute(
+            "SELECT id, segment_size, difficulty, active FROM protocol_params WHERE active = 1"
+        ).fetchone()
+        event_count = connection.execute("SELECT COUNT(*) AS count FROM retarget_events").fetchone()["count"]
+    received = receive_block_header(next_block, source_peer_id="peer-retarget")
+    replay = replay_finalized_blocks()
+    imported_block = get_block(next_block["height"])
+    chain = verify_chain()
+
+    assert applied["protocol_params_applied"] == snapshot["checkpoint"]["protocol_params_count"]
+    assert applied["retarget_events_applied"] == snapshot["checkpoint"]["retarget_events_count"]
+    assert int(active["id"]) == active_protocol_params_id
+    assert int(active["segment_size"]) == 8
+    assert float(active["difficulty"]) == pytest.approx(0.03125)
+    assert int(event_count) == 1
+    assert received["status"] == "pending_replay"
+    assert replay["headers_imported"] == 1
+    assert replay["errors"] == []
+    assert imported_block["block_hash"] == next_block["block_hash"]
+    assert imported_block["protocol_params_id"] == active_protocol_params_id
+    assert chain["valid"] is True
+
+
 def test_active_snapshot_base_accepts_next_block_header(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "snapshot-active-source.sqlite3")
 
@@ -1518,7 +1633,7 @@ def test_consensus_debug_block_reports_matching_canonical_hash(tmp_path, monkeyp
     assert any(candidate["matches"] for candidate in debug["candidates"])
 
 
-def test_replay_ignores_foreign_protocol_params_id_after_snapshot_base(tmp_path, monkeypatch) -> None:
+def test_replay_restores_snapshot_protocol_params_id_after_snapshot_base(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "snapshot-header-foreign-protocol-source.sqlite3")
     with get_connection() as connection:
         connection.execute("UPDATE protocol_params SET id = 9999 WHERE active = 1")
@@ -1544,7 +1659,7 @@ def test_replay_ignores_foreign_protocol_params_id_after_snapshot_base(tmp_path,
     assert replay["headers_imported"] == 1
     assert replay["errors"] == []
     assert imported_block["block_hash"] == next_block["block_hash"]
-    assert imported_block["protocol_params_id"] is None
+    assert imported_block["protocol_params_id"] == 9999
     assert chain["valid"] is True
 
 
