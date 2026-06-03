@@ -130,6 +130,7 @@ from app.services.state import (
 from app.services.treasury import record_scientific_development_treasury_for_block
 from app.services.transactions import (
     apply_block_transactions,
+    freeze_transactions_for_competitive_round_task,
     freeze_transactions_for_task,
     get_task_tx_snapshot,
     load_snapshot_transactions,
@@ -1622,22 +1623,33 @@ def create_next_task(
             ),
         )
         next_height = int(assignment.get("round_height") or (_latest_chain_tip_in_connection(connection)["height"] + 1))
-        tx_snapshot = freeze_transactions_for_task(
-            connection,
-            task_id=task_id,
-            block_height=next_height,
-            max_count=MAX_TRANSACTIONS_PER_BLOCK,
-            timestamp=now,
-        )
+        if assignment_mode == COMPETITIVE_ROUND_ASSIGNMENT_MODE:
+            tx_snapshot = freeze_transactions_for_competitive_round_task(
+                connection,
+                task_id=task_id,
+                block_height=next_height,
+                assignment_seed=assignment.get("assignment_seed"),
+                max_count=MAX_TRANSACTIONS_PER_BLOCK,
+                timestamp=now,
+            )
+        else:
+            tx_snapshot = freeze_transactions_for_task(
+                connection,
+                task_id=task_id,
+                block_height=next_height,
+                max_count=MAX_TRANSACTIONS_PER_BLOCK,
+                timestamp=now,
+            )
         print(
             json.dumps(
                 {
-                    "event": "task_tx_snapshot_created",
+                    "event": "task_tx_snapshot_reused" if tx_snapshot.get("reused") else "task_tx_snapshot_created",
                     "task_id": task_id,
                     "tx_count": tx_snapshot["tx_count"],
                     "tx_merkle_root": tx_snapshot["tx_merkle_root"],
                     "mempool_snapshot_id": tx_snapshot["snapshot_id"],
                     "tx_fee_total_units": tx_snapshot["tx_fee_total_units"],
+                    "source_task_id": tx_snapshot.get("source_task_id"),
                 },
                 sort_keys=True,
             )

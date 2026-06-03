@@ -174,18 +174,8 @@ def canonical_tx_commitment(transactions: list[dict[str, Any]]) -> dict[str, Any
     return transaction_commitment(transactions)
 
 
-def freeze_transactions_for_task(
-    connection: Any,
-    *,
-    task_id: str,
-    block_height: int,
-    max_count: int = MAX_TRANSACTIONS_PER_BLOCK,
-    timestamp: str | None = None,
-) -> dict[str, Any]:
-    timestamp = timestamp or utc_now()
-    transactions = select_transactions_for_task(connection, max_count, block_height - 1)
-    commitment = transaction_commitment(transactions)
-    snapshot_id = sha256_text(
+def _snapshot_id_for_task(*, task_id: str, block_height: int, commitment: dict[str, Any]) -> str:
+    return sha256_text(
         canonical_json(
             {
                 "block_height": int(block_height),
@@ -196,6 +186,17 @@ def freeze_transactions_for_task(
             }
         )
     )
+
+
+def _store_task_tx_snapshot(
+    connection: Any,
+    *,
+    task_id: str,
+    block_height: int,
+    commitment: dict[str, Any],
+    timestamp: str,
+) -> dict[str, Any]:
+    snapshot_id = _snapshot_id_for_task(task_id=task_id, block_height=block_height, commitment=commitment)
     tx_hashes_json = json.dumps(commitment["tx_hashes"], sort_keys=True, separators=(",", ":"))
     connection.execute(
         """
@@ -224,22 +225,6 @@ def freeze_transactions_for_task(
             timestamp,
         ),
     )
-    for tx_hash in commitment["tx_hashes"]:
-        connection.execute(
-            """
-            UPDATE mempool_transactions
-            SET status = 'selected',
-                selected_task_id = ?,
-                selected_block_height = ?,
-                mempool_snapshot_id = ?,
-                selected_at = ?,
-                released_at = NULL,
-                failure_reason = NULL,
-                updated_at = ?
-            WHERE tx_hash = ? AND status = 'pending'
-            """,
-            (task_id, int(block_height), snapshot_id, timestamp, timestamp, tx_hash),
-        )
     connection.execute(
         """
         UPDATE tasks
@@ -267,6 +252,105 @@ def freeze_transactions_for_task(
         "block_height": int(block_height),
         **commitment,
     }
+
+
+def freeze_transactions_for_task(
+    connection: Any,
+    *,
+    task_id: str,
+    block_height: int,
+    max_count: int = MAX_TRANSACTIONS_PER_BLOCK,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    timestamp = timestamp or utc_now()
+    transactions = select_transactions_for_task(connection, max_count, block_height - 1)
+    commitment = transaction_commitment(transactions)
+    snapshot = _store_task_tx_snapshot(
+        connection,
+        task_id=task_id,
+        block_height=block_height,
+        commitment=commitment,
+        timestamp=timestamp,
+    )
+    for tx_hash in commitment["tx_hashes"]:
+        connection.execute(
+            """
+            UPDATE mempool_transactions
+            SET status = 'selected',
+                selected_task_id = ?,
+                selected_block_height = ?,
+                mempool_snapshot_id = ?,
+                selected_at = ?,
+                released_at = NULL,
+                failure_reason = NULL,
+                updated_at = ?
+            WHERE tx_hash = ? AND status = 'pending'
+            """,
+            (task_id, int(block_height), snapshot["snapshot_id"], timestamp, timestamp, tx_hash),
+        )
+    return snapshot
+
+
+def freeze_transactions_for_competitive_round_task(
+    connection: Any,
+    *,
+    task_id: str,
+    block_height: int,
+    assignment_seed: str | None,
+    max_count: int = MAX_TRANSACTIONS_PER_BLOCK,
+    timestamp: str | None = None,
+) -> dict[str, Any]:
+    timestamp = timestamp or utc_now()
+    seed = str(assignment_seed or "").strip()
+    if seed:
+        source = row_to_dict(
+            connection.execute(
+                """
+                SELECT task_tx_snapshots.*
+                FROM task_tx_snapshots
+                JOIN tasks ON tasks.task_id = task_tx_snapshots.task_id
+                WHERE task_tx_snapshots.block_height = ?
+                  AND tasks.assignment_mode = 'competitive_round'
+                  AND tasks.assignment_seed = ?
+                  AND task_tx_snapshots.task_id != ?
+                ORDER BY task_tx_snapshots.created_at ASC, task_tx_snapshots.task_id ASC
+                LIMIT 1
+                """,
+                (int(block_height), seed, task_id),
+            ).fetchone()
+        )
+        if source is not None:
+            tx_hashes = canonical_tx_hashes(_decode_json(source.get("tx_hashes_json"), []))
+            commitment = {
+                "tx_count": len(tx_hashes),
+                "tx_hashes": tx_hashes,
+                "tx_merkle_root": source.get("tx_merkle_root") or merkle_root(tx_hashes),
+                "selected_tx_hashes_hash": selected_tx_hashes_hash(tx_hashes),
+                "tx_fee_total_units": int(source.get("tx_fee_total_units") or 0),
+                "fee_reward": units_to_float(int(source.get("tx_fee_total_units") or 0)),
+            }
+            snapshot = _store_task_tx_snapshot(
+                connection,
+                task_id=task_id,
+                block_height=block_height,
+                commitment=commitment,
+                timestamp=timestamp,
+            )
+            return {
+                **snapshot,
+                "reused": True,
+                "source_task_id": source["task_id"],
+                "source_snapshot_id": source["snapshot_id"],
+            }
+
+    snapshot = freeze_transactions_for_task(
+        connection,
+        task_id=task_id,
+        block_height=block_height,
+        max_count=max_count,
+        timestamp=timestamp,
+    )
+    return {**snapshot, "reused": False}
 
 
 def get_task_tx_snapshot(connection: Any, task_id: str) -> dict[str, Any] | None:

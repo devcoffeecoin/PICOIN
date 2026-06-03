@@ -2,6 +2,7 @@ from app.core.settings import CHAIN_ID, NETWORK_ID
 from app.core.pi import calculate_pi_segment
 from app.core.signatures import build_commit_signature_payload, build_reveal_signature_payload, generate_keypair, sign_payload
 from app.db.database import get_connection, init_db
+from app.services import mining as mining_service
 from app.services.mining import commit_task, create_next_task, get_balance, register_miner, request_faucet, reveal_task
 from app.services.transactions import (
     canonical_empty_tx_merkle_root,
@@ -110,6 +111,41 @@ def test_create_next_task_returns_decoded_selected_tx_hashes(tmp_path, monkeypat
 
     assert isinstance(task["selected_tx_hashes"], list)
     assert task["selected_tx_hashes"] == [first["tx_hash"]]
+
+
+def test_competitive_round_reuses_transaction_snapshot(tmp_path, monkeypatch) -> None:
+    _setup_db(tmp_path, monkeypatch, "task-snapshot-competitive-reuse")
+    monkeypatch.setattr(mining_service, "MINING_TASK_MODE", "competitive_round")
+    source = _funded_wallet(2.0)
+    recipient = create_wallet("recipient")
+    tx = _submit_transfer(source, recipient["address"], 0.25, 1)
+    first_keys = generate_keypair()
+    second_keys = generate_keypair()
+    first_miner = register_miner("snapshot-competitive-a", first_keys["public_key"])
+    second_miner = register_miner("snapshot-competitive-b", second_keys["public_key"])
+
+    first_task = create_next_task(first_miner["miner_id"])
+    second_task = create_next_task(second_miner["miner_id"])
+
+    assert first_task["assignment_mode"] == "competitive_round"
+    assert second_task["assignment_mode"] == "competitive_round"
+    assert first_task["competitive_round_height"] == second_task["competitive_round_height"]
+    assert first_task["selected_tx_hashes"] == [tx["tx_hash"]]
+    assert second_task["selected_tx_hashes"] == [tx["tx_hash"]]
+    assert first_task["tx_merkle_root"] == second_task["tx_merkle_root"]
+    assert first_task["selected_tx_hashes_hash"] == second_task["selected_tx_hashes_hash"]
+    assert first_task["mempool_snapshot_id"] != second_task["mempool_snapshot_id"]
+
+    with get_connection() as connection:
+        tx_row = connection.execute(
+            "SELECT status, selected_task_id FROM mempool_transactions WHERE tx_hash = ?",
+            (tx["tx_hash"],),
+        ).fetchone()
+        snapshot_count = connection.execute("SELECT COUNT(*) AS count FROM task_tx_snapshots").fetchone()["count"]
+
+    assert tx_row["status"] == "selected"
+    assert tx_row["selected_task_id"] == first_task["task_id"]
+    assert snapshot_count == 2
 
 
 def test_double_spend_selects_only_affordable_transactions(tmp_path, monkeypatch) -> None:
