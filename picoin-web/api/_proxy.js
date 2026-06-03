@@ -7,7 +7,8 @@ function cleanTarget(value) {
 }
 
 function pathFromRequest(req) {
-  const parts = Array.isArray(req.query.path) ? req.query.path : [req.query.path].filter(Boolean);
+  const rawParts = Array.isArray(req.query.path) ? req.query.path : [req.query.path].filter(Boolean);
+  const parts = rawParts.flatMap((part) => String(part || "").split("/").filter(Boolean));
   return `/${parts.map(encodeURIComponent).join("/")}`;
 }
 

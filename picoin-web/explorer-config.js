@@ -1,6 +1,6 @@
 window.PICOIN_EXPLORER_CONFIG = {
   apiBaseUrl: "/api/bootstrap",
-  refreshMs: 45000,
+  refreshMs: 60000,
   nodes: [
     { label: "mainnet", url: "/api/bootstrap" }
   ]

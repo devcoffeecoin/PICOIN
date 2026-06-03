@@ -59,8 +59,57 @@ const state = {
   errors: [],
   endpointLoadedAt: {},
 };
+let loadExplorerRunning = false;
 
 const $ = (id) => document.getElementById(id);
+const persistentEndpointKeys = Object.keys(endpointTtls);
+const storagePrefix = `picoin-explorer:${apiBaseUrl}:`;
+
+function storageAvailable() {
+  try {
+    return typeof window.localStorage !== "undefined";
+  } catch (_error) {
+    return false;
+  }
+}
+
+function storageKey(key) {
+  return `${storagePrefix}${key}`;
+}
+
+function restoreEndpointFromStorage(key) {
+  if (!storageAvailable()) return false;
+  try {
+    const raw = window.localStorage.getItem(storageKey(key));
+    if (!raw) return false;
+    const cached = JSON.parse(raw);
+    if (!cached || !cached.storedAt) return false;
+    state[key] = cached.value;
+    state.endpointLoadedAt[key] = Number(cached.storedAt) || Date.now();
+    return true;
+  } catch (_error) {
+    return false;
+  }
+}
+
+function persistEndpointToStorage(key) {
+  if (!storageAvailable()) return;
+  try {
+    window.localStorage.setItem(
+      storageKey(key),
+      JSON.stringify({
+        storedAt: state.endpointLoadedAt[key] || Date.now(),
+        value: state[key],
+      })
+    );
+  } catch (_error) {
+    // Browser storage is best-effort; the explorer can run without it.
+  }
+}
+
+function hydrateStoredEndpoints() {
+  persistentEndpointKeys.forEach(restoreEndpointFromStorage);
+}
 
 function fmt(value, digits = 4) {
   if (value === null || value === undefined || Number.isNaN(Number(value))) return "-";
@@ -285,6 +334,7 @@ function endpointFresh(key, ttlMs = defaultEndpointTtlMs) {
 
 function rememberEndpoint(key) {
   state.endpointLoadedAt[key] = Date.now();
+  persistEndpointToStorage(key);
 }
 
 function rememberError(path, error, stale = false) {
@@ -364,6 +414,9 @@ async function loadMiningMetrics() {
 
 async function loadNodeState(node) {
   const previous = state.nodeStates.find((item) => item.url === node.url);
+  if (cleanUrl(node.url) === apiBaseUrl && state.health && state.sync) {
+    return { ...node, health: state.health, sync: state.sync, ok: state.health.status === "ok", error: null };
+  }
   try {
     const [health, sync] = await Promise.all([
       fetchJsonFrom(node.url, "/health", { timeoutMs: 8000 }),
@@ -425,41 +478,69 @@ async function fetchTransactions() {
   return transactions;
 }
 
+async function runLimited(tasks, limit = 4) {
+  const queue = [...tasks];
+  const workers = Array.from({ length: Math.min(limit, queue.length) }, async () => {
+    while (queue.length) {
+      const task = queue.shift();
+      await task();
+    }
+  });
+  await Promise.all(workers);
+}
+
 async function loadExplorer() {
+  if (loadExplorerRunning) return;
+  loadExplorerRunning = true;
   state.errors = [];
-  await Promise.all([
-    loadEndpoint("health", "/health", null),
-    loadEndpoint("stats", "/stats", null),
-    loadEndpoint("sync", "/node/sync-status", null),
-    loadEndpoint("audit", "/audit/full", null),
-    loadEndpoint("consensus", "/consensus/status", null),
-    loadEndpoint("protocol", "/protocol", null),
-    loadEndpoint("difficultyStatus", "/difficulty", null),
-    loadMiningMetrics(),
-    loadEndpoint("reserve", "/reserve/status", null),
-    loadEndpoint("treasury", "/treasury/status", null),
-    loadEndpoint("validatorsStatus", "/validators/status", null),
-    loadEndpoint("minersStatus", "/miners/status", null),
-    loadEndpoint("mempoolStatus", "/mempool/status", null),
-    loadEndpoint("blocks", "/blocks", []),
-    loadEndpoint("retroAudits", "/audit/retroactive?limit=100", []),
-    loadEndpoint("validators", "/validators?limit=100", []),
-    loadEndpoint("events", "/events?limit=16", []),
-    (async () => {
-      try {
-        state.transactions = await fetchTransactions();
-      } catch (error) {
-        if (state.endpointLoadedAt.transactions) {
-          rememberError("transactions", error, true);
-        } else {
-          state.transactions = [];
-          rememberError("transactions", error);
+  try {
+    const coreTasks = [
+      () => loadEndpoint("health", "/health", null),
+      () => loadEndpoint("sync", "/node/sync-status", null),
+      () => loadEndpoint("protocol", "/protocol", null),
+      () => loadEndpoint("validatorsStatus", "/validators/status", null),
+      () => loadEndpoint("minersStatus", "/miners/status", null),
+      () => loadEndpoint("blocks", "/blocks", []),
+      async () => {
+        try {
+          state.transactions = await fetchTransactions();
+        } catch (error) {
+          if (state.endpointLoadedAt.transactions) {
+            rememberError("transactions", error, true);
+          } else {
+            state.transactions = [];
+            rememberError("transactions", error);
+          }
         }
-      }
-    })(),
-  ]);
-  state.nodeStates = await Promise.all(nodes.map(loadNodeState));
-  render();
+      },
+    ];
+    await runLimited(coreTasks, 3);
+    state.nodeStates = await Promise.all(nodes.map(loadNodeState));
+    render();
+
+    const secondaryTasks = [
+      () => loadEndpoint("stats", "/stats", null),
+      () => loadEndpoint("consensus", "/consensus/status", null),
+      () => loadEndpoint("difficultyStatus", "/difficulty", null),
+      () => loadMiningMetrics(),
+      () => loadEndpoint("reserve", "/reserve/status", null),
+      () => loadEndpoint("treasury", "/treasury/status", null),
+      () => loadEndpoint("mempoolStatus", "/mempool/status", null),
+      () => loadEndpoint("validators", "/validators?limit=100", []),
+      () => loadEndpoint("events", "/events?limit=16", []),
+    ];
+    await runLimited(secondaryTasks, 3);
+    render();
+
+    const slowTasks = [
+      () => loadEndpoint("audit", "/audit/full", null),
+      () => loadEndpoint("retroAudits", "/audit/retroactive?limit=100", []),
+    ];
+    await runLimited(slowTasks, 1);
+    render();
+  } finally {
+    loadExplorerRunning = false;
+  }
 }
 
 function networkAgreement() {
@@ -1072,5 +1153,7 @@ $("lookupInput")?.addEventListener("keydown", (event) => {
   if (event.key === "Enter") runLookup();
 });
 
+hydrateStoredEndpoints();
+render();
 loadExplorer();
 window.setInterval(loadExplorer, refreshMs);
