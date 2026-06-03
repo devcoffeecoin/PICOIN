@@ -57,8 +57,11 @@ from app.services.wallet import address_matches_public_key, is_valid_address, tr
 logger = logging.getLogger(__name__)
 
 PEER_STALE_MARK_MIN_INTERVAL_SECONDS = int(os.getenv("PICOIN_PEER_STALE_MARK_MIN_INTERVAL_SECONDS", "60"))
+PEER_REGISTER_MIN_INTERVAL_SECONDS = int(os.getenv("PICOIN_PEER_REGISTER_MIN_INTERVAL_SECONDS", "60"))
 _PEER_STALE_MARK_LOCK = threading.Lock()
 _PEER_STALE_MARK_LAST_RUN_MONOTONIC = 0.0
+_PEER_REGISTER_LOCK = threading.Lock()
+_PEER_REGISTER_LAST_RUN_MONOTONIC_BY_ID: dict[str, float] = {}
 
 
 class NetworkError(Exception):
@@ -205,44 +208,83 @@ def register_peer(
 
     timestamp = _now()
     peer_id = sha256_text(f"{chain_id}:{peer_address}")[:32]
-    with get_connection() as connection:
-        connection.execute(
-            """
-            INSERT INTO network_peers (
-                peer_id, node_id, peer_address, peer_type, protocol_version,
-                network_id, chain_id, genesis_hash, connected_at, last_seen,
-                status, metadata
+    source = str(metadata.get("source") or "")
+    if source == "validator_heartbeat":
+        monotonic_now = time.monotonic()
+        with _PEER_REGISTER_LOCK:
+            last_run = _PEER_REGISTER_LAST_RUN_MONOTONIC_BY_ID.get(peer_id, 0.0)
+            if monotonic_now - last_run < PEER_REGISTER_MIN_INTERVAL_SECONDS:
+                return {
+                    "peer_id": peer_id,
+                    "node_id": node_id,
+                    "peer_address": peer_address,
+                    "peer_type": peer_type,
+                    "protocol_version": protocol_version,
+                    "network_id": network_id,
+                    "chain_id": chain_id,
+                    "genesis_hash": genesis_hash,
+                    "status": "connected",
+                    "metadata": metadata,
+                    "skipped": "throttled",
+                }
+            _PEER_REGISTER_LAST_RUN_MONOTONIC_BY_ID[peer_id] = monotonic_now
+    try:
+        with get_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO network_peers (
+                    peer_id, node_id, peer_address, peer_type, protocol_version,
+                    network_id, chain_id, genesis_hash, connected_at, last_seen,
+                    status, metadata
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'connected', ?)
+                ON CONFLICT(peer_id) DO UPDATE SET
+                    node_id = excluded.node_id,
+                    peer_address = excluded.peer_address,
+                    peer_type = excluded.peer_type,
+                    protocol_version = excluded.protocol_version,
+                    network_id = excluded.network_id,
+                    chain_id = excluded.chain_id,
+                    genesis_hash = excluded.genesis_hash,
+                    last_seen = excluded.last_seen,
+                    status = 'connected',
+                    metadata = excluded.metadata
+                """,
+                (
+                    peer_id,
+                    node_id,
+                    peer_address,
+                    peer_type,
+                    protocol_version,
+                    network_id,
+                    chain_id,
+                    genesis_hash,
+                    timestamp,
+                    timestamp,
+                    json.dumps(metadata, sort_keys=True),
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'connected', ?)
-            ON CONFLICT(peer_id) DO UPDATE SET
-                node_id = excluded.node_id,
-                peer_address = excluded.peer_address,
-                peer_type = excluded.peer_type,
-                protocol_version = excluded.protocol_version,
-                network_id = excluded.network_id,
-                chain_id = excluded.chain_id,
-                genesis_hash = excluded.genesis_hash,
-                last_seen = excluded.last_seen,
-                status = 'connected',
-                metadata = excluded.metadata
-            """,
-            (
-                peer_id,
-                node_id,
-                peer_address,
-                peer_type,
-                protocol_version,
-                network_id,
-                chain_id,
-                genesis_hash,
-                timestamp,
-                timestamp,
-                json.dumps(metadata, sort_keys=True),
-            ),
-        )
-        _record_sync_event(connection, peer_id, "peer_registered", "inbound", "accepted", {"peer_address": peer_address})
-        peer = row_to_dict(connection.execute("SELECT * FROM network_peers WHERE peer_id = ?", (peer_id,)).fetchone())
-    return _decode_peer(peer)
+            if source != "validator_heartbeat":
+                _record_sync_event(connection, peer_id, "peer_registered", "inbound", "accepted", {"peer_address": peer_address})
+            peer = row_to_dict(connection.execute("SELECT * FROM network_peers WHERE peer_id = ?", (peer_id,)).fetchone())
+        return _decode_peer(peer)
+    except sqlite3.OperationalError as exc:
+        if "database is locked" in str(exc).lower():
+            logger.warning("peer registration skipped: database is locked peer_id=%s source=%s", peer_id, source or "unknown")
+            return {
+                "peer_id": peer_id,
+                "node_id": node_id,
+                "peer_address": peer_address,
+                "peer_type": peer_type,
+                "protocol_version": protocol_version,
+                "network_id": network_id,
+                "chain_id": chain_id,
+                "genesis_hash": genesis_hash,
+                "status": "unknown",
+                "metadata": metadata,
+                "skipped": "database_locked",
+            }
+        raise
 
 
 def discover_peers(seed_peers: list[str] | None = None, *, limit: int | None = None) -> dict[str, Any]:
