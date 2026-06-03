@@ -4,6 +4,7 @@ from app.core.signatures import build_validation_result_signature_payload, gener
 from app.db.database import get_connection, init_db
 from app.services.mining import (
     MiningError,
+    _accept_block_in_connection,
     get_audit_summary,
     get_balance,
     get_ledger_entries,
@@ -154,6 +155,69 @@ def test_block_is_accepted_after_validator_quorum(tmp_path, monkeypatch) -> None
     assert get_validator(second_validator["validator_id"])["total_rewards"] == 0.10472
     assert get_validator(third_validator["validator_id"])["accepted_jobs"] == 1
     assert get_validator(third_validator["validator_id"])["total_rewards"] == 0.10472
+
+
+def test_duplicate_validation_job_for_accepted_task_is_idempotent(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "validator-duplicate-finalization.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    miner_id = _register_miner("miner-duplicate-finalization")
+    first_keys = generate_keypair()
+    second_keys = generate_keypair()
+    third_keys = generate_keypair()
+    first_validator = register_validator("validator-one", first_keys["public_key"])
+    second_validator = register_validator("validator-two", second_keys["public_key"])
+    third_validator = register_validator("validator-three", third_keys["public_key"])
+    job_id, task_id = _insert_validation_job(miner_id, first_validator["validator_id"], suffix="duplicate")
+    signed_at = "2026-05-10T00:00:00+00:00"
+    validators = [
+        (first_keys, first_validator["validator_id"], "accepted by first"),
+        (second_keys, second_validator["validator_id"], "accepted by second"),
+        (third_keys, third_validator["validator_id"], "accepted by third"),
+    ]
+
+    first_final_response = None
+    for keys, validator_id, reason in validators:
+        first_final_response = submit_validation_result(
+            job_id=job_id,
+            validator_id=validator_id,
+            approved=True,
+            reason=reason,
+            signature=_sign_validation_result(keys["private_key"], job_id, validator_id, task_id, True, reason, signed_at),
+            signed_at=signed_at,
+        )
+
+    with get_connection() as connection:
+        original = connection.execute("SELECT * FROM validation_jobs WHERE job_id = ?", (job_id,)).fetchone()
+        task = dict(connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone())
+        duplicate_block = _accept_block_in_connection(
+            connection=connection,
+            task=task,
+            miner_id=miner_id,
+            result_hash=original["result_hash"],
+            merkle_root=original["merkle_root"],
+            samples=[],
+            signature="duplicate-finalization",
+            submission_reason="duplicate finalization retry",
+            validation_ms=0,
+        )
+
+    assert first_final_response["status"] == "approved"
+    assert duplicate_block["already_finalized"] is True
+    assert duplicate_block["height"] == first_final_response["block"]["height"]
+    with get_connection() as connection:
+        blocks = connection.execute("SELECT COUNT(*) AS count FROM blocks WHERE task_id = ?", (task_id,)).fetchone()
+        rewards = connection.execute("SELECT COUNT(*) AS count FROM rewards WHERE block_height = ?", (first_final_response["block"]["height"],)).fetchone()
+        block_rewards = connection.execute(
+            "SELECT COUNT(*) AS count FROM ledger_entries WHERE entry_type = 'block_reward' AND related_id = ?",
+            (task_id,),
+        ).fetchone()
+    assert blocks["count"] == 1
+    assert rewards["count"] == 1
+    assert block_rewards["count"] == 1
+    assert get_balance(miner_id)["balance"] == 2.51328
 
 
 def test_quorum_finalization_failure_rejects_job_without_losing_vote(tmp_path, monkeypatch) -> None:

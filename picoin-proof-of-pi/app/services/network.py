@@ -3,6 +3,10 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import sqlite3
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Any
 from urllib.parse import urlparse
@@ -56,6 +60,13 @@ from app.services.wallet import (
 
 
 logger = logging.getLogger(__name__)
+
+PEER_STALE_MARK_MIN_INTERVAL_SECONDS = int(os.getenv("PICOIN_PEER_STALE_MARK_MIN_INTERVAL_SECONDS", "60"))
+PEER_REGISTER_MIN_INTERVAL_SECONDS = int(os.getenv("PICOIN_PEER_REGISTER_MIN_INTERVAL_SECONDS", "60"))
+_PEER_STALE_MARK_LOCK = threading.Lock()
+_PEER_STALE_MARK_LAST_RUN_MONOTONIC = 0.0
+_PEER_REGISTER_LOCK = threading.Lock()
+_PEER_REGISTER_LAST_RUN_MONOTONIC_BY_ID: dict[str, float] = {}
 
 
 class NetworkError(Exception):
@@ -202,44 +213,83 @@ def register_peer(
 
     timestamp = _now()
     peer_id = sha256_text(f"{chain_id}:{peer_address}")[:32]
-    with get_connection() as connection:
-        connection.execute(
-            """
-            INSERT INTO network_peers (
-                peer_id, node_id, peer_address, peer_type, protocol_version,
-                network_id, chain_id, genesis_hash, connected_at, last_seen,
-                status, metadata
+    source = str(metadata.get("source") or "")
+    if source == "validator_heartbeat":
+        monotonic_now = time.monotonic()
+        with _PEER_REGISTER_LOCK:
+            last_run = _PEER_REGISTER_LAST_RUN_MONOTONIC_BY_ID.get(peer_id, 0.0)
+            if monotonic_now - last_run < PEER_REGISTER_MIN_INTERVAL_SECONDS:
+                return {
+                    "peer_id": peer_id,
+                    "node_id": node_id,
+                    "peer_address": peer_address,
+                    "peer_type": peer_type,
+                    "protocol_version": protocol_version,
+                    "network_id": network_id,
+                    "chain_id": chain_id,
+                    "genesis_hash": genesis_hash,
+                    "status": "connected",
+                    "metadata": metadata,
+                    "skipped": "throttled",
+                }
+            _PEER_REGISTER_LAST_RUN_MONOTONIC_BY_ID[peer_id] = monotonic_now
+    try:
+        with get_connection() as connection:
+            connection.execute(
+                """
+                INSERT INTO network_peers (
+                    peer_id, node_id, peer_address, peer_type, protocol_version,
+                    network_id, chain_id, genesis_hash, connected_at, last_seen,
+                    status, metadata
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'connected', ?)
+                ON CONFLICT(peer_id) DO UPDATE SET
+                    node_id = excluded.node_id,
+                    peer_address = excluded.peer_address,
+                    peer_type = excluded.peer_type,
+                    protocol_version = excluded.protocol_version,
+                    network_id = excluded.network_id,
+                    chain_id = excluded.chain_id,
+                    genesis_hash = excluded.genesis_hash,
+                    last_seen = excluded.last_seen,
+                    status = 'connected',
+                    metadata = excluded.metadata
+                """,
+                (
+                    peer_id,
+                    node_id,
+                    peer_address,
+                    peer_type,
+                    protocol_version,
+                    network_id,
+                    chain_id,
+                    genesis_hash,
+                    timestamp,
+                    timestamp,
+                    json.dumps(metadata, sort_keys=True),
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'connected', ?)
-            ON CONFLICT(peer_id) DO UPDATE SET
-                node_id = excluded.node_id,
-                peer_address = excluded.peer_address,
-                peer_type = excluded.peer_type,
-                protocol_version = excluded.protocol_version,
-                network_id = excluded.network_id,
-                chain_id = excluded.chain_id,
-                genesis_hash = excluded.genesis_hash,
-                last_seen = excluded.last_seen,
-                status = 'connected',
-                metadata = excluded.metadata
-            """,
-            (
-                peer_id,
-                node_id,
-                peer_address,
-                peer_type,
-                protocol_version,
-                network_id,
-                chain_id,
-                genesis_hash,
-                timestamp,
-                timestamp,
-                json.dumps(metadata, sort_keys=True),
-            ),
-        )
-        _record_sync_event(connection, peer_id, "peer_registered", "inbound", "accepted", {"peer_address": peer_address})
-        peer = row_to_dict(connection.execute("SELECT * FROM network_peers WHERE peer_id = ?", (peer_id,)).fetchone())
-    return _decode_peer(peer)
+            if source != "validator_heartbeat":
+                _record_sync_event(connection, peer_id, "peer_registered", "inbound", "accepted", {"peer_address": peer_address})
+            peer = row_to_dict(connection.execute("SELECT * FROM network_peers WHERE peer_id = ?", (peer_id,)).fetchone())
+        return _decode_peer(peer)
+    except sqlite3.OperationalError as exc:
+        if "database is locked" in str(exc).lower():
+            logger.warning("peer registration skipped: database is locked peer_id=%s source=%s", peer_id, source or "unknown")
+            return {
+                "peer_id": peer_id,
+                "node_id": node_id,
+                "peer_address": peer_address,
+                "peer_type": peer_type,
+                "protocol_version": protocol_version,
+                "network_id": network_id,
+                "chain_id": chain_id,
+                "genesis_hash": genesis_hash,
+                "status": "unknown",
+                "metadata": metadata,
+                "skipped": "database_locked",
+            }
+        raise
 
 
 def discover_peers(seed_peers: list[str] | None = None, *, limit: int | None = None) -> dict[str, Any]:
@@ -1212,44 +1262,66 @@ def _decode_tx(row: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def _mark_stale_peers() -> None:
+def _mark_stale_peers(*, force: bool = False) -> dict[str, Any]:
+    global _PEER_STALE_MARK_LAST_RUN_MONOTONIC
+    monotonic_now = time.monotonic()
+    if not force and (
+        monotonic_now - _PEER_STALE_MARK_LAST_RUN_MONOTONIC
+    ) < PEER_STALE_MARK_MIN_INTERVAL_SECONDS:
+        return {"updated": 0, "checked_at": _now(), "skipped": "throttled"}
+    if not _PEER_STALE_MARK_LOCK.acquire(blocking=False):
+        return {"updated": 0, "checked_at": _now(), "skipped": "already_running"}
     stale_before = (datetime.now(timezone.utc) - timedelta(seconds=PEER_TIMEOUT_SECONDS)).isoformat()
     timestamp = _now()
-    with get_connection() as connection:
-        connection.execute(
-            """
-            UPDATE network_peers
-            SET status = 'stale'
-            WHERE status = 'connected' AND last_seen < ?
-            """,
-            (stale_before,),
-        )
-        connection.execute(
-            """
-            UPDATE network_peers
-            SET status = 'connected'
-            WHERE peer_address IN (
-                SELECT peer_address FROM network_peers
-                WHERE peer_address IN ({})
+    updated = 0
+    try:
+        with get_connection() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE network_peers
+                SET status = 'stale'
+                WHERE status = 'connected' AND last_seen < ?
+                """,
+                (stale_before,),
             )
-            """.format(",".join("?" for _ in BOOTSTRAP_PEERS) or "''"),
-            tuple(BOOTSTRAP_PEERS),
-        )
-        if BOOTSTRAP_PEERS:
-            for peer_address in BOOTSTRAP_PEERS:
-                peer_id = sha256_text(f"{CHAIN_ID}:{peer_address}")[:32]
-                connection.execute(
-                    """
-                    INSERT INTO network_peers (
-                        peer_id, node_id, peer_address, peer_type, protocol_version,
-                        network_id, chain_id, genesis_hash, connected_at, last_seen,
-                        status, metadata
-                    )
-                    VALUES (?, 'bootstrap', ?, 'bootstrap', ?, ?, ?, ?, ?, ?, 'connected', '{}')
-                    ON CONFLICT(peer_id) DO NOTHING
-                    """,
-                    (peer_id, peer_address, PROTOCOL_VERSION, NETWORK_ID, CHAIN_ID, GENESIS_HASH, timestamp, timestamp),
+            updated += max(0, int(cursor.rowcount or 0))
+            cursor = connection.execute(
+                """
+                UPDATE network_peers
+                SET status = 'connected'
+                WHERE peer_address IN (
+                    SELECT peer_address FROM network_peers
+                    WHERE peer_address IN ({})
                 )
+                """.format(",".join("?" for _ in BOOTSTRAP_PEERS) or "''"),
+                tuple(BOOTSTRAP_PEERS),
+            )
+            updated += max(0, int(cursor.rowcount or 0))
+            if BOOTSTRAP_PEERS:
+                for peer_address in BOOTSTRAP_PEERS:
+                    peer_id = sha256_text(f"{CHAIN_ID}:{peer_address}")[:32]
+                    cursor = connection.execute(
+                        """
+                        INSERT INTO network_peers (
+                            peer_id, node_id, peer_address, peer_type, protocol_version,
+                            network_id, chain_id, genesis_hash, connected_at, last_seen,
+                            status, metadata
+                        )
+                        VALUES (?, 'bootstrap', ?, 'bootstrap', ?, ?, ?, ?, ?, ?, 'connected', '{}')
+                        ON CONFLICT(peer_id) DO NOTHING
+                        """,
+                        (peer_id, peer_address, PROTOCOL_VERSION, NETWORK_ID, CHAIN_ID, GENESIS_HASH, timestamp, timestamp),
+                    )
+                    updated += max(0, int(cursor.rowcount or 0))
+        _PEER_STALE_MARK_LAST_RUN_MONOTONIC = monotonic_now
+        return {"updated": updated, "checked_at": timestamp}
+    except sqlite3.OperationalError as exc:
+        if "database is locked" in str(exc).lower():
+            logger.warning("peer stale mark skipped: database is locked")
+            return {"updated": updated, "checked_at": timestamp, "skipped": "database_locked"}
+        raise
+    finally:
+        _PEER_STALE_MARK_LOCK.release()
 
 
 def _record_sync_event(

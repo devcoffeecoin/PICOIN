@@ -45,6 +45,21 @@ def account_nonce_snapshot(connection: Any) -> list[dict[str, Any]]:
     return [{"account_id": str(row["account_id"]), "nonce": int(row["nonce"])} for row in rows]
 
 
+def validator_snapshot(connection: Any) -> list[dict[str, Any]]:
+    rows = connection.execute(
+        """
+        SELECT
+            validator_id, name, public_key, reward_address, registered_at,
+            accepted_jobs, rejected_jobs, invalid_results, trust_score, cooldown_until,
+            total_validation_ms, stake_locked, wallet_stake_locked, stake_owner_address,
+            slashed_amount, is_banned, enabled, protocol_version
+        FROM validators
+        ORDER BY validator_id ASC
+        """
+    ).fetchall()
+    return [_normalize_validator_snapshot_row(row) for row in rows]
+
+
 def canonical_balance_snapshot(connection: Any, block_height: int, block_timestamp: str | None = None) -> list[dict[str, Any]]:
     if block_height < 0:
         raise ValueError("block_height must be >= 0")
@@ -146,6 +161,8 @@ def create_canonical_checkpoint_in_connection(
     balances_hash = sha256_text(canonical_json({"height": height, "balances": balances}))
     nonces = account_nonce_snapshot(connection)
     nonces_hash = sha256_text(canonical_json({"height": height, "nonces": nonces}))
+    validators = validator_snapshot(connection)
+    validators_hash = sha256_text(canonical_json({"height": height, "validators": validators}))
     ledger_entries_count = int(
         connection.execute(
             """
@@ -172,6 +189,8 @@ def create_canonical_checkpoint_in_connection(
         "balances_count": len(balances),
         "nonces_hash": nonces_hash,
         "nonces_count": len(nonces),
+        "validators_hash": validators_hash,
+        "validators_count": len(validators),
         "ledger_entries_count": ledger_entries_count,
         "total_balance": total_balance,
         "total_balance_units": total_balance_units,
@@ -287,6 +306,8 @@ def verify_checkpoint(height: int) -> dict[str, Any]:
         balances_hash = sha256_text(canonical_json({"height": height, "balances": balances}))
         nonces = account_nonce_snapshot(connection)
         nonces_hash = sha256_text(canonical_json({"height": height, "nonces": nonces}))
+        validators = validator_snapshot(connection)
+        validators_hash = sha256_text(canonical_json({"height": height, "validators": validators}))
         state_root = calculate_state_root(connection, height, block["timestamp"])
         ledger_entries_count = int(
             connection.execute(
@@ -320,6 +341,9 @@ def verify_checkpoint(height: int) -> dict[str, Any]:
         if checkpoint_payload.get("nonces_hash"):
             payload["nonces_hash"] = nonces_hash
             payload["nonces_count"] = len(nonces)
+        if checkpoint_payload.get("validators_hash"):
+            payload["validators_hash"] = validators_hash
+            payload["validators_count"] = len(validators)
         snapshot_hash = sha256_text(canonical_json(payload))
         issues = []
         if checkpoint["block_hash"] != block["block_hash"]:
@@ -342,6 +366,12 @@ def verify_checkpoint(height: int) -> dict[str, Any]:
             stored_nonces_count = checkpoint_payload.get("nonces_count")
             if stored_nonces_count is None or int(stored_nonces_count) != len(nonces):
                 issues.append("nonces_count mismatch")
+        if checkpoint_payload.get("validators_hash") and checkpoint_payload.get("validators_hash") != validators_hash:
+            issues.append("validators_hash mismatch")
+        if checkpoint_payload.get("validators_hash"):
+            stored_validators_count = checkpoint_payload.get("validators_count")
+            if stored_validators_count is None or int(stored_validators_count) != len(validators):
+                issues.append("validators_count mismatch")
         if checkpoint["snapshot_hash"] != snapshot_hash:
             issues.append("snapshot_hash mismatch")
         if not issues:
@@ -384,6 +414,7 @@ def export_canonical_snapshot(height: int | None = None) -> dict[str, Any]:
             raise StateError(404, "block not found for snapshot export")
         balances = balance_snapshot(connection, int(height), block["timestamp"])
         nonces = account_nonce_snapshot(connection)
+        validators = validator_snapshot(connection)
         account_types = {
             row["account_id"]: row["account_type"]
             for row in connection.execute("SELECT account_id, account_type FROM balances").fetchall()
@@ -402,6 +433,7 @@ def export_canonical_snapshot(height: int | None = None) -> dict[str, Any]:
         "checkpoint": _checkpoint_public_payload(checkpoint),
         "balances": export_balances,
         "nonces": nonces,
+        "validators": validators,
     }
     validation = validate_snapshot_document(document)
     document["valid"] = validation["valid"]
@@ -462,12 +494,16 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
     checkpoint = dict(document.get("checkpoint") or {})
     balances = document.get("balances") or []
     nonces = document.get("nonces") or []
+    validators = document.get("validators") or []
     if not isinstance(balances, list):
         balances = []
         issues.append("balances must be a list")
     if not isinstance(nonces, list):
         nonces = []
         issues.append("nonces must be a list")
+    if not isinstance(validators, list):
+        validators = []
+        issues.append("validators must be a list")
     required = {
         "chain_id",
         "network_id",
@@ -503,8 +539,14 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
     except ValueError as exc:
         normalized_nonces = []
         issues.append(str(exc))
+    try:
+        normalized_validators = _normalize_snapshot_validators(validators)
+    except ValueError as exc:
+        normalized_validators = []
+        issues.append(str(exc))
     balances_hash = sha256_text(canonical_json({"height": height, "balances": normalized_balances}))
     nonces_hash = sha256_text(canonical_json({"height": height, "nonces": normalized_nonces}))
+    validators_hash = sha256_text(canonical_json({"height": height, "validators": normalized_validators}))
     total_balance_units = sum(int(item["balance_units"]) for item in normalized_balances)
     total_balance = units_to_float(total_balance_units)
     payload = {
@@ -525,6 +567,9 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
     if checkpoint.get("nonces_hash") or normalized_nonces:
         payload["nonces_hash"] = nonces_hash
         payload["nonces_count"] = len(normalized_nonces)
+    if checkpoint.get("validators_hash") or normalized_validators:
+        payload["validators_hash"] = validators_hash
+        payload["validators_count"] = len(normalized_validators)
     snapshot_hash = sha256_text(canonical_json(payload))
     if checkpoint.get("balances_hash") != balances_hash:
         issues.append("balances_hash mismatch")
@@ -538,6 +583,12 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
         stored_nonces_count = checkpoint.get("nonces_count")
         if stored_nonces_count is None or int(stored_nonces_count) != len(normalized_nonces):
             issues.append("nonces_count mismatch")
+    if checkpoint.get("validators_hash") and checkpoint.get("validators_hash") != validators_hash:
+        issues.append("validators_hash mismatch")
+    if checkpoint.get("validators_hash"):
+        stored_validators_count = checkpoint.get("validators_count")
+        if stored_validators_count is None or int(stored_validators_count) != len(normalized_validators):
+            issues.append("validators_count mismatch")
     if int(checkpoint.get("total_balance_units") or to_units(checkpoint.get("total_balance") or 0)) != total_balance_units:
         issues.append("total_balance mismatch")
     if checkpoint.get("snapshot_hash") != snapshot_hash:
@@ -555,6 +606,10 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
             "nonces_count": int(
                 checkpoint["nonces_count"] if checkpoint.get("nonces_count") is not None else len(normalized_nonces)
             ),
+            "validators_hash": checkpoint.get("validators_hash") or (validators_hash if normalized_validators else None),
+            "validators_count": int(
+                checkpoint["validators_count"] if checkpoint.get("validators_count") is not None else len(normalized_validators)
+            ),
         },
         "computed": {
             "balances_hash": balances_hash,
@@ -565,6 +620,8 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
             "total_balance_units": total_balance_units,
             "nonces_hash": nonces_hash if normalized_nonces else None,
             "nonces_count": len(normalized_nonces),
+            "validators_hash": validators_hash if normalized_validators else None,
+            "validators_count": len(normalized_validators),
         },
     }
 
@@ -608,12 +665,16 @@ def apply_imported_snapshot_state(snapshot_hash: str, *, replace_existing: bool 
             raise StateError(422, f"invalid imported snapshot: {', '.join(validation['issues'])}")
         balances = _normalize_snapshot_balances_with_type(document.get("balances") or [])
         nonces = _normalize_snapshot_nonces(document.get("nonces") or [])
+        validators = _normalize_snapshot_validators(document.get("validators") or [])
         checkpoint = validation["checkpoint"]
 
         cleared = _clear_local_chain_state_for_snapshot_restore(connection) if replace_existing else {}
         connection.execute("DELETE FROM ledger_entries")
         connection.execute("DELETE FROM balances")
         connection.execute("DELETE FROM account_nonces")
+        if validators:
+            connection.execute("DELETE FROM validators")
+        validators_by_id = {validator["validator_id"]: validator for validator in validators}
         for item in balances:
             balance_units = int(item["balance_units"])
             balance = units_to_float(balance_units)
@@ -624,25 +685,13 @@ def apply_imported_snapshot_state(snapshot_hash: str, *, replace_existing: bool 
                 """,
                 (item["account_id"], item["account_type"], balance, balance_units, timestamp),
             )
-            connection.execute(
-                """
-                INSERT INTO ledger_entries (
-                    account_id, account_type, amount, amount_units, balance_after, balance_after_units, entry_type,
-                    block_height, related_id, description, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, 'snapshot_state_import', ?, ?, 'canonical snapshot state import', ?)
-                """,
-                (
-                    item["account_id"],
-                    item["account_type"],
-                    balance,
-                    balance_units,
-                    balance,
-                    balance_units,
-                    checkpoint["height"],
-                    snapshot_hash,
-                    timestamp,
-                ),
+            _restore_snapshot_balance_ledger_entries(
+                connection,
+                item,
+                validators_by_id,
+                int(checkpoint["height"]),
+                snapshot_hash,
+                timestamp,
             )
         for item in nonces:
             connection.execute(
@@ -652,6 +701,8 @@ def apply_imported_snapshot_state(snapshot_hash: str, *, replace_existing: bool 
                 """,
                 (item["account_id"], int(item["nonce"]), timestamp),
             )
+        for validator in validators:
+            _restore_snapshot_validator(connection, validator, timestamp)
         connection.execute("UPDATE canonical_snapshot_imports SET active = 0")
         connection.execute(
             """
@@ -672,6 +723,7 @@ def apply_imported_snapshot_state(snapshot_hash: str, *, replace_existing: bool 
         "snapshot_hash": snapshot_hash,
         "balances_applied": len(balances),
         "nonces_applied": len(nonces),
+        "validators_applied": len(validators),
         "cleared": cleared,
         "snapshot": applied,
     }
@@ -845,6 +897,213 @@ def _normalize_snapshot_balances_with_type(balances: list[dict[str, Any]]) -> li
         for _, item in sorted(merged.items(), key=lambda item: (item[1]["account_id"], item[1]["account_type"]))
         if int(item["balance_units"]) != 0
     ]
+
+
+def _normalize_snapshot_validators(validators: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: dict[str, dict[str, Any]] = {}
+    for item in validators:
+        validator = _normalize_validator_snapshot_row(item)
+        if validator["validator_id"]:
+            normalized[validator["validator_id"]] = validator
+    return [normalized[key] for key in sorted(normalized)]
+
+
+def _normalize_validator_snapshot_row(row: Any) -> dict[str, Any]:
+    item = dict(row)
+    validator_id = str(item.get("validator_id") or "").strip()
+    if not validator_id:
+        raise ValueError("validator snapshot entry missing validator_id")
+    stake_units = units_from_db(item.get("stake_locked") or 0, item.get("stake_locked_units"))
+    wallet_stake_units = units_from_db(item.get("wallet_stake_locked") or 0, item.get("wallet_stake_locked_units"))
+    slashed_units = units_from_db(item.get("slashed_amount") or 0, item.get("slashed_amount_units"))
+    return {
+        "validator_id": validator_id,
+        "name": str(item.get("name") or validator_id).strip() or validator_id,
+        "public_key": str(item.get("public_key") or "").strip(),
+        "reward_address": str(item.get("reward_address") or "").strip() or None,
+        "registered_at": str(item.get("registered_at") or "").strip(),
+        "accepted_jobs": max(0, int(item.get("accepted_jobs") or 0)),
+        "rejected_jobs": max(0, int(item.get("rejected_jobs") or 0)),
+        "invalid_results": max(0, int(item.get("invalid_results") or 0)),
+        "trust_score": round(float(item.get("trust_score") if item.get("trust_score") is not None else 1.0), 8),
+        "cooldown_until": str(item.get("cooldown_until") or "").strip() or None,
+        "total_validation_ms": max(0, int(item.get("total_validation_ms") or 0)),
+        "stake_locked": canonical_amount(stake_units),
+        "stake_locked_units": stake_units,
+        "wallet_stake_locked": canonical_amount(wallet_stake_units),
+        "wallet_stake_locked_units": wallet_stake_units,
+        "stake_owner_address": str(item.get("stake_owner_address") or "").strip() or None,
+        "slashed_amount": canonical_amount(slashed_units),
+        "slashed_amount_units": slashed_units,
+        "is_banned": 1 if bool(item.get("is_banned")) else 0,
+        "enabled": 1 if bool(item.get("enabled", 1)) else 0,
+        "protocol_version": str(item.get("protocol_version") or PROTOCOL_VERSION).strip() or PROTOCOL_VERSION,
+    }
+
+
+def _restore_snapshot_validator(connection: Any, validator: dict[str, Any], timestamp: str) -> None:
+    stake_locked = units_to_float(int(validator["stake_locked_units"]))
+    wallet_stake_locked = units_to_float(int(validator["wallet_stake_locked_units"]))
+    slashed_amount = units_to_float(int(validator["slashed_amount_units"]))
+    connection.execute(
+        """
+        INSERT INTO validators (
+            validator_id, name, public_key, reward_address, registered_at,
+            accepted_jobs, rejected_jobs, invalid_results, trust_score, cooldown_until,
+            last_seen_at, total_validation_ms, stake_locked, wallet_stake_locked,
+            stake_owner_address, slashed_amount, is_banned, enabled, protocol_version,
+            online_status, sync_status, effective_height, sync_lag, pending_replay_blocks
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?, ?, 'offline', 'unknown', 0, 0, 0)
+        ON CONFLICT(validator_id) DO UPDATE SET
+            name = excluded.name,
+            public_key = excluded.public_key,
+            reward_address = excluded.reward_address,
+            registered_at = excluded.registered_at,
+            accepted_jobs = excluded.accepted_jobs,
+            rejected_jobs = excluded.rejected_jobs,
+            invalid_results = excluded.invalid_results,
+            trust_score = excluded.trust_score,
+            cooldown_until = excluded.cooldown_until,
+            total_validation_ms = excluded.total_validation_ms,
+            stake_locked = excluded.stake_locked,
+            wallet_stake_locked = excluded.wallet_stake_locked,
+            stake_owner_address = excluded.stake_owner_address,
+            slashed_amount = excluded.slashed_amount,
+            is_banned = excluded.is_banned,
+            enabled = excluded.enabled,
+            protocol_version = excluded.protocol_version,
+            online_status = 'offline',
+            sync_status = 'unknown',
+            effective_height = 0,
+            sync_lag = 0,
+            pending_replay_blocks = 0,
+            last_seen_at = NULL,
+            reason_if_not_eligible = NULL
+        """,
+        (
+            validator["validator_id"],
+            validator["name"],
+            validator["public_key"],
+            validator["reward_address"],
+            validator["registered_at"] or timestamp,
+            validator["accepted_jobs"],
+            validator["rejected_jobs"],
+            validator["invalid_results"],
+            validator["trust_score"],
+            validator["cooldown_until"],
+            validator["total_validation_ms"],
+            stake_locked,
+            wallet_stake_locked,
+            validator["stake_owner_address"],
+            slashed_amount,
+            validator["is_banned"],
+            validator["enabled"],
+            validator["protocol_version"],
+        ),
+    )
+
+
+def _restore_snapshot_balance_ledger_entries(
+    connection: Any,
+    item: dict[str, Any],
+    validators_by_id: dict[str, dict[str, Any]],
+    block_height: int,
+    snapshot_hash: str,
+    timestamp: str,
+) -> None:
+    account_id = item["account_id"]
+    account_type = item["account_type"]
+    balance_units = int(item["balance_units"])
+    balance = units_to_float(balance_units)
+    if account_type != "validator":
+        _insert_snapshot_balance_ledger_entry(
+            connection,
+            account_id,
+            account_type,
+            balance_units,
+            balance_units,
+            "snapshot_state_import",
+            block_height,
+            snapshot_hash,
+            "canonical snapshot state import",
+            timestamp,
+        )
+        return
+
+    validator = validators_by_id.get(account_id)
+    wallet_stake_units = min(
+        balance_units,
+        int(validator.get("wallet_stake_locked_units") or 0) if validator else 0,
+    )
+    remaining_units = balance_units - wallet_stake_units
+    running_balance_units = 0
+    if wallet_stake_units:
+        running_balance_units += wallet_stake_units
+        _insert_snapshot_balance_ledger_entry(
+            connection,
+            account_id,
+            account_type,
+            wallet_stake_units,
+            running_balance_units,
+            "validator_stake_lock",
+            block_height,
+            snapshot_hash,
+            "canonical snapshot validator wallet stake import",
+            timestamp,
+        )
+    if remaining_units:
+        running_balance_units += remaining_units
+        _insert_snapshot_balance_ledger_entry(
+            connection,
+            account_id,
+            account_type,
+            remaining_units,
+            running_balance_units,
+            "snapshot_state_import",
+            block_height,
+            snapshot_hash,
+            "canonical snapshot validator state import",
+            timestamp,
+        )
+
+
+def _insert_snapshot_balance_ledger_entry(
+    connection: Any,
+    account_id: str,
+    account_type: str,
+    amount_units: int,
+    balance_after_units: int,
+    entry_type: str,
+    block_height: int,
+    snapshot_hash: str,
+    description: str,
+    timestamp: str,
+) -> None:
+    amount = units_to_float(amount_units)
+    balance_after = units_to_float(balance_after_units)
+    connection.execute(
+        """
+        INSERT INTO ledger_entries (
+            account_id, account_type, amount, amount_units, balance_after, balance_after_units, entry_type,
+            block_height, related_id, description, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            account_id,
+            account_type,
+            amount,
+            amount_units,
+            balance_after,
+            balance_after_units,
+            entry_type,
+            block_height,
+            snapshot_hash,
+            description,
+            timestamp,
+        ),
+    )
 
 
 def _infer_account_type(account_id: str) -> str:

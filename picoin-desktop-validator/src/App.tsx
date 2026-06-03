@@ -87,6 +87,7 @@ export default function App() {
   const [nodeAddress, setNodeAddress] = useState(savedSettings.nodeAddress);
   const [validationSleep, setValidationSleep] = useState(savedSettings.validationSleep);
   const [walletPath, setWalletPath] = useState(savedSettings.walletPath);
+  const [walletPassword, setWalletPassword] = useState("");
   const [stakeAmount, setStakeAmount] = useState(savedSettings.stakeAmount);
   const [stakeFee, setStakeFee] = useState(savedSettings.stakeFee);
   const [processStatus, setProcessStatus] = useState<ProcessStatus>({});
@@ -215,8 +216,9 @@ export default function App() {
     const ok = window.confirm(`Stake ${stakeAmount} PI to ${identity.validatorId}?`);
     if (!ok) return;
     const result = await runAction("Submitting validator stake transaction.", () =>
-      window.validatorApi.stake({ ...settings, walletPath, amount: stakeAmount, fee: stakeFee }),
+      window.validatorApi.stake({ ...settings, walletPath, walletPassword, amount: stakeAmount, fee: stakeFee }),
     );
+    setWalletPassword("");
     const txHash = result?.result?.tx_hash;
     if (txHash) addLog(`Stake tx: ${txHash}`);
   }
@@ -233,8 +235,9 @@ export default function App() {
     const ok = window.confirm(`Unstake ${stakeAmount} PI from ${identity.validatorId}?`);
     if (!ok) return;
     const result = await runAction("Submitting validator unstake transaction.", () =>
-      window.validatorApi.unstake({ ...settings, walletPath, amount: stakeAmount, fee: stakeFee }),
+      window.validatorApi.unstake({ ...settings, walletPath, walletPassword, amount: stakeAmount, fee: stakeFee }),
     );
+    setWalletPassword("");
     const txHash = result?.result?.tx_hash;
     if (txHash) addLog(`Unstake tx: ${txHash}`);
   }
@@ -385,6 +388,16 @@ export default function App() {
                   <input value={walletPath} onChange={(event) => setWalletPath(event.target.value)} placeholder="Select wallet JSON" />
                   <button className="secondary-button" onClick={() => void chooseWallet()}>Browse</button>
                 </div>
+              </label>
+
+              <label className="form-row">
+                <span>Wallet password</span>
+                <input
+                  type="password"
+                  value={walletPassword}
+                  onChange={(event) => setWalletPassword(event.target.value)}
+                  placeholder="Required for encrypted Picoin Wallet keystore"
+                />
               </label>
 
               <div className="split-form">

@@ -1047,6 +1047,85 @@ def test_apply_snapshot_state_bootstraps_balances_for_fast_sync(tmp_path, monkey
     assert audit["supply"]["economic_base_total"] == pytest.approx(snapshot["checkpoint"]["total_balance"])
 
 
+def test_apply_snapshot_state_restores_validator_registry_for_replay(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "snapshot-validator-source.sqlite3")
+
+    miner_key = generate_keypair()
+    validator_key = generate_keypair()
+    miner = register_miner("snapshot-validator-miner", miner_key["public_key"])
+    reward_wallet = create_wallet("snapshot-validator-reward")
+    stake_owner = create_wallet("snapshot-validator-owner")
+    validator = register_validator("snapshot-validator", validator_key["public_key"], reward_wallet["address"])
+    _fund_wallet_from_genesis(stake_owner["address"], 40.0)
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE validators
+            SET stake_locked = 0,
+                wallet_stake_locked = 0,
+                stake_owner_address = NULL
+            WHERE validator_id = ?
+            """,
+            (validator["validator_id"],),
+        )
+    stake_tx = sign_transaction(
+        private_key=stake_owner["private_key"],
+        public_key=stake_owner["public_key"],
+        tx_type="stake",
+        sender=stake_owner["address"],
+        amount=31.416,
+        nonce=1,
+        fee=0.01,
+        payload={"stake_type": "validator", "validator_id": validator["validator_id"]},
+    )
+    submit_transaction(stake_tx)
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE validators
+            SET accepted_jobs = 7,
+                total_validation_ms = 1234
+            WHERE validator_id = ?
+            """,
+            (validator["validator_id"],),
+        )
+
+    snapshot = export_canonical_snapshot(height=1)
+    validation = validate_snapshot_document(snapshot)
+
+    assert snapshot["valid"] is True
+    assert validation["valid"] is True
+    assert snapshot["checkpoint"]["validators_count"] >= 1
+    assert any(item["validator_id"] == validator["validator_id"] for item in snapshot["validators"])
+
+    _init_network_db(tmp_path, monkeypatch, "snapshot-validator-target.sqlite3")
+    imported = import_canonical_snapshot(snapshot, source="peer-validator-state")
+    applied = apply_imported_snapshot_state(imported["snapshot"]["snapshot_hash"])
+
+    with get_connection() as connection:
+        restored = connection.execute(
+            """
+            SELECT validator_id, public_key, reward_address, stake_locked, wallet_stake_locked,
+                   stake_owner_address, accepted_jobs, total_validation_ms
+            FROM validators
+            WHERE validator_id = ?
+            """,
+            (validator["validator_id"],),
+        ).fetchone()
+
+    assert applied["validators_applied"] == snapshot["checkpoint"]["validators_count"]
+    assert get_full_economic_audit()["valid"] is True
+    assert restored is not None
+    assert restored["public_key"] == validator_key["public_key"]
+    assert restored["reward_address"] == reward_wallet["address"]
+    assert restored["stake_locked"] == pytest.approx(31.416)
+    assert restored["wallet_stake_locked"] == pytest.approx(31.416)
+    assert restored["stake_owner_address"] == stake_owner["address"]
+    assert restored["accepted_jobs"] == 7
+    assert restored["total_validation_ms"] == 1234
+
+
 def test_restore_snapshot_state_replaces_existing_local_chain(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "snapshot-restore-source.sqlite3")
     source_key = generate_keypair()

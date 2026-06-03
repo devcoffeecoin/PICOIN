@@ -155,6 +155,7 @@ PARTICIPANT_LIVENESS_INTERVAL_SECONDS = int(os.getenv("PICOIN_LIVENESS_INTERVAL_
 PARTICIPANT_LIVENESS_MIN_INTERVAL_SECONDS = int(
     os.getenv("PICOIN_LIVENESS_MIN_INTERVAL_SECONDS", str(max(5, PARTICIPANT_LIVENESS_INTERVAL_SECONDS)))
 )
+MINER_TASK_HEARTBEAT_MIN_INTERVAL_SECONDS = int(os.getenv("PICOIN_MINER_TASK_HEARTBEAT_MIN_INTERVAL_SECONDS", "60"))
 _PARTICIPANT_LIVENESS_TASK: asyncio.Task | None = None
 _PARTICIPANT_LIVENESS_LOCK = threading.Lock()
 _PARTICIPANT_LIVENESS_LAST_RUN_MONOTONIC = 0.0
@@ -866,7 +867,8 @@ def get_validation_jobs_health(stale_after_seconds: int = VALIDATION_JOB_ASSIGNM
             ORDER BY validation_jobs.created_at ASC
             """
         ).fetchall()
-        eligible = len(_eligible_validator_rows(connection))
+        eligible_rows = _eligible_validator_rows(connection)
+        eligible = len(eligible_rows)
         active_required = _effective_required_validator_approvals(connection)
 
         jobs: list[dict[str, Any]] = []
@@ -886,6 +888,25 @@ def get_validation_jobs_health(stale_after_seconds: int = VALIDATION_JOB_ASSIGNM
             approvals = vote_counts["approvals"]
             rejections = vote_counts["rejections"]
             total_votes = approvals + rejections
+            voted_validator_ids = {
+                str(vote_row["validator_id"])
+                for vote_row in connection.execute(
+                    "SELECT validator_id FROM validation_votes WHERE job_id = ?",
+                    (job["job_id"],),
+                ).fetchall()
+            }
+            missing_eligible_validators = [
+                {
+                    "validator_id": str(validator["validator_id"]),
+                    "node_id": validator.get("node_id"),
+                    "online_status": validator.get("online_status"),
+                    "sync_status": validator.get("sync_status"),
+                    "effective_height": int(validator.get("effective_height") or 0),
+                    "sync_lag": int(validator.get("sync_lag") or 0),
+                }
+                for validator in eligible_rows
+                if str(validator["validator_id"]) not in voted_validator_ids
+            ]
             job_age_seconds = age_seconds(job.get("job_created_at") or job.get("created_at"))
             assigned_age_seconds = age_seconds(job.get("assigned_at"))
             quorum_reached = approvals >= required or rejections >= required
@@ -924,6 +945,11 @@ def get_validation_jobs_health(stale_after_seconds: int = VALIDATION_JOB_ASSIGNM
                     "total_votes": total_votes,
                     "required_approvals": required,
                     "missing_approvals": max(0, required - approvals),
+                    "voted_validator_ids": sorted(voted_validator_ids),
+                    "missing_eligible_validator_ids": [
+                        validator["validator_id"] for validator in missing_eligible_validators
+                    ],
+                    "missing_eligible_validators": missing_eligible_validators,
                     "health": health,
                     "first_vote_at": job.get("first_vote_at"),
                     "second_vote_at": job.get("second_vote_at"),
@@ -1426,14 +1452,7 @@ def create_next_task(
             raise MiningError(403, "miner is banned")
         if not bool(miner.get("enabled", 1)):
             raise MiningError(403, "miner is disabled")
-        connection.execute(
-            """
-            UPDATE miners
-            SET last_seen_at = ?, last_heartbeat_at = ?, online_status = 'online'
-            WHERE miner_id = ?
-            """,
-            (utc_now(), utc_now(), miner_id),
-        )
+        _maybe_update_miner_task_poll(connection, miner)
 
         cooldown_until = parse_iso(miner["cooldown_until"])
         if cooldown_until is not None and cooldown_until > utc_now_dt():
@@ -1602,8 +1621,32 @@ def _update_miner_reward_address(connection: Any, miner_id: str, reward_address:
     reward_address = _normalize_reward_address(reward_address)
     if not reward_address:
         return
+    current = connection.execute("SELECT reward_address FROM miners WHERE miner_id = ?", (miner_id,)).fetchone()
+    if current is not None and str(current["reward_address"] or "") == reward_address:
+        return
     connection.execute("UPDATE miners SET reward_address = ? WHERE miner_id = ?", (reward_address, miner_id))
     _ensure_balance_account(connection, reward_address, "wallet")
+
+
+def _maybe_update_miner_task_poll(connection: Any, miner: dict[str, Any]) -> None:
+    now_dt = utc_now_dt()
+    last_seen = parse_iso(miner.get("last_heartbeat_at") or miner.get("last_seen_at"))
+    online_status = str(miner.get("online_status") or "")
+    if (
+        last_seen is not None
+        and (now_dt - last_seen).total_seconds() < MINER_TASK_HEARTBEAT_MIN_INTERVAL_SECONDS
+        and online_status == "online"
+    ):
+        return
+    timestamp = now_dt.isoformat()
+    connection.execute(
+        """
+        UPDATE miners
+        SET last_seen_at = ?, last_heartbeat_at = ?, online_status = 'online'
+        WHERE miner_id = ?
+        """,
+        (timestamp, timestamp, miner["miner_id"]),
+    )
 
 
 def _restore_validator_identity(
@@ -6663,6 +6706,19 @@ def _accept_block_in_connection(
     params: dict[str, Any] | None = None,
     validation_job_id: str | None = None,
 ) -> dict[str, Any]:
+    existing = row_to_dict(
+        connection.execute("SELECT * FROM blocks WHERE task_id = ?", (task["task_id"],)).fetchone()
+    )
+    if existing is not None:
+        block = _decode_block(existing)
+        block["already_finalized"] = True
+        logger.info(
+            "validation finalization skipped existing block task_id=%s block_height=%s",
+            task["task_id"],
+            block.get("height"),
+        )
+        return block
+
     if params is None:
         params = _protocol_params_for_task(connection, task)
     _ensure_competitive_task_can_finalize(connection, task, params)

@@ -1,6 +1,8 @@
 import { app, dialog } from "electron";
 import { ChildProcessWithoutNullStreams, spawn } from "child_process";
+import crypto from "crypto";
 import fs from "fs";
+import os from "os";
 import path from "path";
 
 const DEFAULT_NETWORK_ID = "picoin-mainnet-v1";
@@ -11,6 +13,7 @@ const MAINNET_TREASURY_WALLET = "PIE1EE818AA165EECC3F0CCF058F4FF7BC04517F8CD0738
 const MAINNET_GOVERNANCE_WALLET = "PI251078EE911B17EDC747DB5BDF505649ECAF60F787AA23";
 const MIN_VALIDATOR_STAKE = "31.416";
 const MAX_LOG_LINES = 20;
+const NODE_HTTP_TIMEOUT_SECONDS = "60";
 
 type NodeStatus = "stopped" | "starting" | "running" | "error";
 type ValidatorStatus = "stopped" | "starting" | "validating" | "error";
@@ -29,6 +32,7 @@ type ValidatorConfig = {
 
 type StakeConfig = ValidatorConfig & {
   walletPath: string;
+  walletPassword?: string;
   amount: string;
   fee: string;
 };
@@ -39,7 +43,9 @@ let nodeStatus: NodeStatus = "stopped";
 let validatorStatus: ValidatorStatus = "stopped";
 let currentTask = "Idle";
 let lastLogs: string[] = [];
-let stoppedByUser = false;
+let nodeStopRequested = false;
+let validatorStopRequested = false;
+let autoRecoveryInProgress = false;
 
 function addLog(line: string) {
   const clean = line.trim();
@@ -126,6 +132,7 @@ function buildEnv(config: ValidatorConfig): NodeJS.ProcessEnv {
     PICOIN_VALIDATOR_NODE_ADDRESS: nodeAddress,
     PICOIN_VALIDATOR_REWARD_ADDRESS: config.rewardWallet,
     PICOIN_AUTO_REGISTER_IDENTITY: "1",
+    PICOIN_HTTP_TIMEOUT_SECONDS: NODE_HTTP_TIMEOUT_SECONDS,
     PYTHONUNBUFFERED: "1",
   };
 }
@@ -152,6 +159,80 @@ async function waitForRpc(url: string, timeoutMs = 45000) {
     await new Promise((resolve) => setTimeout(resolve, 750));
   }
   throw new Error(`Local node RPC did not become available at ${url}`);
+}
+
+async function fetchLocalNodeJson(config: ValidatorConfig, pathName: string, timeoutMs = 15000): Promise<any | null> {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(`${getLocalNodeUrl(config)}${pathName}`, { signal: controller.signal });
+    if (!response.ok) return null;
+    return await response.json();
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+function nodeNeedsSnapshotRestore(syncStatus: any): boolean {
+  const replay = syncStatus?.replay || {};
+  const replayStatus = String(replay.sync_status || syncStatus?.sync_status || "").toLowerCase();
+  return Boolean(replay.divergence_detected) || replayStatus.includes("divergent") || replayStatus.includes("out_of_sync");
+}
+
+function nodeNeedsCatchUp(syncStatus: any): boolean {
+  const replay = syncStatus?.replay || {};
+  const localHeight = Number(syncStatus?.local_block_height ?? syncStatus?.latest_block_height ?? 0);
+  const effectiveHeight = Number(
+    syncStatus?.effective_latest_block_height ?? syncStatus?.target_height ?? syncStatus?.latest_block_height ?? localHeight,
+  );
+  const pendingReplay = Number(syncStatus?.pending_replay_blocks ?? replay.queue_size ?? 0);
+  return localHeight <= 0 || pendingReplay > 0 || effectiveHeight - localHeight > 1;
+}
+
+async function ensureNodeReadyForValidation(config: ValidatorConfig) {
+  addLog("Checking local node sync before validation.");
+  let syncStatus = await fetchLocalNodeJson(config, "/node/sync-status");
+  if (!syncStatus) {
+    addLog("Local sync status unavailable; continuing after RPC startup.");
+    return;
+  }
+
+  if (nodeNeedsSnapshotRestore(syncStatus) || Number(syncStatus.local_block_height ?? syncStatus.latest_block_height ?? 0) <= 0) {
+    addLog("Local node requires canonical snapshot restore before validation.");
+    await restoreSnapshot(config);
+    syncStatus = await fetchLocalNodeJson(config, "/node/sync-status");
+  }
+
+  if (syncStatus && nodeNeedsCatchUp(syncStatus)) {
+    addLog("Catching up local node before validation.");
+    await catchUpNode(config);
+    syncStatus = await fetchLocalNodeJson(config, "/node/sync-status");
+  }
+
+  if (syncStatus && nodeNeedsSnapshotRestore(syncStatus)) {
+    throw new Error("Local node replay is divergent after snapshot restore. Stop the validator and run Fast Sync again.");
+  }
+}
+
+async function autoRecoverValidator(config: ValidatorConfig, reason: string) {
+  if (autoRecoveryInProgress || validatorStopRequested) return;
+  autoRecoveryInProgress = true;
+  validatorStatus = "starting";
+  currentTask = "Recovering validator sync.";
+  addLog(`Validator auto-recovery started: ${reason}`);
+  try {
+    await ensureNodeReadyForValidation(config);
+    await seedLocalValidatorIdentity(config);
+    autoRecoveryInProgress = false;
+    await startValidator(config);
+  } catch (error) {
+    validatorStatus = "error";
+    currentTask = "Validator recovery failed.";
+    addLog(`Validator auto-recovery failed: ${errorMessage(error)}`);
+    autoRecoveryInProgress = false;
+  }
 }
 
 function spawnPython(
@@ -246,6 +327,7 @@ export async function startNode(config: ValidatorConfig) {
   const env = buildEnv(config);
   const localNodeUrl = getLocalNodeUrl(config);
 
+  nodeStopRequested = false;
   nodeStatus = "starting";
   currentTask = "Starting local node...";
   addLog(`Starting local Picoin node on ${localNodeUrl}`);
@@ -259,7 +341,9 @@ export async function startNode(config: ValidatorConfig) {
     (code) => {
       addLog(`Node process exited with code ${code}`);
       nodeProcess = null;
-      nodeStatus = stoppedByUser ? "stopped" : code === 0 ? "stopped" : "error";
+      const requestedStop = nodeStopRequested;
+      nodeStopRequested = false;
+      nodeStatus = requestedStop ? "stopped" : code === 0 ? "stopped" : "error";
     },
   );
 
@@ -274,12 +358,11 @@ export function stopNode() {
     nodeStatus = "stopped";
     return { ok: true, message: "Node already stopped" };
   }
-  stoppedByUser = true;
+  nodeStopRequested = true;
   nodeProcess.kill();
   nodeProcess = null;
   nodeStatus = "stopped";
   addLog("Node stopped by user");
-  stoppedByUser = false;
   return { ok: true, message: "Node stopped" };
 }
 
@@ -325,11 +408,14 @@ export async function startValidator(config: ValidatorConfig) {
     await registerValidator(config);
   }
   await seedLocalValidatorIdentity(config);
+  await ensureNodeReadyForValidation(config);
+  await seedLocalValidatorIdentity(config);
 
   const env = buildEnv(config);
   const localNodeUrl = getLocalNodeUrl(config);
   const sleep = normalizeSleep(config.validationSleep);
 
+  validatorStopRequested = false;
   validatorStatus = "starting";
   currentTask = "Starting validator loop...";
   addLog(`Starting validator against ${normalizeApiUrl(config.apiUrl)}`);
@@ -355,13 +441,18 @@ export async function startValidator(config: ValidatorConfig) {
       "--node-server",
       localNodeUrl,
       "--node-timeout",
-      "20",
+      NODE_HTTP_TIMEOUT_SECONDS,
     ],
     env,
     (code) => {
       addLog(`Validator process exited with code ${code}`);
       validatorProcess = null;
-      validatorStatus = stoppedByUser ? "stopped" : code === 0 ? "stopped" : "error";
+      const requestedStop = validatorStopRequested;
+      validatorStopRequested = false;
+      validatorStatus = requestedStop ? "stopped" : code === 0 ? "stopped" : "error";
+      if (!requestedStop && code !== 0) {
+        void autoRecoverValidator(config, `process exited with code ${code}`);
+      }
     },
   );
 
@@ -375,13 +466,12 @@ export function stopValidator() {
     validatorStatus = "stopped";
     return { ok: true, message: "Validator already stopped" };
   }
-  stoppedByUser = true;
+  validatorStopRequested = true;
   validatorProcess.kill();
   validatorProcess = null;
   validatorStatus = "stopped";
   currentTask = "Validator stopped.";
   addLog("Validator stopped by user");
-  stoppedByUser = false;
   return { ok: true, message: "Validator stopped" };
 }
 
@@ -451,30 +541,32 @@ export async function stakeValidator(config: StakeConfig) {
   }
   await seedLocalValidatorIdentity(config);
   const env = buildEnv(config);
-  const output = await runPythonOnce(
-    config.pythonCmd || "python",
-    [
-      "-u",
-      "-m",
-      "picoin",
-      "tx",
-      "--server",
-      normalizeApiUrl(config.apiUrl),
-      "send",
-      "--wallet",
-      config.walletPath,
-      "--type",
-      "stake",
-      "--stake-type",
-      "validator",
-      "--validator-id",
-      identity.validatorId,
-      "--amount",
-      configValue(config.amount, MIN_VALIDATOR_STAKE),
-      "--fee",
-      configValue(config.fee, "0.001"),
-    ],
-    env,
+  const output = await withCliWallet(config, (walletPath) =>
+    runPythonOnce(
+      config.pythonCmd || "python",
+      [
+        "-u",
+        "-m",
+        "picoin",
+        "tx",
+        "--server",
+        normalizeApiUrl(config.apiUrl),
+        "send",
+        "--wallet",
+        walletPath,
+        "--type",
+        "stake",
+        "--stake-type",
+        "validator",
+        "--validator-id",
+        identity.validatorId,
+        "--amount",
+        configValue(config.amount, MIN_VALIDATOR_STAKE),
+        "--fee",
+        configValue(config.fee, "0.001"),
+      ],
+      env,
+    ),
   );
   return { ok: true, message: "Stake transaction submitted", result: parseJsonOutput(output) };
 }
@@ -490,32 +582,140 @@ export async function unstakeValidator(config: StakeConfig) {
   }
   await seedLocalValidatorIdentity(config);
   const env = buildEnv(config);
-  const output = await runPythonOnce(
-    config.pythonCmd || "python",
-    [
-      "-u",
-      "-m",
-      "picoin",
-      "tx",
-      "--server",
-      normalizeApiUrl(config.apiUrl),
-      "send",
-      "--wallet",
-      config.walletPath,
-      "--type",
-      "unstake",
-      "--stake-type",
-      "validator",
-      "--validator-id",
-      identity.validatorId,
-      "--amount",
-      configValue(config.amount, MIN_VALIDATOR_STAKE),
-      "--fee",
-      configValue(config.fee, "0.001"),
-    ],
-    env,
+  const output = await withCliWallet(config, (walletPath) =>
+    runPythonOnce(
+      config.pythonCmd || "python",
+      [
+        "-u",
+        "-m",
+        "picoin",
+        "tx",
+        "--server",
+        normalizeApiUrl(config.apiUrl),
+        "send",
+        "--wallet",
+        walletPath,
+        "--type",
+        "unstake",
+        "--stake-type",
+        "validator",
+        "--validator-id",
+        identity.validatorId,
+        "--amount",
+        configValue(config.amount, MIN_VALIDATOR_STAKE),
+        "--fee",
+        configValue(config.fee, "0.001"),
+      ],
+      env,
+    ),
   );
   return { ok: true, message: "Unstake transaction submitted", result: parseJsonOutput(output) };
+}
+
+async function withCliWallet(config: StakeConfig, action: (walletPath: string) => Promise<string>): Promise<string> {
+  const wallet = readWalletJson(config.walletPath);
+  const legacyWallet = normalizeLegacyWallet(wallet);
+  if (legacyWallet) {
+    if (legacyWallet === wallet) return action(config.walletPath);
+    return withTemporaryWalletFile(legacyWallet, action);
+  }
+
+  const encryptedWallet = decryptPicoinKeystore(wallet, config.walletPassword || "");
+  return withTemporaryWalletFile(encryptedWallet, action);
+}
+
+function readWalletJson(walletPath: string): Record<string, any> {
+  try {
+    const parsed = JSON.parse(fs.readFileSync(walletPath, "utf-8"));
+    if (!parsed || typeof parsed !== "object") {
+      throw new Error("wallet JSON must be an object");
+    }
+    return parsed as Record<string, any>;
+  } catch (error) {
+    throw new Error(`Unable to read wallet JSON: ${errorMessage(error)}`);
+  }
+}
+
+function normalizeLegacyWallet(wallet: Record<string, any>): Record<string, any> | null {
+  const privateKey = wallet.private_key || wallet.privateKey;
+  const publicKey = wallet.public_key || wallet.publicKey;
+  const address = wallet.address;
+  if (!privateKey || !publicKey || !address) return null;
+  if (wallet.private_key && wallet.public_key) return wallet;
+  return {
+    ...wallet,
+    address,
+    private_key: privateKey,
+    public_key: publicKey,
+  };
+}
+
+function decryptPicoinKeystore(wallet: Record<string, any>, password: string): Record<string, any> {
+  if (!looksLikePicoinKeystore(wallet)) {
+    throw new Error(
+      "Selected wallet is not a CLI wallet and not an encrypted Picoin Wallet keystore. Select a wallet with private_key or an exported Picoin keystore.",
+    );
+  }
+  if (!password) {
+    throw new Error("Wallet password is required for encrypted Picoin Wallet keystores.");
+  }
+  try {
+    const key = crypto.pbkdf2Sync(
+      password,
+      Buffer.from(String(wallet.salt), "base64url"),
+      Number(wallet.iterations),
+      32,
+      "sha256",
+    );
+    const decipher = crypto.createDecipheriv("aes-256-gcm", key, Buffer.from(String(wallet.iv), "base64url"));
+    decipher.setAuthTag(Buffer.from(String(wallet.tag), "base64url"));
+    const plaintext = Buffer.concat([
+      decipher.update(Buffer.from(String(wallet.ciphertext), "base64url")),
+      decipher.final(),
+    ]).toString("utf-8");
+    const secrets = JSON.parse(plaintext);
+    if (!secrets.privateKey) {
+      throw new Error("keystore does not contain a private key");
+    }
+    return {
+      address: wallet.address,
+      public_key: wallet.publicKey,
+      private_key: secrets.privateKey,
+      network_id: wallet.network,
+      chain_id: wallet.chainId,
+    };
+  } catch (error) {
+    throw new Error(`Unable to unlock wallet keystore: ${errorMessage(error)}`);
+  }
+}
+
+function looksLikePicoinKeystore(wallet: Record<string, any>): boolean {
+  return (
+    wallet.version === 1 &&
+    wallet.cipher === "aes-256-gcm" &&
+    wallet.kdf === "pbkdf2-sha256" &&
+    Boolean(wallet.salt) &&
+    Boolean(wallet.iv) &&
+    Boolean(wallet.tag) &&
+    Boolean(wallet.ciphertext) &&
+    Boolean(wallet.address) &&
+    Boolean(wallet.publicKey)
+  );
+}
+
+async function withTemporaryWalletFile(wallet: Record<string, any>, action: (walletPath: string) => Promise<string>): Promise<string> {
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "picoin-validator-wallet-"));
+  const walletPath = path.join(tempDir, "wallet.json");
+  try {
+    fs.writeFileSync(walletPath, JSON.stringify(wallet, null, 2), { encoding: "utf-8", mode: 0o600 });
+    return await action(walletPath);
+  } finally {
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    } catch {
+      // Best-effort cleanup only.
+    }
+  }
 }
 
 export async function updateValidatorRewardWallet(config: ValidatorConfig) {
@@ -553,10 +753,10 @@ export async function updateValidatorRewardWallet(config: ValidatorConfig) {
           "--node-server",
           getLocalNodeUrl(config),
           "--node-timeout",
-          "20",
+          NODE_HTTP_TIMEOUT_SECONDS,
         ],
         buildEnv(config),
-        45000,
+        90000,
       );
       syncMessage = "Saved locally and sync attempt completed.";
     } catch (error) {
@@ -594,10 +794,10 @@ async function seedLocalValidatorIdentity(config: ValidatorConfig) {
         "--node-server",
         getLocalNodeUrl(config),
         "--node-timeout",
-        "20",
+        NODE_HTTP_TIMEOUT_SECONDS,
       ],
       buildEnv(config),
-      45000,
+      90000,
     );
   } catch (error) {
     addLog(`Local validator identity seed skipped: ${errorMessage(error)}`);

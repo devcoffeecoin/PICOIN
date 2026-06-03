@@ -1,5 +1,6 @@
 import json
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -42,8 +43,73 @@ from app.core.money import to_units
 from app.services.genesis import load_genesis_allocations, validate_mainnet_genesis_allocations
 
 
+_DB_WRITE_LOCK = threading.RLock()
+_WRITE_SQL_PREFIXES = (
+    "alter",
+    "begin exclusive",
+    "begin immediate",
+    "create",
+    "delete",
+    "drop",
+    "insert",
+    "replace",
+    "update",
+    "vacuum",
+)
+
+
+def _needs_write_lock(sql: str) -> bool:
+    normalized = sql.lstrip().lower()
+    return normalized.startswith(_WRITE_SQL_PREFIXES)
+
+
 class PicoinConnection(sqlite3.Connection):
-    """SQLite connection that closes when used as a context manager."""
+    """SQLite connection that closes cleanly and serializes write transactions."""
+
+    def _write_lock_held(self) -> bool:
+        return bool(getattr(self, "_picoin_write_lock_acquired", False))
+
+    def _acquire_write_lock_if_needed(self, sql: str) -> None:
+        if self._write_lock_held() or not _needs_write_lock(sql):
+            return
+        _DB_WRITE_LOCK.acquire()
+        self._picoin_write_lock_acquired = True
+
+    def _release_write_lock_if_held(self) -> None:
+        if not self._write_lock_held():
+            return
+        self._picoin_write_lock_acquired = False
+        _DB_WRITE_LOCK.release()
+
+    def execute(self, sql: str, parameters: Any = (), /) -> sqlite3.Cursor:
+        self._acquire_write_lock_if_needed(sql)
+        return super().execute(sql, parameters)
+
+    def executemany(self, sql: str, parameters: Any, /) -> sqlite3.Cursor:
+        self._acquire_write_lock_if_needed(sql)
+        return super().executemany(sql, parameters)
+
+    def executescript(self, sql_script: str, /) -> sqlite3.Cursor:
+        self._acquire_write_lock_if_needed(sql_script)
+        return super().executescript(sql_script)
+
+    def commit(self) -> None:
+        try:
+            super().commit()
+        finally:
+            self._release_write_lock_if_held()
+
+    def rollback(self) -> None:
+        try:
+            super().rollback()
+        finally:
+            self._release_write_lock_if_held()
+
+    def close(self) -> None:
+        try:
+            super().close()
+        finally:
+            self._release_write_lock_if_held()
 
     def __exit__(self, exc_type: Any, exc: Any, tb: Any) -> bool | None:
         try:
