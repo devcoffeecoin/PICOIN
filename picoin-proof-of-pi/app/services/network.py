@@ -47,7 +47,12 @@ from app.services.state import (
     latest_checkpoint_in_connection,
     restore_imported_snapshot_state,
 )
-from app.services.wallet import address_matches_public_key, is_valid_address, transaction_hash, unsigned_transaction_payload
+from app.services.wallet import (
+    address_matches_public_key,
+    is_valid_address,
+    matching_transaction_signature_payload,
+    unsigned_transaction_payload,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -502,19 +507,33 @@ def get_blocks_since(from_height: int, limit: int = 100) -> dict[str, Any]:
             block["fraudulent"] = bool(block.get("fraudulent"))
             validator_rows = connection.execute(
                 """
-                SELECT account_id, amount
+                SELECT account_id, account_type, amount, related_id
                 FROM ledger_entries
                 WHERE block_height = ? AND entry_type = 'validator_reward'
                 ORDER BY id ASC
                 """,
                 (block["height"],),
             ).fetchall()
-            validator_ids = [item["account_id"] for item in validator_rows]
+            validator_rows = [row_to_dict(item) for item in validator_rows]
+            related_id = next((str(item.get("related_id") or "") for item in validator_rows if item.get("related_id")), "")
+            reward_validator_ids = _validator_reward_ids_for_related_id(connection, related_id, len(validator_rows))
+            validator_ids = []
+            reward_addresses: dict[str, str] = {}
+            for index, item in enumerate(validator_rows):
+                validator_id = (
+                    reward_validator_ids[index]
+                    if index < len(reward_validator_ids)
+                    else str(item["account_id"])
+                )
+                validator_ids.append(validator_id)
+                if str(item.get("account_type") or "") == "wallet" or is_valid_address(str(item["account_id"])):
+                    reward_addresses[validator_id] = str(item["account_id"])
             validator_pool = round(sum(float(item["amount"]) for item in validator_rows), 8)
             block["validator_reward"] = {
                 "pool": validator_pool,
                 "per_validator": round(validator_pool / len(validator_ids), 8) if validator_ids else 0.0,
                 "validator_ids": validator_ids,
+                "reward_addresses": reward_addresses,
             }
             tx_rows = connection.execute(
                 """
@@ -528,6 +547,35 @@ def get_blocks_since(from_height: int, limit: int = 100) -> dict[str, Any]:
             block["transactions"] = [_decode_tx(row_to_dict(tx_row)) for tx_row in tx_rows]
             blocks.append(block)
     return {"from_height": from_height, "count": len(blocks), "blocks": blocks}
+
+
+def _validator_reward_ids_for_related_id(connection: Any, related_id: str, limit: int) -> list[str]:
+    if not related_id or limit <= 0:
+        return []
+    rows = connection.execute(
+        """
+        SELECT validator_id
+        FROM validation_votes
+        WHERE job_id = ? AND approved = 1
+        ORDER BY created_at ASC, id ASC
+        LIMIT ?
+        """,
+        (related_id, limit),
+    ).fetchall()
+    validator_ids = [str(row["validator_id"]) for row in rows]
+    if validator_ids:
+        return validator_ids
+    rows = connection.execute(
+        """
+        SELECT validator_id
+        FROM consensus_votes
+        WHERE proposal_id = ? AND approved = 1
+        ORDER BY created_at ASC, id ASC
+        LIMIT ?
+        """,
+        (related_id, limit),
+    ).fetchall()
+    return [str(row["validator_id"]) for row in rows]
 
 
 def receive_block_header(block: dict[str, Any], source_peer_id: str | None = None) -> dict[str, Any]:
@@ -1110,10 +1158,11 @@ def _validate_signed_transaction(tx: dict[str, Any]) -> None:
         raise NetworkError(409, f"transaction network or chain mismatch (tx: {tx['network_id']}/{tx['chain_id']}, node: {NETWORK_ID}/{CHAIN_ID})")
     
     unsigned_payload = _unsigned_from_tx(tx)
-    if transaction_hash(unsigned_payload, tx["public_key"]) != tx["tx_hash"]:
+    signature_payload = matching_transaction_signature_payload(unsigned_payload, tx["public_key"], tx["tx_hash"])
+    if signature_payload is None:
         raise NetworkError(401, "transaction hash mismatch")
     
-    if not verify_payload_signature(tx["public_key"], unsigned_payload, tx["signature"]):
+    if not verify_payload_signature(tx["public_key"], signature_payload, tx["signature"]):
         raise NetworkError(401, "invalid transaction signature")
 
 

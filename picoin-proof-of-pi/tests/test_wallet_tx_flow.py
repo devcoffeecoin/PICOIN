@@ -12,7 +12,12 @@ from app.core.settings import NETWORK_ID, CHAIN_ID, MIN_TX_FEE_UNITS
 from app.core.signatures import generate_keypair
 from app.db.database import get_connection, init_db
 from app.services.network import register_peer
-from app.services.wallet import address_from_public_key, transaction_hash, unsigned_transaction_payload
+from app.services.wallet import (
+    address_from_public_key,
+    matching_transaction_signature_payload,
+    transaction_hash,
+    unsigned_transaction_payload,
+)
 from app.core.signatures import sign_payload, verify_payload_signature
 
 
@@ -418,3 +423,96 @@ def test_transaction_submit_marks_origin_tx_propagated_after_peer_accept(tmp_pat
     assert row is not None
     assert int(row["propagated"]) == 1
     assert row["status"] == "pending"
+
+
+def test_transaction_signature_payload_accepts_replayed_utc_z_timestamp() -> None:
+    unsigned_payload = unsigned_transaction_payload(
+        tx_type="stake",
+        sender="PIEB149E99DCD64653088B68F92D6790068428462919DD96",
+        recipient=None,
+        amount=canonical_amount(to_units("31.416")),
+        nonce=1,
+        fee=canonical_amount(to_units("0.001")),
+        payload={"stake_type": "validator", "validator_id": "validator_821444ca8baa47a5"},
+        timestamp="2026-06-01T18:30:19.283682Z",
+        network_id="picoin-mainnet-v1",
+        chain_id=314159,
+    )
+    public_key = "ed25519:RoafWOwI4BjqCUPM4L6rWaegjmwem1uw_leSkqQ2zuc"
+    signature = "brExnXn790OXjJQVWKkzJf_3V-zetT-CvmIPvk0KYB7BEylmJiOX_Iz0Nz4bZe1Wqz69CwBsDUX9z5ChBXu-BA"
+
+    signature_payload = matching_transaction_signature_payload(
+        unsigned_payload,
+        public_key,
+        "9d343e68ced1c72120dcd1d824dc5a74f5d9ffd18ea5b0a75e983dc3af76cabd",
+    )
+
+    assert signature_payload is not None
+    assert signature_payload["timestamp"] == "2026-06-01T18:30:19.283682+00:00"
+    assert verify_payload_signature(public_key, signature_payload, signature) is True
+
+
+def test_transaction_signature_payload_accepts_replayed_trimmed_fraction_timestamp() -> None:
+    unsigned_payload = unsigned_transaction_payload(
+        tx_type="transfer",
+        sender="PIBFF3E7EC720092297B7A9F4CCDB4A588D8814F860E78B8",
+        recipient="PI7504E598E4A6769E0B34C3A8A9BCC36D5CBAEC7019950D",
+        amount=canonical_amount(to_units("31.5")),
+        nonce=1,
+        fee=canonical_amount(to_units("0.001")),
+        payload={},
+        timestamp="2026-06-01T21:44:29.639000Z",
+        network_id="picoin-mainnet-v1",
+        chain_id=314159,
+    )
+    public_key = "ed25519:yqRfRJ8tdJfGQzFIlq7SfoC6A6ILLjnJRus_FaKSmkA"
+    signature = "186GxGNHiJDo0jhDF15H0ZmaZxTs42xn5oMqckGugIzUJlnCFzebWN5XW_1uFPr57gnmauElOICNUpPGjmhxAA"
+
+    signature_payload = matching_transaction_signature_payload(
+        unsigned_payload,
+        public_key,
+        "83f41f39b26b3dfc7faa541ad26f1af1c2afa6a65cc2414edd101c5723c0da1b",
+    )
+
+    assert signature_payload is not None
+    assert signature_payload["timestamp"] == "2026-06-01T21:44:29.639Z"
+    assert verify_payload_signature(public_key, signature_payload, signature) is True
+
+
+def test_transaction_signature_payload_accepts_legacy_numeric_money_payload() -> None:
+    keypair = generate_keypair()
+    sender = address_from_public_key(keypair["public_key"])
+    legacy_payload = {
+        "amount": 2.5,
+        "chain_id": str(CHAIN_ID),
+        "fee": 0.001,
+        "network_id": NETWORK_ID,
+        "nonce": 1,
+        "payload": {},
+        "sender": sender,
+        "timestamp": "2026-06-02T20:00:00+00:00",
+        "tx_type": "stake",
+    }
+    signature = sign_payload(keypair["private_key"], legacy_payload)
+    tx_hash = transaction_hash(legacy_payload, keypair["public_key"])
+    replay_payload = unsigned_transaction_payload(
+        tx_type="stake",
+        sender=sender,
+        recipient=None,
+        amount=canonical_amount(to_units("2.5")),
+        nonce=1,
+        fee=canonical_amount(to_units("0.001")),
+        payload={},
+        timestamp="2026-06-02T20:00:00Z",
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+    )
+
+    signature_payload = matching_transaction_signature_payload(
+        replay_payload,
+        keypair["public_key"],
+        tx_hash,
+    )
+
+    assert signature_payload == legacy_payload
+    assert verify_payload_signature(keypair["public_key"], signature_payload, signature) is True

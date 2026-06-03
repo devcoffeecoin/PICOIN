@@ -5,6 +5,7 @@ import pytest
 from app.core.crypto import hash_result
 from app.core.pi import calculate_pi_segment
 from app.core.signatures import build_submission_signature_payload, generate_keypair, sign_payload
+from app.db.database import _ensure_tasks_range_constraints
 from app.db.database import get_connection
 from app.db.database import init_db
 from app.services import mining as mining_service
@@ -57,6 +58,49 @@ def _submit_legacy_task(task: dict, miner_id: str, private_key: str) -> dict:
     )
     signature = sign_payload(private_key, payload)
     return submit_task(task["task_id"], miner_id, result_hash, segment, signature, signed_at)
+
+
+def test_tasks_range_constraint_migration_adds_competitive_columns_first(tmp_path) -> None:
+    db_path = tmp_path / "legacy-tasks-constraints.sqlite3"
+    connection = sqlite3.connect(db_path)
+    try:
+        connection.executescript(
+            """
+            CREATE TABLE tasks (
+                task_id TEXT PRIMARY KEY,
+                miner_id TEXT NOT NULL,
+                range_start INTEGER NOT NULL,
+                range_end INTEGER NOT NULL,
+                algorithm TEXT NOT NULL,
+                status TEXT NOT NULL,
+                assignment_seed TEXT,
+                assignment_mode TEXT,
+                assignment_ms INTEGER,
+                compute_ms INTEGER,
+                protocol_params_id INTEGER,
+                created_at TEXT NOT NULL,
+                expires_at TEXT,
+                submitted_at TEXT,
+                mempool_snapshot_id TEXT,
+                selected_tx_hashes TEXT NOT NULL DEFAULT '[]',
+                tx_merkle_root TEXT NOT NULL DEFAULT '',
+                tx_count INTEGER NOT NULL DEFAULT 0,
+                tx_fee_total_units INTEGER NOT NULL DEFAULT 0,
+                selected_tx_hashes_hash TEXT
+            );
+            """
+        )
+
+        _ensure_tasks_range_constraints(connection)
+
+        columns = {row[1] for row in connection.execute("PRAGMA table_info(tasks)").fetchall()}
+        indexes = {row[1] for row in connection.execute("PRAGMA index_list(tasks)").fetchall()}
+    finally:
+        connection.close()
+
+    assert "competitive_round_height" in columns
+    assert "competitive_round_previous_hash" in columns
+    assert "idx_tasks_competitive_height" in indexes
 
 
 def test_pseudo_random_assignment_returns_non_sequential_ranges(tmp_path, monkeypatch) -> None:

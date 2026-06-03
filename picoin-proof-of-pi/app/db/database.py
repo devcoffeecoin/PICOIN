@@ -814,6 +814,10 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "tasks", "assignment_ms", "INTEGER")
         _ensure_column(connection, "tasks", "compute_ms", "INTEGER")
         _ensure_column(connection, "tasks", "protocol_params_id", "INTEGER")
+        _ensure_column(connection, "tasks", "competitive_round_height", "INTEGER")
+        _ensure_column(connection, "tasks", "competitive_round_previous_hash", "TEXT")
+        _ensure_column(connection, "tasks", "stale_at", "TEXT")
+        _ensure_column(connection, "tasks", "stale_reason", "TEXT")
         _ensure_column(connection, "protocol_params", "difficulty", "REAL")
         _ensure_column(connection, "protocol_params", "target_block_time_ms", "INTEGER")
         _ensure_column(connection, "protocol_params", "retarget_reason", "TEXT")
@@ -884,10 +888,6 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "tasks", "tx_count", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "tasks", "tx_fee_total_units", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "tasks", "selected_tx_hashes_hash", "TEXT")
-        _ensure_column(connection, "tasks", "competitive_round_height", "INTEGER")
-        _ensure_column(connection, "tasks", "competitive_round_previous_hash", "TEXT")
-        _ensure_column(connection, "tasks", "stale_at", "TEXT")
-        _ensure_column(connection, "tasks", "stale_reason", "TEXT")
         _ensure_column(connection, "commitments", "tx_merkle_root", "TEXT NOT NULL DEFAULT ''")
         _ensure_column(connection, "commitments", "mempool_snapshot_id", "TEXT")
         _ensure_column(connection, "commitments", "selected_tx_hashes_hash", "TEXT")
@@ -1184,6 +1184,7 @@ def _tasks_have_global_range_unique(connection: sqlite3.Connection) -> bool:
 
 
 def _ensure_tasks_range_constraints(connection: sqlite3.Connection) -> None:
+    _ensure_task_competitive_round_columns(connection)
     if _tasks_have_global_range_unique(connection):
         _rebuild_tasks_without_global_range_unique(connection)
     connection.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
@@ -1208,6 +1209,11 @@ def _ensure_tasks_range_constraints(connection: sqlite3.Connection) -> None:
         WHERE status IN ('accepted')
         """
     )
+
+
+def _ensure_task_competitive_round_columns(connection: sqlite3.Connection) -> None:
+    _ensure_column(connection, "tasks", "competitive_round_height", "INTEGER")
+    _ensure_column(connection, "tasks", "competitive_round_previous_hash", "TEXT")
 
 
 def _rebuild_tasks_without_global_range_unique(connection: sqlite3.Connection) -> None:

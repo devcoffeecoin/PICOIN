@@ -2,6 +2,9 @@ import json
 import logging
 import os
 import random
+import sqlite3
+import threading
+import time
 import uuid
 import asyncio
 from datetime import datetime, timedelta, timezone
@@ -149,7 +152,12 @@ VALIDATOR_SYNC_LAG_BLOCKS = 3
 VALIDATOR_OUT_OF_SYNC_SECONDS = 60
 VALIDATION_JOB_ASSIGNMENT_TIMEOUT_SECONDS = 60
 PARTICIPANT_LIVENESS_INTERVAL_SECONDS = int(os.getenv("PICOIN_LIVENESS_INTERVAL_SECONDS", "30"))
+PARTICIPANT_LIVENESS_MIN_INTERVAL_SECONDS = int(
+    os.getenv("PICOIN_LIVENESS_MIN_INTERVAL_SECONDS", str(max(5, PARTICIPANT_LIVENESS_INTERVAL_SECONDS)))
+)
 _PARTICIPANT_LIVENESS_TASK: asyncio.Task | None = None
+_PARTICIPANT_LIVENESS_LOCK = threading.Lock()
+_PARTICIPANT_LIVENESS_LAST_RUN_MONOTONIC = 0.0
 
 
 class MiningError(Exception):
@@ -495,60 +503,77 @@ def _effective_required_validator_approvals(connection: Any, params: dict[str, A
     return max(1, min(configured, adaptive_required_validator_approvals(eligible_count)))
 
 
-def refresh_participant_liveness(now: datetime | None = None) -> dict[str, Any]:
+def refresh_participant_liveness(now: datetime | None = None, *, force: bool = False) -> dict[str, Any]:
+    global _PARTICIPANT_LIVENESS_LAST_RUN_MONOTONIC
+    monotonic_now = time.monotonic()
+    if not force and (
+        monotonic_now - _PARTICIPANT_LIVENESS_LAST_RUN_MONOTONIC
+    ) < PARTICIPANT_LIVENESS_MIN_INTERVAL_SECONDS:
+        return {"updated": {"validators": 0, "miners": 0}, "checked_at": utc_now(), "skipped": "throttled"}
+    if not _PARTICIPANT_LIVENESS_LOCK.acquire(blocking=False):
+        return {"updated": {"validators": 0, "miners": 0}, "checked_at": utc_now(), "skipped": "already_running"}
     now_dt = now or utc_now_dt()
     updates = {"validators": 0, "miners": 0}
-    with get_connection() as connection:
-        validator_rows = connection.execute("SELECT * FROM validators").fetchall()
-        for row in validator_rows:
-            validator = row_to_dict(row)
-            online_status = _status_from_heartbeat(validator.get("last_heartbeat_at"), now_dt)
-            if bool(validator.get("is_banned")) or not bool(validator.get("enabled", 1)):
-                online_status = "offline"
-            sync_status, out_of_sync_since = _sync_status_from_metrics(
-                sync_lag=int(validator.get("sync_lag") or 0),
-                pending_replay_blocks=int(validator.get("pending_replay_blocks") or 0),
-                out_of_sync_since=validator.get("out_of_sync_since"),
-                now=now_dt,
-            )
-            reason = None
-            if not bool(validator.get("enabled", 1)):
-                reason = validator.get("reason_if_not_eligible") or "validator disabled"
-            elif bool(validator.get("is_banned")):
-                reason = "validator banned"
-            elif online_status != "online":
-                reason = f"validator {online_status}"
-            elif not str(validator.get("node_id") or "").strip() or not str(validator.get("advertised_address") or "").strip():
-                reason = "validator node heartbeat required"
-            elif sync_status == "out_of_sync":
-                reason = "validator out of sync"
-            elif str(validator.get("protocol_version") or PROTOCOL_VERSION) != PROTOCOL_VERSION:
-                reason = "protocol version mismatch"
-            elif _validator_eligibility_stake(validator) < MIN_VALIDATOR_STAKE:
-                reason = _validator_min_stake_reason()
-            connection.execute(
-                """
-                UPDATE validators
-                SET online_status = ?, sync_status = ?, out_of_sync_since = ?,
-                    reason_if_not_eligible = ?
-                WHERE validator_id = ?
-                """,
-                (online_status, sync_status, out_of_sync_since, reason, validator["validator_id"]),
-            )
-            updates["validators"] += 1
+    try:
+        with get_connection() as connection:
+            validator_rows = connection.execute("SELECT * FROM validators").fetchall()
+            for row in validator_rows:
+                validator = row_to_dict(row)
+                online_status = _status_from_heartbeat(validator.get("last_heartbeat_at"), now_dt)
+                if bool(validator.get("is_banned")) or not bool(validator.get("enabled", 1)):
+                    online_status = "offline"
+                sync_status, out_of_sync_since = _sync_status_from_metrics(
+                    sync_lag=int(validator.get("sync_lag") or 0),
+                    pending_replay_blocks=int(validator.get("pending_replay_blocks") or 0),
+                    out_of_sync_since=validator.get("out_of_sync_since"),
+                    now=now_dt,
+                )
+                reason = None
+                if not bool(validator.get("enabled", 1)):
+                    reason = validator.get("reason_if_not_eligible") or "validator disabled"
+                elif bool(validator.get("is_banned")):
+                    reason = "validator banned"
+                elif online_status != "online":
+                    reason = f"validator {online_status}"
+                elif not str(validator.get("node_id") or "").strip() or not str(validator.get("advertised_address") or "").strip():
+                    reason = "validator node heartbeat required"
+                elif sync_status == "out_of_sync":
+                    reason = "validator out of sync"
+                elif str(validator.get("protocol_version") or PROTOCOL_VERSION) != PROTOCOL_VERSION:
+                    reason = "protocol version mismatch"
+                elif _validator_eligibility_stake(validator) < MIN_VALIDATOR_STAKE:
+                    reason = _validator_min_stake_reason()
+                connection.execute(
+                    """
+                    UPDATE validators
+                    SET online_status = ?, sync_status = ?, out_of_sync_since = ?,
+                        reason_if_not_eligible = ?
+                    WHERE validator_id = ?
+                    """,
+                    (online_status, sync_status, out_of_sync_since, reason, validator["validator_id"]),
+                )
+                updates["validators"] += 1
 
-        miner_rows = connection.execute("SELECT * FROM miners").fetchall()
-        for row in miner_rows:
-            miner = row_to_dict(row)
-            online_status = _status_from_heartbeat(miner.get("last_heartbeat_at"), now_dt)
-            if bool(miner.get("is_banned")) or not bool(miner.get("enabled", 1)):
-                online_status = "offline"
-            connection.execute(
-                "UPDATE miners SET online_status = ? WHERE miner_id = ?",
-                (online_status, miner["miner_id"]),
-            )
-            updates["miners"] += 1
-    return {"updated": updates, "checked_at": now_dt.isoformat()}
+            miner_rows = connection.execute("SELECT * FROM miners").fetchall()
+            for row in miner_rows:
+                miner = row_to_dict(row)
+                online_status = _status_from_heartbeat(miner.get("last_heartbeat_at"), now_dt)
+                if bool(miner.get("is_banned")) or not bool(miner.get("enabled", 1)):
+                    online_status = "offline"
+                connection.execute(
+                    "UPDATE miners SET online_status = ? WHERE miner_id = ?",
+                    (online_status, miner["miner_id"]),
+                )
+                updates["miners"] += 1
+        _PARTICIPANT_LIVENESS_LAST_RUN_MONOTONIC = monotonic_now
+        return {"updated": updates, "checked_at": now_dt.isoformat()}
+    except sqlite3.OperationalError as exc:
+        if "database is locked" in str(exc).lower():
+            logger.warning("participant liveness refresh skipped: database is locked")
+            return {"updated": updates, "checked_at": now_dt.isoformat(), "skipped": "database_locked"}
+        raise
+    finally:
+        _PARTICIPANT_LIVENESS_LOCK.release()
 
 
 def record_validator_heartbeat(payload: dict[str, Any], client_host: str | None = None) -> dict[str, Any]:

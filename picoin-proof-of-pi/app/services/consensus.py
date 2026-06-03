@@ -53,6 +53,7 @@ from app.services.transactions import (
     ensure_block_transactions_in_mempool,
     transaction_commitment,
 )
+from app.services.wallet import is_valid_address
 
 
 logger = logging.getLogger(__name__)
@@ -1814,12 +1815,14 @@ def _apply_distributed_validator_rewards(
         if index == len(validator_ids):
             amount_units = pool_units - distributed_units
         distributed_units += amount_units
-        _ensure_validator(connection, validator_id, timestamp)
         reward_address = reward_addresses.get(validator_id)
+        legacy_reward_wallet = not reward_address and is_valid_address(validator_id)
+        if not legacy_reward_wallet:
+            _ensure_validator(connection, validator_id, timestamp)
         _apply_account_delta(
             connection,
             reward_address or validator_id,
-            "wallet" if reward_address else "validator",
+            "wallet" if reward_address or legacy_reward_wallet else "validator",
             reward_units_to_float(amount_units),
             "validator_reward",
             block_height,
@@ -1827,14 +1830,15 @@ def _apply_distributed_validator_rewards(
             "distributed consensus validator reward",
             timestamp,
         )
-        connection.execute(
-            """
-            UPDATE validators
-            SET accepted_jobs = accepted_jobs + 1, last_seen_at = ?
-            WHERE validator_id = ?
-            """,
-            (timestamp, validator_id),
-        )
+        if not legacy_reward_wallet:
+            connection.execute(
+                """
+                UPDATE validators
+                SET accepted_jobs = accepted_jobs + 1, last_seen_at = ?
+                WHERE validator_id = ?
+                """,
+                (timestamp, validator_id),
+            )
 
 
 def _ensure_validator(connection: Any, validator_id: str, timestamp: str) -> None:

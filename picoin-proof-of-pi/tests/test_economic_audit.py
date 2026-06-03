@@ -1,9 +1,11 @@
 import pytest
 
 from app.core.crypto import hash_result
+from app.core.money import to_units
 from app.core.pi import calculate_pi_segment
 from app.core.signatures import build_submission_signature_payload, build_validation_result_signature_payload, generate_keypair, sign_payload
 from app.db.database import get_connection, init_db
+from app.services.consensus import _apply_distributed_validator_rewards
 from app.services.mining import (
     create_next_task,
     get_balance,
@@ -16,6 +18,7 @@ from app.services.mining import (
     submit_validation_result,
     submit_task,
 )
+from app.services.network import get_blocks_since
 from app.services.transactions import canonical_empty_tx_merkle_root, canonical_selected_tx_hashes_hash
 from app.services.wallet import create_wallet
 
@@ -197,6 +200,63 @@ def test_validator_reward_address_receives_new_validator_rewards(tmp_path, monke
     assert get_balance_amount(first_reward["address"]) == pytest.approx(per_validator)
     assert get_balance_amount(first_validator["validator_id"]) == pytest.approx(0)
     assert audit["valid"] is True
+
+    exported_block = get_blocks_since(0)["blocks"][0]
+    exported_rewards = exported_block["validator_reward"]
+    assert exported_rewards["validator_ids"] == [
+        first_validator["validator_id"],
+        second_validator["validator_id"],
+        third_validator["validator_id"],
+    ]
+    assert exported_rewards["reward_addresses"] == reward_addresses
+
+
+def test_legacy_validator_reward_wallet_ids_replay_as_wallet_accounts(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "economic-legacy-validator-reward-wallets.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    first_reward = create_wallet("legacy-validator-one-reward")["address"]
+    second_reward = create_wallet("legacy-validator-two-reward")["address"]
+    timestamp = "2026-06-02T20:00:00+00:00"
+
+    with get_connection() as connection:
+        _apply_distributed_validator_rewards(
+            connection,
+            {
+                "height": 1,
+                "validator_reward": {
+                    "pool": 0.31416,
+                    "per_validator": 0.10472,
+                    "validator_ids": [first_reward, second_reward, first_reward],
+                },
+            },
+            "job_legacy_wallet_rewards",
+            to_units("3.1416"),
+            timestamp,
+        )
+        entries = connection.execute(
+            """
+            SELECT account_id, account_type, amount
+            FROM ledger_entries
+            WHERE entry_type = 'validator_reward'
+            ORDER BY id ASC
+            """
+        ).fetchall()
+        fake_validators = connection.execute(
+            "SELECT validator_id FROM validators WHERE validator_id LIKE 'PI%'"
+        ).fetchall()
+        first_balance = connection.execute(
+            "SELECT account_type, balance FROM balances WHERE account_id = ?",
+            (first_reward,),
+        ).fetchone()
+
+    assert [row["account_type"] for row in entries] == ["wallet", "wallet", "wallet"]
+    assert [row["account_id"] for row in entries] == [first_reward, second_reward, first_reward]
+    assert fake_validators == []
+    assert first_balance["account_type"] == "wallet"
+    assert first_balance["balance"] == pytest.approx(0.20944)
 
 
 def _register_miner_with_keys(name: str) -> tuple[dict, dict]:

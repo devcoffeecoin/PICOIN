@@ -880,6 +880,7 @@ class ProtocolResponse(BaseModel):
     chain_id: str | int
     algorithm: str
     validation_mode: str
+    mining_task_mode: str | None = None
     required_validator_approvals: int
     range_assignment_mode: str
     max_pi_position: int
@@ -892,6 +893,7 @@ class ProtocolResponse(BaseModel):
     sample_count: int
     task_expiration_seconds: int
     max_active_tasks_per_miner: int
+    block_maturity_depth: int | None = None
     base_reward: float
     difficulty: float
     target_block_time_ms: int | None = None

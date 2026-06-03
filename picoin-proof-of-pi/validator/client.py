@@ -15,7 +15,7 @@ from app.core.pi import calculate_pi_segment
 from app.core.signatures import build_validation_result_signature_payload, generate_keypair, sign_payload, verify_payload_signature
 from app.core.settings import CHAIN_ID, NETWORK_ID
 from app.services.transactions import selected_tx_hashes_hash, transaction_commitment
-from app.services.wallet import transaction_hash, unsigned_transaction_payload
+from app.services.wallet import matching_transaction_signature_payload, unsigned_transaction_payload
 
 
 DEFAULT_IDENTITY_PATH = Path("validator_identity.json")
@@ -195,9 +195,14 @@ def validate_job(job: dict[str, Any]) -> tuple[bool, str]:
             )
             if str(unsigned["chain_id"]) != str(CHAIN_ID) or unsigned["network_id"] != NETWORK_ID:
                 return False, "invalid_tx_payload"
-            if transaction_hash(unsigned, tx.get("public_key", "")) != tx.get("tx_hash"):
+            signature_payload = matching_transaction_signature_payload(
+                unsigned,
+                tx.get("public_key", ""),
+                tx.get("tx_hash", ""),
+            )
+            if signature_payload is None:
                 return False, "invalid_tx_payload"
-            if not verify_payload_signature(tx.get("public_key", ""), unsigned, tx.get("signature", "")):
+            if not verify_payload_signature(tx.get("public_key", ""), signature_payload, tx.get("signature", "")):
                 return False, "invalid_tx_signature"
         commitment = transaction_commitment(transactions)
         if commitment["tx_merkle_root"] != (job.get("tx_merkle_root") or ""):
