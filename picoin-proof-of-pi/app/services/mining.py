@@ -6241,6 +6241,19 @@ def _accept_block_in_connection(
     params: dict[str, Any] | None = None,
     validation_job_id: str | None = None,
 ) -> dict[str, Any]:
+    existing = row_to_dict(
+        connection.execute("SELECT * FROM blocks WHERE task_id = ?", (task["task_id"],)).fetchone()
+    )
+    if existing is not None:
+        block = _decode_block(existing)
+        block["already_finalized"] = True
+        logger.info(
+            "validation finalization skipped existing block task_id=%s block_height=%s",
+            task["task_id"],
+            block.get("height"),
+        )
+        return block
+
     if params is None:
         params = _protocol_params_for_task(connection, task)
     total_block_reward = calculate_reward(params)
