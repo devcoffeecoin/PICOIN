@@ -399,19 +399,20 @@ def export_canonical_snapshot(height: int | None = None) -> dict[str, Any]:
         if height is None:
             latest = connection.execute("SELECT COALESCE(MAX(height), 0) AS height FROM blocks").fetchone()
             height = int(latest["height"] if latest else 0)
-        checkpoint = get_checkpoint_in_connection(connection, int(height))
-        if checkpoint is None or not (checkpoint.get("payload") or {}).get("nonces_hash"):
-            checkpoint = create_canonical_checkpoint_in_connection(
-                connection,
-                int(height),
-                trusted=True,
-                source="export",
-            )
         block = row_to_dict(
             connection.execute("SELECT timestamp FROM blocks WHERE height = ?", (int(height),)).fetchone()
         )
         if block is None:
             raise StateError(404, "block not found for snapshot export")
+        # Validator registry/reputation and account nonces can change after a
+        # checkpoint was first created. Rebuild the checkpoint at export time so
+        # the signed hashes match the exact state included in this snapshot.
+        checkpoint = create_canonical_checkpoint_in_connection(
+            connection,
+            int(height),
+            trusted=True,
+            source="export",
+        )
         balances = balance_snapshot(connection, int(height), block["timestamp"])
         nonces = account_nonce_snapshot(connection)
         validators = validator_snapshot(connection)

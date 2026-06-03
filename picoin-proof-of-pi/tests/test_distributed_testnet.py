@@ -1126,6 +1126,42 @@ def test_apply_snapshot_state_restores_validator_registry_for_replay(tmp_path, m
     assert restored["total_validation_ms"] == 1234
 
 
+def test_snapshot_export_refreshes_checkpoint_after_validator_state_changes(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "snapshot-validator-refresh-source.sqlite3")
+
+    miner_key = generate_keypair()
+    validator_key = generate_keypair()
+    miner = register_miner("snapshot-validator-refresh-miner", miner_key["public_key"])
+    validator = register_validator("snapshot-validator-refresh", validator_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    stale_snapshot = export_canonical_snapshot(height=1)
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE validators
+            SET accepted_jobs = accepted_jobs + 3,
+                total_validation_ms = total_validation_ms + 987
+            WHERE validator_id = ?
+            """,
+            (validator["validator_id"],),
+        )
+
+    refreshed_snapshot = export_canonical_snapshot(height=1)
+    validation = validate_snapshot_document(refreshed_snapshot)
+
+    assert stale_snapshot["checkpoint"]["height"] == refreshed_snapshot["checkpoint"]["height"]
+    assert refreshed_snapshot["valid"] is True
+    assert validation["valid"] is True
+    assert validation["issues"] == []
+    assert refreshed_snapshot["checkpoint"]["snapshot_hash"] != stale_snapshot["checkpoint"]["snapshot_hash"]
+
+    _init_network_db(tmp_path, monkeypatch, "snapshot-validator-refresh-target.sqlite3")
+    imported = import_canonical_snapshot(refreshed_snapshot, source="peer-validator-refresh")
+
+    assert imported["validation"]["valid"] is True
+
+
 def test_restore_snapshot_state_replaces_existing_local_chain(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "snapshot-restore-source.sqlite3")
     source_key = generate_keypair()
