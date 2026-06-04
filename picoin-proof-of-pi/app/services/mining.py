@@ -1602,6 +1602,8 @@ def create_next_task(
         task_id = f"task_{uuid.uuid4().hex[:16]}"
         if MINING_TASK_MODE == COMPETITIVE_ROUND_ASSIGNMENT_MODE:
             assignment = _competitive_round_assignment(connection, params)
+            if _competitive_round_has_pending_validation_job(connection, assignment.get("assignment_seed")):
+                raise MiningError(429, "competitive round is waiting for validation; retry after next block")
             assignment_mode = COMPETITIVE_ROUND_ASSIGNMENT_MODE
         else:
             assignment = _assign_pseudo_random_range(connection, miner_id, task_id, params)
@@ -1961,6 +1963,28 @@ def _competitive_round_has_earlier_pending_validation_job(connection: Any, job: 
                 created_at,
                 job_id,
             ),
+        ).fetchone()
+        is not None
+    )
+
+
+def _competitive_round_has_pending_validation_job(connection: Any, assignment_seed: str | None) -> bool:
+    assignment_seed = str(assignment_seed or "").strip()
+    if not assignment_seed:
+        return False
+    return (
+        connection.execute(
+            """
+            SELECT 1
+            FROM validation_jobs
+            JOIN tasks ON tasks.task_id = validation_jobs.task_id
+            WHERE validation_jobs.status = 'pending'
+              AND tasks.status = 'revealed'
+              AND tasks.assignment_mode = ?
+              AND tasks.assignment_seed = ?
+            LIMIT 1
+            """,
+            (COMPETITIVE_ROUND_ASSIGNMENT_MODE, assignment_seed),
         ).fetchone()
         is not None
     )

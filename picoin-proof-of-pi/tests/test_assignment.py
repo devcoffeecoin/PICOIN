@@ -154,6 +154,64 @@ def test_competitive_round_assignment_gives_miners_same_round_range(tmp_path, mo
     assert first_task["competitive_round_previous_hash"] == second_task["competitive_round_previous_hash"]
 
 
+def test_competitive_round_stops_new_assignments_while_reveal_is_pending(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-competitive-round-pending-validation.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr(mining_service, "MINING_TASK_MODE", "competitive_round")
+    init_db(db_path)
+
+    first_keys = generate_keypair()
+    second_keys = generate_keypair()
+    first_miner = register_miner("competitive-pending-a", first_keys["public_key"])
+    second_miner = register_miner("competitive-pending-b", second_keys["public_key"])
+
+    first_task = create_next_task(first_miner["miner_id"])
+    with get_connection() as connection:
+        connection.execute("UPDATE tasks SET status = 'revealed' WHERE task_id = ?", (first_task["task_id"],))
+        connection.execute(
+            """
+            INSERT INTO validation_jobs (
+                job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                samples, status, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, '[]', 'pending', ?)
+            """,
+            (
+                "job_competitive_pending",
+                first_task["task_id"],
+                first_miner["miner_id"],
+                "a" * 64,
+                "b" * 64,
+                "c" * 64,
+                "2026-06-04T00:00:00+00:00",
+            ),
+        )
+
+    repeated_first_task = create_next_task(first_miner["miner_id"])
+    assert repeated_first_task["task_id"] == first_task["task_id"]
+
+    with pytest.raises(MiningError) as exc_info:
+        create_next_task(second_miner["miner_id"])
+
+    assert exc_info.value.status_code == 429
+    assert "waiting for validation" in exc_info.value.detail
+    with get_connection() as connection:
+        second_task_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM tasks WHERE miner_id = ?",
+            (second_miner["miner_id"],),
+        ).fetchone()["count"]
+    assert second_task_count == 0
+
+    with get_connection() as connection:
+        connection.execute("UPDATE validation_jobs SET status = 'rejected' WHERE job_id = 'job_competitive_pending'")
+        connection.execute("UPDATE tasks SET status = 'rejected' WHERE task_id = ?", (first_task["task_id"],))
+
+    second_task = create_next_task(second_miner["miner_id"])
+    assert second_task["assignment_mode"] == "competitive_round"
+    assert second_task["assignment_seed"] == first_task["assignment_seed"]
+
+
 def test_competitive_round_accepts_one_winner_and_marks_late_task_stale(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "assignment-competitive-winner.sqlite3"
     monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
