@@ -753,7 +753,7 @@ Test scope:
 - [ ] Verify a full node rejects snapshots or blocks from the wrong network id, chain id, genesis hash, or protocol version
 - [ ] Verify a full node can serve read-only explorer/wallet API requests locally
 - [x] Verify no private wallet, miner, or validator identity files are required for a read-only full node
-- [ ] Produce a full-node operator runbook for the community
+- [x] Produce a full-node operator runbook for the community
 
 Phase 1 lab evidence:
 
@@ -764,6 +764,7 @@ Phase 1 lab evidence:
 - [x] `phase1-full-node-b` matched bootstrap checkpoint fields for state root, balances hash, validators hash, pending rewards hash, protocol params hash, retarget events hash, and snapshot hash
 - [x] Negative env identity test rejected mismatched network id, chain id, and genesis hash before accepting the node as valid
 - [x] Real env control returned `status=ok`, `errors=0`, `warnings=0`, `lag=0`, and matching local/peer tip hash at height `5`
+- [x] Full-node operator runbook is tracked at `picoin-proof-of-pi/deploy/README-full-node-phase1.md`
 
 Acceptance gates:
 
@@ -784,7 +785,7 @@ Goal: prove the Phase 1 full-node path can reproduce live mainnet as a read-only
 - [x] Catch up to live mainnet tip with zero lag and matching effective block hash
 - [x] Verify `/audit/full valid=true`, replay healthy, no divergence, and checkpoint/snapshot hashes match
 - [x] Restart the shadow node and verify it remains healthy from disk
-- [ ] Destroy or keep the shadow node read-only after evidence is recorded
+- [x] Destroy or keep the shadow node read-only after evidence is recorded
 
 Phase 1B evidence:
 
@@ -792,6 +793,7 @@ Phase 1B evidence:
 - [x] Shadow node matched mainnet checkpoint fields for state root, balances hash, validators hash, pending rewards hash, protocol params hash, retarget events hash, and snapshot hash
 - [x] After restart, `mainnet-shadow-full-node-1` caught up from snapshot height `4504` to live height `4508` with lag `0`, audit valid, no replay divergence, and matching tip hash `63e5595549e39c719f20245ad06dd19cd834adbf8274ba4cf1b45801ca14c647`
 - [x] Service check confirmed only `picoin-node` active; miner, validator, reconciler, and auditor remained inactive
+- [x] Decision recorded: keep `mainnet-shadow-full-node-1` alive as a read-only observer while Phase 2 is planned
 
 ### Phase 2: Multiple Public Bootstrap Nodes
 
