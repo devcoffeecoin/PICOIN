@@ -16,6 +16,33 @@ Phase 2 candidates are read-only API/node servers:
 
 They may expose `http://PUBLIC_IP:8000` during the lab. Add Nginx/TLS only after the raw node checks pass.
 
+## Current Candidate Endpoints
+
+These endpoints are Phase 2 public bootstrap candidates. They are read-only candidates for decentralization testing, not yet the production failover list for explorer, wallets, miners, or validators.
+
+| Candidate | Region label | Endpoint | Role |
+| --- | --- | --- | --- |
+| `mainnet-bootstrap-candidate-a` | lon1 | `http://178.62.30.17:8000` | read-only public bootstrap candidate |
+| `mainnet-bootstrap-candidate-b` | lon1-02 | `http://138.68.139.141:8000` | read-only public bootstrap candidate |
+| `mainnet-bootstrap-candidate-c` | tor1 | `http://159.89.115.183:8000` | read-only public bootstrap candidate |
+
+Keep the current production API endpoint, `https://api.picoin.science`, as the canonical mainnet bootstrap until explorer, wallet, miner, and validator failover are explicitly enabled and tested.
+
+## Operator Requirements
+
+A Phase 2 bootstrap candidate operator must:
+
+- run a clean Ubuntu 22.04 or 24.04 server with enough disk for the mainnet SQLite database, logs, and backups
+- expose `picoin-node` publicly on the configured node address
+- keep `picoin-miner`, `picoin-validator`, `picoin-reconciler`, and `picoin-auditor` disabled unless the node is later promoted under a separate production plan
+- use the production mainnet identity values: `picoin-mainnet-v1`, chain id `314159`, protocol version `1.0`, and the canonical mainnet genesis hash
+- preserve a unique `PICOIN_NODE_ID` and `PICOIN_NODE_ADDRESS` per candidate
+- restore from a canonical peer or another already verified candidate, then verify zero replay divergence
+- pass `bootstrap-phase2-verify.py` against the rest of the candidate set before being listed as healthy
+- avoid manual SQLite edits, database copies from unknown nodes, or private wallet files on the bootstrap candidate
+- monitor `/health`, `/node/sync-status`, `/audit/full`, `/validators/status`, `/miners/status`, `/stats`, `/blocks`, and `/mempool/status`
+- be disposable: if the candidate diverges or fails verification, rebuild it from a verified snapshot instead of repairing it by hand
+
 ## Candidate Install
 
 Run on each clean Ubuntu 22.04/24.04 candidate droplet:
