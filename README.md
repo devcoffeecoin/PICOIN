@@ -845,6 +845,7 @@ Use separate wallets for treasury, governance, miner rewards, validator rewards,
 | Document | Purpose |
 | --- | --- |
 | `picoin-proof-of-pi/deploy/README-mainnet.md` | Mainnet deployment runbook |
+| `picoin-proof-of-pi/deploy/README-full-node-phase1.md` | Decentralization Phase 1 full-node verification lab |
 | `picoin-proof-of-pi/deploy/README-public-testnet.md` | Historical public-testnet deployment guide |
 | `picoin-proof-of-pi/README.md` | Core developer and protocol reference |
 | `picoin-desktop-wallet/README.md` | Desktop wallet build and usage |
