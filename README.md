@@ -713,6 +713,118 @@ Before mainnet starts:
 [ ] Limited mining starts only after validators are healthy
 ```
 
+## Decentralization Roadmap
+
+This section is the tracked mainnet decentralization artifact. Items remain unchecked until they are implemented on an isolated branch, deployed to independent test droplets, verified with reproducible local audits, and explicitly approved for mainnet. Mainnet stability takes priority over roadmap speed.
+
+Status rules:
+
+- `[ ]` Pending or untested
+- `[x]` Tested on isolated droplets and accepted for the next stage
+
+### Phase 0: Stable Mainnet Baseline
+
+Mainnet stays on the current stable path while decentralization work happens separately.
+
+- [ ] Keep mainnet mining, validators, explorer, wallet, and bootstrap health stable while Phase 1 is tested separately
+- [ ] Monitor competitive mining rounds for accepted/rejected closure, stuck validation jobs, validator lag, and audit validity
+- [ ] Keep bootstrap running only the required API/node role unless explicitly testing another service
+- [ ] Keep desktop validator recovery under review until community reports confirm stable long-running sync
+- [ ] Do not merge decentralization code into mainnet until the Phase 1 acceptance gates below pass
+
+### Phase 1: Independent Full Node Verification
+
+Goal: any operator can run a Linux node on a clean droplet, sync from a canonical checkpoint or replay path, and independently verify the same chain state as the bootstrap without mining or validating.
+
+Test scope:
+
+- [ ] Create an isolated decentralization branch from stable main
+- [ ] Provision at least two independent test droplets that are not mainnet bootstrap machines
+- [ ] Configure a separate network id, chain id, env file, data directory, and DNS/API endpoints for the test lab
+- [ ] Start bootstrap-test and full-node-test roles without enabling miner, validator, reconciler, or auditor services by default
+- [ ] Document clean install commands for Ubuntu 22.04/24.04 full nodes
+- [ ] Add a reproducible snapshot restore path for a fresh full node
+- [ ] Add a reproducible block/header catch-up path after snapshot restore
+- [ ] Verify local `/health`, `/protocol`, `/node/sync-status`, `/audit/full`, and checkpoint endpoints on each full node
+- [ ] Verify full nodes compute the same latest height, block hash, state root, balances hash, validators hash, and pending rewards hash as the test bootstrap
+- [ ] Verify a full node can restart from disk and remain consistent without manual database edits
+- [ ] Verify a full node can fall behind, catch up, and recover without replay divergence
+- [ ] Verify a full node rejects snapshots or blocks from the wrong network id, chain id, genesis hash, or protocol version
+- [ ] Verify a full node can serve read-only explorer/wallet API requests locally
+- [ ] Verify no private wallet, miner, or validator identity files are required for a read-only full node
+- [ ] Produce a full-node operator runbook for the community
+
+Acceptance gates:
+
+- [ ] Two independent droplets sync to the same test height and hashes
+- [ ] `/audit/full` returns `valid=true` on every full node
+- [ ] Full nodes stay healthy across at least one restart and one catch-up cycle
+- [ ] No manual SQLite edits are required during setup or recovery
+- [ ] The test lab can be rebuilt from the documented commands
+- [ ] Mainnet remains untouched during testing
+
+### Phase 2: Multiple Public Bootstrap Nodes
+
+Goal: replace the single public bootstrap dependency with multiple API/bootstrap nodes that serve the same chain view.
+
+- [ ] Deploy at least three public bootstrap candidates in different regions
+- [ ] Add node identity, peer discovery, and peer health checks for bootstrap candidates
+- [ ] Add explorer and wallet failover across bootstrap endpoints
+- [ ] Verify public bootstraps agree on height, block hash, state root, and audit validity
+- [ ] Verify one bootstrap can go offline without stopping explorer, wallet reads, miners, or validators
+- [ ] Publish bootstrap endpoint list and operator requirements
+
+### Phase 3: Peer Gossip And Consensus Propagation
+
+Goal: nodes exchange chain data and consensus messages directly instead of relying on one coordinator API.
+
+- [ ] Gossip block headers and finalized block payloads between peers
+- [ ] Gossip signed transactions and mempool inventory between peers
+- [ ] Gossip validator heartbeats and validator votes between peers
+- [ ] Add deterministic duplicate suppression for peer messages
+- [ ] Add peer scoring, stale peer detection, and peer ban/cooldown rules
+- [ ] Verify nodes can catch up from multiple peers instead of one bootstrap
+
+### Phase 4: Decentralized Mempool And Block Candidate Construction
+
+Goal: every full node can independently validate transaction ordering and reconstruct the same candidate block state.
+
+- [ ] Define canonical transaction selection rules for competitive rounds
+- [ ] Verify deterministic nonce ordering, fee ordering, and tx merkle root generation across nodes
+- [ ] Propagate signed transactions without exposing private keys
+- [ ] Add conflict handling for replaced, expired, failed, or already-confirmed transactions
+- [ ] Verify candidate block replay produces identical state roots across nodes
+
+### Phase 5: Miner Task Independence
+
+Goal: miners can request the same canonical competitive round work from any healthy node.
+
+- [ ] Derive competitive task ranges from canonical height, previous block hash, and protocol params
+- [ ] Allow multiple full nodes to serve the same round without creating conflicting work
+- [ ] Verify first valid reveal wins independent of which node assigned the task
+- [ ] Verify late reveals become stale consistently across nodes
+- [ ] Verify miners can fail over to another node without losing identity or reward wallet configuration
+
+### Phase 6: Validator Finality Certificates
+
+Goal: a block becomes canonical by validator quorum certificate, not by one API database decision.
+
+- [ ] Define signed finality certificate schema for each block
+- [ ] Include quorum validator ids, signatures, reward addresses, and protocol params id in canonical payloads
+- [ ] Reject conflicting certificates for the same height unless deterministic rules select one valid canonical block
+- [ ] Add slashing evidence for validators that sign conflicting blocks at the same height
+- [ ] Verify all full nodes can validate finality certificates from disk after restart
+
+### Phase 7: Exchange And Infrastructure Full-Node Package
+
+Goal: exchanges and infrastructure operators can run PICOIN without depending on the public API server.
+
+- [ ] Provide Linux full-node install package or script
+- [ ] Provide wallet manager commands for address creation, balance checks, nonce checks, and signed withdrawals
+- [ ] Provide local API/RPC endpoints for deposits, withdrawals, confirmations, blocks, transactions, and health
+- [ ] Document confirmation policy and block maturity behavior
+- [ ] Provide backup, restore, audit, and monitoring runbooks
+
 ## Security Rules
 
 Do not commit:
