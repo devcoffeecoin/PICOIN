@@ -60,6 +60,46 @@ def checkpoint_payload(checkpoint: dict | None) -> dict:
     return dict((checkpoint or {}).get("payload") or {})
 
 
+def checkpoint_view(checkpoint: dict | None, sync: dict) -> dict | None:
+    if checkpoint:
+        view = dict(checkpoint)
+        view["_source"] = "canonical_checkpoint"
+        return view
+
+    active_snapshot = sync.get("active_snapshot_base") or {}
+    if not isinstance(active_snapshot, dict):
+        return None
+    snapshot_payload = active_snapshot.get("payload") or {}
+    if not isinstance(snapshot_payload, dict):
+        snapshot_payload = {}
+    checkpoint_payload_value = snapshot_payload.get("checkpoint") or {}
+    if not isinstance(checkpoint_payload_value, dict):
+        checkpoint_payload_value = {}
+    checkpoint_payload_value = dict(checkpoint_payload_value)
+    if not checkpoint_payload_value:
+        for key in (
+            "block_hash",
+            "state_root",
+            "balances_hash",
+            "validators_hash",
+            "pending_rewards_hash",
+            "protocol_params_hash",
+            "retarget_events_hash",
+            "snapshot_hash",
+        ):
+            value = active_snapshot.get(key)
+            if value is not None:
+                checkpoint_payload_value[key] = value
+    height = checkpoint_payload_value.get("height") or active_snapshot.get("height")
+    if not height:
+        return None
+    return {
+        "height": height,
+        "payload": checkpoint_payload_value,
+        "_source": "active_snapshot_base",
+    }
+
+
 checks: list[dict] = []
 payloads: dict[str, object] = {}
 
@@ -137,10 +177,24 @@ if lag == 0:
 else:
     add_check("tip_hash_match", True, f"skipped while lag={lag}", "warning")
 
-local_cp_payload = checkpoint_payload(local_checkpoint)
-peer_cp_payload = checkpoint_payload(peer_checkpoint)
-if local_checkpoint and peer_checkpoint and int(local_checkpoint.get("height") or 0) == int(peer_checkpoint.get("height") or -1):
-    add_check("checkpoint_height_match", True, f"height={local_checkpoint.get('height')}")
+local_checkpoint_view = checkpoint_view(local_checkpoint, local_sync)
+peer_checkpoint_view = checkpoint_view(peer_checkpoint, peer_sync)
+local_cp_payload = checkpoint_payload(local_checkpoint_view)
+peer_cp_payload = checkpoint_payload(peer_checkpoint_view)
+if (
+    local_checkpoint_view
+    and peer_checkpoint_view
+    and int(local_checkpoint_view.get("height") or 0) == int(peer_checkpoint_view.get("height") or -1)
+):
+    add_check(
+        "checkpoint_height_match",
+        True,
+        (
+            f"height={local_checkpoint_view.get('height')} "
+            f"local_source={local_checkpoint_view.get('_source')} "
+            f"peer_source={peer_checkpoint_view.get('_source')}"
+        ),
+    )
     for key in (
         "block_hash",
         "state_root",
@@ -156,13 +210,16 @@ if local_checkpoint and peer_checkpoint and int(local_checkpoint.get("height") o
             local_cp_payload.get(key) == peer_cp_payload.get(key),
             f"local={local_cp_payload.get(key)} peer={peer_cp_payload.get(key)}",
         )
-elif not local_checkpoint and not peer_checkpoint and local_height == peer_height:
+elif not local_checkpoint_view and not peer_checkpoint_view and local_height == peer_height:
     add_check("checkpoint_height_match", True, f"both nodes have no checkpoint at height={local_height}")
 else:
     add_check(
         "checkpoint_height_match",
         False,
-        f"local={None if not local_checkpoint else local_checkpoint.get('height')} peer={None if not peer_checkpoint else peer_checkpoint.get('height')}",
+        (
+            f"local={None if not local_checkpoint_view else local_checkpoint_view.get('height')} "
+            f"peer={None if not peer_checkpoint_view else peer_checkpoint_view.get('height')}"
+        ),
         "warning",
     )
 
