@@ -808,7 +808,8 @@ Goal: replace the single public bootstrap dependency with multiple API/bootstrap
 - [x] Add node identity and peer health checks for bootstrap candidates
 - [ ] Add explorer and wallet failover across bootstrap endpoints
 - [x] Verify initial public bootstrap candidates agree on height, block hash, state root, and audit validity
-- [ ] Verify one bootstrap can go offline without stopping explorer, wallet reads, miners, or validators
+- [x] Verify one bootstrap candidate can go offline without losing read-only bootstrap quorum
+- [ ] Verify one production bootstrap endpoint can go offline without stopping explorer, wallet reads, miners, or validators
 - [ ] Publish bootstrap endpoint list and operator requirements
 
 Phase 2 preparation evidence:
@@ -821,6 +822,8 @@ Phase 2 preparation evidence:
 - [x] Phase 2 verifier compared candidates A and B with `status=ok`, `checked=59`, `errors=0`, `warnings=0`, and matching checkpoint hashes
 - [x] `mainnet-bootstrap-candidate-c` (`159.89.115.183`) restored from `mainnet-bootstrap-candidate-b`, caught up to height `4571`, and matched tip hash `92519b241db6d20300e2cfe583836fabfa1f37c946c9923674abcdf1a73c766c`
 - [x] Phase 2 verifier compared candidates A, B, and C with `status=ok`, `checked=88`, `errors=0`, `warnings=0`, and matching read-only endpoint responses
+- [x] Controlled offline drill stopped `mainnet-bootstrap-candidate-c`; candidates A and B remained healthy with `status=ok`, `checked=59`, `errors=0`, `warnings=0`, height `4571`, and matching tip hash `92519b241db6d20300e2cfe583836fabfa1f37c946c9923674abcdf1a73c766c`
+- [x] After restarting `mainnet-bootstrap-candidate-c`, candidates A, B, and C returned to `status=ok`, `checked=88`, `errors=0`, `warnings=0`, height `4571`, and matching tip hash `92519b241db6d20300e2cfe583836fabfa1f37c946c9923674abcdf1a73c766c`
 
 ### Phase 3: Peer Gossip And Consensus Propagation
 
