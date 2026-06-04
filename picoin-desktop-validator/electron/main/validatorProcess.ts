@@ -20,7 +20,7 @@ const AUTO_SYNC_MAX_HEALTHY_LAG = 1;
 const AUTO_SYNC_SNAPSHOT_LAG = 6;
 const SNAPSHOT_RESTORE_TIMEOUT_MS = 300_000;
 const SNAPSHOT_RESTORE_RETRY_DELAY_MS = 3_000;
-const DESKTOP_VALIDATOR_VERSION = "0.1.10";
+const DESKTOP_VALIDATOR_VERSION = "0.1.11";
 const SNAPSHOT_HEIGHT_OFFSETS = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 0];
 const REMOTE_STABLE_SNAPSHOT_HEIGHT_OFFSETS = [5, 8, 13, 21, 34, 55, 89, 144, 233, 3, 2, 1, 0];
 const LOCAL_FALLBACK_SNAPSHOT_HEIGHT_OFFSETS = [0, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89];
@@ -62,6 +62,8 @@ let autoSyncTimer: NodeJS.Timeout | null = null;
 let autoSyncInProgress = false;
 let autoSyncConfig: ValidatorConfig | null = null;
 let operationStopRequested = false;
+let repairOperationInProgress = false;
+let repairOperationPromise: Promise<unknown> | null = null;
 const utilityProcesses = new Set<ChildProcessWithoutNullStreams>();
 
 function addLog(line: string) {
@@ -201,6 +203,8 @@ function killProcess(child: ChildProcessWithoutNullStreams | null) {
 
 function cancelUtilityProcesses(reason: string) {
   operationStopRequested = true;
+  repairOperationInProgress = false;
+  repairOperationPromise = null;
   if (utilityProcesses.size > 0) {
     addLog(`${reason}: cancelling ${utilityProcesses.size} sync operation(s).`);
   }
@@ -213,6 +217,20 @@ function assertOperationNotStopped() {
   if (operationStopRequested || validatorStopRequested || nodeStopRequested) {
     throw new Error("Operation cancelled by user.");
   }
+}
+
+async function runSerializedRepair<T>(label: string, operation: () => Promise<T>): Promise<T> {
+  if (repairOperationPromise) {
+    addLog(`${label} requested while another node repair is running; waiting for current repair.`);
+    return repairOperationPromise as Promise<T>;
+  }
+  repairOperationInProgress = true;
+  const promise = operation().finally(() => {
+    repairOperationInProgress = false;
+    repairOperationPromise = null;
+  });
+  repairOperationPromise = promise;
+  return promise;
 }
 
 async function fetchLocalNodeJson(config: ValidatorConfig, pathName: string, timeoutMs = 15000): Promise<any | null> {
@@ -337,7 +355,7 @@ async function runSnapshotRestore(config: ValidatorConfig, height: number | null
 }
 
 async function runAutoSyncOnce(config: ValidatorConfig) {
-  if (!nodeProcess || autoSyncInProgress) return;
+  if (!nodeProcess || autoSyncInProgress || autoRecoveryInProgress || repairOperationInProgress) return;
   autoSyncInProgress = true;
   try {
     const syncStatus = await fetchLocalNodeJson(config, "/node/sync-status", 20000);
@@ -842,74 +860,78 @@ export function stopValidator() {
 }
 
 export async function restoreSnapshot(config: ValidatorConfig, localStatus?: any) {
-  if (!nodeProcess) {
-    await startNode(config);
-  }
-  assertOperationNotStopped();
-  const heights = await resolveSnapshotHeights(config, localStatus);
-  let lastError: unknown = null;
-  for (const height of heights) {
+  return runSerializedRepair("Snapshot restore", async () => {
+    if (!nodeProcess) {
+      await startNode(config);
+    }
     assertOperationNotStopped();
-    for (let attempt = 1; attempt <= 2; attempt += 1) {
-      try {
-        assertOperationNotStopped();
-        addLog(`Restoring canonical snapshot at height ${height}${attempt > 1 ? ` (retry ${attempt})` : ""}.`);
-        const output = await runSnapshotRestore(config, height);
-        return { ok: true, message: `Snapshot restored at height ${height}`, result: parseJsonOutput(output) };
-      } catch (error) {
-        lastError = error;
-        addLog(`Snapshot restore at height ${height} failed: ${errorMessage(error)}`);
-        if (/422|Unprocessable|invalid canonical snapshot/i.test(errorMessage(error))) {
-          break;
-        }
-        if (attempt < 2) {
-          await sleep(SNAPSHOT_RESTORE_RETRY_DELAY_MS);
+    const heights = await resolveSnapshotHeights(config, localStatus);
+    let lastError: unknown = null;
+    for (const height of heights) {
+      assertOperationNotStopped();
+      for (let attempt = 1; attempt <= 2; attempt += 1) {
+        try {
+          assertOperationNotStopped();
+          addLog(`Restoring canonical snapshot at height ${height}${attempt > 1 ? ` (retry ${attempt})` : ""}.`);
+          const output = await runSnapshotRestore(config, height);
+          return { ok: true, message: `Snapshot restored at height ${height}`, result: parseJsonOutput(output) };
+        } catch (error) {
+          lastError = error;
+          addLog(`Snapshot restore at height ${height} failed: ${errorMessage(error)}`);
+          if (/422|Unprocessable|invalid canonical snapshot/i.test(errorMessage(error))) {
+            break;
+          }
+          if (attempt < 2) {
+            await sleep(SNAPSHOT_RESTORE_RETRY_DELAY_MS);
+          }
         }
       }
     }
-  }
-  if (heights.length > 0) {
-    addLog("Snapshot restore from selected heights failed; trying latest canonical snapshot.");
-  }
-  try {
-    assertOperationNotStopped();
-    addLog("Restoring latest canonical snapshot.");
-    const output = await runSnapshotRestore(config, null);
-    return { ok: true, message: "Snapshot restored", result: parseJsonOutput(output) };
-  } catch (error) {
-    lastError = error;
-    addLog(`Latest snapshot restore failed: ${errorMessage(error)}`);
-  }
-  throw lastError;
+    if (heights.length > 0) {
+      addLog("Snapshot restore from selected heights failed; trying latest canonical snapshot.");
+    }
+    try {
+      assertOperationNotStopped();
+      addLog("Restoring latest canonical snapshot.");
+      const output = await runSnapshotRestore(config, null);
+      return { ok: true, message: "Snapshot restored", result: parseJsonOutput(output) };
+    } catch (error) {
+      lastError = error;
+      addLog(`Latest snapshot restore failed: ${errorMessage(error)}`);
+    }
+    throw lastError;
+  });
 }
 
 export async function catchUpNode(config: ValidatorConfig) {
-  if (!nodeProcess) {
-    await startNode(config);
-  }
-  assertOperationNotStopped();
-  const env = buildEnv(config);
-  const output = await runPythonOnce(
-    config.pythonCmd || "python",
-    [
-      "-u",
-      "-m",
-      "picoin",
-      "node",
-      "catch-up",
-      "--server",
-      getLocalNodeUrl(config),
-      "--peer",
-      normalizeApiUrl(config.apiUrl),
-      "--max-rounds",
-      "10",
-      "--replay-limit",
-      "50",
-    ],
-    env,
-    180000,
-  );
-  return { ok: true, message: "Catch-up completed", result: parseJsonOutput(output) };
+  return runSerializedRepair("Catch-up", async () => {
+    if (!nodeProcess) {
+      await startNode(config);
+    }
+    assertOperationNotStopped();
+    const env = buildEnv(config);
+    const output = await runPythonOnce(
+      config.pythonCmd || "python",
+      [
+        "-u",
+        "-m",
+        "picoin",
+        "node",
+        "catch-up",
+        "--server",
+        getLocalNodeUrl(config),
+        "--peer",
+        normalizeApiUrl(config.apiUrl),
+        "--max-rounds",
+        "10",
+        "--replay-limit",
+        "50",
+      ],
+      env,
+      180000,
+    );
+    return { ok: true, message: "Catch-up completed", result: parseJsonOutput(output) };
+  });
 }
 
 export async function stakeValidator(config: StakeConfig) {
