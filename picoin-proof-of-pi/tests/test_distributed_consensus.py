@@ -188,6 +188,22 @@ def test_block_proposal_reaches_quorum_and_imports_canonical_block(tmp_path, mon
     assert chain["valid"] is True
 
 
+def test_block_one_legacy_zero_parent_imports_with_configured_genesis(tmp_path, monkeypatch) -> None:
+    _init_consensus_db(tmp_path, monkeypatch, "consensus-legacy-genesis-parent.sqlite3")
+    monkeypatch.setattr("app.services.consensus.GENESIS_HASH", "f" * 64)
+    identities = _register_validators()
+    proposal = propose_block(_block(previous_hash="0" * 64), "miner-node-1")
+
+    for identity in identities:
+        proposal = _vote(proposal, identity)
+
+    imported = get_block(1)
+
+    assert proposal["status"] == "imported"
+    assert imported["previous_hash"] == "0" * 64
+    assert imported["block_hash"] == proposal["block_hash"]
+
+
 def test_finalize_adapts_to_single_live_validator_quorum(tmp_path, monkeypatch) -> None:
     _init_consensus_db(tmp_path, monkeypatch, "consensus-quorum.sqlite3")
     identity = _register_validators(1)[0]
