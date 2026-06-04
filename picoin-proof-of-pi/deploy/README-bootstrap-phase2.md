@@ -248,15 +248,21 @@ Signed wallet transaction submission remains pinned to the primary route. Do not
 After deploying the web frontend, verify:
 
 ```bash
-for path in health protocol node/sync-status blocks validators/status miners/status stats; do
-  curl -i --max-time 20 "https://picoin.science/api/bootstrap/$path" | head -20
-  curl -i --max-time 20 "https://picoin.science/api/bootstrap-a/$path" | head -20
-  curl -i --max-time 20 "https://picoin.science/api/bootstrap-b/$path" | head -20
-  curl -i --max-time 20 "https://picoin.science/api/bootstrap-c/$path" | head -20
-done
+node picoin-web/tests/phase2-web-routes-smoke.mjs \
+  --base-url https://picoin.science \
+  --required 4
 ```
 
-Then stop one candidate, refresh explorer and wallet, and confirm read-only data continues loading from the remaining endpoints. This closes the production failover gate only after the deployed site is observed working while one bootstrap is offline.
+Then stop one candidate, refresh explorer and wallet, and verify the remaining routes:
+
+```bash
+node picoin-web/tests/phase2-web-routes-smoke.mjs \
+  --base-url https://picoin.science \
+  --required 3 \
+  --routes /api/bootstrap,/api/bootstrap-a,/api/bootstrap-b
+```
+
+Use the route list that excludes the stopped candidate. This closes the production failover gate only after the deployed site is observed working while one bootstrap is offline and the smoke test returns `status=ok`.
 
 ## Acceptance Gates
 

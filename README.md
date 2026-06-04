@@ -827,6 +827,7 @@ Phase 2 preparation evidence:
 - [x] Published candidate endpoint list and operator requirements in `picoin-proof-of-pi/deploy/README-bootstrap-phase2.md`
 - [x] Added web read failover for explorer, miner search, transaction lookup, and wallet balance/history through same-origin `/api/bootstrap-*` routes; signed wallet submissions remain pinned to the primary route until write propagation is tested
 - [x] Added `picoin-web/tests/phase2-failover.test.mjs` to verify read failover and primary-only wallet POST behavior
+- [x] Added `picoin-web/tests/phase2-web-routes-smoke.mjs` to verify deployed `/api/bootstrap-*` routes before the final production failover drill
 
 ### Phase 3: Peer Gossip And Consensus Propagation
 
