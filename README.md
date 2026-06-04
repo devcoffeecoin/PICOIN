@@ -54,12 +54,14 @@ The public testnet has been used for launch rehearsals and can still be studied 
 
 ## Environment Files
 
-There are four tracked env examples. Treat them as the source of truth.
+There are six tracked env examples. Treat them as the source of truth.
 
 | File | Use it for | Notes |
 | --- | --- | --- |
 | `picoin-proof-of-pi/deploy/mainnet.env.example` | Mainnet nodes, miners, validators | Production template. Every `CHANGE_ME` value must be replaced before services start. |
 | `picoin-proof-of-pi/deploy/mainnet-shadow-full-node.env.example` | Disposable mainnet shadow full node | Read-only template for Phase 1B reproduction tests. Do not use on the mainnet bootstrap. |
+| `picoin-proof-of-pi/deploy/mainnet-public-bootstrap-candidate.env.example` | Phase 2 public bootstrap candidate | Read-only public candidate template. Keep miner, validator, reconciler, and auditor disabled. |
+| `picoin-proof-of-pi/deploy/phase1-full-node.env.example` | Isolated Phase 1 full-node lab | Test-only template with a non-mainnet network id, chain id, and genesis hash. |
 | `picoin-proof-of-pi/deploy/public-testnet.env.example` | Historical public-testnet rehearsal only | Keeps the old `public-testnet` and `picoin-public-testnet-v018` values for reference. Do not use for mainnet. |
 | `picoin-proof-of-pi/.env.example` | Local development only | Uses `local` and `picoin-local-testnet`; useful for tests and isolated dev nodes. |
 
@@ -801,12 +803,19 @@ Phase 1B evidence:
 
 Goal: replace the single public bootstrap dependency with multiple API/bootstrap nodes that serve the same chain view.
 
+- [x] Add reproducible public bootstrap candidate env template, runbook, and read-only comparison verifier
 - [ ] Deploy at least three public bootstrap candidates in different regions
 - [ ] Add node identity, peer discovery, and peer health checks for bootstrap candidates
 - [ ] Add explorer and wallet failover across bootstrap endpoints
 - [ ] Verify public bootstraps agree on height, block hash, state root, and audit validity
 - [ ] Verify one bootstrap can go offline without stopping explorer, wallet reads, miners, or validators
 - [ ] Publish bootstrap endpoint list and operator requirements
+
+Phase 2 preparation evidence:
+
+- [x] Public bootstrap candidate env template is tracked at `picoin-proof-of-pi/deploy/mainnet-public-bootstrap-candidate.env.example`
+- [x] Public bootstrap candidate runbook is tracked at `picoin-proof-of-pi/deploy/README-bootstrap-phase2.md`
+- [x] Read-only multi-bootstrap comparison verifier is tracked at `picoin-proof-of-pi/deploy/scripts/bootstrap-phase2-verify.py`
 
 ### Phase 3: Peer Gossip And Consensus Propagation
 
@@ -881,6 +890,7 @@ Use separate wallets for treasury, governance, miner rewards, validator rewards,
 | `picoin-proof-of-pi/deploy/README-mainnet.md` | Mainnet deployment runbook |
 | `picoin-proof-of-pi/deploy/README-full-node-phase1.md` | Decentralization Phase 1 full-node verification lab |
 | `picoin-proof-of-pi/deploy/README-mainnet-shadow-full-node.md` | Phase 1B read-only mainnet shadow full-node verification |
+| `picoin-proof-of-pi/deploy/README-bootstrap-phase2.md` | Phase 2 public bootstrap candidate and failover verification |
 | `picoin-proof-of-pi/deploy/README-public-testnet.md` | Historical public-testnet deployment guide |
 | `picoin-proof-of-pi/README.md` | Core developer and protocol reference |
 | `picoin-desktop-wallet/README.md` | Desktop wallet build and usage |
