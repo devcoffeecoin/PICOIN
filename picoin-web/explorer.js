@@ -14,6 +14,14 @@ const apiBaseUrl = cleanUrl(explorerConfig.apiBaseUrl || nodes[0]?.url || fallba
 const refreshMs = Number(explorerConfig.refreshMs || 30000);
 const transactionLimit = 20;
 const defaultFetchTimeoutMs = 12000;
+const apiClient = window.PicoinApiFailover
+  ? window.PicoinApiFailover.createClient({
+      config: explorerConfig,
+      defaultBaseUrl: apiBaseUrl,
+      storageKey: `picoin-explorer-active-bootstrap:${apiBaseUrl}`,
+      timeoutMs: defaultFetchTimeoutMs,
+    })
+  : null;
 const defaultEndpointTtlMs = 10000;
 const endpointTtls = {
   health: 5000,
@@ -376,6 +384,10 @@ async function fetchJsonFrom(baseUrl, path, options = {}) {
 }
 
 async function fetchJson(path, options = {}) {
+  if (apiClient) {
+    const result = await apiClient.fetchJson(path, options);
+    return result.payload;
+  }
   return fetchJsonFrom(apiBaseUrl, path, options);
 }
 

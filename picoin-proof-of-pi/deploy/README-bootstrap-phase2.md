@@ -230,6 +230,34 @@ sleep 30
 
 The drill passes only if the remaining candidates continue to match mainnet while one candidate is offline, and the stopped candidate catches up without manual database edits.
 
+## Explorer And Wallet Read Failover
+
+The web frontend can read through the Phase 2 candidate set without exposing `http://` bootstrap URLs directly to HTTPS browsers. Vercel rewrites same-origin routes to each candidate:
+
+| Web route | Upstream |
+| --- | --- |
+| `/api/bootstrap` | `https://api.picoin.science` |
+| `/api/bootstrap-a` | `http://178.62.30.17:8000` |
+| `/api/bootstrap-b` | `http://138.68.139.141:8000` |
+| `/api/bootstrap-c` | `http://159.89.115.183:8000` |
+
+The static web pages use `api-failover.js` to try the last healthy bootstrap first, then fall through to the rest of the configured endpoint list. The explorer, miner search, transaction page, and wallet balance/history reads use this path.
+
+Signed wallet transaction submission remains pinned to the primary route. Do not enable write failover to read-only candidates until transaction propagation through multiple public bootstraps is explicitly tested.
+
+After deploying the web frontend, verify:
+
+```bash
+for path in health protocol node/sync-status blocks validators/status miners/status stats; do
+  curl -i --max-time 20 "https://picoin.science/api/bootstrap/$path" | head -20
+  curl -i --max-time 20 "https://picoin.science/api/bootstrap-a/$path" | head -20
+  curl -i --max-time 20 "https://picoin.science/api/bootstrap-b/$path" | head -20
+  curl -i --max-time 20 "https://picoin.science/api/bootstrap-c/$path" | head -20
+done
+```
+
+Then stop one candidate, refresh explorer and wallet, and confirm read-only data continues loading from the remaining endpoints. This closes the production failover gate only after the deployed site is observed working while one bootstrap is offline.
+
 ## Acceptance Gates
 
 Phase 2 is not ready for production failover until all of these are true:

@@ -1,13 +1,20 @@
+const walletConfig = window.PICOIN_EXPLORER_CONFIG || {};
+
+function cleanUrl(value) {
+  return String(value || "").replace(/\/+$/, "");
+}
+
+const mainnetApiBaseUrl = cleanUrl(walletConfig.apiBaseUrl || "/api/bootstrap");
 const STORE_KEY = "picoin:web-wallet";
 const PICOIN_UNIT = 1_000_000n;
 const PICOIN_DECIMALS = 6;
 const CHAIN_ID = 314159;
 const NETWORKS = {
-  "picoin-mainnet-v1": "/picoin-api",
+  "picoin-mainnet-v1": mainnetApiBaseUrl,
   localhost: "http://127.0.0.1:8000",
 };
 const NETWORK_LABELS = {
-  "picoin-mainnet-v1": "https://api.picoin.science",
+  "picoin-mainnet-v1": "Public bootstrap failover",
   localhost: "http://127.0.0.1:8000",
 };
 
@@ -37,6 +44,8 @@ const els = {
   refreshHistory: document.getElementById("refreshHistory"),
   historyList: document.getElementById("historyList"),
 };
+let walletApiClient = null;
+let walletApiClientKey = "";
 
 function base64Url(bytes) {
   let binary = "";
@@ -117,6 +126,33 @@ function currentApi() {
   return els.apiUrl.value.replace(/\/+$/, "");
 }
 
+function currentApiConfig() {
+  const base = currentApi();
+  const selectedNetwork = els.networkSelect.value;
+  const defaultMainnet = NETWORKS["picoin-mainnet-v1"];
+  if (selectedNetwork === "picoin-mainnet-v1" && base === defaultMainnet) {
+    return walletConfig;
+  }
+  return { apiBaseUrl: base, nodes: [{ label: "custom", url: base }] };
+}
+
+function currentApiClient() {
+  if (!window.PicoinApiFailover) return null;
+  const base = currentApi();
+  const selectedNetwork = els.networkSelect.value;
+  const key = `${selectedNetwork}:${base}`;
+  if (!walletApiClient || walletApiClientKey !== key) {
+    walletApiClient = window.PicoinApiFailover.createClient({
+      config: currentApiConfig(),
+      defaultBaseUrl: base,
+      storageKey: `picoin-wallet-active-bootstrap:${key}`,
+      timeoutMs: 12000,
+    });
+    walletApiClientKey = key;
+  }
+  return walletApiClient;
+}
+
 function api(path) {
   const base = currentApi();
   if (!base || base === "/") return path;
@@ -124,6 +160,16 @@ function api(path) {
 }
 
 async function fetchJson(path, options = {}) {
+  const client = currentApiClient();
+  if (client) {
+    const method = String(options.method || "GET").toUpperCase();
+    const allowFailover = method === "GET" || method === "HEAD";
+    const result = await client.fetchJson(path, { ...options, allowFailover });
+    if (allowFailover && els.apiDisplay) {
+      els.apiDisplay.textContent = result.baseUrl;
+    }
+    return result.payload;
+  }
   const response = await fetch(api(path), {
     ...options,
     mode: "cors",

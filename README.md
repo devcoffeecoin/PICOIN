@@ -806,7 +806,7 @@ Goal: replace the single public bootstrap dependency with multiple API/bootstrap
 - [x] Add reproducible public bootstrap candidate env template, runbook, and read-only comparison verifier
 - [x] Deploy at least three public bootstrap candidates in different regions
 - [x] Add node identity and peer health checks for bootstrap candidates
-- [ ] Add explorer and wallet failover across bootstrap endpoints
+- [x] Add explorer and wallet read failover across bootstrap endpoints
 - [x] Verify initial public bootstrap candidates agree on height, block hash, state root, and audit validity
 - [x] Verify one bootstrap candidate can go offline without losing read-only bootstrap quorum
 - [ ] Verify one production bootstrap endpoint can go offline without stopping explorer, wallet reads, miners, or validators
@@ -825,6 +825,8 @@ Phase 2 preparation evidence:
 - [x] Controlled offline drill stopped `mainnet-bootstrap-candidate-c`; candidates A and B remained healthy with `status=ok`, `checked=59`, `errors=0`, `warnings=0`, height `4571`, and matching tip hash `92519b241db6d20300e2cfe583836fabfa1f37c946c9923674abcdf1a73c766c`
 - [x] After restarting `mainnet-bootstrap-candidate-c`, candidates A, B, and C returned to `status=ok`, `checked=88`, `errors=0`, `warnings=0`, height `4571`, and matching tip hash `92519b241db6d20300e2cfe583836fabfa1f37c946c9923674abcdf1a73c766c`
 - [x] Published candidate endpoint list and operator requirements in `picoin-proof-of-pi/deploy/README-bootstrap-phase2.md`
+- [x] Added web read failover for explorer, miner search, transaction lookup, and wallet balance/history through same-origin `/api/bootstrap-*` routes; signed wallet submissions remain pinned to the primary route until write propagation is tested
+- [x] Added `picoin-web/tests/phase2-failover.test.mjs` to verify read failover and primary-only wallet POST behavior
 
 ### Phase 3: Peer Gossip And Consensus Propagation
 
