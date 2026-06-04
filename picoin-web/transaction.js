@@ -5,6 +5,14 @@ function cleanUrl(value) {
 }
 
 const apiBaseUrl = cleanUrl(explorerConfig.apiBaseUrl || window.location.origin);
+const apiClient = window.PicoinApiFailover
+  ? window.PicoinApiFailover.createClient({
+      config: explorerConfig,
+      defaultBaseUrl: apiBaseUrl,
+      storageKey: `picoin-transaction-active-bootstrap:${apiBaseUrl}`,
+      timeoutMs: 12000,
+    })
+  : null;
 const $ = (id) => document.getElementById(id);
 
 function escapeHtml(value) {
@@ -35,6 +43,10 @@ function statusClass(status) {
 }
 
 async function fetchJson(path) {
+  if (apiClient) {
+    const result = await apiClient.fetchJson(path);
+    return result.payload;
+  }
   const response = await fetch(`${apiBaseUrl}${path}`, {
     headers: { Accept: "application/json" },
     mode: "cors",

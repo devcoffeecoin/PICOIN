@@ -31,20 +31,22 @@ window.PICOIN_EXPLORER_CONFIG = {
 
 `apiBaseUrl` is the primary read API for blocks, mining metrics, miners, validators, events, mempool and lookup. `nodes` powers the public network comparison table and should list the public API URL for every mainnet node you want visitors to see.
 
-The public Vercel deployment can use the included same-origin proxies:
+The public Vercel deployment can use the included same-origin proxies and read failover:
 
 ```js
 window.PICOIN_EXPLORER_CONFIG = {
   apiBaseUrl: "/api/bootstrap",
   refreshMs: 30000,
   nodes: [
-    { label: "bootstrap", url: "/api/bootstrap" },
-    { label: "validator", url: "/api/validator" }
+    { label: "mainnet-primary", url: "/api/bootstrap" },
+    { label: "candidate-a", url: "/api/bootstrap-a" },
+    { label: "candidate-b", url: "/api/bootstrap-b" },
+    { label: "candidate-c", url: "/api/bootstrap-c" }
   ]
 };
 ```
 
-The proxies forward read-only explorer traffic to the mainnet API. Override the default targets with `PICOIN_BOOTSTRAP_API_URL` and `PICOIN_VALIDATOR_API_URL` in Vercel if the canonical API endpoint changes.
+The proxies forward read-only explorer and wallet traffic to the mainnet API and Phase 2 bootstrap candidates. Browsers do not call the `http://` candidate URLs directly from the HTTPS site; they call same-origin `/api/bootstrap-*` routes and Vercel proxies upstream. Wallet transaction submission stays pinned to the primary route until write propagation through multiple public bootstraps is tested.
 
 If the website is served over HTTPS, the Picoin APIs must also be exposed over HTTPS; browsers block HTTP API calls from HTTPS pages.
 

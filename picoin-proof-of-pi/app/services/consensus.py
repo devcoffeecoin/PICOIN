@@ -112,6 +112,8 @@ FORK_CHOICE_RULE = (
     "oldest proposal, lexicographically lowest block_hash"
 )
 
+LEGACY_ZERO_GENESIS_HASH = "0" * 64
+
 _REPLAY_LOCK = threading.Lock()
 _REPLAY_WORKER_TASK: asyncio.Task | None = None
 _REPLAY_WORKER_STOP: asyncio.Event | None = None
@@ -129,6 +131,17 @@ _REPLAY_METRICS: dict[str, Any] = {
     "total_batches": 0,
     "last_error": None,
 }
+
+
+def _matches_local_parent(block: dict[str, Any], tip: dict[str, Any]) -> bool:
+    previous_hash = str(block["previous_hash"])
+    if previous_hash == str(tip["block_hash"]):
+        return True
+    return (
+        int(block["height"]) == 1
+        and int(tip["height"]) == 0
+        and previous_hash == LEGACY_ZERO_GENESIS_HASH
+    )
 _REPLAY_HEALTH_LOCK = threading.Lock()
 _REPLAY_HEALTH: dict[str, Any] = {
     "sync_status": "healthy",
@@ -208,7 +221,7 @@ def propose_block(block: dict[str, Any], proposer_node_id: str, gossip: bool = T
                     reason = "block already covered by active snapshot base"
                 else:
                     raise ConsensusError(409, "proposal conflicts with local finalized chain")
-        elif normalized["height"] == tip["height"] + 1 and normalized["previous_hash"] != tip["block_hash"]:
+        elif normalized["height"] == tip["height"] + 1 and not _matches_local_parent(normalized, tip):
             status = "pending_missing_ancestors"
             reason = "proposal accepted but previous_hash is not local chain tip"
             should_sync_ancestors = True
@@ -330,7 +343,7 @@ def _promote_ready_missing_ancestor_proposals(connection: Any) -> int:
         height = int(row["height"])
         previous_hash = row["previous_hash"]
         parent_exists = False
-        if height == 1 and previous_hash == GENESIS_HASH:
+        if height == 1 and previous_hash in {GENESIS_HASH, LEGACY_ZERO_GENESIS_HASH}:
             parent_exists = True
         else:
             parent = connection.execute(
@@ -1670,7 +1683,7 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
         raise ConsensusError(409, "finalized block conflicts with local chain")
     if block["height"] != tip["height"] + 1:
         raise ConsensusError(409, "cannot import block before ancestors")
-    if block["previous_hash"] != tip["block_hash"]:
+    if not _matches_local_parent(block, tip):
         raise ConsensusError(409, "finalized block previous_hash does not match local chain tip")
     _reject_duplicate_block_material(connection, block)
     _ensure_miner(connection, block["miner_id"])

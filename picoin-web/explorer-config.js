@@ -1,7 +1,10 @@
 window.PICOIN_EXPLORER_CONFIG = {
-  apiBaseUrl: "https://api.picoin.science",
+  apiBaseUrl: "/api/bootstrap",
   refreshMs: 60000,
   nodes: [
-    { label: "mainnet", url: "https://api.picoin.science" }
+    { label: "mainnet-primary", url: "/api/bootstrap" },
+    { label: "candidate-a", url: "/api/bootstrap-a" },
+    { label: "candidate-b", url: "/api/bootstrap-b" },
+    { label: "candidate-c", url: "/api/bootstrap-c" }
   ]
 };

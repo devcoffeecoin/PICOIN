@@ -5,6 +5,18 @@
       "destination": "https://api.picoin.science/:path*"
     },
     {
+      "source": "/api/bootstrap-a/:path*",
+      "destination": "http://178.62.30.17:8000/:path*"
+    },
+    {
+      "source": "/api/bootstrap-b/:path*",
+      "destination": "http://138.68.139.141:8000/:path*"
+    },
+    {
+      "source": "/api/bootstrap-c/:path*",
+      "destination": "http://159.89.115.183:8000/:path*"
+    },
+    {
       "source": "/api/validator/:path*",
       "destination": "https://api.picoin.science/:path*"
     },

@@ -54,11 +54,14 @@ The public testnet has been used for launch rehearsals and can still be studied 
 
 ## Environment Files
 
-There are three tracked env examples. Treat them as the source of truth.
+There are six tracked env examples. Treat them as the source of truth.
 
 | File | Use it for | Notes |
 | --- | --- | --- |
 | `picoin-proof-of-pi/deploy/mainnet.env.example` | Mainnet nodes, miners, validators | Production template. Every `CHANGE_ME` value must be replaced before services start. |
+| `picoin-proof-of-pi/deploy/mainnet-shadow-full-node.env.example` | Disposable mainnet shadow full node | Read-only template for Phase 1B reproduction tests. Do not use on the mainnet bootstrap. |
+| `picoin-proof-of-pi/deploy/mainnet-public-bootstrap-candidate.env.example` | Phase 2 public bootstrap candidate | Read-only public candidate template. Keep miner, validator, reconciler, and auditor disabled. |
+| `picoin-proof-of-pi/deploy/phase1-full-node.env.example` | Isolated Phase 1 full-node lab | Test-only template with a non-mainnet network id, chain id, and genesis hash. |
 | `picoin-proof-of-pi/deploy/public-testnet.env.example` | Historical public-testnet rehearsal only | Keeps the old `public-testnet` and `picoin-public-testnet-v018` values for reference. Do not use for mainnet. |
 | `picoin-proof-of-pi/.env.example` | Local development only | Uses `local` and `picoin-local-testnet`; useful for tests and isolated dev nodes. |
 
@@ -713,6 +716,170 @@ Before mainnet starts:
 [ ] Limited mining starts only after validators are healthy
 ```
 
+## Decentralization Roadmap
+
+This section is the tracked mainnet decentralization artifact. Items remain unchecked until they are implemented on an isolated branch, deployed to independent test droplets, verified with reproducible local audits, and explicitly approved for mainnet. Mainnet stability takes priority over roadmap speed.
+
+Status rules:
+
+- `[ ]` Pending or untested
+- `[x]` Tested on isolated droplets and accepted for the next stage
+
+### Phase 0: Stable Mainnet Baseline
+
+Mainnet stays on the current stable path while decentralization work happens separately.
+
+- [ ] Keep mainnet mining, validators, explorer, wallet, and bootstrap health stable while Phase 1 is tested separately
+- [ ] Monitor competitive mining rounds for accepted/rejected closure, stuck validation jobs, validator lag, and audit validity
+- [ ] Keep bootstrap running only the required API/node role unless explicitly testing another service
+- [ ] Keep desktop validator recovery under review until community reports confirm stable long-running sync
+- [ ] Do not merge decentralization code into mainnet until the Phase 1 acceptance gates below pass
+
+### Phase 1: Independent Full Node Verification
+
+Goal: any operator can run a Linux node on a clean droplet, sync from a canonical checkpoint or replay path, and independently verify the same chain state as the bootstrap without mining or validating.
+
+Test scope:
+
+- [x] Create an isolated decentralization branch from stable main
+- [x] Provision at least two independent test droplets that are not mainnet bootstrap machines
+- [x] Configure a separate network id, chain id, env file, data directory, and DNS/API endpoints for the test lab
+- [x] Start bootstrap-test and full-node-test roles without enabling miner, validator, reconciler, or auditor services by default
+- [x] Document clean install commands for Ubuntu 22.04/24.04 full nodes
+- [x] Add a reproducible snapshot restore path for a fresh full node
+- [x] Add a reproducible block/header catch-up path after snapshot restore
+- [x] Verify local `/health`, `/protocol`, `/node/sync-status`, `/audit/full`, and checkpoint endpoints on each full node
+- [x] Verify full nodes compute the same latest height, block hash, state root, balances hash, validators hash, and pending rewards hash as the test bootstrap
+- [x] Verify a full node can restart from disk and remain consistent without manual database edits
+- [x] Verify a full node can fall behind, catch up, and recover without replay divergence
+- [x] Verify a full node rejects snapshots or blocks from the wrong network id, chain id, genesis hash, or protocol version
+- [x] Verify a full node can serve read-only explorer/wallet API requests locally
+- [x] Verify no private wallet, miner, or validator identity files are required for a read-only full node
+- [x] Produce a full-node operator runbook for the community
+
+Phase 1 lab evidence:
+
+- [x] `phase1-bootstrap-test` (`159.65.35.231`) started on isolated network `picoin-phase1-fullnode-lab-v1`, chain `31415991`, genesis `060d1089d198a42d043ea19e89d5d5aa08b40446a713a3c5f6df84c50b13fed5`
+- [x] `phase1-full-node-a` (`143.110.172.254`) caught up from height `0` to height `5` and matched bootstrap hash `f18b8961345f14011a7786771bfa3d7aeb6d11820ea793590bb86864ac1f1aa1`
+- [x] `phase1-full-node-b` (`209.38.90.231`) restored the canonical snapshot at height `5`, restarted cleanly, caught up to height `7`, and matched bootstrap hash `98a6db57d4d56b2e26003712eea77e142815e6b588b4c005c54750ebb06c0699`
+- [x] `phase1-full-node-a` and `phase1-full-node-b` both synced to bootstrap height `7` with matching tip hash `98a6db57d4d56b2e26003712eea77e142815e6b588b4c005c54750ebb06c0699`
+- [x] `phase1-full-node-b` matched bootstrap checkpoint fields for state root, balances hash, validators hash, pending rewards hash, protocol params hash, retarget events hash, and snapshot hash
+- [x] Negative env identity test rejected mismatched network id, chain id, and genesis hash before accepting the node as valid
+- [x] Real env control returned `status=ok`, `errors=0`, `warnings=0`, `lag=0`, and matching local/peer tip hash at height `5`
+- [x] Full-node operator runbook is tracked at `picoin-proof-of-pi/deploy/README-full-node-phase1.md`
+
+Acceptance gates:
+
+- [x] Two independent droplets sync to the same test height and hashes
+- [x] `/audit/full` returns `valid=true` on every full node
+- [x] Full nodes stay healthy across at least one restart and one catch-up cycle
+- [x] No manual SQLite edits are required during setup or recovery
+- [x] The test lab can be rebuilt from the documented commands
+- [x] Mainnet remains untouched during testing
+
+### Phase 1B: Mainnet Shadow Full Node
+
+Goal: prove the Phase 1 full-node path can reproduce live mainnet as a read-only shadow node before any public bootstrap or miner/validator failover work begins.
+
+- [x] Provision one disposable mainnet-shadow full node that is not the mainnet bootstrap
+- [x] Start only `picoin-node`; keep miner, validator, reconciler, and auditor disabled
+- [x] Restore from `https://api.picoin.science` canonical snapshot without manual SQLite edits
+- [x] Catch up to live mainnet tip with zero lag and matching effective block hash
+- [x] Verify `/audit/full valid=true`, replay healthy, no divergence, and checkpoint/snapshot hashes match
+- [x] Restart the shadow node and verify it remains healthy from disk
+- [x] Destroy or keep the shadow node read-only after evidence is recorded
+
+Phase 1B evidence:
+
+- [x] `mainnet-shadow-full-node-1` (`137.184.59.98`) restored from `https://api.picoin.science`, verified height `4504`, lag `0`, and matched tip hash `9bbc91b7fab575fb00736bd2ff770f55cf6440c361b4f614a3f6c00371acb004`
+- [x] Shadow node matched mainnet checkpoint fields for state root, balances hash, validators hash, pending rewards hash, protocol params hash, retarget events hash, and snapshot hash
+- [x] After restart, `mainnet-shadow-full-node-1` caught up from snapshot height `4504` to live height `4508` with lag `0`, audit valid, no replay divergence, and matching tip hash `63e5595549e39c719f20245ad06dd19cd834adbf8274ba4cf1b45801ca14c647`
+- [x] Service check confirmed only `picoin-node` active; miner, validator, reconciler, and auditor remained inactive
+- [x] Negative snapshot import on `mainnet-shadow-full-node-1` rejected mismatched network id, chain id, and genesis hash, then remained replay healthy at height `4508`
+- [x] Local read-only API check on `mainnet-shadow-full-node-1` returned JSON for health, protocol, sync status, stats, blocks, mempool, recent transactions, validators, miners, account balance, and account history endpoints
+- [x] Decision recorded: keep `mainnet-shadow-full-node-1` alive as a read-only observer while Phase 2 is planned
+
+### Phase 2: Multiple Public Bootstrap Nodes
+
+Goal: replace the single public bootstrap dependency with multiple API/bootstrap nodes that serve the same chain view.
+
+- [x] Add reproducible public bootstrap candidate env template, runbook, and read-only comparison verifier
+- [x] Deploy at least three public bootstrap candidates in different regions
+- [x] Add node identity and peer health checks for bootstrap candidates
+- [x] Add explorer and wallet read failover across bootstrap endpoints
+- [x] Verify initial public bootstrap candidates agree on height, block hash, state root, and audit validity
+- [x] Verify one bootstrap candidate can go offline without losing read-only bootstrap quorum
+- [ ] Verify one production bootstrap endpoint can go offline without stopping explorer, wallet reads, miners, or validators
+- [x] Publish bootstrap endpoint list and operator requirements
+
+Phase 2 preparation evidence:
+
+- [x] Public bootstrap candidate env template is tracked at `picoin-proof-of-pi/deploy/mainnet-public-bootstrap-candidate.env.example`
+- [x] Public bootstrap candidate runbook is tracked at `picoin-proof-of-pi/deploy/README-bootstrap-phase2.md`
+- [x] Read-only multi-bootstrap comparison verifier is tracked at `picoin-proof-of-pi/deploy/scripts/bootstrap-phase2-verify.py`
+- [x] `mainnet-bootstrap-candidate-b` (`138.68.139.141`) restored from mainnet, caught up to height `4571`, and matched tip hash `92519b241db6d20300e2cfe583836fabfa1f37c946c9923674abcdf1a73c766c`
+- [x] `mainnet-bootstrap-candidate-a` (`178.62.30.17`) restored from `mainnet-bootstrap-candidate-b`, caught up to height `4571`, and matched tip hash `92519b241db6d20300e2cfe583836fabfa1f37c946c9923674abcdf1a73c766c`
+- [x] Phase 2 verifier compared candidates A and B with `status=ok`, `checked=59`, `errors=0`, `warnings=0`, and matching checkpoint hashes
+- [x] `mainnet-bootstrap-candidate-c` (`159.89.115.183`) restored from `mainnet-bootstrap-candidate-b`, caught up to height `4571`, and matched tip hash `92519b241db6d20300e2cfe583836fabfa1f37c946c9923674abcdf1a73c766c`
+- [x] Phase 2 verifier compared candidates A, B, and C with `status=ok`, `checked=88`, `errors=0`, `warnings=0`, and matching read-only endpoint responses
+- [x] Controlled offline drill stopped `mainnet-bootstrap-candidate-c`; candidates A and B remained healthy with `status=ok`, `checked=59`, `errors=0`, `warnings=0`, height `4571`, and matching tip hash `92519b241db6d20300e2cfe583836fabfa1f37c946c9923674abcdf1a73c766c`
+- [x] After restarting `mainnet-bootstrap-candidate-c`, candidates A, B, and C returned to `status=ok`, `checked=88`, `errors=0`, `warnings=0`, height `4571`, and matching tip hash `92519b241db6d20300e2cfe583836fabfa1f37c946c9923674abcdf1a73c766c`
+- [x] Published candidate endpoint list and operator requirements in `picoin-proof-of-pi/deploy/README-bootstrap-phase2.md`
+- [x] Added web read failover for explorer, miner search, transaction lookup, and wallet balance/history through same-origin `/api/bootstrap-*` routes; signed wallet submissions remain pinned to the primary route until write propagation is tested
+- [x] Added `picoin-web/tests/phase2-failover.test.mjs` to verify read failover and primary-only wallet POST behavior
+- [x] Added `picoin-web/tests/phase2-web-routes-smoke.mjs` to verify deployed `/api/bootstrap-*` routes before the final production failover drill
+
+### Phase 3: Peer Gossip And Consensus Propagation
+
+Goal: nodes exchange chain data and consensus messages directly instead of relying on one coordinator API.
+
+- [ ] Gossip block headers and finalized block payloads between peers
+- [ ] Gossip signed transactions and mempool inventory between peers
+- [ ] Gossip validator heartbeats and validator votes between peers
+- [ ] Add deterministic duplicate suppression for peer messages
+- [ ] Add peer scoring, stale peer detection, and peer ban/cooldown rules
+- [ ] Verify nodes can catch up from multiple peers instead of one bootstrap
+
+### Phase 4: Decentralized Mempool And Block Candidate Construction
+
+Goal: every full node can independently validate transaction ordering and reconstruct the same candidate block state.
+
+- [ ] Define canonical transaction selection rules for competitive rounds
+- [ ] Verify deterministic nonce ordering, fee ordering, and tx merkle root generation across nodes
+- [ ] Propagate signed transactions without exposing private keys
+- [ ] Add conflict handling for replaced, expired, failed, or already-confirmed transactions
+- [ ] Verify candidate block replay produces identical state roots across nodes
+
+### Phase 5: Miner Task Independence
+
+Goal: miners can request the same canonical competitive round work from any healthy node.
+
+- [ ] Derive competitive task ranges from canonical height, previous block hash, and protocol params
+- [ ] Allow multiple full nodes to serve the same round without creating conflicting work
+- [ ] Verify first valid reveal wins independent of which node assigned the task
+- [ ] Verify late reveals become stale consistently across nodes
+- [ ] Verify miners can fail over to another node without losing identity or reward wallet configuration
+
+### Phase 6: Validator Finality Certificates
+
+Goal: a block becomes canonical by validator quorum certificate, not by one API database decision.
+
+- [ ] Define signed finality certificate schema for each block
+- [ ] Include quorum validator ids, signatures, reward addresses, and protocol params id in canonical payloads
+- [ ] Reject conflicting certificates for the same height unless deterministic rules select one valid canonical block
+- [ ] Add slashing evidence for validators that sign conflicting blocks at the same height
+- [ ] Verify all full nodes can validate finality certificates from disk after restart
+
+### Phase 7: Exchange And Infrastructure Full-Node Package
+
+Goal: exchanges and infrastructure operators can run PICOIN without depending on the public API server.
+
+- [ ] Provide Linux full-node install package or script
+- [ ] Provide wallet manager commands for address creation, balance checks, nonce checks, and signed withdrawals
+- [ ] Provide local API/RPC endpoints for deposits, withdrawals, confirmations, blocks, transactions, and health
+- [ ] Document confirmation policy and block maturity behavior
+- [ ] Provide backup, restore, audit, and monitoring runbooks
+
 ## Security Rules
 
 Do not commit:
@@ -733,6 +900,9 @@ Use separate wallets for treasury, governance, miner rewards, validator rewards,
 | Document | Purpose |
 | --- | --- |
 | `picoin-proof-of-pi/deploy/README-mainnet.md` | Mainnet deployment runbook |
+| `picoin-proof-of-pi/deploy/README-full-node-phase1.md` | Decentralization Phase 1 full-node verification lab |
+| `picoin-proof-of-pi/deploy/README-mainnet-shadow-full-node.md` | Phase 1B read-only mainnet shadow full-node verification |
+| `picoin-proof-of-pi/deploy/README-bootstrap-phase2.md` | Phase 2 public bootstrap candidate and failover verification |
 | `picoin-proof-of-pi/deploy/README-public-testnet.md` | Historical public-testnet deployment guide |
 | `picoin-proof-of-pi/README.md` | Core developer and protocol reference |
 | `picoin-desktop-wallet/README.md` | Desktop wallet build and usage |
