@@ -804,7 +804,7 @@ Phase 1B evidence:
 Goal: replace the single public bootstrap dependency with multiple API/bootstrap nodes that serve the same chain view.
 
 - [x] Add reproducible public bootstrap candidate env template, runbook, and read-only comparison verifier
-- [ ] Deploy at least three public bootstrap candidates in different regions
+- [x] Deploy at least three public bootstrap candidates in different regions
 - [x] Add node identity and peer health checks for bootstrap candidates
 - [ ] Add explorer and wallet failover across bootstrap endpoints
 - [x] Verify initial public bootstrap candidates agree on height, block hash, state root, and audit validity
@@ -819,6 +819,8 @@ Phase 2 preparation evidence:
 - [x] `mainnet-bootstrap-candidate-b` (`138.68.139.141`) restored from mainnet, caught up to height `4571`, and matched tip hash `92519b241db6d20300e2cfe583836fabfa1f37c946c9923674abcdf1a73c766c`
 - [x] `mainnet-bootstrap-candidate-a` (`178.62.30.17`) restored from `mainnet-bootstrap-candidate-b`, caught up to height `4571`, and matched tip hash `92519b241db6d20300e2cfe583836fabfa1f37c946c9923674abcdf1a73c766c`
 - [x] Phase 2 verifier compared candidates A and B with `status=ok`, `checked=59`, `errors=0`, `warnings=0`, and matching checkpoint hashes
+- [x] `mainnet-bootstrap-candidate-c` (`159.89.115.183`) restored from `mainnet-bootstrap-candidate-b`, caught up to height `4571`, and matched tip hash `92519b241db6d20300e2cfe583836fabfa1f37c946c9923674abcdf1a73c766c`
+- [x] Phase 2 verifier compared candidates A, B, and C with `status=ok`, `checked=88`, `errors=0`, `warnings=0`, and matching read-only endpoint responses
 
 ### Phase 3: Peer Gossip And Consensus Propagation
 
