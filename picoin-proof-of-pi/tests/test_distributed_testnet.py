@@ -1120,8 +1120,8 @@ def test_snapshot_restore_preserves_pending_reward_maturity_for_replay(tmp_path,
     miner = register_miner("snapshot-pending-reward-miner", miner_key["public_key"])
     _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
     _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
-    snapshot = export_canonical_snapshot(height=2)
     _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    snapshot = export_canonical_snapshot(height=2)
     next_block = get_blocks_since(2)["blocks"][0]
     source_audit = get_full_economic_audit()
 

@@ -99,11 +99,13 @@ def pending_rewards_snapshot(connection: Any, block_height: int) -> list[dict[st
             status, matures_at_height, matured_at, orphaned_at, orphan_reason,
             related_id, reason, created_at
         FROM rewards
-        WHERE status = 'immature'
-          AND block_height <= ?
+        WHERE block_height <= ?
+          AND matures_at_height IS NOT NULL
+          AND matures_at_height > ?
+          AND COALESCE(orphaned_at, '') = ''
         ORDER BY matures_at_height ASC, id ASC
         """,
-        (block_height,),
+        (block_height, block_height),
     ).fetchall()
     return [_normalize_pending_reward_snapshot_row(row) for row in rows]
 
