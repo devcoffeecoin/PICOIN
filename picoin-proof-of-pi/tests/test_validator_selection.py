@@ -53,6 +53,42 @@ def test_validator_list_exposes_rotation_aware_selection_scores(tmp_path, monkey
     assert validators[fresh_validator["validator_id"]]["availability_score"] >= 0.5
 
 
+def test_competitive_round_validation_focuses_oldest_pending_candidate(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "validator-selection-competitive-round.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    miner = _register_miner("competitive-selection-miner")
+    first_validator = _register_validator("competitive-selection-validator-a")
+    second_validator = _register_validator("competitive-selection-validator-b")
+    with get_connection() as connection:
+        _insert_pending_job(
+            connection,
+            miner["miner_id"],
+            suffix="competitive_a",
+            assignment_mode="competitive_round",
+            assignment_seed="round-seed-1",
+            created_at="2026-06-04T00:00:00+00:00",
+        )
+        _insert_pending_job(
+            connection,
+            miner["miner_id"],
+            suffix="competitive_b",
+            assignment_mode="competitive_round",
+            assignment_seed="round-seed-1",
+            created_at="2026-06-04T00:00:01+00:00",
+        )
+
+    first_job = get_validation_job(first_validator["validator_id"])
+    second_job = get_validation_job(second_validator["validator_id"])
+
+    assert first_job is not None
+    assert second_job is not None
+    assert first_job["job_id"] == "job_selection_competitive_a"
+    assert second_job["job_id"] == "job_selection_competitive_a"
+
+
 def _register_miner(name: str) -> dict:
     keypair = generate_keypair()
     return register_miner(name, keypair["public_key"])
@@ -78,11 +114,18 @@ def _register_validator(name: str) -> dict:
     return validator
 
 
-def _insert_pending_job(connection, miner_id: str, suffix: str = "1") -> None:
+def _insert_pending_job(
+    connection,
+    miner_id: str,
+    suffix: str = "1",
+    assignment_mode: str | None = None,
+    assignment_seed: str | None = None,
+    created_at: str | None = None,
+) -> None:
     protocol_params_id = connection.execute(
         "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
     ).fetchone()["id"]
-    now = datetime.now(timezone.utc).isoformat()
+    now = created_at or datetime.now(timezone.utc).isoformat()
     task_id = f"task_selection_{suffix}"
     job_id = f"job_selection_{suffix}"
     offset = sum(ord(char) for char in suffix) * 100
@@ -92,11 +135,11 @@ def _insert_pending_job(connection, miner_id: str, suffix: str = "1") -> None:
         """
         INSERT INTO tasks (
             task_id, miner_id, range_start, range_end, algorithm, status,
-            protocol_params_id, created_at
+            protocol_params_id, assignment_mode, assignment_seed, created_at
         )
-        VALUES (?, ?, ?, ?, 'bbp_hex_v1', 'revealed', ?, ?)
+        VALUES (?, ?, ?, ?, 'bbp_hex_v1', 'revealed', ?, ?, ?, ?)
         """,
-        (task_id, miner_id, range_start, range_end, protocol_params_id, now),
+        (task_id, miner_id, range_start, range_end, protocol_params_id, assignment_mode, assignment_seed, now),
     )
     connection.execute(
         """
