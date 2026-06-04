@@ -95,7 +95,20 @@ local_hash = effective_hash(local_sync)
 peer_hash = effective_hash(peer_sync)
 lag = max(0, peer_height - local_height)
 
-add_check("local_health_ok", local_health.get("status") == "ok", f"status={local_health.get('status')}")
+local_health_issues = list(local_health.get("issues") or [])
+expected_read_only_issues = {
+    "not enough eligible validators for quorum",
+}
+health_ok = local_health.get("status") == "ok" or (
+    local_health.get("status") == "degraded"
+    and local_sync.get("node_id")
+    and set(local_health_issues).issubset(expected_read_only_issues)
+)
+add_check(
+    "local_health_ok",
+    health_ok,
+    f"status={local_health.get('status')} issues={local_health_issues}",
+)
 add_check("local_sync_healthy", (local_sync.get("replay") or {}).get("sync_status") == "healthy", f"replay={(local_sync.get('replay') or {}).get('sync_status')}")
 add_check("local_not_divergent", (local_sync.get("replay") or {}).get("divergence_detected") is False, f"divergence={(local_sync.get('replay') or {}).get('divergence_reason')}")
 add_check("local_audit_valid", local_audit.get("valid") is True, f"issues={local_audit.get('issues')}")
@@ -128,6 +141,8 @@ if local_checkpoint and peer_checkpoint and int(local_checkpoint.get("height") o
             local_cp_payload.get(key) == peer_cp_payload.get(key),
             f"local={local_cp_payload.get(key)} peer={peer_cp_payload.get(key)}",
         )
+elif not local_checkpoint and not peer_checkpoint and local_height == peer_height:
+    add_check("checkpoint_height_match", True, f"both nodes have no checkpoint at height={local_height}")
 else:
     add_check(
         "checkpoint_height_match",
