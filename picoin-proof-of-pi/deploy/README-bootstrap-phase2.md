@@ -9,16 +9,16 @@ Do not run this on the current mainnet bootstrap. Use disposable candidate dropl
 Phase 2 candidates are read-only API/node servers:
 
 - `picoin-node` enabled
+- `picoin-reconciler` enabled after snapshot restore so the candidate keeps catching up automatically
 - `picoin-miner` disabled
 - `picoin-validator` disabled
-- `picoin-reconciler` disabled
 - `picoin-auditor` disabled
 
 They may expose `http://PUBLIC_IP:8000` during the lab. Add Nginx/TLS only after the raw node checks pass.
 
 ## Current Candidate Endpoints
 
-These endpoints are Phase 2 public bootstrap candidates. They are read-only candidates for decentralization testing, not yet the production failover list for explorer, wallets, miners, or validators.
+These endpoints are Phase 2 public bootstrap candidates. They are read-only candidates for decentralization testing and production web read failover, not miner, validator, or signed wallet transaction failover.
 
 | Candidate | Region label | Endpoint | Role |
 | --- | --- | --- | --- |
@@ -34,7 +34,8 @@ A Phase 2 bootstrap candidate operator must:
 
 - run a clean Ubuntu 22.04 or 24.04 server with enough disk for the mainnet SQLite database, logs, and backups
 - expose `picoin-node` publicly on the configured node address
-- keep `picoin-miner`, `picoin-validator`, `picoin-reconciler`, and `picoin-auditor` disabled unless the node is later promoted under a separate production plan
+- keep `picoin-miner`, `picoin-validator`, and `picoin-auditor` disabled unless the node is later promoted under a separate production plan
+- keep `picoin-reconciler` enabled after the first verified restore so the candidate stays close to the mainnet tip without manual catch-up
 - use the production mainnet identity values: `picoin-mainnet-v1`, chain id `314159`, protocol version `1.0`, and the canonical mainnet genesis hash
 - preserve a unique `PICOIN_NODE_ID` and `PICOIN_NODE_ADDRESS` per candidate
 - restore from a canonical peer or another already verified candidate, then verify zero replay divergence
@@ -97,7 +98,7 @@ The final grep must print nothing before services start.
 
 ```bash
 sudo systemctl daemon-reload
-sudo systemctl disable --now picoin-miner picoin-validator picoin-reconciler picoin-auditor 2>/dev/null || true
+sudo systemctl disable --now picoin-miner picoin-validator picoin-auditor 2>/dev/null || true
 sudo systemctl enable --now picoin-node
 sleep 20
 
@@ -158,6 +159,15 @@ sudo -u picoin .venv/bin/python -m picoin node catch-up \
 ```
 
 Final acceptance requires zero lag, matching effective tip hash, audit valid, and no replay divergence.
+
+After the first verified restore, keep the reconciler enabled so the candidate continues to follow mainnet:
+
+```bash
+sudo systemctl enable --now picoin-reconciler
+systemctl is-active picoin-node picoin-reconciler picoin-miner picoin-validator picoin-auditor 2>/dev/null || true
+```
+
+A small temporary lag is normal because candidates are read-only followers. It should converge automatically and remain within the documented smoke-test allowance.
 
 ## Compare Public Candidates
 
@@ -273,7 +283,8 @@ Phase 2 is not ready for production failover until all of these are true:
 - `/audit/full` is valid on every candidate
 - read-only explorer/wallet endpoints return JSON locally and publicly
 - one candidate can be stopped without losing at least two healthy read-only candidates
-- no miner, validator, reconciler, or auditor service is enabled on candidate droplets
+- no miner, validator, or auditor service is enabled on candidate droplets
+- reconciler is enabled on candidate droplets after restore so they do not require manual catch-up during normal operation
 - the endpoint list and operator requirements are documented before explorer/wallet failover is enabled
 
 ## Rollback

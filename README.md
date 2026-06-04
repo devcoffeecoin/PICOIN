@@ -60,7 +60,7 @@ There are six tracked env examples. Treat them as the source of truth.
 | --- | --- | --- |
 | `picoin-proof-of-pi/deploy/mainnet.env.example` | Mainnet nodes, miners, validators | Production template. Every `CHANGE_ME` value must be replaced before services start. |
 | `picoin-proof-of-pi/deploy/mainnet-shadow-full-node.env.example` | Disposable mainnet shadow full node | Read-only template for Phase 1B reproduction tests. Do not use on the mainnet bootstrap. |
-| `picoin-proof-of-pi/deploy/mainnet-public-bootstrap-candidate.env.example` | Phase 2 public bootstrap candidate | Read-only public candidate template. Keep miner, validator, reconciler, and auditor disabled. |
+| `picoin-proof-of-pi/deploy/mainnet-public-bootstrap-candidate.env.example` | Phase 2 public bootstrap candidate | Read-only public candidate template. Keep miner, validator, and auditor disabled; run reconciler so the candidate keeps up with mainnet. |
 | `picoin-proof-of-pi/deploy/phase1-full-node.env.example` | Isolated Phase 1 full-node lab | Test-only template with a non-mainnet network id, chain id, and genesis hash. |
 | `picoin-proof-of-pi/deploy/public-testnet.env.example` | Historical public-testnet rehearsal only | Keeps the old `public-testnet` and `picoin-public-testnet-v018` values for reference. Do not use for mainnet. |
 | `picoin-proof-of-pi/.env.example` | Local development only | Uses `local` and `picoin-local-testnet`; useful for tests and isolated dev nodes. |
@@ -809,7 +809,7 @@ Goal: replace the single public bootstrap dependency with multiple API/bootstrap
 - [x] Add explorer and wallet read failover across bootstrap endpoints
 - [x] Verify initial public bootstrap candidates agree on height, block hash, state root, and audit validity
 - [x] Verify one bootstrap candidate can go offline without losing read-only bootstrap quorum
-- [ ] Verify one production bootstrap endpoint can go offline without stopping explorer, wallet reads, miners, or validators
+- [x] Verify one production web bootstrap route can go offline without stopping explorer or wallet reads; miner and validator traffic remains pinned to the primary API
 - [x] Publish bootstrap endpoint list and operator requirements
 
 Phase 2 preparation evidence:
@@ -828,6 +828,9 @@ Phase 2 preparation evidence:
 - [x] Added web read failover for explorer, miner search, transaction lookup, and wallet balance/history through same-origin `/api/bootstrap-*` routes; signed wallet submissions remain pinned to the primary route until write propagation is tested
 - [x] Added `picoin-web/tests/phase2-failover.test.mjs` to verify read failover and primary-only wallet POST behavior
 - [x] Added `picoin-web/tests/phase2-web-routes-smoke.mjs` to verify deployed `/api/bootstrap-*` routes before the final production failover drill
+- [x] Production web failover drill with `mainnet-bootstrap-candidate-c` stopped passed against `/api/bootstrap`, `/api/bootstrap-a`, and `/api/bootstrap-b` with `required=3`, `allowed_lag=5`, `status=ok`, `healthy_routes=3`, and `errors=0`
+- [x] `picoin-reconciler` is enabled on bootstrap candidates A, B, and C so read-only candidates keep catching up automatically while miner, validator, and auditor services remain disabled
+- [x] After restarting `mainnet-bootstrap-candidate-c`, deployed web route smoke passed with `/api/bootstrap`, `/api/bootstrap-a`, `/api/bootstrap-b`, and `/api/bootstrap-c`: `required=4`, `allowed_lag=5`, `status=ok`, `healthy_routes=4`, `errors=0`, primary height `4815`, candidate height `4814`
 
 ### Phase 3: Peer Gossip And Consensus Propagation
 
