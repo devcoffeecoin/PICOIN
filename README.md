@@ -778,11 +778,11 @@ Acceptance gates:
 
 Goal: prove the Phase 1 full-node path can reproduce live mainnet as a read-only shadow node before any public bootstrap or miner/validator failover work begins.
 
-- [ ] Provision one disposable mainnet-shadow full node that is not the mainnet bootstrap
+- [x] Provision one disposable mainnet-shadow full node that is not the mainnet bootstrap
 - [ ] Start only `picoin-node`; keep miner, validator, reconciler, and auditor disabled
-- [ ] Restore from `https://api.picoin.science` canonical snapshot without manual SQLite edits
+- [x] Restore from `https://api.picoin.science` canonical snapshot without manual SQLite edits
 - [x] Catch up to live mainnet tip with zero lag and matching effective block hash
-- [ ] Verify `/audit/full valid=true`, replay healthy, no divergence, and checkpoint/snapshot hashes match
+- [x] Verify `/audit/full valid=true`, replay healthy, no divergence, and checkpoint/snapshot hashes match
 - [x] Restart the shadow node and verify it remains healthy from disk
 - [ ] Destroy or keep the shadow node read-only after evidence is recorded
 
