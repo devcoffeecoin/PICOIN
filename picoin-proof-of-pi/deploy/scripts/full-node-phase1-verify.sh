@@ -29,6 +29,7 @@ fi
 
 "$PICOIN_PYTHON" - "$PICOIN_SERVER" "$PICOIN_BOOTSTRAP_PEER" "$PICOIN_PHASE1_ALLOWED_LAG_BLOCKS" <<'PY'
 import json
+import os
 import sys
 import urllib.error
 import urllib.request
@@ -112,6 +113,20 @@ add_check(
 add_check("local_sync_healthy", (local_sync.get("replay") or {}).get("sync_status") == "healthy", f"replay={(local_sync.get('replay') or {}).get('sync_status')}")
 add_check("local_not_divergent", (local_sync.get("replay") or {}).get("divergence_detected") is False, f"divergence={(local_sync.get('replay') or {}).get('divergence_reason')}")
 add_check("local_audit_valid", local_audit.get("valid") is True, f"issues={local_audit.get('issues')}")
+
+expected_env = {
+    "network_id": os.environ.get("PICOIN_NETWORK", "").strip(),
+    "chain_id": os.environ.get("PICOIN_CHAIN_ID", "").strip(),
+    "genesis_hash": os.environ.get("PICOIN_GENESIS_HASH", "").strip(),
+    "protocol_version": os.environ.get("PICOIN_PROTOCOL_VERSION", "").strip(),
+}
+for key, expected in expected_env.items():
+    if expected:
+        add_check(
+            f"local_{key}_matches_env",
+            str(local_sync.get(key)) == expected,
+            f"local={local_sync.get(key)} env={expected}",
+        )
 
 for key in ("network_id", "chain_id", "genesis_hash", "protocol_version"):
     add_check(f"{key}_match", local_sync.get(key) == peer_sync.get(key), f"local={local_sync.get(key)} peer={peer_sync.get(key)}")
