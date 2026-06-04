@@ -1202,8 +1202,8 @@ def validation_result(payload: ValidationResultRequest) -> dict:
 
 
 @router.get("/blocks", response_model=list[BlockResponse])
-def blocks() -> list[dict]:
-    return get_blocks()
+def blocks(limit: int | None = Query(None, ge=1, le=500)) -> list[dict]:
+    return get_blocks(limit=limit)
 
 
 @router.get("/blocks/verify", response_model=ChainVerificationResponse)

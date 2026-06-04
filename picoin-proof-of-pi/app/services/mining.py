@@ -3443,10 +3443,16 @@ def submit_validation_result(
     }
 
 
-def get_blocks() -> list[dict[str, Any]]:
+def get_blocks(limit: int | None = None) -> list[dict[str, Any]]:
     with get_connection() as connection:
+        if limit is not None:
+            rows = connection.execute(
+                "SELECT * FROM blocks ORDER BY height DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+            return [_decode_block(row_to_dict(row)) for row in reversed(rows)]
         rows = connection.execute("SELECT * FROM blocks ORDER BY height ASC").fetchall()
-    return [_decode_block(row_to_dict(row)) for row in rows]
+        return [_decode_block(row_to_dict(row)) for row in rows]
 
 
 def get_block(height: int) -> dict[str, Any] | None:

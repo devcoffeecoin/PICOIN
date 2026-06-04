@@ -500,7 +500,7 @@ async function loadExplorer() {
       () => loadEndpoint("protocol", "/protocol", null),
       () => loadEndpoint("validatorsStatus", "/validators/status", null),
       () => loadEndpoint("minersStatus", "/miners/status", null),
-      () => loadEndpoint("blocks", "/blocks", []),
+      () => loadEndpoint("blocks", "/blocks?limit=50", []),
       async () => {
         try {
           state.transactions = await fetchTransactions();
