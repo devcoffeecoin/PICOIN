@@ -254,6 +254,42 @@ def _store_task_tx_snapshot(
     }
 
 
+def _apply_task_tx_snapshot(
+    connection: Any,
+    *,
+    task_id: str,
+    snapshot_id: str,
+    commitment: dict[str, Any],
+) -> dict[str, Any]:
+    tx_hashes_json = json.dumps(commitment["tx_hashes"], sort_keys=True, separators=(",", ":"))
+    connection.execute(
+        """
+        UPDATE tasks
+        SET mempool_snapshot_id = ?,
+            selected_tx_hashes = ?,
+            tx_merkle_root = ?,
+            tx_count = ?,
+            tx_fee_total_units = ?,
+            selected_tx_hashes_hash = ?
+        WHERE task_id = ?
+        """,
+        (
+            snapshot_id,
+            tx_hashes_json,
+            commitment["tx_merkle_root"],
+            commitment["tx_count"],
+            commitment["tx_fee_total_units"],
+            commitment["selected_tx_hashes_hash"],
+            task_id,
+        ),
+    )
+    return {
+        "snapshot_id": snapshot_id,
+        "task_id": task_id,
+        **commitment,
+    }
+
+
 def freeze_transactions_for_task(
     connection: Any,
     *,
@@ -329,15 +365,15 @@ def freeze_transactions_for_competitive_round_task(
                 "tx_fee_total_units": int(source.get("tx_fee_total_units") or 0),
                 "fee_reward": units_to_float(int(source.get("tx_fee_total_units") or 0)),
             }
-            snapshot = _store_task_tx_snapshot(
+            snapshot = _apply_task_tx_snapshot(
                 connection,
                 task_id=task_id,
-                block_height=block_height,
+                snapshot_id=source["snapshot_id"],
                 commitment=commitment,
-                timestamp=timestamp,
             )
             return {
                 **snapshot,
+                "block_height": int(block_height),
                 "reused": True,
                 "source_task_id": source["task_id"],
                 "source_snapshot_id": source["snapshot_id"],
@@ -355,6 +391,18 @@ def freeze_transactions_for_competitive_round_task(
 
 def get_task_tx_snapshot(connection: Any, task_id: str) -> dict[str, Any] | None:
     row = row_to_dict(connection.execute("SELECT * FROM task_tx_snapshots WHERE task_id = ?", (task_id,)).fetchone())
+    if row is None:
+        row = row_to_dict(
+            connection.execute(
+                """
+                SELECT task_tx_snapshots.*
+                FROM tasks
+                JOIN task_tx_snapshots ON task_tx_snapshots.snapshot_id = tasks.mempool_snapshot_id
+                WHERE tasks.task_id = ?
+                """,
+                (task_id,),
+            ).fetchone()
+        )
     if row is None:
         return None
     tx_hashes = _decode_json(row.get("tx_hashes_json"), [])

@@ -9,6 +9,7 @@ from app.services.transactions import (
     canonical_selected_tx_hashes_hash,
     canonical_tx_commitment,
     freeze_transactions_for_task,
+    get_task_tx_snapshot,
     merkle_root,
     release_selected_transactions,
     select_transactions_for_task,
@@ -134,7 +135,7 @@ def test_competitive_round_reuses_transaction_snapshot(tmp_path, monkeypatch) ->
     assert second_task["selected_tx_hashes"] == [tx["tx_hash"]]
     assert first_task["tx_merkle_root"] == second_task["tx_merkle_root"]
     assert first_task["selected_tx_hashes_hash"] == second_task["selected_tx_hashes_hash"]
-    assert first_task["mempool_snapshot_id"] != second_task["mempool_snapshot_id"]
+    assert first_task["mempool_snapshot_id"] == second_task["mempool_snapshot_id"]
 
     with get_connection() as connection:
         tx_row = connection.execute(
@@ -142,10 +143,48 @@ def test_competitive_round_reuses_transaction_snapshot(tmp_path, monkeypatch) ->
             (tx["tx_hash"],),
         ).fetchone()
         snapshot_count = connection.execute("SELECT COUNT(*) AS count FROM task_tx_snapshots").fetchone()["count"]
+        second_snapshot = get_task_tx_snapshot(connection, second_task["task_id"])
 
     assert tx_row["status"] == "selected"
     assert tx_row["selected_task_id"] == first_task["task_id"]
-    assert snapshot_count == 2
+    assert snapshot_count == 1
+    assert second_snapshot is not None
+    assert second_snapshot["snapshot_id"] == first_task["mempool_snapshot_id"]
+
+    signed_at = "2026-05-20T00:00:00+00:00"
+    payload = build_commit_signature_payload(
+        task_id=second_task["task_id"],
+        miner_id=second_miner["miner_id"],
+        range_start=second_task["range_start"],
+        range_end=second_task["range_end"],
+        algorithm=second_task["algorithm"],
+        result_hash="a" * 64,
+        merkle_root="b" * 64,
+        signed_at=signed_at,
+        tx_merkle_root=second_task["tx_merkle_root"],
+        mempool_snapshot_id=second_task["mempool_snapshot_id"],
+        selected_tx_hashes_hash=second_task["selected_tx_hashes_hash"],
+        tx_count=int(second_task["tx_count"]),
+        tx_fee_total_units=int(second_task["tx_fee_total_units"]),
+        chain_id=CHAIN_ID,
+        network_id=NETWORK_ID,
+    )
+    result = commit_task(
+        task_id=second_task["task_id"],
+        miner_id=second_miner["miner_id"],
+        result_hash="a" * 64,
+        merkle_root="b" * 64,
+        signature=sign_payload(second_keys["private_key"], payload),
+        signed_at=signed_at,
+        tx_merkle_root=second_task["tx_merkle_root"],
+        mempool_snapshot_id=second_task["mempool_snapshot_id"],
+        selected_tx_hashes_hash=second_task["selected_tx_hashes_hash"],
+        tx_count=int(second_task["tx_count"]),
+        tx_fee_total_units=int(second_task["tx_fee_total_units"]),
+    )
+
+    assert result["accepted"] is True
+    assert result["status"] == "committed"
 
 
 def test_double_spend_selects_only_affordable_transactions(tmp_path, monkeypatch) -> None:

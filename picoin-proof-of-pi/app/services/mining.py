@@ -1640,20 +1640,20 @@ def create_next_task(
                 max_count=MAX_TRANSACTIONS_PER_BLOCK,
                 timestamp=now,
             )
-        print(
-            json.dumps(
-                {
-                    "event": "task_tx_snapshot_reused" if tx_snapshot.get("reused") else "task_tx_snapshot_created",
-                    "task_id": task_id,
-                    "tx_count": tx_snapshot["tx_count"],
-                    "tx_merkle_root": tx_snapshot["tx_merkle_root"],
-                    "mempool_snapshot_id": tx_snapshot["snapshot_id"],
-                    "tx_fee_total_units": tx_snapshot["tx_fee_total_units"],
-                    "source_task_id": tx_snapshot.get("source_task_id"),
-                },
-                sort_keys=True,
+        if not tx_snapshot.get("reused"):
+            print(
+                json.dumps(
+                    {
+                        "event": "task_tx_snapshot_created",
+                        "task_id": task_id,
+                        "tx_count": tx_snapshot["tx_count"],
+                        "tx_merkle_root": tx_snapshot["tx_merkle_root"],
+                        "mempool_snapshot_id": tx_snapshot["snapshot_id"],
+                        "tx_fee_total_units": tx_snapshot["tx_fee_total_units"],
+                    },
+                    sort_keys=True,
+                )
             )
-        )
         row = connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
         task = row_to_dict(row)
         if isinstance(task.get("selected_tx_hashes"), str):
