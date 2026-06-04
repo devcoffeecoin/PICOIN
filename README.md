@@ -750,8 +750,8 @@ Test scope:
 - [x] Verify full nodes compute the same latest height, block hash, state root, balances hash, validators hash, and pending rewards hash as the test bootstrap
 - [x] Verify a full node can restart from disk and remain consistent without manual database edits
 - [x] Verify a full node can fall behind, catch up, and recover without replay divergence
-- [ ] Verify a full node rejects snapshots or blocks from the wrong network id, chain id, genesis hash, or protocol version
-- [ ] Verify a full node can serve read-only explorer/wallet API requests locally
+- [x] Verify a full node rejects snapshots or blocks from the wrong network id, chain id, genesis hash, or protocol version
+- [x] Verify a full node can serve read-only explorer/wallet API requests locally
 - [x] Verify no private wallet, miner, or validator identity files are required for a read-only full node
 - [x] Produce a full-node operator runbook for the community
 
@@ -793,6 +793,8 @@ Phase 1B evidence:
 - [x] Shadow node matched mainnet checkpoint fields for state root, balances hash, validators hash, pending rewards hash, protocol params hash, retarget events hash, and snapshot hash
 - [x] After restart, `mainnet-shadow-full-node-1` caught up from snapshot height `4504` to live height `4508` with lag `0`, audit valid, no replay divergence, and matching tip hash `63e5595549e39c719f20245ad06dd19cd834adbf8274ba4cf1b45801ca14c647`
 - [x] Service check confirmed only `picoin-node` active; miner, validator, reconciler, and auditor remained inactive
+- [x] Negative snapshot import on `mainnet-shadow-full-node-1` rejected mismatched network id, chain id, and genesis hash, then remained replay healthy at height `4508`
+- [x] Local read-only API check on `mainnet-shadow-full-node-1` returned JSON for health, protocol, sync status, stats, blocks, mempool, recent transactions, validators, miners, account balance, and account history endpoints
 - [x] Decision recorded: keep `mainnet-shadow-full-node-1` alive as a read-only observer while Phase 2 is planned
 
 ### Phase 2: Multiple Public Bootstrap Nodes
