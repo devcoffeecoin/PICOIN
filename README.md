@@ -759,13 +759,14 @@ Phase 1 lab evidence:
 - [x] `phase1-bootstrap-test` (`159.65.35.231`) started on isolated network `picoin-phase1-fullnode-lab-v1`, chain `31415991`, genesis `060d1089d198a42d043ea19e89d5d5aa08b40446a713a3c5f6df84c50b13fed5`
 - [x] `phase1-full-node-a` (`143.110.172.254`) caught up from height `0` to height `5` and matched bootstrap hash `f18b8961345f14011a7786771bfa3d7aeb6d11820ea793590bb86864ac1f1aa1`
 - [x] `phase1-full-node-b` (`209.38.90.231`) restored the canonical snapshot at height `5`, restarted cleanly, caught up to height `7`, and matched bootstrap hash `98a6db57d4d56b2e26003712eea77e142815e6b588b4c005c54750ebb06c0699`
+- [x] `phase1-full-node-a` and `phase1-full-node-b` both synced to bootstrap height `7` with matching tip hash `98a6db57d4d56b2e26003712eea77e142815e6b588b4c005c54750ebb06c0699`
 - [x] `phase1-full-node-b` matched bootstrap checkpoint fields for state root, balances hash, validators hash, pending rewards hash, protocol params hash, retarget events hash, and snapshot hash
 - [x] Negative env identity test rejected mismatched network id, chain id, and genesis hash before accepting the node as valid
 - [x] Real env control returned `status=ok`, `errors=0`, `warnings=0`, `lag=0`, and matching local/peer tip hash at height `5`
 
 Acceptance gates:
 
-- [ ] Two independent droplets sync to the same test height and hashes
+- [x] Two independent droplets sync to the same test height and hashes
 - [x] `/audit/full` returns `valid=true` on every full node
 - [x] Full nodes stay healthy across at least one restart and one catch-up cycle
 - [x] No manual SQLite edits are required during setup or recovery
