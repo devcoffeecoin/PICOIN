@@ -88,15 +88,30 @@ def print_json(payload: Any) -> None:
     print(json.dumps(payload, indent=2, sort_keys=True))
 
 
+def raise_for_status_with_detail(response: requests.Response) -> None:
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        detail = response.text.strip()
+        try:
+            parsed = response.json()
+            detail = json.dumps(parsed, sort_keys=True)
+        except ValueError:
+            pass
+        if detail:
+            raise requests.HTTPError(f"{exc} response={detail}", response=response) from exc
+        raise
+
+
 def get_json(server_url: str, path: str) -> Any:
     response = requests.get(f"{normalize_server_url(server_url)}{path}", timeout=http_timeout_seconds())
-    response.raise_for_status()
+    raise_for_status_with_detail(response)
     return response.json()
 
 
 def post_json(server_url: str, path: str, payload: dict[str, Any] | None = None) -> Any:
     response = requests.post(f"{normalize_server_url(server_url)}{path}", json=payload, timeout=http_timeout_seconds())
-    response.raise_for_status()
+    raise_for_status_with_detail(response)
     return response.json()
 
 

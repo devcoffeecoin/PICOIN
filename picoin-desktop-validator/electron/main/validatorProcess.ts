@@ -20,8 +20,10 @@ const AUTO_SYNC_MAX_HEALTHY_LAG = 1;
 const AUTO_SYNC_SNAPSHOT_LAG = 6;
 const SNAPSHOT_RESTORE_TIMEOUT_MS = 300_000;
 const SNAPSHOT_RESTORE_RETRY_DELAY_MS = 3_000;
-const DESKTOP_VALIDATOR_VERSION = "0.1.9";
+const DESKTOP_VALIDATOR_VERSION = "0.1.10";
 const SNAPSHOT_HEIGHT_OFFSETS = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 0];
+const REMOTE_STABLE_SNAPSHOT_HEIGHT_OFFSETS = [5, 8, 13, 21, 34, 55, 89, 144, 233, 3, 2, 1, 0];
+const LOCAL_FALLBACK_SNAPSHOT_HEIGHT_OFFSETS = [0, 1, 2, 3, 5, 8, 13, 21, 34, 55, 89];
 const PROCESS_KILL_GRACE_MS = 3_000;
 
 type NodeStatus = "stopped" | "starting" | "running" | "error";
@@ -288,13 +290,27 @@ async function getRemoteLag(config: ValidatorConfig, syncStatus: any): Promise<{
 
 async function resolveSnapshotHeights(config: ValidatorConfig, localStatus?: any): Promise<number[]> {
   const candidates: number[] = [];
-  if (localStatus && nodeNeedsSnapshotRestore(localStatus)) {
-    addSnapshotHeightCandidates(candidates, snapshotHeightFromStatus(localStatus), [0, 1, 2, 3, 5, 8, 13, 21, 34]);
-    addSnapshotHeightCandidates(candidates, effectiveHeightFromStatus(localStatus), [0, 1, 2, 3, 5, 8, 13, 21, 34]);
-  }
   const remote = await fetchRemoteSyncStatus(config);
   const remoteHeight = effectiveHeightFromStatus(remote);
-  addSnapshotHeightCandidates(candidates, remoteHeight);
+  if (remoteHeight > 0) {
+    addSnapshotHeightCandidates(candidates, remoteHeight, REMOTE_STABLE_SNAPSHOT_HEIGHT_OFFSETS);
+  }
+  if (localStatus && nodeNeedsSnapshotRestore(localStatus)) {
+    const localSnapshotHeight = snapshotHeightFromStatus(localStatus);
+    const localEffectiveHeight = effectiveHeightFromStatus(localStatus);
+    if (remoteHeight <= 0) {
+      addSnapshotHeightCandidates(candidates, localSnapshotHeight, LOCAL_FALLBACK_SNAPSHOT_HEIGHT_OFFSETS);
+      addSnapshotHeightCandidates(candidates, localEffectiveHeight, LOCAL_FALLBACK_SNAPSHOT_HEIGHT_OFFSETS);
+    } else {
+      const nearRemoteThreshold = remoteHeight - 120;
+      if (localEffectiveHeight >= nearRemoteThreshold) {
+        addSnapshotHeightCandidates(candidates, localEffectiveHeight, LOCAL_FALLBACK_SNAPSHOT_HEIGHT_OFFSETS);
+      }
+      if (localSnapshotHeight >= nearRemoteThreshold) {
+        addSnapshotHeightCandidates(candidates, localSnapshotHeight, LOCAL_FALLBACK_SNAPSHOT_HEIGHT_OFFSETS);
+      }
+    }
+  }
   return candidates;
 }
 
@@ -843,6 +859,9 @@ export async function restoreSnapshot(config: ValidatorConfig, localStatus?: any
       } catch (error) {
         lastError = error;
         addLog(`Snapshot restore at height ${height} failed: ${errorMessage(error)}`);
+        if (/422|Unprocessable|invalid canonical snapshot/i.test(errorMessage(error))) {
+          break;
+        }
         if (attempt < 2) {
           await sleep(SNAPSHOT_RESTORE_RETRY_DELAY_MS);
         }
