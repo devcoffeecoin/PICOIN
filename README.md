@@ -779,7 +779,7 @@ Acceptance gates:
 Goal: prove the Phase 1 full-node path can reproduce live mainnet as a read-only shadow node before any public bootstrap or miner/validator failover work begins.
 
 - [x] Provision one disposable mainnet-shadow full node that is not the mainnet bootstrap
-- [ ] Start only `picoin-node`; keep miner, validator, reconciler, and auditor disabled
+- [x] Start only `picoin-node`; keep miner, validator, reconciler, and auditor disabled
 - [x] Restore from `https://api.picoin.science` canonical snapshot without manual SQLite edits
 - [x] Catch up to live mainnet tip with zero lag and matching effective block hash
 - [x] Verify `/audit/full valid=true`, replay healthy, no divergence, and checkpoint/snapshot hashes match
@@ -791,6 +791,7 @@ Phase 1B evidence:
 - [x] `mainnet-shadow-full-node-1` (`137.184.59.98`) restored from `https://api.picoin.science`, verified height `4504`, lag `0`, and matched tip hash `9bbc91b7fab575fb00736bd2ff770f55cf6440c361b4f614a3f6c00371acb004`
 - [x] Shadow node matched mainnet checkpoint fields for state root, balances hash, validators hash, pending rewards hash, protocol params hash, retarget events hash, and snapshot hash
 - [x] After restart, `mainnet-shadow-full-node-1` caught up from snapshot height `4504` to live height `4508` with lag `0`, audit valid, no replay divergence, and matching tip hash `63e5595549e39c719f20245ad06dd19cd834adbf8274ba4cf1b45801ca14c647`
+- [x] Service check confirmed only `picoin-node` active; miner, validator, reconciler, and auditor remained inactive
 
 ### Phase 2: Multiple Public Bootstrap Nodes
 
