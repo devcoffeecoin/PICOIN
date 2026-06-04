@@ -786,6 +786,11 @@ Goal: prove the Phase 1 full-node path can reproduce live mainnet as a read-only
 - [ ] Restart the shadow node and verify it remains healthy from disk
 - [ ] Destroy or keep the shadow node read-only after evidence is recorded
 
+Phase 1B evidence:
+
+- [x] `mainnet-shadow-full-node-1` (`137.184.59.98`) restored from `https://api.picoin.science`, verified height `4504`, lag `0`, and matched tip hash `9bbc91b7fab575fb00736bd2ff770f55cf6440c361b4f614a3f6c00371acb004`
+- [x] Shadow node matched mainnet checkpoint fields for state root, balances hash, validators hash, pending rewards hash, protocol params hash, retarget events hash, and snapshot hash
+
 ### Phase 2: Multiple Public Bootstrap Nodes
 
 Goal: replace the single public bootstrap dependency with multiple API/bootstrap nodes that serve the same chain view.
