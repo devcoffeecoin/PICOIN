@@ -738,21 +738,28 @@ Goal: any operator can run a Linux node on a clean droplet, sync from a canonica
 
 Test scope:
 
-- [ ] Create an isolated decentralization branch from stable main
-- [ ] Provision at least two independent test droplets that are not mainnet bootstrap machines
-- [ ] Configure a separate network id, chain id, env file, data directory, and DNS/API endpoints for the test lab
-- [ ] Start bootstrap-test and full-node-test roles without enabling miner, validator, reconciler, or auditor services by default
-- [ ] Document clean install commands for Ubuntu 22.04/24.04 full nodes
+- [x] Create an isolated decentralization branch from stable main
+- [x] Provision at least two independent test droplets that are not mainnet bootstrap machines
+- [x] Configure a separate network id, chain id, env file, data directory, and DNS/API endpoints for the test lab
+- [x] Start bootstrap-test and full-node-test roles without enabling miner, validator, reconciler, or auditor services by default
+- [x] Document clean install commands for Ubuntu 22.04/24.04 full nodes
 - [ ] Add a reproducible snapshot restore path for a fresh full node
-- [ ] Add a reproducible block/header catch-up path after snapshot restore
-- [ ] Verify local `/health`, `/protocol`, `/node/sync-status`, `/audit/full`, and checkpoint endpoints on each full node
+- [x] Add a reproducible block/header catch-up path after snapshot restore
+- [x] Verify local `/health`, `/protocol`, `/node/sync-status`, `/audit/full`, and checkpoint endpoints on each full node
 - [ ] Verify full nodes compute the same latest height, block hash, state root, balances hash, validators hash, and pending rewards hash as the test bootstrap
-- [ ] Verify a full node can restart from disk and remain consistent without manual database edits
-- [ ] Verify a full node can fall behind, catch up, and recover without replay divergence
+- [x] Verify a full node can restart from disk and remain consistent without manual database edits
+- [x] Verify a full node can fall behind, catch up, and recover without replay divergence
 - [ ] Verify a full node rejects snapshots or blocks from the wrong network id, chain id, genesis hash, or protocol version
 - [ ] Verify a full node can serve read-only explorer/wallet API requests locally
-- [ ] Verify no private wallet, miner, or validator identity files are required for a read-only full node
+- [x] Verify no private wallet, miner, or validator identity files are required for a read-only full node
 - [ ] Produce a full-node operator runbook for the community
+
+Phase 1 lab evidence:
+
+- [x] `phase1-bootstrap-test` (`159.65.35.231`) started on isolated network `picoin-phase1-fullnode-lab-v1`, chain `31415991`, genesis `060d1089d198a42d043ea19e89d5d5aa08b40446a713a3c5f6df84c50b13fed5`
+- [x] `phase1-full-node-a` (`143.110.172.254`) caught up from height `0` to height `5` and matched bootstrap hash `f18b8961345f14011a7786771bfa3d7aeb6d11820ea793590bb86864ac1f1aa1`
+- [x] Negative env identity test rejected mismatched network id, chain id, and genesis hash before accepting the node as valid
+- [x] Real env control returned `status=ok`, `errors=0`, `warnings=0`, `lag=0`, and matching local/peer tip hash at height `5`
 
 Acceptance gates:
 
