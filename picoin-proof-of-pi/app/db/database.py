@@ -809,10 +809,13 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
             );
 
             CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status);
+            CREATE INDEX IF NOT EXISTS idx_tasks_status_expires ON tasks(status, expires_at);
             CREATE INDEX IF NOT EXISTS idx_blocks_miner ON blocks(miner_id);
             CREATE INDEX IF NOT EXISTS idx_commitments_miner ON commitments(miner_id);
             CREATE INDEX IF NOT EXISTS idx_validation_jobs_status ON validation_jobs(status);
+            CREATE INDEX IF NOT EXISTS idx_validation_jobs_status_created ON validation_jobs(status, created_at);
             CREATE INDEX IF NOT EXISTS idx_validation_votes_job ON validation_votes(job_id);
+            CREATE INDEX IF NOT EXISTS idx_validation_votes_job_validator ON validation_votes(job_id, validator_id);
             CREATE INDEX IF NOT EXISTS idx_submissions_miner ON submissions(miner_id);
             CREATE INDEX IF NOT EXISTS idx_penalties_miner ON penalties(miner_id);
             CREATE INDEX IF NOT EXISTS idx_ledger_account ON ledger_entries(account_id);
@@ -1255,6 +1258,7 @@ def _ensure_tasks_range_constraints(connection: sqlite3.Connection) -> None:
     if _tasks_have_global_range_unique(connection):
         _rebuild_tasks_without_global_range_unique(connection)
     connection.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)")
+    connection.execute("CREATE INDEX IF NOT EXISTS idx_tasks_status_expires ON tasks(status, expires_at)")
     connection.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_tasks_competitive_round

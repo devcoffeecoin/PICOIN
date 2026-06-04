@@ -157,11 +157,14 @@ PARTICIPANT_LIVENESS_MIN_INTERVAL_SECONDS = int(
     os.getenv("PICOIN_LIVENESS_MIN_INTERVAL_SECONDS", str(max(5, PARTICIPANT_LIVENESS_INTERVAL_SECONDS)))
 )
 MINER_TASK_HEARTBEAT_MIN_INTERVAL_SECONDS = int(os.getenv("PICOIN_MINER_TASK_HEARTBEAT_MIN_INTERVAL_SECONDS", "60"))
+EXPIRED_TASK_CLEANUP_MIN_INTERVAL_SECONDS = int(os.getenv("PICOIN_EXPIRED_TASK_CLEANUP_MIN_INTERVAL_SECONDS", "5"))
 STATUS_ENDPOINT_CACHE_SECONDS = int(os.getenv("PICOIN_STATUS_ENDPOINT_CACHE_SECONDS", "10"))
 HEALTH_ENDPOINT_CACHE_SECONDS = int(os.getenv("PICOIN_HEALTH_ENDPOINT_CACHE_SECONDS", "15"))
 _PARTICIPANT_LIVENESS_TASK: asyncio.Task | None = None
 _PARTICIPANT_LIVENESS_LOCK = threading.Lock()
 _PARTICIPANT_LIVENESS_LAST_RUN_MONOTONIC = 0.0
+_EXPIRED_TASK_CLEANUP_LOCK = threading.Lock()
+_EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC = 0.0
 _STATUS_ENDPOINT_CACHE_LOCK = threading.Lock()
 _STATUS_ENDPOINT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
@@ -1520,7 +1523,7 @@ def create_next_task(
     _ensure_replay_can_accept_work()
     refresh_participant_liveness()
     with get_connection() as connection:
-        _expire_assigned_tasks(connection)
+        _maybe_expire_assigned_tasks(connection)
         miner = row_to_dict(connection.execute("SELECT * FROM miners WHERE miner_id = ?", (miner_id,)).fetchone())
         if miner is None and public_key:
             miner = _restore_miner_identity(connection, miner_id, public_key, name, reward_address)
@@ -1552,13 +1555,18 @@ def create_next_task(
         ).fetchone()
         if active_task is not None:
             task = row_to_dict(active_task)
-            if MINING_TASK_MODE == COMPETITIVE_ROUND_ASSIGNMENT_MODE and _expire_stale_competitive_task(
+            expires_at = parse_iso(task.get("expires_at"))
+            if expires_at is not None and expires_at <= utc_now_dt():
+                connection.execute("UPDATE tasks SET status = 'expired' WHERE task_id = ?", (task["task_id"],))
+                release_selected_transactions(connection, task["task_id"], "task expired")
+                task = None
+            elif MINING_TASK_MODE == COMPETITIVE_ROUND_ASSIGNMENT_MODE and _expire_stale_competitive_task(
                 connection,
                 task,
                 params,
             ):
                 task = None
-            else:
+            if task is not None:
                 RETARGET_MAX_PI_POSITION_value = _resolve_RETARGET_MAX_PI_POSITION(params)
                 if int(task["range_end"]) > RETARGET_MAX_PI_POSITION_value:
                     raise MiningError(
@@ -5010,6 +5018,25 @@ def _expire_assigned_tasks(connection: Any) -> dict[str, int]:
         "expired_tasks": max(0, task_cursor.rowcount) + revealed_expired_count,
         "expired_validation_jobs": job_expired_count,
     }
+
+
+def _maybe_expire_assigned_tasks(connection: Any) -> dict[str, Any]:
+    global _EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC
+    min_interval = max(0, int(EXPIRED_TASK_CLEANUP_MIN_INTERVAL_SECONDS))
+    monotonic_now = time.monotonic()
+    if monotonic_now - _EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC < min_interval:
+        return {"expired_tasks": 0, "expired_validation_jobs": 0, "skipped": "recent"}
+    if not _EXPIRED_TASK_CLEANUP_LOCK.acquire(blocking=False):
+        return {"expired_tasks": 0, "expired_validation_jobs": 0, "skipped": "already_running"}
+    try:
+        monotonic_now = time.monotonic()
+        if monotonic_now - _EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC < min_interval:
+            return {"expired_tasks": 0, "expired_validation_jobs": 0, "skipped": "recent"}
+        result = _expire_assigned_tasks(connection)
+        _EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC = monotonic_now
+        return result
+    finally:
+        _EXPIRED_TASK_CLEANUP_LOCK.release()
 
 
 def _revealed_task_has_quorum_path(connection: Any, task_id: str) -> bool:
