@@ -181,6 +181,19 @@ export default function App() {
     }
   }
 
+  async function runStopAction(label: string, action: () => Promise<any>) {
+    addLog(label);
+    try {
+      const result = await action();
+      addLog(result?.message || "Stopped.");
+      await refreshAll();
+      return result;
+    } catch (error) {
+      addLog(errorMessage(error));
+      return null;
+    }
+  }
+
   async function registerIdentity() {
     const result = await runAction("Registering validator identity.", () => window.validatorApi.register(settings));
     const nextIdentity = result?.identity as Identity | undefined;
@@ -317,7 +330,7 @@ export default function App() {
                   <Play />
                   Start Validator
                 </button>
-                <button className="secondary-button" disabled={busy} onClick={() => void runAction("Stopping validator.", () => window.validatorApi.stop())}>
+                <button className="secondary-button" onClick={() => void runStopAction("Stopping validator.", () => window.validatorApi.stop())}>
                   <Square />
                   Stop
                 </button>
@@ -345,7 +358,7 @@ export default function App() {
                   <RefreshCw />
                   Catch Up
                 </button>
-                <button className="secondary-button" disabled={busy} onClick={() => void runAction("Stopping local node.", () => window.validatorApi.stopNode())}>
+                <button className="secondary-button" onClick={() => void runStopAction("Stopping local node.", () => window.validatorApi.stopNode())}>
                   <Square />
                   Stop Node
                 </button>

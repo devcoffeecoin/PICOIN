@@ -20,8 +20,9 @@ const AUTO_SYNC_MAX_HEALTHY_LAG = 1;
 const AUTO_SYNC_SNAPSHOT_LAG = 6;
 const SNAPSHOT_RESTORE_TIMEOUT_MS = 300_000;
 const SNAPSHOT_RESTORE_RETRY_DELAY_MS = 3_000;
-const DESKTOP_VALIDATOR_VERSION = "0.1.8";
+const DESKTOP_VALIDATOR_VERSION = "0.1.9";
 const SNAPSHOT_HEIGHT_OFFSETS = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 0];
+const PROCESS_KILL_GRACE_MS = 3_000;
 
 type NodeStatus = "stopped" | "starting" | "running" | "error";
 type ValidatorStatus = "stopped" | "starting" | "validating" | "error";
@@ -58,6 +59,8 @@ let autoRecoveryInProgress = false;
 let autoSyncTimer: NodeJS.Timeout | null = null;
 let autoSyncInProgress = false;
 let autoSyncConfig: ValidatorConfig | null = null;
+let operationStopRequested = false;
+const utilityProcesses = new Set<ChildProcessWithoutNullStreams>();
 
 function addLog(line: string) {
   const clean = line.trim();
@@ -176,6 +179,38 @@ async function waitForRpc(url: string, timeoutMs = 45000) {
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function killProcess(child: ChildProcessWithoutNullStreams | null) {
+  if (!child) return;
+  try {
+    if (!child.killed) child.kill();
+  } catch {
+    // Best-effort termination.
+  }
+  setTimeout(() => {
+    try {
+      if (!child.killed) child.kill("SIGKILL");
+    } catch {
+      // Best-effort hard termination.
+    }
+  }, PROCESS_KILL_GRACE_MS).unref?.();
+}
+
+function cancelUtilityProcesses(reason: string) {
+  operationStopRequested = true;
+  if (utilityProcesses.size > 0) {
+    addLog(`${reason}: cancelling ${utilityProcesses.size} sync operation(s).`);
+  }
+  for (const child of Array.from(utilityProcesses)) {
+    killProcess(child);
+  }
+}
+
+function assertOperationNotStopped() {
+  if (operationStopRequested || validatorStopRequested || nodeStopRequested) {
+    throw new Error("Operation cancelled by user.");
+  }
 }
 
 async function fetchLocalNodeJson(config: ValidatorConfig, pathName: string, timeoutMs = 15000): Promise<any | null> {
@@ -432,13 +467,32 @@ async function autoRecoverValidator(config: ValidatorConfig, reason: string) {
   addLog(`Validator auto-recovery started: ${reason}`);
   try {
     await ensureNodeReadyForValidation(config);
+    if (validatorStopRequested || operationStopRequested) {
+      validatorStatus = "stopped";
+      currentTask = "Validator stopped.";
+      addLog("Validator auto-recovery cancelled by user.");
+      return;
+    }
     await seedLocalValidatorIdentity(config);
+    if (validatorStopRequested || operationStopRequested) {
+      validatorStatus = "stopped";
+      currentTask = "Validator stopped.";
+      addLog("Validator auto-recovery cancelled by user.");
+      return;
+    }
     autoRecoveryInProgress = false;
     await startValidator(config);
   } catch (error) {
-    validatorStatus = "error";
-    currentTask = "Validator recovery failed.";
-    addLog(`Validator auto-recovery failed: ${errorMessage(error)}`);
+    if (validatorStopRequested || operationStopRequested) {
+      validatorStatus = "stopped";
+      currentTask = "Validator stopped.";
+      addLog("Validator auto-recovery cancelled by user.");
+    } else {
+      validatorStatus = "error";
+      currentTask = "Validator recovery failed.";
+      addLog(`Validator auto-recovery failed: ${errorMessage(error)}`);
+    }
+  } finally {
     autoRecoveryInProgress = false;
   }
 }
@@ -451,6 +505,20 @@ function validatorLineNeedsRecovery(line: string): boolean {
   );
 }
 
+function nodeLineNeedsRecovery(line: string): boolean {
+  return /Picoin replay divergence|state_root mismatch after canonical replay|cannot import block before ancestors/i.test(line);
+}
+
+function pauseValidatorForRecovery(config: ValidatorConfig, reason: string) {
+  if (validatorStopRequested || operationStopRequested || autoRecoveryInProgress) return;
+  if (validatorProcess) {
+    validatorRecoveryStopRequested = true;
+    killProcess(validatorProcess);
+    validatorProcess = null;
+  }
+  void autoRecoverValidator(config, reason);
+}
+
 function handleValidatorOutputLine(config: ValidatorConfig, line: string) {
   addLog(line);
   const clean = line.trim();
@@ -458,12 +526,17 @@ function handleValidatorOutputLine(config: ValidatorConfig, line: string) {
   if (!validatorLineNeedsRecovery(clean)) return;
 
   addLog("Validator loop paused for automatic Fast Sync recovery.");
-  if (validatorProcess) {
-    validatorRecoveryStopRequested = true;
-    validatorProcess.kill();
-    validatorProcess = null;
-  }
-  void autoRecoverValidator(config, clean);
+  pauseValidatorForRecovery(config, clean);
+}
+
+function handleNodeOutputLine(config: ValidatorConfig, line: string) {
+  addLog(line);
+  const clean = line.trim();
+  if (!clean || nodeStopRequested || validatorStopRequested || autoRecoveryInProgress) return;
+  if (!nodeLineNeedsRecovery(clean)) return;
+
+  addLog("Local node replay divergence detected; pausing validator for Fast Sync recovery.");
+  pauseValidatorForRecovery(config, clean);
 }
 
 function spawnPython(
@@ -490,16 +563,25 @@ function spawnPython(
 
 function runPythonOnce(pythonCmd: string, args: string[], env: NodeJS.ProcessEnv, timeoutMs = 120000): Promise<string> {
   return new Promise((resolve, reject) => {
+    if (operationStopRequested) {
+      reject(new Error("Operation cancelled by user."));
+      return;
+    }
     const corePath = getCorePath();
     const child = spawn(pythonCmd || "python", args, {
       cwd: corePath,
       env,
       shell: false,
     });
+    utilityProcesses.add(child);
     let stdout = "";
     let stderr = "";
+    let settled = false;
     const timer = setTimeout(() => {
-      child.kill();
+      if (settled) return;
+      settled = true;
+      utilityProcesses.delete(child);
+      killProcess(child);
       reject(new Error(`Command timed out: python ${args.join(" ")}`));
     }, timeoutMs);
 
@@ -514,7 +596,14 @@ function runPythonOnce(pythonCmd: string, args: string[], env: NodeJS.ProcessEnv
       text.split(/\r?\n/).forEach((line) => addLog(`ERROR: ${line}`));
     });
     child.on("close", (code) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      utilityProcesses.delete(child);
+      if (operationStopRequested) {
+        reject(new Error("Operation cancelled by user."));
+        return;
+      }
       if (code === 0) {
         resolve(stdout.trim());
       } else {
@@ -522,7 +611,10 @@ function runPythonOnce(pythonCmd: string, args: string[], env: NodeJS.ProcessEnv
       }
     });
     child.on("error", (error) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timer);
+      utilityProcesses.delete(child);
       reject(error);
     });
   });
@@ -550,6 +642,7 @@ function errorMessage(error: unknown): string {
 
 export async function startNode(config: ValidatorConfig) {
   assertCoreReady();
+  operationStopRequested = false;
   if (nodeProcess) {
     return { ok: true, message: "Node already running", localNodeUrl: getLocalNodeUrl(config) };
   }
@@ -580,6 +673,7 @@ export async function startNode(config: ValidatorConfig) {
       nodeStopRequested = false;
       nodeStatus = requestedStop ? "stopped" : code === 0 ? "stopped" : "error";
     },
+    (line) => handleNodeOutputLine(config, line),
   );
   nodeProcess = child;
 
@@ -591,14 +685,18 @@ export async function startNode(config: ValidatorConfig) {
 }
 
 export function stopNode() {
+  nodeStopRequested = true;
+  stopAutoSyncLoop();
+  cancelUtilityProcesses("Node stop requested");
+  if (validatorProcess) {
+    stopValidator();
+  }
   if (!nodeProcess) {
     nodeStatus = "stopped";
     return { ok: true, message: "Node already stopped" };
   }
-  nodeStopRequested = true;
-  nodeProcess.kill();
+  killProcess(nodeProcess);
   nodeProcess = null;
-  stopAutoSyncLoop();
   nodeStatus = "stopped";
   addLog("Node stopped by user");
   return { ok: true, message: "Node stopped" };
@@ -634,6 +732,9 @@ export async function registerValidator(config: ValidatorConfig) {
 
 export async function startValidator(config: ValidatorConfig) {
   assertCoreReady();
+  operationStopRequested = false;
+  validatorStopRequested = false;
+  validatorRecoveryStopRequested = false;
   if (validatorProcess) {
     return { ok: true, message: "Validator already running" };
   }
@@ -708,12 +809,15 @@ export async function startValidator(config: ValidatorConfig) {
 }
 
 export function stopValidator() {
+  validatorStopRequested = true;
+  validatorRecoveryStopRequested = false;
+  autoRecoveryInProgress = false;
+  cancelUtilityProcesses("Validator stop requested");
   if (!validatorProcess) {
     validatorStatus = "stopped";
     return { ok: true, message: "Validator already stopped" };
   }
-  validatorStopRequested = true;
-  validatorProcess.kill();
+  killProcess(validatorProcess);
   validatorProcess = null;
   validatorStatus = "stopped";
   currentTask = "Validator stopped.";
@@ -725,11 +829,14 @@ export async function restoreSnapshot(config: ValidatorConfig, localStatus?: any
   if (!nodeProcess) {
     await startNode(config);
   }
+  assertOperationNotStopped();
   const heights = await resolveSnapshotHeights(config, localStatus);
   let lastError: unknown = null;
   for (const height of heights) {
+    assertOperationNotStopped();
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
+        assertOperationNotStopped();
         addLog(`Restoring canonical snapshot at height ${height}${attempt > 1 ? ` (retry ${attempt})` : ""}.`);
         const output = await runSnapshotRestore(config, height);
         return { ok: true, message: `Snapshot restored at height ${height}`, result: parseJsonOutput(output) };
@@ -746,6 +853,7 @@ export async function restoreSnapshot(config: ValidatorConfig, localStatus?: any
     addLog("Snapshot restore from selected heights failed; trying latest canonical snapshot.");
   }
   try {
+    assertOperationNotStopped();
     addLog("Restoring latest canonical snapshot.");
     const output = await runSnapshotRestore(config, null);
     return { ok: true, message: "Snapshot restored", result: parseJsonOutput(output) };
@@ -760,6 +868,7 @@ export async function catchUpNode(config: ValidatorConfig) {
   if (!nodeProcess) {
     await startNode(config);
   }
+  assertOperationNotStopped();
   const env = buildEnv(config);
   const output = await runPythonOnce(
     config.pythonCmd || "python",

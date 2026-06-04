@@ -157,11 +157,14 @@ PARTICIPANT_LIVENESS_MIN_INTERVAL_SECONDS = int(
     os.getenv("PICOIN_LIVENESS_MIN_INTERVAL_SECONDS", str(max(5, PARTICIPANT_LIVENESS_INTERVAL_SECONDS)))
 )
 MINER_TASK_HEARTBEAT_MIN_INTERVAL_SECONDS = int(os.getenv("PICOIN_MINER_TASK_HEARTBEAT_MIN_INTERVAL_SECONDS", "60"))
+EXPIRED_TASK_CLEANUP_MIN_INTERVAL_SECONDS = int(os.getenv("PICOIN_EXPIRED_TASK_CLEANUP_MIN_INTERVAL_SECONDS", "5"))
 STATUS_ENDPOINT_CACHE_SECONDS = int(os.getenv("PICOIN_STATUS_ENDPOINT_CACHE_SECONDS", "10"))
 HEALTH_ENDPOINT_CACHE_SECONDS = int(os.getenv("PICOIN_HEALTH_ENDPOINT_CACHE_SECONDS", "15"))
 _PARTICIPANT_LIVENESS_TASK: asyncio.Task | None = None
 _PARTICIPANT_LIVENESS_LOCK = threading.Lock()
 _PARTICIPANT_LIVENESS_LAST_RUN_MONOTONIC = 0.0
+_EXPIRED_TASK_CLEANUP_LOCK = threading.Lock()
+_EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC = 0.0
 _STATUS_ENDPOINT_CACHE_LOCK = threading.Lock()
 _STATUS_ENDPOINT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
@@ -906,6 +909,8 @@ def _get_validation_jobs_health_uncached(
                 validation_jobs.quorum_reached_at,
                 validation_jobs.finalized_at,
                 tasks.status AS task_status,
+                tasks.assignment_mode,
+                tasks.assignment_seed,
                 tasks.protocol_params_id,
                 tasks.range_start,
                 tasks.range_end
@@ -926,6 +931,7 @@ def _get_validation_jobs_health_uncached(
             "stuck_waiting_for_quorum": 0,
             "assignment_timeout_pending_release": 0,
             "quorum_reached_waiting_finalization": 0,
+            "competitive_round_waiting": 0,
         }
 
         for row in pending_rows:
@@ -963,10 +969,13 @@ def _get_validation_jobs_health_uncached(
                 and assigned_age_seconds >= VALIDATION_JOB_ASSIGNMENT_TIMEOUT_SECONDS
                 and bool(job.get("assigned_validator_id"))
             )
+            competitive_round_waiting = _competitive_round_has_earlier_pending_validation_job(connection, job)
             stale = job_age_seconds is not None and job_age_seconds >= stale_after_seconds
 
             if quorum_reached:
                 health = "quorum_reached_waiting_finalization"
+            elif competitive_round_waiting:
+                health = "competitive_round_waiting"
             elif assigned_timeout:
                 health = "assignment_timeout_pending_release"
             elif stale and total_votes == 0:
@@ -1514,7 +1523,7 @@ def create_next_task(
     _ensure_replay_can_accept_work()
     refresh_participant_liveness()
     with get_connection() as connection:
-        _expire_assigned_tasks(connection)
+        _maybe_expire_assigned_tasks(connection)
         miner = row_to_dict(connection.execute("SELECT * FROM miners WHERE miner_id = ?", (miner_id,)).fetchone())
         if miner is None and public_key:
             miner = _restore_miner_identity(connection, miner_id, public_key, name, reward_address)
@@ -1546,13 +1555,18 @@ def create_next_task(
         ).fetchone()
         if active_task is not None:
             task = row_to_dict(active_task)
-            if MINING_TASK_MODE == COMPETITIVE_ROUND_ASSIGNMENT_MODE and _expire_stale_competitive_task(
+            expires_at = parse_iso(task.get("expires_at"))
+            if expires_at is not None and expires_at <= utc_now_dt():
+                connection.execute("UPDATE tasks SET status = 'expired' WHERE task_id = ?", (task["task_id"],))
+                release_selected_transactions(connection, task["task_id"], "task expired")
+                task = None
+            elif MINING_TASK_MODE == COMPETITIVE_ROUND_ASSIGNMENT_MODE and _expire_stale_competitive_task(
                 connection,
                 task,
                 params,
             ):
                 task = None
-            else:
+            if task is not None:
                 RETARGET_MAX_PI_POSITION_value = _resolve_RETARGET_MAX_PI_POSITION(params)
                 if int(task["range_end"]) > RETARGET_MAX_PI_POSITION_value:
                     raise MiningError(
@@ -1907,6 +1921,49 @@ def _task_competitive_round_height(task: dict[str, Any]) -> int | None:
         return int(value) if value is not None else None
     except (TypeError, ValueError):
         return None
+
+
+def _competitive_round_has_earlier_pending_validation_job(connection: Any, job: dict[str, Any]) -> bool:
+    if str(job.get("assignment_mode") or "") != COMPETITIVE_ROUND_ASSIGNMENT_MODE:
+        return False
+    assignment_seed = str(job.get("assignment_seed") or "").strip()
+    if not assignment_seed:
+        return False
+    created_at = str(job.get("job_created_at") or job.get("created_at") or "")
+    job_id = str(job.get("job_id") or "")
+    if not created_at or not job_id:
+        return False
+    return (
+        connection.execute(
+            """
+            SELECT 1
+            FROM validation_jobs AS earlier_jobs
+            JOIN tasks AS earlier_tasks ON earlier_tasks.task_id = earlier_jobs.task_id
+            WHERE earlier_jobs.status = 'pending'
+            AND earlier_tasks.status = 'revealed'
+            AND earlier_tasks.assignment_mode = ?
+            AND earlier_tasks.assignment_seed = ?
+            AND earlier_jobs.job_id != ?
+            AND (
+                earlier_jobs.created_at < ?
+                OR (
+                    earlier_jobs.created_at = ?
+                    AND earlier_jobs.job_id < ?
+                )
+            )
+            LIMIT 1
+            """,
+            (
+                COMPETITIVE_ROUND_ASSIGNMENT_MODE,
+                assignment_seed,
+                job_id,
+                created_at,
+                created_at,
+                job_id,
+            ),
+        ).fetchone()
+        is not None
+    )
 
 
 def _competitive_task_matches_current_round(connection: Any, task: dict[str, Any], params: dict[str, Any]) -> bool:
@@ -2961,6 +3018,25 @@ def get_validation_job(
             JOIN tasks ON tasks.task_id = validation_jobs.task_id
             WHERE validation_jobs.status = 'pending'
             AND tasks.status = 'revealed'
+            AND (
+                COALESCE(tasks.assignment_mode, '') != ?
+                OR NOT EXISTS (
+                    SELECT 1
+                    FROM validation_jobs AS earlier_jobs
+                    JOIN tasks AS earlier_tasks ON earlier_tasks.task_id = earlier_jobs.task_id
+                    WHERE earlier_jobs.status = 'pending'
+                    AND earlier_tasks.status = 'revealed'
+                    AND earlier_tasks.assignment_mode = ?
+                    AND earlier_tasks.assignment_seed = tasks.assignment_seed
+                    AND (
+                        earlier_jobs.created_at < validation_jobs.created_at
+                        OR (
+                            earlier_jobs.created_at = validation_jobs.created_at
+                            AND earlier_jobs.job_id < validation_jobs.job_id
+                        )
+                    )
+                )
+            )
             AND NOT EXISTS (
                 SELECT 1
                 FROM validation_votes
@@ -2970,7 +3046,7 @@ def get_validation_job(
             ORDER BY approval_count DESC, vote_count DESC, validation_jobs.created_at ASC
             LIMIT 20
             """,
-            (validator_id,),
+            (COMPETITIVE_ROUND_ASSIGNMENT_MODE, COMPETITIVE_ROUND_ASSIGNMENT_MODE, validator_id),
         ).fetchall()
 
         job = None
@@ -4942,6 +5018,25 @@ def _expire_assigned_tasks(connection: Any) -> dict[str, int]:
         "expired_tasks": max(0, task_cursor.rowcount) + revealed_expired_count,
         "expired_validation_jobs": job_expired_count,
     }
+
+
+def _maybe_expire_assigned_tasks(connection: Any) -> dict[str, Any]:
+    global _EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC
+    min_interval = max(0, int(EXPIRED_TASK_CLEANUP_MIN_INTERVAL_SECONDS))
+    monotonic_now = time.monotonic()
+    if monotonic_now - _EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC < min_interval:
+        return {"expired_tasks": 0, "expired_validation_jobs": 0, "skipped": "recent"}
+    if not _EXPIRED_TASK_CLEANUP_LOCK.acquire(blocking=False):
+        return {"expired_tasks": 0, "expired_validation_jobs": 0, "skipped": "already_running"}
+    try:
+        monotonic_now = time.monotonic()
+        if monotonic_now - _EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC < min_interval:
+            return {"expired_tasks": 0, "expired_validation_jobs": 0, "skipped": "recent"}
+        result = _expire_assigned_tasks(connection)
+        _EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC = monotonic_now
+        return result
+    finally:
+        _EXPIRED_TASK_CLEANUP_LOCK.release()
 
 
 def _revealed_task_has_quorum_path(connection: Any, task_id: str) -> bool:
