@@ -18,6 +18,10 @@ const HTTP_MAX_RETRIES = "3";
 const AUTO_SYNC_INTERVAL_MS = 30_000;
 const AUTO_SYNC_MAX_HEALTHY_LAG = 1;
 const AUTO_SYNC_SNAPSHOT_LAG = 6;
+const SNAPSHOT_RESTORE_TIMEOUT_MS = 300_000;
+const SNAPSHOT_RESTORE_RETRY_DELAY_MS = 3_000;
+const DESKTOP_VALIDATOR_VERSION = "0.1.8";
+const SNAPSHOT_HEIGHT_OFFSETS = [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 0];
 
 type NodeStatus = "stopped" | "starting" | "running" | "error";
 type ValidatorStatus = "stopped" | "starting" | "validating" | "error";
@@ -170,6 +174,10 @@ async function waitForRpc(url: string, timeoutMs = 45000) {
   throw new Error(`Local node RPC did not become available at ${url}`);
 }
 
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function fetchLocalNodeJson(config: ValidatorConfig, pathName: string, timeoutMs = 15000): Promise<any | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -204,6 +212,20 @@ function effectiveHeightFromStatus(syncStatus: any): number {
   return Number(syncStatus?.effective_latest_block_height ?? syncStatus?.latest_block_height ?? syncStatus?.local_block_height ?? 0);
 }
 
+function snapshotHeightFromStatus(syncStatus: any): number {
+  return Number(syncStatus?.snapshot_height ?? syncStatus?.checkpoint_height ?? syncStatus?.active_snapshot_height ?? 0);
+}
+
+function addSnapshotHeightCandidates(candidates: number[], baseHeight: number, offsets = SNAPSHOT_HEIGHT_OFFSETS) {
+  if (!Number.isFinite(baseHeight) || baseHeight <= 0) return;
+  for (const offset of offsets) {
+    const height = Math.floor(baseHeight - offset);
+    if (height > 0 && !candidates.includes(height)) {
+      candidates.push(height);
+    }
+  }
+}
+
 async function fetchRemoteSyncStatus(config: ValidatorConfig, timeoutMs = 30000): Promise<any | null> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -229,13 +251,16 @@ async function getRemoteLag(config: ValidatorConfig, syncStatus: any): Promise<{
   };
 }
 
-async function resolveSnapshotHeights(config: ValidatorConfig): Promise<number[]> {
+async function resolveSnapshotHeights(config: ValidatorConfig, localStatus?: any): Promise<number[]> {
+  const candidates: number[] = [];
+  if (localStatus && nodeNeedsSnapshotRestore(localStatus)) {
+    addSnapshotHeightCandidates(candidates, snapshotHeightFromStatus(localStatus), [0, 1, 2, 3, 5, 8, 13, 21, 34]);
+    addSnapshotHeightCandidates(candidates, effectiveHeightFromStatus(localStatus), [0, 1, 2, 3, 5, 8, 13, 21, 34]);
+  }
   const remote = await fetchRemoteSyncStatus(config);
   const remoteHeight = effectiveHeightFromStatus(remote);
-  if (remoteHeight <= 0) return [];
-  return [remoteHeight - 1, remoteHeight - 2, remoteHeight - 3, remoteHeight - 5, remoteHeight].filter(
-    (height, index, heights) => height > 0 && heights.indexOf(height) === index,
-  );
+  addSnapshotHeightCandidates(candidates, remoteHeight);
+  return candidates;
 }
 
 async function runSnapshotRestore(config: ValidatorConfig, height: number | null) {
@@ -257,7 +282,7 @@ async function runSnapshotRestore(config: ValidatorConfig, height: number | null
   if (height !== null) {
     args.push("--height", String(height));
   }
-  return runPythonOnce(config.pythonCmd || "python", args, env, 180000);
+  return runPythonOnce(config.pythonCmd || "python", args, env, SNAPSHOT_RESTORE_TIMEOUT_MS);
 }
 
 async function runAutoSyncOnce(config: ValidatorConfig) {
@@ -269,7 +294,7 @@ async function runAutoSyncOnce(config: ValidatorConfig) {
 
     if (nodeNeedsSnapshotRestore(syncStatus)) {
       addLog("Auto sync detected divergent local replay; restoring canonical snapshot.");
-      await restoreSnapshot(config);
+      await restoreSnapshot(config, syncStatus);
       return;
     }
 
@@ -280,7 +305,7 @@ async function runAutoSyncOnce(config: ValidatorConfig) {
       addLog(`Auto sync: local=${localHeight} remote=${remoteHeight || "unknown"} lag=${lag} pending=${pendingReplay}.`);
       if (lag > AUTO_SYNC_SNAPSHOT_LAG) {
         addLog("Auto sync lag is high; restoring canonical snapshot before validation.");
-        await restoreSnapshot(config);
+        await restoreSnapshot(config, syncStatus);
       } else {
         try {
           await catchUpNode(config);
@@ -292,7 +317,7 @@ async function runAutoSyncOnce(config: ValidatorConfig) {
       const after = await fetchLocalNodeJson(config, "/node/sync-status", 20000);
       if (after && nodeNeedsSnapshotRestore(after)) {
         addLog("Auto sync catch-up produced divergence; restoring canonical snapshot.");
-        await restoreSnapshot(config);
+        await restoreSnapshot(config, after);
       } else if (!after) {
         addLog("Auto sync could not read local status after catch-up; restoring canonical snapshot.");
         await restoreSnapshot(config);
@@ -308,7 +333,7 @@ async function runAutoSyncOnce(config: ValidatorConfig) {
           const finalStatus = await fetchLocalNodeJson(config, "/node/sync-status", 20000);
           if (!finalStatus || nodeNeedsSnapshotRestore(finalStatus)) {
             addLog("Auto sync final catch-up did not produce a healthy node; restoring canonical snapshot.");
-            await restoreSnapshot(config);
+            await restoreSnapshot(config, finalStatus);
           }
         }
       }
@@ -349,7 +374,7 @@ async function ensureNodeReadyForValidation(config: ValidatorConfig) {
 
   if (nodeNeedsSnapshotRestore(syncStatus) || Number(syncStatus.local_block_height ?? syncStatus.latest_block_height ?? 0) <= 0) {
     addLog("Local node requires canonical snapshot restore before validation.");
-    await restoreSnapshot(config);
+    await restoreSnapshot(config, syncStatus);
     syncStatus = await fetchLocalNodeJson(config, "/node/sync-status");
   }
 
@@ -358,7 +383,7 @@ async function ensureNodeReadyForValidation(config: ValidatorConfig) {
     const pendingReplay = Number(syncStatus?.pending_replay_blocks ?? syncStatus?.replay?.queue_size ?? 0);
     if (remoteLag.lag > AUTO_SYNC_SNAPSHOT_LAG) {
       addLog(`Local node lag=${remoteLag.lag}; restoring snapshot before validation.`);
-      await restoreSnapshot(config);
+      await restoreSnapshot(config, syncStatus);
       syncStatus = await fetchLocalNodeJson(config, "/node/sync-status");
     } else if (pendingReplay > 0 || remoteLag.lag > AUTO_SYNC_MAX_HEALTHY_LAG || nodeNeedsCatchUp(syncStatus)) {
       addLog(`Catching up local node before validation: lag=${remoteLag.lag} pending=${pendingReplay}.`);
@@ -375,7 +400,7 @@ async function ensureNodeReadyForValidation(config: ValidatorConfig) {
 
   if (syncStatus && nodeNeedsSnapshotRestore(syncStatus)) {
     addLog("Local node replay is divergent after catch-up; restoring snapshot.");
-    await restoreSnapshot(config);
+    await restoreSnapshot(config, syncStatus);
     syncStatus = await fetchLocalNodeJson(config, "/node/sync-status");
   }
 
@@ -388,7 +413,7 @@ async function ensureNodeReadyForValidation(config: ValidatorConfig) {
       finalLag = await getRemoteLag(config, syncStatus);
       if (syncStatus && nodeNeedsSnapshotRestore(syncStatus)) {
         addLog("Local node diverged during final catch-up; restoring snapshot.");
-        await restoreSnapshot(config);
+        await restoreSnapshot(config, syncStatus);
         syncStatus = await fetchLocalNodeJson(config, "/node/sync-status");
         finalLag = await getRemoteLag(config, syncStatus);
       }
@@ -537,6 +562,7 @@ export async function startNode(config: ValidatorConfig) {
   nodeStopRequested = false;
   nodeStatus = "starting";
   currentTask = "Starting local node...";
+  addLog(`Picoin Desktop Validator ${DESKTOP_VALIDATOR_VERSION}`);
   addLog(`Starting local Picoin node on ${localNodeUrl}`);
   addLog(`Data dir: ${getRuntimeDir()}`);
   addLog(`DB path: ${getDbPath()}`);
@@ -695,28 +721,39 @@ export function stopValidator() {
   return { ok: true, message: "Validator stopped" };
 }
 
-export async function restoreSnapshot(config: ValidatorConfig) {
+export async function restoreSnapshot(config: ValidatorConfig, localStatus?: any) {
   if (!nodeProcess) {
     await startNode(config);
   }
-  const heights = await resolveSnapshotHeights(config);
+  const heights = await resolveSnapshotHeights(config, localStatus);
   let lastError: unknown = null;
   for (const height of heights) {
-    try {
-      addLog(`Restoring canonical snapshot at height ${height}.`);
-      const output = await runSnapshotRestore(config, height);
-      return { ok: true, message: `Snapshot restored at height ${height}`, result: parseJsonOutput(output) };
-    } catch (error) {
-      lastError = error;
-      addLog(`Snapshot restore at height ${height} failed: ${errorMessage(error)}`);
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        addLog(`Restoring canonical snapshot at height ${height}${attempt > 1 ? ` (retry ${attempt})` : ""}.`);
+        const output = await runSnapshotRestore(config, height);
+        return { ok: true, message: `Snapshot restored at height ${height}`, result: parseJsonOutput(output) };
+      } catch (error) {
+        lastError = error;
+        addLog(`Snapshot restore at height ${height} failed: ${errorMessage(error)}`);
+        if (attempt < 2) {
+          await sleep(SNAPSHOT_RESTORE_RETRY_DELAY_MS);
+        }
+      }
     }
   }
-  if (heights.length > 0 && lastError) {
-    throw lastError;
+  if (heights.length > 0) {
+    addLog("Snapshot restore from selected heights failed; trying latest canonical snapshot.");
   }
-  addLog("Restoring latest canonical snapshot.");
-  const output = await runSnapshotRestore(config, null);
-  return { ok: true, message: "Snapshot restored", result: parseJsonOutput(output) };
+  try {
+    addLog("Restoring latest canonical snapshot.");
+    const output = await runSnapshotRestore(config, null);
+    return { ok: true, message: "Snapshot restored", result: parseJsonOutput(output) };
+  } catch (error) {
+    lastError = error;
+    addLog(`Latest snapshot restore failed: ${errorMessage(error)}`);
+  }
+  throw lastError;
 }
 
 export async function catchUpNode(config: ValidatorConfig) {
