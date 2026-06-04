@@ -54,11 +54,12 @@ The public testnet has been used for launch rehearsals and can still be studied 
 
 ## Environment Files
 
-There are three tracked env examples. Treat them as the source of truth.
+There are four tracked env examples. Treat them as the source of truth.
 
 | File | Use it for | Notes |
 | --- | --- | --- |
 | `picoin-proof-of-pi/deploy/mainnet.env.example` | Mainnet nodes, miners, validators | Production template. Every `CHANGE_ME` value must be replaced before services start. |
+| `picoin-proof-of-pi/deploy/mainnet-shadow-full-node.env.example` | Disposable mainnet shadow full node | Read-only template for Phase 1B reproduction tests. Do not use on the mainnet bootstrap. |
 | `picoin-proof-of-pi/deploy/public-testnet.env.example` | Historical public-testnet rehearsal only | Keeps the old `public-testnet` and `picoin-public-testnet-v018` values for reference. Do not use for mainnet. |
 | `picoin-proof-of-pi/.env.example` | Local development only | Uses `local` and `picoin-local-testnet`; useful for tests and isolated dev nodes. |
 
@@ -773,6 +774,18 @@ Acceptance gates:
 - [x] The test lab can be rebuilt from the documented commands
 - [x] Mainnet remains untouched during testing
 
+### Phase 1B: Mainnet Shadow Full Node
+
+Goal: prove the Phase 1 full-node path can reproduce live mainnet as a read-only shadow node before any public bootstrap or miner/validator failover work begins.
+
+- [ ] Provision one disposable mainnet-shadow full node that is not the mainnet bootstrap
+- [ ] Start only `picoin-node`; keep miner, validator, reconciler, and auditor disabled
+- [ ] Restore from `https://api.picoin.science` canonical snapshot without manual SQLite edits
+- [ ] Catch up to live mainnet tip with zero lag and matching effective block hash
+- [ ] Verify `/audit/full valid=true`, replay healthy, no divergence, and checkpoint/snapshot hashes match
+- [ ] Restart the shadow node and verify it remains healthy from disk
+- [ ] Destroy or keep the shadow node read-only after evidence is recorded
+
 ### Phase 2: Multiple Public Bootstrap Nodes
 
 Goal: replace the single public bootstrap dependency with multiple API/bootstrap nodes that serve the same chain view.
@@ -856,6 +869,7 @@ Use separate wallets for treasury, governance, miner rewards, validator rewards,
 | --- | --- |
 | `picoin-proof-of-pi/deploy/README-mainnet.md` | Mainnet deployment runbook |
 | `picoin-proof-of-pi/deploy/README-full-node-phase1.md` | Decentralization Phase 1 full-node verification lab |
+| `picoin-proof-of-pi/deploy/README-mainnet-shadow-full-node.md` | Phase 1B read-only mainnet shadow full-node verification |
 | `picoin-proof-of-pi/deploy/README-public-testnet.md` | Historical public-testnet deployment guide |
 | `picoin-proof-of-pi/README.md` | Core developer and protocol reference |
 | `picoin-desktop-wallet/README.md` | Desktop wallet build and usage |
