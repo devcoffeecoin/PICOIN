@@ -130,6 +130,7 @@ from app.services.state import (
 from app.services.treasury import record_scientific_development_treasury_for_block
 from app.services.transactions import (
     apply_block_transactions,
+    freeze_transactions_for_competitive_round_task,
     freeze_transactions_for_task,
     get_task_tx_snapshot,
     load_snapshot_transactions,
@@ -156,9 +157,13 @@ PARTICIPANT_LIVENESS_MIN_INTERVAL_SECONDS = int(
     os.getenv("PICOIN_LIVENESS_MIN_INTERVAL_SECONDS", str(max(5, PARTICIPANT_LIVENESS_INTERVAL_SECONDS)))
 )
 MINER_TASK_HEARTBEAT_MIN_INTERVAL_SECONDS = int(os.getenv("PICOIN_MINER_TASK_HEARTBEAT_MIN_INTERVAL_SECONDS", "60"))
+STATUS_ENDPOINT_CACHE_SECONDS = int(os.getenv("PICOIN_STATUS_ENDPOINT_CACHE_SECONDS", "10"))
+HEALTH_ENDPOINT_CACHE_SECONDS = int(os.getenv("PICOIN_HEALTH_ENDPOINT_CACHE_SECONDS", "15"))
 _PARTICIPANT_LIVENESS_TASK: asyncio.Task | None = None
 _PARTICIPANT_LIVENESS_LOCK = threading.Lock()
 _PARTICIPANT_LIVENESS_LAST_RUN_MONOTONIC = 0.0
+_STATUS_ENDPOINT_CACHE_LOCK = threading.Lock()
+_STATUS_ENDPOINT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
 class MiningError(Exception):
@@ -177,6 +182,34 @@ def utc_now() -> str:
 
 def iso_at(seconds_from_now: int) -> str:
     return (utc_now_dt() + timedelta(seconds=seconds_from_now)).isoformat()
+
+
+def _status_cache_get(key: str, ttl_seconds: int) -> dict[str, Any] | None:
+    if ttl_seconds <= 0:
+        return None
+    now = time.monotonic()
+    with _STATUS_ENDPOINT_CACHE_LOCK:
+        cached = _STATUS_ENDPOINT_CACHE.get(key)
+        if cached is None:
+            return None
+        stored_at, payload = cached
+        if now - stored_at > ttl_seconds:
+            _STATUS_ENDPOINT_CACHE.pop(key, None)
+            return None
+        return payload
+
+
+def _status_cache_set(key: str, payload: dict[str, Any]) -> dict[str, Any]:
+    with _STATUS_ENDPOINT_CACHE_LOCK:
+        _STATUS_ENDPOINT_CACHE[key] = (time.monotonic(), payload)
+    return payload
+
+
+def _cached_status_payload(key: str, ttl_seconds: int, builder: Any) -> dict[str, Any]:
+    cached = _status_cache_get(key, ttl_seconds)
+    if cached is not None:
+        return cached
+    return _status_cache_set(key, builder())
 
 
 def _task_expiration_seconds_for_position(params: dict[str, Any], position: int | None) -> int:
@@ -784,51 +817,66 @@ def record_miner_heartbeat(payload: dict[str, Any], client_host: str | None = No
 
 
 def get_validators_status(limit: int = 500) -> dict[str, Any]:
-    refresh_participant_liveness()
-    with get_connection() as connection:
-        rows = connection.execute(
-            """
-            SELECT *
-            FROM validators
-            ORDER BY
-                CASE online_status
-                    WHEN 'online' THEN 0
-                    WHEN 'stale' THEN 1
-                    WHEN 'offline' THEN 2
-                    ELSE 3
-                END,
-                effective_height DESC,
-                validator_id ASC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-        validators = [enrich_validator(row_to_dict(row), connection) for row in rows]
-        counts = connection.execute(
-            """
-            SELECT
-                COUNT(*) AS total,
-                COALESCE(SUM(CASE WHEN online_status = 'online' THEN 1 ELSE 0 END), 0) AS online,
-                COALESCE(SUM(CASE WHEN online_status = 'stale' THEN 1 ELSE 0 END), 0) AS stale,
-                COALESCE(SUM(CASE WHEN online_status = 'offline' THEN 1 ELSE 0 END), 0) AS offline,
-                COALESCE(SUM(CASE WHEN sync_status = 'out_of_sync' THEN 1 ELSE 0 END), 0) AS out_of_sync,
-                COALESCE(SUM(CASE WHEN enabled = 0 THEN 1 ELSE 0 END), 0) AS disabled
-            FROM validators
-            """
-        ).fetchone()
-        eligible = len(_eligible_validator_rows(connection))
-        required = _effective_required_validator_approvals(connection)
-    return {
-        "checked_at": utc_now(),
-        "required_validator_approvals": required,
-        "eligible_validators": eligible,
-        "counts": {key: int(counts[key]) for key in counts.keys()},
-        "validators": validators,
-    }
+    cache_key = f"validators_status:{int(limit)}"
+
+    def build() -> dict[str, Any]:
+        with get_connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM validators
+                ORDER BY
+                    CASE online_status
+                        WHEN 'online' THEN 0
+                        WHEN 'stale' THEN 1
+                        WHEN 'offline' THEN 2
+                        ELSE 3
+                    END,
+                    effective_height DESC,
+                    validator_id ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            validators = [enrich_validator(row_to_dict(row), connection) for row in rows]
+            counts = connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    COALESCE(SUM(CASE WHEN online_status = 'online' THEN 1 ELSE 0 END), 0) AS online,
+                    COALESCE(SUM(CASE WHEN online_status = 'stale' THEN 1 ELSE 0 END), 0) AS stale,
+                    COALESCE(SUM(CASE WHEN online_status = 'offline' THEN 1 ELSE 0 END), 0) AS offline,
+                    COALESCE(SUM(CASE WHEN sync_status = 'out_of_sync' THEN 1 ELSE 0 END), 0) AS out_of_sync,
+                    COALESCE(SUM(CASE WHEN enabled = 0 THEN 1 ELSE 0 END), 0) AS disabled
+                FROM validators
+                """
+            ).fetchone()
+            eligible = len(_eligible_validator_rows(connection))
+            required = _effective_required_validator_approvals(connection)
+        return {
+            "checked_at": utc_now(),
+            "required_validator_approvals": required,
+            "eligible_validators": eligible,
+            "counts": {key: int(counts[key]) for key in counts.keys()},
+            "validators": validators,
+        }
+
+    return _cached_status_payload(cache_key, STATUS_ENDPOINT_CACHE_SECONDS, build)
 
 
 def get_validation_jobs_health(stale_after_seconds: int = VALIDATION_JOB_ASSIGNMENT_TIMEOUT_SECONDS * 2, limit: int = 20) -> dict[str, Any]:
-    refresh_participant_liveness()
+    cache_key = f"validation_jobs_health:{int(stale_after_seconds)}:{int(limit)}"
+
+    def build() -> dict[str, Any]:
+        return _get_validation_jobs_health_uncached(stale_after_seconds, limit)
+
+    return _cached_status_payload(cache_key, STATUS_ENDPOINT_CACHE_SECONDS, build)
+
+
+def _get_validation_jobs_health_uncached(
+    stale_after_seconds: int = VALIDATION_JOB_ASSIGNMENT_TIMEOUT_SECONDS * 2,
+    limit: int = 20,
+) -> dict[str, Any]:
     stale_after_seconds = max(1, int(stale_after_seconds))
     limit = max(1, int(limit))
     now_iso = utc_now()
@@ -986,42 +1034,46 @@ def get_validation_jobs_health(stale_after_seconds: int = VALIDATION_JOB_ASSIGNM
 
 
 def get_miners_status(limit: int = 500) -> dict[str, Any]:
-    refresh_participant_liveness()
-    with get_connection() as connection:
-        rows = connection.execute(
-            """
-            SELECT *
-            FROM miners
-            ORDER BY
-                CASE online_status
-                    WHEN 'online' THEN 0
-                    WHEN 'stale' THEN 1
-                    WHEN 'offline' THEN 2
-                    ELSE 3
-                END,
-                COALESCE(last_compute_ms, 0) ASC,
-                miner_id ASC
-            LIMIT ?
-            """,
-            (limit,),
-        ).fetchall()
-        miners = [enrich_miner(row_to_dict(row)) for row in rows]
-        counts = connection.execute(
-            """
-            SELECT
-                COUNT(*) AS total,
-                COALESCE(SUM(CASE WHEN online_status = 'online' THEN 1 ELSE 0 END), 0) AS online,
-                COALESCE(SUM(CASE WHEN online_status = 'stale' THEN 1 ELSE 0 END), 0) AS stale,
-                COALESCE(SUM(CASE WHEN online_status = 'offline' THEN 1 ELSE 0 END), 0) AS offline,
-                COALESCE(SUM(CASE WHEN enabled = 0 THEN 1 ELSE 0 END), 0) AS disabled
-            FROM miners
-            """
-        ).fetchone()
-    return {
-        "checked_at": utc_now(),
-        "counts": {key: int(counts[key]) for key in counts.keys()},
-        "miners": miners,
-    }
+    cache_key = f"miners_status:{int(limit)}"
+
+    def build() -> dict[str, Any]:
+        with get_connection() as connection:
+            rows = connection.execute(
+                """
+                SELECT *
+                FROM miners
+                ORDER BY
+                    CASE online_status
+                        WHEN 'online' THEN 0
+                        WHEN 'stale' THEN 1
+                        WHEN 'offline' THEN 2
+                        ELSE 3
+                    END,
+                    COALESCE(last_compute_ms, 0) ASC,
+                    miner_id ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+            miners = [enrich_miner(row_to_dict(row)) for row in rows]
+            counts = connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    COALESCE(SUM(CASE WHEN online_status = 'online' THEN 1 ELSE 0 END), 0) AS online,
+                    COALESCE(SUM(CASE WHEN online_status = 'stale' THEN 1 ELSE 0 END), 0) AS stale,
+                    COALESCE(SUM(CASE WHEN online_status = 'offline' THEN 1 ELSE 0 END), 0) AS offline,
+                    COALESCE(SUM(CASE WHEN enabled = 0 THEN 1 ELSE 0 END), 0) AS disabled
+                FROM miners
+                """
+            ).fetchone()
+        return {
+            "checked_at": utc_now(),
+            "counts": {key: int(counts[key]) for key in counts.keys()},
+            "miners": miners,
+        }
+
+    return _cached_status_payload(cache_key, STATUS_ENDPOINT_CACHE_SECONDS, build)
 
 
 def _mining_metric_from_row(row: Any) -> dict[str, Any]:
@@ -1571,26 +1623,37 @@ def create_next_task(
             ),
         )
         next_height = int(assignment.get("round_height") or (_latest_chain_tip_in_connection(connection)["height"] + 1))
-        tx_snapshot = freeze_transactions_for_task(
-            connection,
-            task_id=task_id,
-            block_height=next_height,
-            max_count=MAX_TRANSACTIONS_PER_BLOCK,
-            timestamp=now,
-        )
-        print(
-            json.dumps(
-                {
-                    "event": "task_tx_snapshot_created",
-                    "task_id": task_id,
-                    "tx_count": tx_snapshot["tx_count"],
-                    "tx_merkle_root": tx_snapshot["tx_merkle_root"],
-                    "mempool_snapshot_id": tx_snapshot["snapshot_id"],
-                    "tx_fee_total_units": tx_snapshot["tx_fee_total_units"],
-                },
-                sort_keys=True,
+        if assignment_mode == COMPETITIVE_ROUND_ASSIGNMENT_MODE:
+            tx_snapshot = freeze_transactions_for_competitive_round_task(
+                connection,
+                task_id=task_id,
+                block_height=next_height,
+                assignment_seed=assignment.get("assignment_seed"),
+                max_count=MAX_TRANSACTIONS_PER_BLOCK,
+                timestamp=now,
             )
-        )
+        else:
+            tx_snapshot = freeze_transactions_for_task(
+                connection,
+                task_id=task_id,
+                block_height=next_height,
+                max_count=MAX_TRANSACTIONS_PER_BLOCK,
+                timestamp=now,
+            )
+        if not tx_snapshot.get("reused"):
+            print(
+                json.dumps(
+                    {
+                        "event": "task_tx_snapshot_created",
+                        "task_id": task_id,
+                        "tx_count": tx_snapshot["tx_count"],
+                        "tx_merkle_root": tx_snapshot["tx_merkle_root"],
+                        "mempool_snapshot_id": tx_snapshot["snapshot_id"],
+                        "tx_fee_total_units": tx_snapshot["tx_fee_total_units"],
+                    },
+                    sort_keys=True,
+                )
+            )
         row = connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
         task = row_to_dict(row)
         if isinstance(task.get("selected_tx_hashes"), str):
@@ -3380,10 +3443,16 @@ def submit_validation_result(
     }
 
 
-def get_blocks() -> list[dict[str, Any]]:
+def get_blocks(limit: int | None = None) -> list[dict[str, Any]]:
     with get_connection() as connection:
+        if limit is not None:
+            rows = connection.execute(
+                "SELECT * FROM blocks ORDER BY height DESC LIMIT ?",
+                (max(1, int(limit)),),
+            ).fetchall()
+            return [_decode_block(row_to_dict(row)) for row in reversed(rows)]
         rows = connection.execute("SELECT * FROM blocks ORDER BY height ASC").fetchall()
-    return [_decode_block(row_to_dict(row)) for row in rows]
+        return [_decode_block(row_to_dict(row)) for row in rows]
 
 
 def get_block(height: int) -> dict[str, Any] | None:
@@ -3393,8 +3462,11 @@ def get_block(height: int) -> dict[str, Any] | None:
 
 
 def get_stats() -> dict[str, Any]:
+    return _cached_status_payload("stats", STATUS_ENDPOINT_CACHE_SECONDS, _get_stats_uncached)
+
+
+def _get_stats_uncached() -> dict[str, Any]:
     with get_connection() as connection:
-        _expire_assigned_tasks(connection)
         miners = connection.execute("SELECT COUNT(*) AS count FROM miners").fetchone()["count"]
         tasks = connection.execute("SELECT COUNT(*) AS count FROM tasks").fetchone()["count"]
         pending = connection.execute("SELECT COUNT(*) AS count FROM tasks WHERE status = 'assigned'").fetchone()["count"]
@@ -4181,6 +4253,10 @@ def get_performance_stats() -> dict[str, Any]:
 
 
 def get_health_status() -> dict[str, Any]:
+    return _cached_status_payload("health", HEALTH_ENDPOINT_CACHE_SECONDS, _get_health_status_uncached)
+
+
+def _get_health_status_uncached() -> dict[str, Any]:
     checked_at = utc_now_dt()
     issues: list[str] = []
     database = {"connected": False}
@@ -4248,11 +4324,16 @@ def get_health_status() -> dict[str, Any]:
                 "latest_block_hash": latest_hash,
                 "issues": [{"reason": "database unavailable"}],
             }
-    audit = _basic_audit_health() if database["connected"] else {"valid": False, "issues": 1}
+    include_audit = os.getenv("PICOIN_HEALTH_INCLUDE_AUDIT", "0").strip().lower() in {"1", "true", "yes", "on"}
+    audit = (
+        _basic_audit_health()
+        if database["connected"] and include_audit
+        else {"valid": bool(database["connected"]), "skipped": True, "detail": "use /audit/full for economic audit"}
+    )
 
     if not chain["valid"]:
         issues.append("chain verification failed")
-    if not audit["valid"]:
+    if include_audit and not audit["valid"]:
         issues.append("economic audit has issues")
     try:
         from app.services.consensus import get_replay_status
@@ -5038,29 +5119,6 @@ def _selected_validators_for_job(
 
 
 def _eligible_validator_rows(connection: Any) -> list[dict[str, Any]]:
-    refresh_rows = connection.execute("SELECT COUNT(*) AS count FROM validators").fetchone()
-    if refresh_rows and int(refresh_rows["count"] or 0) > 0:
-        # Keep the eligibility view fresh for callers that do not go through an HTTP route.
-        now = utc_now_dt()
-        for row in connection.execute("SELECT * FROM validators").fetchall():
-            validator = row_to_dict(row)
-            online_status = _status_from_heartbeat(validator.get("last_heartbeat_at"), now)
-            if bool(validator.get("is_banned")) or not bool(validator.get("enabled", 1)):
-                online_status = "offline"
-            sync_status, out_of_sync_since = _sync_status_from_metrics(
-                sync_lag=int(validator.get("sync_lag") or 0),
-                pending_replay_blocks=int(validator.get("pending_replay_blocks") or 0),
-                out_of_sync_since=validator.get("out_of_sync_since"),
-                now=now,
-            )
-            connection.execute(
-                """
-                UPDATE validators
-                SET online_status = ?, sync_status = ?, out_of_sync_since = ?
-                WHERE validator_id = ?
-                """,
-                (online_status, sync_status, out_of_sync_since, validator["validator_id"]),
-            )
     rows = connection.execute(
         f"""
         SELECT *

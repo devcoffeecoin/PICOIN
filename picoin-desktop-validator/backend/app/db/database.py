@@ -828,6 +828,7 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_mempool_sender_nonce ON mempool_transactions(sender, nonce);
             CREATE INDEX IF NOT EXISTS idx_mempool_selected_task ON mempool_transactions(selected_task_id);
             CREATE INDEX IF NOT EXISTS idx_task_tx_snapshots_task ON task_tx_snapshots(task_id);
+            CREATE INDEX IF NOT EXISTS idx_task_tx_snapshots_block ON task_tx_snapshots(block_height);
             CREATE INDEX IF NOT EXISTS idx_network_block_headers_height ON network_block_headers(height);
             CREATE INDEX IF NOT EXISTS idx_consensus_block_proposals_status ON consensus_block_proposals(status);
             CREATE INDEX IF NOT EXISTS idx_consensus_block_proposals_height ON consensus_block_proposals(height);
