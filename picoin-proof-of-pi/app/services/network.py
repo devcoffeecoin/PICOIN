@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
@@ -79,6 +80,7 @@ class NetworkError(Exception):
 ALLOWED_NODE_TYPES = {"full", "miner", "validator", "auditor", "bootstrap"}
 ALLOWED_TX_TYPES = {"transfer", "stake", "unstake", "science_job_create", "governance_action", "treasury_claim", "faucet"}
 TERMINAL_TX_STATUSES = {"confirmed", "rejected", "failed", "expired"}
+RECONCILE_PEER_TYPE_PRIORITY = {"bootstrap": 0, "full": 1, "validator": 2, "miner": 3, "auditor": 3}
 _PEER_DISCOVERY_TASK: asyncio.Task | None = None
 
 
@@ -112,6 +114,32 @@ def _normalize_peer_address(peer_address: str | None) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return ""
     return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _is_reconcile_peer_address_allowed(peer_address: str) -> bool:
+    parsed = urlparse(peer_address)
+    host = parsed.hostname or ""
+    if not host:
+        return False
+    try:
+        host.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    if host.lower() == "localhost":
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return not (ip.is_loopback or ip.is_unspecified or ip.is_link_local)
+
+
+def _reconcile_peer_sort_key(peer: dict[str, Any]) -> tuple[int, int]:
+    peer_type = str(peer.get("peer_type") or "").lower()
+    peer_address = _normalize_peer_address(peer.get("peer_address"))
+    bootstrap_seed_addresses = {_normalize_peer_address(address) for address in BOOTSTRAP_PEERS}
+    seed_priority = 1 if peer_address in bootstrap_seed_addresses else 0
+    return (RECONCILE_PEER_TYPE_PRIORITY.get(peer_type, 99), seed_priority)
 
 
 def recover_from_peer_snapshot(
@@ -418,9 +446,11 @@ def select_reconcile_peers(limit: int = 16) -> list[dict[str, Any]]:
     local_address = _normalize_peer_address(NODE_PUBLIC_ADDRESS)
     selected: list[dict[str, Any]] = []
     seen_addresses: set[str] = set()
-    for peer in list_peers(include_stale=False):
+    for peer in sorted(list_peers(include_stale=False), key=_reconcile_peer_sort_key):
         peer_address = _normalize_peer_address(peer.get("peer_address"))
         if not peer_address or peer_address == local_address or peer_address in seen_addresses:
+            continue
+        if not _is_reconcile_peer_address_allowed(peer_address):
             continue
         if peer.get("network_id") != NETWORK_ID:
             continue
