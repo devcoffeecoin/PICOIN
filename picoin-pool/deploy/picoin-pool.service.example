@@ -1,0 +1,19 @@
+[Unit]
+Description=Picoin Pool 1
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=picoin
+Group=picoin
+WorkingDirectory=/opt/picoin/src/PICOIN
+Environment=PICOIN_POOL_TOKEN=CHANGE_ME_PRIVATE_POOL_TOKEN
+Environment=PICOIN_MINER_REWARD_ADDRESS=CHANGE_ME_POOL_REWARD_WALLET
+ExecStart=/opt/picoin/src/PICOIN/.venv/bin/python /opt/picoin/src/PICOIN/picoin-pool/pool_server.py --server https://api.picoin.science --identity /var/lib/picoin-pool/pool_identity.json --db /var/lib/picoin-pool/pool.sqlite3 --host 127.0.0.1 --port 9321 --chunk-size 2 --auth-token CHANGE_ME_PRIVATE_POOL_TOKEN
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+

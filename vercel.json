@@ -9,12 +9,20 @@
       "destination": "/explorer.html"
     },
     {
+      "source": "/pool1",
+      "destination": "/pool1.html"
+    },
+    {
       "source": "/picoin-api/:path*",
       "destination": "https://api.picoin.science/:path*"
     },
     {
       "source": "/api/bootstrap/:path*",
       "destination": "https://api.picoin.science/:path*"
+    },
+    {
+      "source": "/api/pool1/:path*",
+      "destination": "https://pool1.picoin.science/:path*"
     },
     {
       "source": "/api/validator/:path*",

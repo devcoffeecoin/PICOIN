@@ -17,6 +17,10 @@
       "destination": "http://159.89.115.183:8000/:path*"
     },
     {
+      "source": "/api/pool1/:path*",
+      "destination": "https://pool1.picoin.science/:path*"
+    },
+    {
       "source": "/api/validator/:path*",
       "destination": "https://api.picoin.science/:path*"
     },
@@ -31,6 +35,10 @@
     {
       "source": "/miner",
       "destination": "/miner.html"
+    },
+    {
+      "source": "/pool1",
+      "destination": "/pool1.html"
     },
     {
       "source": "/transaction",

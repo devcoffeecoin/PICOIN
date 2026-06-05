@@ -37,6 +37,18 @@ python picoin-pool/pool_server.py \
 
 The first run auto-registers `pool_identity.json` as a normal miner, using the same official miner registration flow.
 
+For the first hosted pool, the intended public API is:
+
+```text
+https://pool1.picoin.science
+```
+
+The public stats page is served by the website at:
+
+```text
+https://picoin.science/pool1
+```
+
 ## Start A Worker
 
 ```bash
@@ -57,10 +69,24 @@ curl http://127.0.0.1:9321/stats
 sqlite3 picoin-pool/pool.sqlite3 "select worker_id, sum(units) from pool_shares where credited=1 group by worker_id;"
 ```
 
+For a public deployment behind nginx:
+
+```bash
+curl https://pool1.picoin.science/health
+curl https://pool1.picoin.science/stats
+curl https://picoin.science/api/pool1/stats
+```
+
+Deployment templates are included in:
+
+```text
+picoin-pool/deploy/picoin-pool.service.example
+picoin-pool/deploy/nginx-pool1.conf.example
+```
+
 ## Current Limits
 
 - This is an alpha pool coordinator, not a custody or payout product.
 - A pool is one mainnet miner identity, so it can still receive `429 Too Many Requests` or wait for the next competitive block like any other miner.
 - If mainnet task sizes are small, pooling mostly helps reward sharing. It does not make one identity mathematically equivalent to many independent miners.
 - Production pool operators should add HTTPS, monitoring, payout policy, abuse controls, backups, and clear community rules before accepting public workers.
-

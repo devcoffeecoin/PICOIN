@@ -554,6 +554,11 @@ class PoolHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         return
 
+    def do_OPTIONS(self) -> None:
+        self.send_response(HTTPStatus.NO_CONTENT)
+        self.send_common_headers()
+        self.end_headers()
+
     def do_GET(self) -> None:
         parsed = urlparse(self.path)
         try:
@@ -621,11 +626,17 @@ class PoolHandler(BaseHTTPRequestHandler):
     def send_json(self, payload: dict[str, Any], status: int | HTTPStatus = HTTPStatus.OK) -> None:
         body = json.dumps(payload, indent=2, sort_keys=True).encode("utf-8")
         self.send_response(int(status))
+        self.send_common_headers()
         self.send_header("Content-Type", "application/json")
-        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def send_common_headers(self) -> None:
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Picoin-Pool-Token")
 
 
 def parse_args() -> argparse.Namespace:

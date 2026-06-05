@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Picoin Pool 1</title>
+    <meta name="description" content="Public statistics for Picoin Pool 1." />
+    <link rel="icon" href="./assets/picoin-logo.png" />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body class="explorer-page pool-page">
+    <header class="site-header">
+      <a class="brand" href="./index.html" aria-label="Picoin home">
+        <img src="./assets/picoin-logo.png" alt="Picoin logo" />
+        <span>Picoin</span>
+      </a>
+      <nav aria-label="Pool navigation">
+        <a href="./index.html">Home</a>
+        <a href="./explorer.html">Explorer</a>
+        <a href="./miner.html">Miner Search</a>
+        <a href="./wallet.html">Web Wallet</a>
+        <a href="https://solvency.gitbook.io/picoin" target="_blank" rel="noreferrer">Docs</a>
+      </nav>
+    </header>
+
+    <main>
+      <section class="explorer-hero section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">Pool 1</p>
+            <h1>Picoin Pool 1</h1>
+          </div>
+          <span id="poolStatus" class="status-pill warn">Connecting</span>
+        </div>
+        <div class="pool-endpoint">
+          <span>API</span>
+          <strong id="poolEndpoint">/api/pool1</strong>
+        </div>
+        <div class="explorer-metrics pool-metrics">
+          <article>
+            <span>Pool Miner</span>
+            <strong id="poolMinerId">-</strong>
+          </article>
+          <article>
+            <span>Mainnet API</span>
+            <strong id="poolMainnet">-</strong>
+          </article>
+          <article>
+            <span>Workers</span>
+            <strong id="poolWorkers">-</strong>
+          </article>
+          <article>
+            <span>Credited Workers</span>
+            <strong id="poolCreditedWorkers">-</strong>
+          </article>
+          <article>
+            <span>Active Tasks</span>
+            <strong id="poolActiveTasks">-</strong>
+          </article>
+          <article>
+            <span>Completed Tasks</span>
+            <strong id="poolCompletedTasks">-</strong>
+          </article>
+        </div>
+        <div id="poolError" class="api-errors" aria-live="polite"></div>
+      </section>
+
+      <section class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Shares</p>
+          <h2>Credited worker shares</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Worker</th>
+                <th>Units</th>
+                <th>Share</th>
+              </tr>
+            </thead>
+            <tbody id="poolSharesTable">
+              <tr><td colspan="3" class="empty">Waiting for pool data</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="section pool-grid">
+        <div>
+          <div class="section-heading">
+            <p class="eyebrow">Tasks</p>
+            <h2>Pool task states</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Status</th>
+                  <th>Count</th>
+                </tr>
+              </thead>
+              <tbody id="poolTasksTable">
+                <tr><td colspan="2" class="empty">Waiting for pool tasks</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div>
+          <div class="section-heading">
+            <p class="eyebrow">Chunks</p>
+            <h2>Worker chunk states</h2>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Status</th>
+                  <th>Count</th>
+                </tr>
+              </thead>
+              <tbody id="poolChunksTable">
+                <tr><td colspan="2" class="empty">Waiting for pool chunks</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <section class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Events</p>
+          <h2>Recent pool activity</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Time</th>
+                <th>Level</th>
+                <th>Message</th>
+              </tr>
+            </thead>
+            <tbody id="poolEventsTable">
+              <tr><td colspan="3" class="empty">Waiting for pool events</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </main>
+
+    <footer class="site-footer">
+      <span>Picoin Pool 1</span>
+      <span id="poolUpdated">Waiting for update</span>
+    </footer>
+
+    <script src="./pool1.js?v=20260605-pool1"></script>
+  </body>
+</html>
+

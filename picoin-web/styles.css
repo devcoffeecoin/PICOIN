@@ -1053,6 +1053,34 @@ td strong {
   padding: 18px;
 }
 
+.pool-endpoint {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 18px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.pool-endpoint span {
+  color: var(--cyan);
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.pool-endpoint strong,
+.pool-metrics strong,
+.pool-page td {
+  overflow-wrap: anywhere;
+}
+
+.pool-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
 .tx-detail-layout {
   display: grid;
   gap: 14px;
@@ -1147,6 +1175,7 @@ td strong {
   .explorer-metrics,
   .network-summary,
   .chart-summary,
+  .pool-grid,
   .miner-summary-grid,
   .validator-grid {
     grid-template-columns: 1fr 1fr;
@@ -1252,6 +1281,7 @@ td strong {
   .explorer-metrics,
   .network-summary,
   .chart-summary,
+  .pool-grid,
   .miner-summary-grid,
   .validator-grid {
     grid-template-columns: 1fr;
