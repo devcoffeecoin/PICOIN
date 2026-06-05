@@ -233,6 +233,16 @@ function statusClass(ok) {
   return ok ? "ok" : "bad";
 }
 
+function healthAcceptable(health) {
+  if (health?.status === "ok") return true;
+  const issues = Array.isArray(health?.issues) ? health.issues : [];
+  return (
+    health?.status === "degraded" &&
+    issues.length > 0 &&
+    issues.every((issue) => /not enough eligible validators for quorum/i.test(String(issue)))
+  );
+}
+
 function peerCount(sync) {
   const counts = sync?.peer_counts || {};
   return `${fmt(counts.connected, 0)} / ${fmt(counts.total, 0)}`;
@@ -427,14 +437,14 @@ async function loadMiningMetrics() {
 async function loadNodeState(node) {
   const previous = state.nodeStates.find((item) => item.url === node.url);
   if (cleanUrl(node.url) === apiBaseUrl && state.health && state.sync) {
-    return { ...node, health: state.health, sync: state.sync, ok: state.health.status === "ok", error: null };
+    return { ...node, health: state.health, sync: state.sync, ok: healthAcceptable(state.health), error: null };
   }
   try {
     const [health, sync] = await Promise.all([
       fetchJsonFrom(node.url, "/health", { timeoutMs: 8000 }),
       fetchJsonFrom(node.url, "/node/sync-status", { timeoutMs: 8000 }),
     ]);
-    return { ...node, health, sync, ok: health.status === "ok", error: null };
+    return { ...node, health, sync, ok: healthAcceptable(health), error: null };
   } catch (error) {
     if (previous?.sync) {
       return { ...previous, ok: false, stale: true, error: error.message };
@@ -511,7 +521,7 @@ async function loadExplorer() {
       () => loadEndpoint("sync", "/node/sync-status", null),
       () => loadEndpoint("protocol", "/protocol", null),
       () => loadEndpoint("validatorsStatus", "/validators/status", null),
-      () => loadEndpoint("minersStatus", "/miners/status", null),
+      () => loadEndpoint("minersStatus", "/miners/status", null, { allowFailover: false }),
       () => loadEndpoint("blocks", "/blocks?limit=50", []),
       async () => {
         try {
