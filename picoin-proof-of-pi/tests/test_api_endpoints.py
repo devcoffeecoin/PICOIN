@@ -1,8 +1,10 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from app.api.routes import router
+from app.core.settings import GENESIS_HASH
 from app.core.signatures import generate_keypair
 from app.db.database import DATABASE_PATH, get_connection, init_db
+from app.services.network import node_identity
 from app.services.mining import register_miner
 from app.services.wallet import create_wallet
 
@@ -33,6 +35,80 @@ def test_node_sync_status_endpoint_returns_200(tmp_path, monkeypatch) -> None:
     response = client.get("/node/sync-status")
 
     assert response.status_code == 200
+
+
+def test_node_blocks_receive_gossips_new_pending_block(tmp_path, monkeypatch) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+    calls: list[dict] = []
+
+    def fake_gossip_json(path, payload, event_type, exclude_peer_id=None):
+        calls.append(
+            {
+                "path": path,
+                "payload": payload,
+                "event_type": event_type,
+                "exclude_peer_id": exclude_peer_id,
+            }
+        )
+        return {"enabled": True, "attempted": 1, "succeeded": 1, "failed": 0, "peers": []}
+
+    monkeypatch.setattr("app.api.routes.gossip_json", fake_gossip_json)
+    block = {
+        "height": 1,
+        "previous_hash": GENESIS_HASH,
+        "block_hash": "c" * 64,
+        "timestamp": "2026-06-04T00:00:00+00:00",
+    }
+
+    response = client.post(
+        "/node/blocks/receive",
+        json={"block": block, "source_peer_id": "peer-a"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "pending_replay"
+    assert payload["gossip"]["succeeded"] == 1
+    assert calls == [
+        {
+            "path": "/node/blocks/receive?gossip=false",
+            "payload": {"block": block, "source_peer_id": node_identity()["peer_id"]},
+            "event_type": "block_payload_gossip",
+            "exclude_peer_id": "peer-a",
+        }
+    ]
+
+
+def test_node_blocks_receive_does_not_regossip_duplicate_header(tmp_path, monkeypatch) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+    calls: list[dict] = []
+    block = {
+        "height": 1,
+        "previous_hash": GENESIS_HASH,
+        "block_hash": "d" * 64,
+        "timestamp": "2026-06-04T00:00:00+00:00",
+    }
+
+    first = client.post(
+        "/node/blocks/receive?gossip=false",
+        json={"block": block, "source_peer_id": "peer-a"},
+    )
+    assert first.status_code == 200
+    assert first.json()["status"] == "pending_replay"
+
+    monkeypatch.setattr(
+        "app.api.routes.gossip_json",
+        lambda *args, **kwargs: calls.append({"args": args, "kwargs": kwargs}) or {},
+    )
+    duplicate = client.post(
+        "/node/blocks/receive",
+        json={"block": block, "source_peer_id": "peer-b"},
+    )
+
+    assert duplicate.status_code == 200
+    assert duplicate.json()["status"] == "known"
+    assert duplicate.json()["reason"] == "block header already queued"
+    assert calls == []
 
 
 def test_tasks_next_endpoint_does_not_502_when_protocol_params_has_retarget_fields(tmp_path, monkeypatch) -> None:
