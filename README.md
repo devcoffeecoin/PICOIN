@@ -838,6 +838,7 @@ Goal: nodes exchange chain data and consensus messages directly instead of relyi
 
 - [x] Add read-only multi-peer reconcile selection for catch-up from more than one compatible peer
 - [x] Add deterministic peer selection filters for local self, stale peers, duplicate addresses, wrong network id, wrong chain id, wrong genesis hash, and wrong protocol version
+- [x] Add block payload relay for `/node/blocks/receive` with source-peer exclusion and queued-header duplicate suppression
 - [ ] Gossip block headers and finalized block payloads between peers
 - [ ] Gossip signed transactions and mempool inventory between peers
 - [ ] Gossip validator heartbeats and validator votes between peers
@@ -850,6 +851,7 @@ Phase 3 alpha evidence:
 - [x] `select_reconcile_peers()` now returns unique, connected, locally compatible peers for read-only reconcile/catch-up
 - [x] `/node/reconcile` multi-peer mode now reports `selected_peers` so operators can see which peers were attempted
 - [x] Added tests for filtering local/stale/wrong-identity peers and attempting multiple selected peers in one reconcile pass
+- [x] `POST /node/blocks/receive` now relays new pending block payloads to peers with `gossip=false`, excludes the source peer, and does not re-gossip duplicate queued headers
 
 ### Phase 4: Decentralized Mempool And Block Candidate Construction
 

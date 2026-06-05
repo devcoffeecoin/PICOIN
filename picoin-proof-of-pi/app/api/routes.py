@@ -395,9 +395,17 @@ def node_restore_snapshot(snapshot_hash: str) -> dict:
 
 
 @router.post("/node/blocks/receive", response_model=BlockReceiveResponse)
-def node_receive_block(payload: BlockReceiveRequest) -> dict:
+def node_receive_block(payload: BlockReceiveRequest, gossip: bool = Query(True)) -> dict:
     try:
-        return receive_block_header(payload.block, payload.source_peer_id)
+        result = receive_block_header(payload.block, payload.source_peer_id)
+        if gossip and result.get("status") in {"pending_replay", "pending_missing_ancestors"}:
+            result["gossip"] = gossip_json(
+                "/node/blocks/receive?gossip=false",
+                {"block": payload.block, "source_peer_id": node_identity()["peer_id"]},
+                "block_payload_gossip",
+                exclude_peer_id=payload.source_peer_id,
+            )
+        return result
     except NetworkError as exc:
         raise _network_error(exc) from exc
 

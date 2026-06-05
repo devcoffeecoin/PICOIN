@@ -672,6 +672,10 @@ def receive_block_header(block: dict[str, Any], source_peer_id: str | None = Non
     reason = "accepted for distributed replay queue"
     with get_connection() as connection:
         local = connection.execute("SELECT block_hash FROM blocks WHERE height = ?", (int(block["height"]),)).fetchone()
+        queued = connection.execute(
+            "SELECT status, reason FROM network_block_headers WHERE block_hash = ?",
+            (block["block_hash"],),
+        ).fetchone()
         latest = connection.execute(
             "SELECT height, block_hash FROM blocks ORDER BY height DESC LIMIT 1"
         ).fetchone()
@@ -682,6 +686,26 @@ def receive_block_header(block: dict[str, Any], source_peer_id: str | None = Non
         if local is not None and local["block_hash"] == block["block_hash"]:
             status = "known"
             reason = "block already known locally"
+        elif queued is not None:
+            _record_sync_event(
+                connection,
+                source_peer_id,
+                "block_received",
+                "inbound",
+                "known",
+                {
+                    "height": int(block["height"]),
+                    "block_hash": block["block_hash"],
+                    "reason": "block header already queued",
+                    "queued_status": queued["status"],
+                },
+            )
+            return {
+                "accepted": True,
+                "status": "known",
+                "reason": "block header already queued",
+                "block_hash": block["block_hash"],
+            }
         elif local is not None and local["block_hash"] != block["block_hash"]:
             raise NetworkError(409, "conflicting block at height")
         elif active_base is not None and int(block["height"]) <= active_base_height:

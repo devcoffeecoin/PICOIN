@@ -635,6 +635,7 @@ class BlockReceiveResponse(BaseModel):
     status: str
     reason: str
     block_hash: str
+    gossip: dict[str, Any] | None = None
 
 
 class BlockSyncResponse(BaseModel):
