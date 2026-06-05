@@ -31,6 +31,9 @@ AUTO_REGISTER_IDENTITY = os.getenv("PICOIN_AUTO_REGISTER_IDENTITY", "1").strip()
 MINER_REWARD_ADDRESS = os.getenv("PICOIN_MINER_REWARD_ADDRESS", "").strip()
 RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
 DEFAULT_POOL_URL = "https://pool1.picoin.science"
+POOL_IDLE_LOG_INTERVAL_SECONDS = 30.0
+_last_pool_idle_log_at = 0.0
+_pool_idle_polls = 0
 
 
 def http_timeout_seconds() -> float:
@@ -406,6 +409,7 @@ def pool_register_worker(
 
 
 def pool_mine_once(pool_url: str, worker_id: str, auth_token: str | None, workers: int) -> bool:
+    global _last_pool_idle_log_at, _pool_idle_polls
     response = request_with_retries(
         "GET",
         f"{pool_url}/work/next",
@@ -414,13 +418,24 @@ def pool_mine_once(pool_url: str, worker_id: str, auth_token: str | None, worker
     )
     work = response.json()
     if work.get("status") != "work":
-        print(f"Pool idle: {work.get('message', 'no pool work available')}")
+        _pool_idle_polls += 1
+        current = time.monotonic()
+        if current - _last_pool_idle_log_at >= POOL_IDLE_LOG_INTERVAL_SECONDS:
+            print(
+                "Pool connected. Waiting for available pool chunk "
+                f"(idle_polls={_pool_idle_polls}, message={work.get('message', 'no pool work available')})"
+            )
+            _last_pool_idle_log_at = current
+            _pool_idle_polls = 0
         return False
 
+    _pool_idle_polls = 0
+    units = int(work["range_end"]) - int(work["range_start"]) + 1
     print(
-        "Task assigned: "
-        f"pool chunk {work['chunk_id']} positions {work['range_start']}..{work['range_end']} "
-        f"using {work['algorithm']}"
+        "Pool work received: "
+        f"task={work.get('task_id')} chunk={work['chunk_id']} "
+        f"range={work['range_start']}..{work['range_end']} units={units} "
+        f"algorithm={work['algorithm']}"
     )
     compute_started = now_perf()
     segment = calculate_segment_with_workers(int(work["range_start"]), int(work["range_end"]), work["algorithm"], workers)
@@ -428,6 +443,7 @@ def pool_mine_once(pool_url: str, worker_id: str, auth_token: str | None, worker
     print(f"Calculated segment length: {len(segment)}")
     print(f"Compute time: {compute_ms} ms")
     print(f"Workers: {workers}")
+    print(f"Pool chunk computed: {work['chunk_id']} units={units} compute_ms={compute_ms}")
 
     submit = request_with_retries(
         "POST",
@@ -443,6 +459,7 @@ def pool_mine_once(pool_url: str, worker_id: str, auth_token: str | None, worker
     result = submit.json()
     print(
         f"Pool chunk accepted: {work['chunk_id']} "
+        f"range={work['range_start']}..{work['range_end']} "
         f"units={result.get('units')} compute_ms={compute_ms}"
     )
     return True
@@ -514,9 +531,16 @@ def command_pool_mine(args: argparse.Namespace) -> int:
     completed = 0
     attempts = 0
     loops = 1 if args.once else args.loops
+    last_status_log_at = 0.0
     for index in range(loops):
         attempts += 1
-        print(f"Pool mining attempt {index + 1}/{loops} as {worker_id}")
+        current = time.monotonic()
+        if index == 0 or current - last_status_log_at >= 30:
+            print(
+                f"Pool worker active: {worker_id} "
+                f"attempts={attempts}/{loops} completed_chunks={completed}"
+            )
+            last_status_log_at = current
         if pool_mine_once(pool_url, worker_id, auth_token, args.workers):
             completed += 1
         if index + 1 < loops:

@@ -12,7 +12,7 @@ const MAINNET_GENESIS_HASH = "da286143167d14044c053fbb23fcf4673bb11bcd34fb1a11e5
 const MAINNET_TREASURY_WALLET = "PIE1EE818AA165EECC3F0CCF058F4FF7BC04517F8CD07385";
 const MAINNET_GOVERNANCE_WALLET = "PI251078EE911B17EDC747DB5BDF505649ECAF60F787AA23";
 const DEFAULT_POOL_URL = "https://pool1.picoin.science";
-const MAX_LOG_LINES = 15;
+const MAX_LOG_LINES = 60;
 const HTTP_TIMEOUT_SECONDS = "60";
 const HTTP_MAX_RETRIES = "3";
 
@@ -116,6 +116,11 @@ function addLog(line: string) {
   lastLogs = lastLogs.slice(0, MAX_LOG_LINES);
 
   if (clean.includes("Task assigned")) currentTask = clean;
+  if (clean.includes("Pool worker active")) currentTask = "Pool connected. Waiting for available pool chunk";
+  if (clean.includes("Pool connected. Waiting")) currentTask = "Pool connected. Waiting for available pool chunk";
+  if (clean.includes("Pool work received")) currentTask = clean;
+  if (clean.includes("Pool chunk computed")) currentTask = clean;
+  if (clean.includes("Pool chunk accepted")) currentTask = clean;
   if (clean.includes("Calculated segment")) currentTask = clean;
   if (clean.includes("Commit accepted")) currentTask = clean;
   if (clean.includes("Reveal accepted")) currentTask = clean;
