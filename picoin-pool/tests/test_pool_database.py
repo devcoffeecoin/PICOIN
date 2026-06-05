@@ -249,6 +249,51 @@ def test_auto_chunk_size_uses_active_workers(tmp_path, monkeypatch):
     assert event is not None
     assert '"chunk_mode":"auto"' in event["payload_json"]
     assert '"active_workers":8' in event["payload_json"]
+    assert '"chunk_strategy":"adaptive_work_queue"' in event["payload_json"]
+
+
+def test_auto_chunk_size_uses_fine_queue_for_mixed_worker_capacity(tmp_path, monkeypatch):
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size="auto",
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=False,
+        pool_fee_percent=0,
+    )
+    for index in range(3):
+        coordinator.register_worker(f"worker-{index}", f"Worker {index}", None)
+
+    monkeypatch.setattr(
+        "pool_server.get_task_for_identity",
+        lambda *_: {
+            "status": "assigned",
+            "task_id": "task_auto",
+            "range_start": 100,
+            "range_end": 108,
+            "algorithm": "bbp_hex_v1",
+        },
+    )
+
+    coordinator.ensure_active_task()
+
+    with db.connect() as connection:
+        chunks = connection.execute(
+            """
+            SELECT range_start, range_end, units
+            FROM pool_chunks
+            ORDER BY range_start
+            """
+        ).fetchall()
+
+    assert len(chunks) == 9
+    assert all(row["units"] == 1 for row in chunks)
+    assert chunks[0]["range_start"] == 100
+    assert chunks[-1]["range_end"] == 108
 
 
 def test_idle_worker_claim_updates_last_seen_for_auto_chunking(tmp_path):

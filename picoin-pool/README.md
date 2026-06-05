@@ -46,7 +46,7 @@ python picoin-pool/pool_server.py \
 
 The first run auto-registers `pool_identity.json` as a normal miner, using the same official miner registration flow.
 If `--payout-wallet` is omitted, automatic transfers are disabled and the pool only reports pending payout balances.
-With `--chunk-size auto`, the pool splits each mainnet task using the active workers seen in the last 5 minutes. Operators can still pass a positive integer to force fixed chunk sizes.
+With `--chunk-size auto`, the pool creates an adaptive work queue from workers seen in the last 5 minutes. Fast workers naturally claim more small chunks because they finish and ask for more sooner; slow workers receive fewer chunks without blocking a large part of the task. Operators can still pass a positive integer to force fixed chunk sizes.
 
 For the first hosted pool, the intended public API is:
 

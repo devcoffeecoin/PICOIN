@@ -508,6 +508,7 @@ class PoolCoordinator:
             {
                 "active_workers": active_workers,
                 "chunk_mode": "fixed" if self.chunk_size else "auto",
+                "chunk_strategy": "fixed" if self.chunk_size else "adaptive_work_queue",
                 "chunk_size": chunk_size,
                 "chunks": len(chunks),
                 "mainnet_task_id": task["task_id"],
@@ -529,8 +530,8 @@ class PoolCoordinator:
             return self.chunk_size, 0, task_units
 
         active_workers = self._active_worker_count(connection)
-        target_workers = max(1, min(active_workers, task_units))
-        chunk_size = max(1, task_units // target_workers)
+        target_chunks = min(task_units, max(1, active_workers * 4))
+        chunk_size = max(1, (task_units + target_chunks - 1) // target_chunks)
         return chunk_size, active_workers, task_units
 
     def _active_worker_count(self, connection: sqlite3.Connection, window_seconds: int = 300) -> int:
@@ -761,6 +762,8 @@ class PoolCoordinator:
                 "mode": "fixed" if self.chunk_size else "auto",
                 "fixed_chunk_size": self.chunk_size,
                 "active_worker_window_seconds": 300,
+                "strategy": "fixed" if self.chunk_size else "adaptive_work_queue",
+                "target_chunks_per_active_worker": 4,
             },
             "hashrate": hashrate,
             "tasks": tasks,
