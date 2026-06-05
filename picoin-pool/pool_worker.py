@@ -26,24 +26,35 @@ def headers(token: str | None) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def register(pool_url: str, worker_id: str, name: str, payout_address: str | None, token: str | None) -> None:
+def register(
+    pool_url: str,
+    worker_id: str,
+    name: str,
+    payout_address: str | None,
+    token: str | None,
+    request_timeout: float,
+) -> None:
     response = requests.post(
         f"{pool_url}/workers/register",
         json={"worker_id": worker_id, "name": name, "payout_address": payout_address},
         headers=headers(token),
-        timeout=20,
+        timeout=request_timeout,
     )
     response.raise_for_status()
 
 
-def mine_once(pool_url: str, worker_id: str, token: str | None) -> bool:
-    response = requests.get(
-        f"{pool_url}/work/next",
-        params={"worker_id": worker_id},
-        headers=headers(token),
-        timeout=20,
-    )
-    response.raise_for_status()
+def mine_once(pool_url: str, worker_id: str, token: str | None, request_timeout: float) -> bool:
+    try:
+        response = requests.get(
+            f"{pool_url}/work/next",
+            params={"worker_id": worker_id},
+            headers=headers(token),
+            timeout=request_timeout,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        print(f"Pool request failed: {exc}")
+        return False
     work = response.json()
     if work.get("status") != "work":
         print(f"Pool idle: {work.get('message', 'no work')}")
@@ -52,18 +63,22 @@ def mine_once(pool_url: str, worker_id: str, token: str | None) -> bool:
     started = now_perf()
     segment = calculate_pi_segment(int(work["range_start"]), int(work["range_end"]), work["algorithm"])
     compute_ms = elapsed_ms(started)
-    submit = requests.post(
-        f"{pool_url}/work/submit",
-        json={
-            "worker_id": worker_id,
-            "chunk_id": work["chunk_id"],
-            "segment": segment,
-            "compute_ms": compute_ms,
-        },
-        headers=headers(token),
-        timeout=20,
-    )
-    submit.raise_for_status()
+    try:
+        submit = requests.post(
+            f"{pool_url}/work/submit",
+            json={
+                "worker_id": worker_id,
+                "chunk_id": work["chunk_id"],
+                "segment": segment,
+                "compute_ms": compute_ms,
+            },
+            headers=headers(token),
+            timeout=request_timeout,
+        )
+        submit.raise_for_status()
+    except requests.RequestException as exc:
+        print(f"Pool submit failed: {exc}")
+        return False
     result: dict[str, Any] = submit.json()
     print(
         f"Submitted {work['chunk_id']} {work['range_start']}..{work['range_end']} "
@@ -81,6 +96,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--auth-token", default=os.getenv("PICOIN_POOL_TOKEN", ""))
     parser.add_argument("--loops", type=int, default=1)
     parser.add_argument("--sleep", type=float, default=2.0)
+    parser.add_argument("--request-timeout", type=float, default=60.0)
     return parser.parse_args()
 
 
@@ -89,10 +105,11 @@ def main() -> int:
     pool_url = args.pool.rstrip("/")
     token = args.auth_token.strip() or None
     payout_address = args.payout_address.strip() or None
-    register(pool_url, args.worker_id, args.name, payout_address, token)
+    request_timeout = max(5.0, float(args.request_timeout))
+    register(pool_url, args.worker_id, args.name, payout_address, token, request_timeout)
     completed = 0
     for index in range(max(1, args.loops)):
-        if mine_once(pool_url, args.worker_id, token):
+        if mine_once(pool_url, args.worker_id, token, request_timeout):
             completed += 1
         if index + 1 < args.loops:
             time.sleep(max(0.1, args.sleep))
@@ -102,4 +119,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

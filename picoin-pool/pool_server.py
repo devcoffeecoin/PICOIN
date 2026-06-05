@@ -253,12 +253,15 @@ class PoolCoordinator:
                 raise ValueError("unknown chunk_id")
             if row["status"] != "assigned" or row["worker_id"] != worker_id:
                 raise ValueError("chunk is not assigned to this worker")
-            expected_len = int(row["range_end"]) - int(row["range_start"]) + 1
-            if len(segment) != expected_len:
-                raise ValueError("segment length does not match chunk range")
-            if self.verify_chunks:
-                expected = calculate_pi_segment(int(row["range_start"]), int(row["range_end"]), row["algorithm"])
-                if segment != expected.upper():
+            row_data = dict(row)
+
+        expected_len = int(row_data["range_end"]) - int(row_data["range_start"]) + 1
+        if len(segment) != expected_len:
+            raise ValueError("segment length does not match chunk range")
+        if self.verify_chunks:
+            expected = calculate_pi_segment(int(row_data["range_start"]), int(row_data["range_end"]), row_data["algorithm"])
+            if segment != expected.upper():
+                with self.db._lock, self.db.connect() as connection:
                     connection.execute(
                         """
                         UPDATE pool_chunks
@@ -267,29 +270,32 @@ class PoolCoordinator:
                         """,
                         (chunk_id,),
                     )
-                    self.db.event(
-                        "warning",
-                        "worker submitted invalid segment",
-                        {"worker_id": worker_id, "chunk_id": chunk_id},
-                    )
-                    raise ValueError("submitted segment failed pool verification")
+                self.db.event(
+                    "warning",
+                    "worker submitted invalid segment",
+                    {"worker_id": worker_id, "chunk_id": chunk_id},
+                )
+                raise ValueError("submitted segment failed pool verification")
 
+        with self.db._lock, self.db.connect() as connection:
             now = utc_now()
             units = expected_len
-            connection.execute(
+            cursor = connection.execute(
                 """
                 UPDATE pool_chunks
                 SET status = 'completed', segment = ?, compute_ms = ?, submitted_at = ?
-                WHERE chunk_id = ?
+                WHERE chunk_id = ? AND status = 'assigned' AND worker_id = ?
                 """,
-                (segment, max(0, int(compute_ms or 0)), now, chunk_id),
+                (segment, max(0, int(compute_ms or 0)), now, chunk_id, worker_id),
             )
+            if cursor.rowcount == 0:
+                raise ValueError("chunk assignment changed before submission completed")
             connection.execute(
                 """
                 INSERT INTO pool_shares (share_id, worker_id, pool_task_id, chunk_id, units, credited, created_at)
                 VALUES (?, ?, ?, ?, ?, 0, ?)
                 """,
-                (f"share_{uuid.uuid4().hex[:16]}", worker_id, row["pool_task_id"], chunk_id, units, now),
+                (f"share_{uuid.uuid4().hex[:16]}", worker_id, row_data["pool_task_id"], chunk_id, units, now),
             )
             connection.execute(
                 "UPDATE pool_workers SET last_seen_at = ? WHERE worker_id = ?",
