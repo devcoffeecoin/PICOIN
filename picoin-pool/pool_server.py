@@ -46,6 +46,10 @@ def json_dumps(data: Any) -> str:
     return json.dumps(data, sort_keys=True, separators=(",", ":"))
 
 
+def is_lost_competitive_round_error(message: str) -> bool:
+    return message.startswith("commit rejected: competitive round won by ")
+
+
 class PoolDatabase:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -534,16 +538,20 @@ class PoolCoordinator:
                     )
             self.db.event("info", "pool task submitted", {"pool_task_id": pool_task_id, "status": status})
         except Exception as exc:
+            error = str(exc)
+            status = "lost" if is_lost_competitive_round_error(error) else "error"
+            level = "info" if status == "lost" else "error"
+            message = "pool task lost competitive round" if status == "lost" else "pool task failed"
             with self.db._lock, self.db.connect() as connection:
                 connection.execute(
                     """
                     UPDATE pool_tasks
-                    SET status = 'error', error = ?, completed_at = ?
+                    SET status = ?, error = ?, completed_at = ?
                     WHERE pool_task_id = ?
                     """,
-                    (str(exc), utc_now(), pool_task_id),
+                    (status, error, utc_now(), pool_task_id),
                 )
-            self.db.event("error", "pool task failed", {"pool_task_id": pool_task_id, "error": str(exc)})
+            self.db.event(level, message, {"pool_task_id": pool_task_id, "error": error})
 
     def stats(self) -> dict[str, Any]:
         with self.db._lock, self.db.connect() as connection:
@@ -563,9 +571,20 @@ class PoolCoordinator:
                 dict(row)
                 for row in connection.execute(
                     """
-                    SELECT status, COUNT(*) AS count
+                    SELECT
+                        CASE
+                            WHEN status = 'error' AND error LIKE 'commit rejected: competitive round won by %'
+                            THEN 'lost'
+                            ELSE status
+                        END AS status,
+                        COUNT(*) AS count
                     FROM pool_tasks
-                    GROUP BY status
+                    GROUP BY
+                        CASE
+                            WHEN status = 'error' AND error LIKE 'commit rejected: competitive round won by %'
+                            THEN 'lost'
+                            ELSE status
+                        END
                     ORDER BY status
                     """
                 ).fetchall()
