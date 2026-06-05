@@ -7,6 +7,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from pool_server import PoolCoordinator, PoolDatabase, is_lost_competitive_round_error
+from app.services.wallet import create_wallet
 
 
 def test_pool_database_uses_busy_timeout(tmp_path):
@@ -111,3 +112,79 @@ def test_stats_reports_lost_competitive_rounds_without_error_status(tmp_path):
     )
 
     assert coordinator.stats()["tasks"] == [{"status": "lost", "count": 1}]
+
+
+def test_auto_payout_submits_transfer_once_and_subtracts_pending(tmp_path, monkeypatch):
+    wallet = create_wallet("pool-payout")
+    worker_wallet = create_wallet("worker")
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    with db.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO pool_workers (worker_id, name, payout_address, registered_at, last_seen_at)
+            VALUES ('worker-1', 'Worker 1', ?, '2026-06-05T00:00:00+00:00', '2026-06-05T00:00:00+00:00')
+            """,
+            (worker_wallet["address"],),
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_tasks (
+                pool_task_id, mainnet_task_id, status, range_start, range_end,
+                algorithm, raw_task_json, raw_reveal_json, created_at, completed_at
+            )
+            VALUES (
+                'pooltask_1', 'task_1', 'accepted', 1, 1,
+                'bbp_hex_v1', '{}', ?, '2026-06-05T00:00:00+00:00', '2026-06-05T00:01:00+00:00'
+            )
+            """,
+            ('{"block":{"reward":1.0}}',),
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_shares (share_id, worker_id, pool_task_id, chunk_id, units, credited, created_at)
+            VALUES ('share_1', 'worker-1', 'pooltask_1', 'chunk_1', 1, 1, '2026-06-05T00:00:30+00:00')
+            """
+        )
+
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size=1,
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=True,
+        pool_fee_percent=1,
+        payout_wallet=wallet,
+        payout_interval_seconds=7200,
+        payout_min_amount=0.1,
+    )
+
+    submitted = []
+    monkeypatch.setattr(coordinator, "_fetch_wallet_nonce", lambda: 12)
+
+    def fake_submit(tx):
+        submitted.append(tx)
+        return {"tx_hash": tx["tx_hash"], "status": "pending"}
+
+    monkeypatch.setattr(coordinator, "_submit_payout_transaction", fake_submit)
+
+    result = coordinator.run_payouts()
+
+    assert result["submitted"] == 1
+    assert result["errors"] == 0
+    assert submitted[0]["tx_type"] == "transfer"
+    assert submitted[0]["sender"] == wallet["address"]
+    assert submitted[0]["recipient"] == worker_wallet["address"]
+    assert submitted[0]["amount"] == "0.990000"
+    assert submitted[0]["nonce"] == 12
+
+    stats = coordinator.stats()
+    assert stats["payouts"]["paid_total"] == pytest.approx(0.99)
+    assert stats["payouts"]["pending_total"] == pytest.approx(0.0)
+    assert stats["payouts"]["workers"] == []
+
+    second = coordinator.run_payouts()
+    assert second["submitted"] == 0
+    assert len(submitted) == 1

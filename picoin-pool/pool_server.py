@@ -27,9 +27,10 @@ if str(CORE_PATH) not in sys.path:
 
 from app.core.crypto import hash_result  # noqa: E402
 from app.core.merkle import merkle_root  # noqa: E402
+from app.core.money import to_units, units_to_float  # noqa: E402
 from app.core.performance import elapsed_ms, now_perf  # noqa: E402
 from app.core.pi import calculate_pi_segment  # noqa: E402
-from app.services.wallet import is_valid_address  # noqa: E402
+from app.services.wallet import address_from_public_key, address_matches_public_key, is_valid_address, sign_transaction  # noqa: E402
 from miner.client import (  # noqa: E402
     commit_result,
     get_task_for_identity,
@@ -48,6 +49,30 @@ def json_dumps(data: Any) -> str:
 
 def is_lost_competitive_round_error(message: str) -> bool:
     return message.startswith("commit rejected: competitive round won by ")
+
+
+def load_payout_wallet(path: Path | None) -> dict[str, Any] | None:
+    if path is None:
+        return None
+    if not path.exists():
+        raise FileNotFoundError(f"payout wallet not found: {path}")
+    wallet = json.loads(path.read_text(encoding="utf-8"))
+    private_key = wallet.get("private_key") or wallet.get("privateKey")
+    public_key = wallet.get("public_key") or wallet.get("publicKey")
+    address = str(wallet.get("address") or "").strip().upper()
+    if not public_key or not private_key:
+        raise ValueError("payout wallet must include public_key and private_key")
+    if not address:
+        address = address_from_public_key(public_key)
+    if not is_valid_address(address):
+        raise ValueError("payout wallet address must be a valid PI wallet address")
+    if not address_matches_public_key(address, public_key):
+        raise ValueError("payout wallet address does not match public_key")
+    return {
+        "address": address,
+        "public_key": public_key,
+        "private_key": private_key,
+    }
 
 
 class PoolDatabase:
@@ -127,6 +152,24 @@ class PoolDatabase:
                     message TEXT NOT NULL,
                     payload_json TEXT
                 );
+
+                CREATE TABLE IF NOT EXISTS pool_payouts (
+                    payout_id TEXT PRIMARY KEY,
+                    worker_id TEXT NOT NULL,
+                    payout_address TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    amount_units INTEGER NOT NULL,
+                    fee REAL NOT NULL DEFAULT 0,
+                    fee_units INTEGER NOT NULL DEFAULT 0,
+                    tx_hash TEXT UNIQUE,
+                    status TEXT NOT NULL,
+                    error TEXT,
+                    raw_tx_json TEXT,
+                    raw_response_json TEXT,
+                    created_at TEXT NOT NULL,
+                    submitted_at TEXT,
+                    updated_at TEXT NOT NULL
+                );
                 """
             )
 
@@ -169,6 +212,10 @@ class PoolCoordinator:
         verify_chunks: bool,
         require_worker_payout: bool,
         pool_fee_percent: float,
+        payout_wallet: dict[str, Any] | None = None,
+        payout_interval_seconds: int = 7200,
+        payout_min_amount: float = 0.1,
+        payout_fee: float = 0.0,
     ) -> None:
         self.db = db
         self.server_url = server_url.rstrip("/")
@@ -179,6 +226,11 @@ class PoolCoordinator:
         self.verify_chunks = verify_chunks
         self.require_worker_payout = require_worker_payout
         self.pool_fee_percent = max(0.0, min(100.0, float(pool_fee_percent)))
+        self.payout_wallet = payout_wallet
+        self.payout_interval_seconds = max(1, int(payout_interval_seconds))
+        self.payout_min_amount = max(0.0, float(payout_min_amount))
+        self.payout_fee = max(0.0, float(payout_fee))
+        self._last_payout_attempt = 0.0
         self.stop_event = threading.Event()
 
     def start(self) -> threading.Thread:
@@ -198,6 +250,7 @@ class PoolCoordinator:
         self.expire_stale_assignments()
         self.finalize_ready_tasks()
         self.ensure_active_task()
+        self.maybe_run_payouts()
 
     def register_worker(self, worker_id: str, name: str | None, payout_address: str | None) -> dict[str, Any]:
         worker_id = worker_id.strip()
@@ -611,6 +664,8 @@ class PoolCoordinator:
                 ).fetchall()
             ]
             task_rewards = self._accepted_task_rewards(connection)
+            payout_rows = self._paid_payout_rows(connection)
+            payout_history = self._payout_history(connection)
             recent_events = [
                 dict(row)
                 for row in connection.execute(
@@ -635,17 +690,24 @@ class PoolCoordinator:
                 task_rewards=task_rewards,
                 share_rows=share_rows,
                 worker_rows=worker_rows,
+                payout_rows=payout_rows,
                 pool_fee_percent=self.pool_fee_percent,
+                min_payout_amount=self.payout_min_amount,
             ),
+            "auto_payouts": self.auto_payout_config(),
+            "payout_history": payout_history,
             "events": recent_events,
             "checked_at": utc_now(),
         }
 
     def payouts(self) -> dict[str, Any]:
+        stats = self.stats()
         return {
             "status": "ok",
             "miner_id": self.identity.get("miner_id"),
-            "payouts": self.stats()["payouts"],
+            "auto_payouts": stats["auto_payouts"],
+            "payouts": stats["payouts"],
+            "history": stats["payout_history"],
             "checked_at": utc_now(),
         }
 
@@ -691,6 +753,180 @@ class PoolCoordinator:
                 continue
             rewards.append({"pool_task_id": row["pool_task_id"], "reward": reward_amount})
         return rewards
+
+    def _paid_payout_rows(self, connection: sqlite3.Connection) -> list[dict[str, Any]]:
+        return [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT worker_id, payout_address, amount
+                FROM pool_payouts
+                WHERE status IN ('submitting', 'submitted', 'confirmed')
+                """
+            ).fetchall()
+        ]
+
+    def _payout_history(self, connection: sqlite3.Connection, limit: int = 50) -> list[dict[str, Any]]:
+        return [
+            dict(row)
+            for row in connection.execute(
+                """
+                SELECT payout_id, worker_id, payout_address, amount, fee, tx_hash, status,
+                       error, created_at, submitted_at, updated_at
+                FROM pool_payouts
+                ORDER BY created_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        ]
+
+    def auto_payout_config(self) -> dict[str, Any]:
+        return {
+            "enabled": self.payout_wallet is not None,
+            "wallet_address": self.payout_wallet.get("address") if self.payout_wallet else None,
+            "interval_seconds": self.payout_interval_seconds,
+            "min_amount": self.payout_min_amount,
+            "fee": self.payout_fee,
+        }
+
+    def maybe_run_payouts(self) -> None:
+        if self.payout_wallet is None:
+            return
+        current = time.monotonic()
+        if self._last_payout_attempt and current - self._last_payout_attempt < self.payout_interval_seconds:
+            return
+        self._last_payout_attempt = current
+        result = self.run_payouts()
+        if result["submitted"] or result["errors"]:
+            self.db.event("info", "auto payout run completed", result)
+
+    def run_payouts(self) -> dict[str, Any]:
+        if self.payout_wallet is None:
+            return {"enabled": False, "eligible": 0, "submitted": 0, "errors": 0}
+
+        stats = self.stats()
+        workers = [
+            worker
+            for worker in stats["payouts"].get("workers", [])
+            if worker.get("payable") and worker.get("payout_address")
+        ]
+        result: dict[str, Any] = {
+            "enabled": True,
+            "eligible": len(workers),
+            "submitted": 0,
+            "errors": 0,
+            "tx_hashes": [],
+        }
+        if not workers:
+            return result
+
+        nonce = self._fetch_wallet_nonce()
+        min_units = to_units(self.payout_min_amount)
+        fee_units = to_units(self.payout_fee)
+        for worker in workers:
+            payout_address = self._normalize_payout_address(worker.get("payout_address"))
+            amount_units = to_units(worker.get("pending_amount") or 0)
+            if amount_units < min_units:
+                continue
+            payout_id = f"payout_{uuid.uuid4().hex[:16]}"
+            amount = units_to_float(amount_units)
+            tx = sign_transaction(
+                private_key=self.payout_wallet["private_key"],
+                public_key=self.payout_wallet["public_key"],
+                tx_type="transfer",
+                sender=self.payout_wallet["address"],
+                recipient=payout_address,
+                amount=amount,
+                fee=self.payout_fee,
+                nonce=nonce,
+                payload={
+                    "source": "picoin-pool",
+                    "pool_miner_id": self.identity.get("miner_id"),
+                    "worker_id": worker["worker_id"],
+                    "payout_id": payout_id,
+                },
+            )
+            now = utc_now()
+            with self.db._lock, self.db.connect() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO pool_payouts (
+                        payout_id, worker_id, payout_address, amount, amount_units,
+                        fee, fee_units, tx_hash, status, raw_tx_json, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'submitting', ?, ?, ?)
+                    """,
+                    (
+                        payout_id,
+                        worker["worker_id"],
+                        payout_address,
+                        amount,
+                        amount_units,
+                        units_to_float(fee_units),
+                        fee_units,
+                        tx["tx_hash"],
+                        json_dumps(tx),
+                        now,
+                        now,
+                    ),
+                )
+            try:
+                response = self._submit_payout_transaction(tx)
+                submitted_at = utc_now()
+                with self.db._lock, self.db.connect() as connection:
+                    connection.execute(
+                        """
+                        UPDATE pool_payouts
+                        SET status = 'submitted', raw_response_json = ?, submitted_at = ?, updated_at = ?
+                        WHERE payout_id = ?
+                        """,
+                        (json_dumps(response), submitted_at, submitted_at, payout_id),
+                    )
+                result["submitted"] += 1
+                result["tx_hashes"].append(tx["tx_hash"])
+                nonce += 1
+            except Exception as exc:
+                updated_at = utc_now()
+                with self.db._lock, self.db.connect() as connection:
+                    connection.execute(
+                        """
+                        UPDATE pool_payouts
+                        SET status = 'error', error = ?, updated_at = ?
+                        WHERE payout_id = ?
+                        """,
+                        (str(exc), updated_at, payout_id),
+                    )
+                result["errors"] += 1
+                self.db.event(
+                    "error",
+                    "auto payout failed",
+                    {"worker_id": worker["worker_id"], "payout_id": payout_id, "error": str(exc)},
+                )
+                break
+        return result
+
+    def _fetch_wallet_nonce(self) -> int:
+        response = requests.get(
+            f"{self.server_url}/wallet/{self.payout_wallet['address']}/nonce",
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return int(payload.get("next_nonce") or payload.get("nonce") or 1)
+
+    def _submit_payout_transaction(self, tx: dict[str, Any]) -> dict[str, Any]:
+        last_error: Exception | None = None
+        for path in ("/tx/submit", "/transactions/submit"):
+            response = requests.post(f"{self.server_url}{path}", json=tx, timeout=30)
+            if response.status_code == HTTPStatus.NOT_FOUND:
+                last_error = requests.HTTPError(f"404 Client Error: Not Found for url: {response.url}", response=response)
+                continue
+            response.raise_for_status()
+            return response.json()
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("no transaction submit endpoint returned a response")
 
 
 class PoolHandler(BaseHTTPRequestHandler):
@@ -809,7 +1045,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--auth-token", default=os.getenv("PICOIN_POOL_TOKEN", ""))
     parser.add_argument("--public-workers", action="store_true", help="Allow workers to register, claim, and submit without a shared token")
     parser.add_argument("--require-worker-payout", action="store_true", help="Require every worker to register a valid PI payout address")
-    parser.add_argument("--pool-fee-percent", type=float, default=0.0, help="Operator fee shown in payout accounting")
+    parser.add_argument("--pool-fee-percent", type=float, default=1.0, help="Operator fee shown in payout accounting")
+    parser.add_argument("--payout-wallet", type=Path, default=None, help="Wallet JSON used to sign automatic worker payouts")
+    parser.add_argument("--payout-interval-seconds", type=int, default=7200, help="Seconds between automatic payout runs")
+    parser.add_argument("--payout-min-amount", type=float, default=0.1, help="Minimum worker pending balance before auto payout")
+    parser.add_argument("--payout-fee", type=float, default=0.0, help="Network fee attached to each automatic payout transaction")
     parser.add_argument("--trust-workers", action="store_true", help="Skip pool-side chunk verification")
     return parser.parse_args()
 
@@ -817,6 +1057,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     identity = load_or_register_identity(args.server.rstrip("/"), args.identity, default_name=args.pool_name)
+    payout_wallet = load_payout_wallet(args.payout_wallet)
     db = PoolDatabase(args.db)
     coordinator = PoolCoordinator(
         db=db,
@@ -828,6 +1069,10 @@ def main() -> int:
         verify_chunks=not args.trust_workers,
         require_worker_payout=bool(args.require_worker_payout or args.public_workers),
         pool_fee_percent=args.pool_fee_percent,
+        payout_wallet=payout_wallet,
+        payout_interval_seconds=args.payout_interval_seconds,
+        payout_min_amount=args.payout_min_amount,
+        payout_fee=args.payout_fee,
     )
     coordinator.start()
     PoolHandler.coordinator = coordinator
@@ -836,6 +1081,8 @@ def main() -> int:
     httpd = ThreadingHTTPServer((args.host, args.port), PoolHandler)
     print(f"Picoin pool server listening on http://{args.host}:{args.port}")
     print(f"Pool miner identity: {identity.get('miner_id')}")
+    if payout_wallet:
+        print(f"Auto payouts enabled from wallet: {payout_wallet['address']}")
     try:
         httpd.serve_forever()
     except KeyboardInterrupt:

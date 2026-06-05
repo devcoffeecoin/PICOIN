@@ -80,3 +80,23 @@ def test_summarize_payouts_splits_accepted_rewards_by_units():
     assert by_worker["alice"]["pool_fee_amount"] == pytest.approx(0.1875)
     assert by_worker["alice"]["pending_amount"] == pytest.approx(1.6875)
     assert by_worker["bob"]["pending_amount"] == pytest.approx(0.5625)
+
+
+def test_summarize_payouts_subtracts_submitted_payments():
+    payouts = summarize_payouts(
+        task_rewards=[{"pool_task_id": "task-1", "reward": 1.0}],
+        share_rows=[{"pool_task_id": "task-1", "worker_id": "alice", "units": 1}],
+        worker_rows=[{"worker_id": "alice", "name": "Alice", "payout_address": "PIA"}],
+        payout_rows=[{"worker_id": "alice", "payout_address": "PIA", "amount": 0.25}],
+        pool_fee_percent=1,
+        min_payout_amount=0.1,
+    )
+
+    by_worker = {worker["worker_id"]: worker for worker in payouts["workers"]}
+    assert payouts["gross_total"] == pytest.approx(1.0)
+    assert payouts["pool_fee_total"] == pytest.approx(0.01)
+    assert payouts["paid_total"] == pytest.approx(0.25)
+    assert payouts["pending_total"] == pytest.approx(0.74)
+    assert by_worker["alice"]["paid_amount"] == pytest.approx(0.25)
+    assert by_worker["alice"]["pending_amount"] == pytest.approx(0.74)
+    assert by_worker["alice"]["payable"] is True

@@ -77,7 +77,9 @@ def summarize_payouts(
     task_rewards: Iterable[dict[str, Any]],
     share_rows: Iterable[dict[str, Any]],
     worker_rows: Iterable[dict[str, Any]],
+    payout_rows: Iterable[dict[str, Any]] | None = None,
     pool_fee_percent: float = 0.0,
+    min_payout_amount: float = 0.0,
 ) -> dict[str, Any]:
     rewards = {
         str(row["pool_task_id"]): Decimal(str(row.get("reward") or "0"))
@@ -93,7 +95,9 @@ def summarize_payouts(
             "accepted_tasks": 0,
             "gross_amount": Decimal("0"),
             "pool_fee_amount": Decimal("0"),
+            "paid_amount": Decimal("0"),
             "pending_amount": Decimal("0"),
+            "payable": False,
         }
         for row in worker_rows
     }
@@ -131,7 +135,9 @@ def summarize_payouts(
                     "accepted_tasks": 0,
                     "gross_amount": Decimal("0"),
                     "pool_fee_amount": Decimal("0"),
+                    "paid_amount": Decimal("0"),
                     "pending_amount": Decimal("0"),
+                    "payable": False,
                 },
             )
             gross = reward * Decimal(units) / Decimal(task_units)
@@ -146,12 +152,46 @@ def summarize_payouts(
             total_fee += fee
             total_pending += pending
 
+    total_paid = Decimal("0")
+    for row in payout_rows or []:
+        worker_id = str(row.get("worker_id") or "")
+        if not worker_id:
+            continue
+        try:
+            amount = Decimal(str(row.get("amount") or "0"))
+        except Exception:
+            continue
+        if amount <= 0:
+            continue
+        worker = workers.setdefault(
+            worker_id,
+            {
+                "worker_id": worker_id,
+                "name": row.get("name"),
+                "payout_address": row.get("payout_address"),
+                "units": 0,
+                "accepted_tasks": 0,
+                "gross_amount": Decimal("0"),
+                "pool_fee_amount": Decimal("0"),
+                "paid_amount": Decimal("0"),
+                "pending_amount": Decimal("0"),
+                "payable": False,
+            },
+        )
+        worker["paid_amount"] = Decimal(worker["paid_amount"]) + amount
+        worker["pending_amount"] = max(Decimal("0"), Decimal(worker["pending_amount"]) - amount)
+        total_paid += amount
+
+    total_pending = sum((Decimal(worker["pending_amount"]) for worker in workers.values()), Decimal("0"))
+    min_payout = Decimal(str(max(0.0, float(min_payout_amount or 0.0))))
     payout_workers = [
         {
             **worker,
             "gross_amount": _decimal_to_float(Decimal(worker["gross_amount"])),
             "pool_fee_amount": _decimal_to_float(Decimal(worker["pool_fee_amount"])),
+            "paid_amount": _decimal_to_float(Decimal(worker["paid_amount"])),
             "pending_amount": _decimal_to_float(Decimal(worker["pending_amount"])),
+            "payable": Decimal(worker["pending_amount"]) >= min_payout if min_payout > 0 else Decimal(worker["pending_amount"]) > 0,
         }
         for worker in workers.values()
         if Decimal(worker["pending_amount"]) > 0
@@ -160,8 +200,10 @@ def summarize_payouts(
 
     return {
         "pool_fee_percent": float(pool_fee_percent),
+        "min_payout_amount": float(min_payout),
         "gross_total": _decimal_to_float(total_gross),
         "pool_fee_total": _decimal_to_float(total_fee),
+        "paid_total": _decimal_to_float(total_paid),
         "pending_total": _decimal_to_float(total_pending),
         "workers": payout_workers,
     }

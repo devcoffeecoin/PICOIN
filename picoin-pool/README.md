@@ -10,15 +10,17 @@
 4. Pool workers calculate chunks and submit them back to the pool.
 5. The pool verifies each chunk, assembles the full segment, signs `/tasks/commit`, and signs `/tasks/reveal`.
 6. If mainnet accepts the reveal or creates a validation job, the pool records credited shares for the workers that contributed chunks.
-7. For accepted blocks, `/stats` and `/payouts` calculate each worker's pending payout from the accepted reward and credited units.
+7. For accepted blocks, `/stats` and `/payouts` calculate each worker's pending payout from the accepted reward and credited units, after the pool operator fee.
+8. If a payout wallet is configured, the pool automatically sends worker payouts on the configured interval once a worker reaches the minimum payout.
 
 This means the pool does not multiply mining identities. It gives a community a way to share one miner's reward internally if that pool miner wins a block.
 
 ## Security Model
 
 - Workers never receive the pool miner private key.
-- The pool operator controls the mainnet reward wallet.
-- Payouts are calculated and exposed by the pool, but transfers are not automatic in this alpha. The pool operator still sends payout transactions.
+- The pool operator controls the mainnet reward wallet and the payout wallet.
+- Payouts are calculated and exposed by the pool. Automatic payout transfers are enabled only when the operator starts the server with `--payout-wallet`.
+- The default pool operator fee is 1%.
 - Public pools should use `--public-workers`, which lets workers register with only a worker id and a valid PI payout wallet.
 - Private pools can still use `--auth-token` for workers.
 - The server verifies worker chunks by default. Use `--trust-workers` only on a trusted private network.
@@ -36,10 +38,14 @@ python picoin-pool/pool_server.py \
   --pool-name pool1 \
   --chunk-size 1 \
   --public-workers \
-  --pool-fee-percent 0
+  --pool-fee-percent 1 \
+  --payout-wallet /var/lib/picoin-pool/payout_wallet.json \
+  --payout-interval-seconds 7200 \
+  --payout-min-amount 0.1
 ```
 
 The first run auto-registers `pool_identity.json` as a normal miner, using the same official miner registration flow.
+If `--payout-wallet` is omitted, automatic transfers are disabled and the pool only reports pending payout balances.
 
 For the first hosted pool, the intended public API is:
 
@@ -88,6 +94,7 @@ curl http://127.0.0.1:9321/health
 curl http://127.0.0.1:9321/stats
 curl http://127.0.0.1:9321/payouts
 sqlite3 picoin-pool/pool.sqlite3 "select worker_id, sum(units) from pool_shares where credited=1 group by worker_id;"
+sqlite3 picoin-pool/pool.sqlite3 "select worker_id, payout_address, amount, tx_hash, status, created_at from pool_payouts order by created_at desc limit 10;"
 ```
 
 For a public deployment behind nginx:
@@ -109,7 +116,7 @@ picoin-pool/deploy/nginx-pool1.conf.example
 ## Current Limits
 
 - This is an alpha pool coordinator, not a custody product.
-- Payout accounting is transparent, but payout transactions are still operator-controlled.
+- Automatic payouts require a configured payout wallet file on the pool server.
 - A pool is one mainnet miner identity, so it can still receive `429 Too Many Requests` or wait for the next competitive block like any other miner.
 - If mainnet task sizes are small, pooling mostly helps reward sharing. It does not make one identity mathematically equivalent to many independent miners.
 - Production pool operators should add HTTPS, monitoring, payout policy, abuse controls, backups, and clear community rules before accepting public workers.

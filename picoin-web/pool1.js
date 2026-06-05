@@ -13,6 +13,9 @@
     activeTasks: document.getElementById("poolActiveTasks"),
     completedTasks: document.getElementById("poolCompletedTasks"),
     pendingPayouts: document.getElementById("poolPendingPayouts"),
+    fee: document.getElementById("poolFee"),
+    minPayout: document.getElementById("poolMinPayout"),
+    autoPayouts: document.getElementById("poolAutoPayouts"),
     error: document.getElementById("poolError"),
     sharesTable: document.getElementById("poolSharesTable"),
     payoutsTable: document.getElementById("poolPayoutsTable"),
@@ -170,6 +173,7 @@
     const completedTasks = statusCount(tasks, ["accepted", "submitted", "validation_pending"]);
     const shares = stats.credited_shares || {};
     const payouts = stats.payouts || {};
+    const autoPayouts = stats.auto_payouts || {};
 
     els.minerId.textContent = fmt(stats.miner_id);
     els.mainnet.textContent = fmt(stats.mainnet_server);
@@ -178,6 +182,11 @@
     els.activeTasks.textContent = fmt(activeTasks, 0);
     els.completedTasks.textContent = fmt(completedTasks, 0);
     els.pendingPayouts.textContent = pi(payouts.pending_total);
+    els.fee.textContent = `${Number(payouts.pool_fee_percent || 0).toFixed(2)}%`;
+    els.minPayout.textContent = pi(payouts.min_payout_amount);
+    els.autoPayouts.textContent = autoPayouts.enabled
+      ? `On / ${fmt(Number(autoPayouts.interval_seconds || 0), 0)}s`
+      : "Off";
 
     renderShares(shares);
     renderPayouts(payouts);
