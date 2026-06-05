@@ -855,6 +855,9 @@ Phase 3 alpha evidence:
 - [x] Added tests for filtering local/stale/wrong-identity peers and attempting multiple selected peers in one reconcile pass
 - [x] `POST /node/blocks/receive` now relays new pending block payloads to peers with `gossip=false`, excludes the source peer, and does not re-gossip duplicate queued headers
 - [x] Added `/mempool/inventory` and inventory-first reconcile so peers compare pending transaction hashes before fetching full signed transactions, with fallback to legacy `/mempool` for older peers
+- [x] Deployed Phase 3 mempool inventory build `ee0bac9` to bootstrap candidates A (`178.62.30.17`), B (`138.68.139.141`), and C (`159.89.115.183`); each candidate returned `/mempool/inventory` with `HTTP 200`, `picoin-node` and `picoin-reconciler` active, miner/validator/auditor disabled, healthy replay, and no divergence
+- [x] Production web smoke for `/api/bootstrap-a`, `/api/bootstrap-b`, and `/api/bootstrap-c` passed with `required=3`, `allowed_lag=5`, `status=ok`, `healthy_routes=3`, and `errors=0` at heights `4994`, `4993`, and `4995`
+- [x] Direct bootstrap candidate verifier passed with `required=3`, `allowed_lag=5`, `errors=0`, and read-only degraded health accepted for no local validator quorum; one warning remains under observation for candidate B checkpoint `snapshot_hash` mismatch while checkpoint block hash, state root, balances hash, validators hash, pending rewards hash, protocol params hash, and retarget events hash matched the reference
 
 ### Phase 4: Decentralized Mempool And Block Candidate Construction
 
