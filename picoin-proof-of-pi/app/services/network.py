@@ -411,6 +411,34 @@ def list_peers(include_stale: bool = True) -> list[dict[str, Any]]:
         return [_decode_peer(row_to_dict(row)) for row in connection.execute(query, params).fetchall()]
 
 
+def select_reconcile_peers(limit: int = 16) -> list[dict[str, Any]]:
+    """Return unique, locally compatible peers for read-only catch-up/reconcile."""
+
+    max_peers = max(1, int(limit))
+    local_address = _normalize_peer_address(NODE_PUBLIC_ADDRESS)
+    selected: list[dict[str, Any]] = []
+    seen_addresses: set[str] = set()
+    for peer in list_peers(include_stale=False):
+        peer_address = _normalize_peer_address(peer.get("peer_address"))
+        if not peer_address or peer_address == local_address or peer_address in seen_addresses:
+            continue
+        if peer.get("network_id") != NETWORK_ID:
+            continue
+        if str(peer.get("chain_id")) != str(CHAIN_ID):
+            continue
+        if peer.get("genesis_hash") != GENESIS_HASH:
+            continue
+        if peer.get("protocol_version") != PROTOCOL_VERSION:
+            continue
+        normalized_peer = dict(peer)
+        normalized_peer["peer_address"] = peer_address
+        selected.append(normalized_peer)
+        seen_addresses.add(peer_address)
+        if len(selected) >= max_peers:
+            break
+    return selected
+
+
 def heartbeat_peer(peer_id: str) -> dict[str, Any]:
     timestamp = _now()
     with get_connection() as connection:
@@ -1086,10 +1114,19 @@ def sync_blocks_until(
 
 
 def reconcile_connected_peers(limit: int = 16) -> dict[str, Any]:
-    peers = list_peers(include_stale=False)[:limit]
+    peers = select_reconcile_peers(limit)
     results = [reconcile_peer(peer["peer_address"]) for peer in peers]
     return {
         "attempted": len(results),
+        "selected_peers": [
+            {
+                "peer_id": peer["peer_id"],
+                "node_id": peer["node_id"],
+                "peer_address": peer["peer_address"],
+                "peer_type": peer["peer_type"],
+            }
+            for peer in peers
+        ],
         "transactions_imported": sum(item["transactions_imported"] for item in results),
         "proposals_imported": sum(item["proposals_imported"] for item in results),
         "blocks_imported": sum(item["blocks_imported"] for item in results),

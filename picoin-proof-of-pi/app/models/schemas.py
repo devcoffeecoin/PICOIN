@@ -682,6 +682,7 @@ class SnapshotImportResponse(BaseModel):
 
 class PeerReconcileResponse(BaseModel):
     attempted: int = 0
+    selected_peers: list[dict[str, Any]] = []
     transactions_imported: int = 0
     proposals_imported: int = 0
     blocks_imported: int = 0

@@ -836,12 +836,20 @@ Phase 2 preparation evidence:
 
 Goal: nodes exchange chain data and consensus messages directly instead of relying on one coordinator API.
 
+- [x] Add read-only multi-peer reconcile selection for catch-up from more than one compatible peer
+- [x] Add deterministic peer selection filters for local self, stale peers, duplicate addresses, wrong network id, wrong chain id, wrong genesis hash, and wrong protocol version
 - [ ] Gossip block headers and finalized block payloads between peers
 - [ ] Gossip signed transactions and mempool inventory between peers
 - [ ] Gossip validator heartbeats and validator votes between peers
 - [ ] Add deterministic duplicate suppression for peer messages
 - [ ] Add peer scoring, stale peer detection, and peer ban/cooldown rules
 - [ ] Verify nodes can catch up from multiple peers instead of one bootstrap
+
+Phase 3 alpha evidence:
+
+- [x] `select_reconcile_peers()` now returns unique, connected, locally compatible peers for read-only reconcile/catch-up
+- [x] `/node/reconcile` multi-peer mode now reports `selected_peers` so operators can see which peers were attempted
+- [x] Added tests for filtering local/stale/wrong-identity peers and attempting multiple selected peers in one reconcile pass
 
 ### Phase 4: Decentralized Mempool And Block Candidate Construction
 
