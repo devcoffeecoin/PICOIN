@@ -38,8 +38,10 @@ from app.services.network import (
     list_peers,
     discover_peers,
     receive_block_header,
+    reconcile_connected_peers,
     reconcile_peer,
     register_peer,
+    select_reconcile_peers,
     submit_transaction,
     sync_blocks_until,
 )
@@ -285,6 +287,109 @@ def test_register_peer_normalizes_duplicate_scheme(tmp_path, monkeypatch) -> Non
 
     assert peer["peer_address"] == "http://validator-1:8000"
     assert peer["status"] == "connected"
+
+
+def test_select_reconcile_peers_filters_local_stale_and_wrong_identity(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "peer-select.sqlite3")
+
+    register_peer(
+        node_id="local-node-copy",
+        peer_address="http://127.0.0.1:8000",
+        peer_type="full",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    healthy_a = register_peer(
+        node_id="peer-a",
+        peer_address="http://peer-a:8000",
+        peer_type="full",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    healthy_b = register_peer(
+        node_id="peer-b",
+        peer_address="http://peer-b:8000",
+        peer_type="bootstrap",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    stale = register_peer(
+        node_id="peer-stale",
+        peer_address="http://peer-stale:8000",
+        peer_type="full",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    wrong_identity = register_peer(
+        node_id="peer-wrong",
+        peer_address="http://peer-wrong:8000",
+        peer_type="full",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    with get_connection() as connection:
+        connection.execute("UPDATE network_peers SET status = 'stale' WHERE peer_id = ?", (stale["peer_id"],))
+        connection.execute("UPDATE network_peers SET network_id = ? WHERE peer_id = ?", ("wrong-network", wrong_identity["peer_id"]))
+
+    selected = select_reconcile_peers(limit=10)
+
+    assert {peer["peer_id"] for peer in selected} == {healthy_a["peer_id"], healthy_b["peer_id"]}
+    assert {peer["peer_address"] for peer in selected} == {"http://peer-a:8000", "http://peer-b:8000"}
+
+
+def test_reconcile_connected_peers_attempts_multiple_selected_peers(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "peer-reconcile-multiple.sqlite3")
+
+    register_peer(
+        node_id="peer-a",
+        peer_address="http://peer-a:8000",
+        peer_type="full",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    register_peer(
+        node_id="peer-b",
+        peer_address="http://peer-b:8000",
+        peer_type="bootstrap",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+
+    attempted: list[str] = []
+
+    def fake_reconcile_peer(peer_address: str) -> dict:
+        attempted.append(peer_address)
+        return {
+            "peer_address": peer_address,
+            "peers_seen": 0,
+            "transactions_imported": 0,
+            "proposals_imported": 0,
+            "blocks_imported": 0,
+            "errors": [],
+        }
+
+    monkeypatch.setattr("app.services.network.reconcile_peer", fake_reconcile_peer)
+
+    result = reconcile_connected_peers(limit=10)
+
+    assert set(attempted) == {"http://peer-a:8000", "http://peer-b:8000"}
+    assert result["attempted"] == 2
+    assert {peer["peer_address"] for peer in result["selected_peers"]} == set(attempted)
+    assert result["errors"] == 0
 
 
 def test_discover_peers_skips_invalid_discovered_peer_address(tmp_path, monkeypatch) -> None:
