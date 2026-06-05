@@ -51,6 +51,15 @@ def is_lost_competitive_round_error(message: str) -> bool:
     return message.startswith("commit rejected: competitive round won by ")
 
 
+def parse_iso_timestamp(value: str | None) -> float:
+    if not value:
+        return 0.0
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return 0.0
+
+
 def load_payout_wallet(path: Path | None) -> dict[str, Any] | None:
     if path is None:
         return None
@@ -664,6 +673,7 @@ class PoolCoordinator:
                 ).fetchall()
             ]
             task_rewards = self._accepted_task_rewards(connection)
+            validation_pending_tasks = self._validation_pending_task_count(connection)
             payout_rows = self._paid_payout_rows(connection)
             payout_history = self._payout_history(connection)
             recent_events = [
@@ -677,15 +687,30 @@ class PoolCoordinator:
                     """
                 ).fetchall()
             ]
+            active_worker_rows = self._active_workers(worker_rows)
+            credited_shares = summarize_shares(share_rows)
+            performance = self._performance_summary(
+                tasks=tasks,
+                chunks=chunks,
+                active_worker_rows=active_worker_rows,
+                credited_worker_count=len(credited_shares),
+                won_blocks=task_rewards,
+                validation_pending_tasks=validation_pending_tasks,
+            )
         return {
             "status": "ok",
             "miner_id": self.identity.get("miner_id"),
             "mainnet_server": self.server_url,
             "workers": workers,
             "worker_details": worker_rows,
+            "active_workers": len(active_worker_rows),
+            "active_worker_window_seconds": 300,
+            "active_worker_details": active_worker_rows,
             "tasks": tasks,
             "chunks": chunks,
-            "credited_shares": summarize_shares(share_rows),
+            "credited_shares": credited_shares,
+            "won_blocks": task_rewards[:20],
+            "performance": performance,
             "payouts": summarize_payouts(
                 task_rewards=task_rewards,
                 share_rows=share_rows,
@@ -730,10 +755,11 @@ class PoolCoordinator:
         rewards: list[dict[str, Any]] = []
         rows = connection.execute(
             """
-            SELECT pool_task_id, raw_reveal_json
+            SELECT pool_task_id, mainnet_task_id, raw_reveal_json, completed_at
             FROM pool_tasks
             WHERE status = 'accepted'
               AND raw_reveal_json IS NOT NULL
+            ORDER BY completed_at DESC
             """
         ).fetchall()
         for row in rows:
@@ -751,8 +777,77 @@ class PoolCoordinator:
                 continue
             if reward_amount <= 0:
                 continue
-            rewards.append({"pool_task_id": row["pool_task_id"], "reward": reward_amount})
+            rewards.append(
+                {
+                    "pool_task_id": row["pool_task_id"],
+                    "mainnet_task_id": row["mainnet_task_id"],
+                    "height": block.get("height"),
+                    "block_hash": block.get("block_hash"),
+                    "reward": reward_amount,
+                    "completed_at": row["completed_at"],
+                }
+            )
         return rewards
+
+    def _validation_pending_task_count(self, connection: sqlite3.Connection) -> int:
+        rows = connection.execute(
+            """
+            SELECT status, raw_reveal_json
+            FROM pool_tasks
+            WHERE raw_reveal_json IS NOT NULL
+              AND status IN ('accepted', 'submitted', 'validation_pending')
+            """
+        ).fetchall()
+        pending = 0
+        for row in rows:
+            try:
+                reveal = json.loads(row["raw_reveal_json"])
+            except (TypeError, ValueError):
+                continue
+            block = reveal.get("block") if isinstance(reveal, dict) else None
+            reveal_status = reveal.get("status") if isinstance(reveal, dict) else None
+            if block is None and reveal_status == "validation_pending":
+                pending += 1
+        return pending
+
+    def _active_workers(self, worker_rows: list[dict[str, Any]], window_seconds: int = 300) -> list[dict[str, Any]]:
+        cutoff = time.time() - max(1, int(window_seconds))
+        active = [row for row in worker_rows if parse_iso_timestamp(row.get("last_seen_at")) >= cutoff]
+        active.sort(key=lambda row: str(row.get("last_seen_at") or ""), reverse=True)
+        return active
+
+    def _performance_summary(
+        self,
+        *,
+        tasks: list[dict[str, Any]],
+        chunks: list[dict[str, Any]],
+        active_worker_rows: list[dict[str, Any]],
+        credited_worker_count: int,
+        won_blocks: list[dict[str, Any]],
+        validation_pending_tasks: int,
+    ) -> dict[str, Any]:
+        task_counts = {str(row["status"]): int(row.get("count") or 0) for row in tasks}
+        chunk_counts = {str(row["status"]): int(row.get("count") or 0) for row in chunks}
+        blocks_won = len(won_blocks)
+        lost_rounds = int(task_counts.get("lost", 0))
+        finished_competitive_rounds = blocks_won + lost_rounds
+        win_rate = (blocks_won / finished_competitive_rounds) if finished_competitive_rounds else 0.0
+        return {
+            "active_workers": len(active_worker_rows),
+            "active_worker_window_seconds": 300,
+            "credited_workers": credited_worker_count,
+            "blocks_won": blocks_won,
+            "validation_pending_tasks": validation_pending_tasks,
+            "lost_rounds": lost_rounds,
+            "finished_competitive_rounds": finished_competitive_rounds,
+            "win_rate": round(win_rate, 6),
+            "win_rate_percent": round(win_rate * 100, 2),
+            "active_tasks": sum(int(task_counts.get(status, 0)) for status in ("active", "gathering", "submitting", "validation_pending")),
+            "completed_tasks": sum(int(task_counts.get(status, 0)) for status in ("accepted", "submitted", "validation_pending")),
+            "available_chunks": int(chunk_counts.get("pending", 0)),
+            "assigned_chunks": int(chunk_counts.get("assigned", 0)),
+            "completed_chunks": int(chunk_counts.get("completed", 0)),
+        }
 
     def _paid_payout_rows(self, connection: sqlite3.Connection) -> list[dict[str, Any]]:
         return [

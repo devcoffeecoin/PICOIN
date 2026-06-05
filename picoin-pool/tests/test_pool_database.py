@@ -6,7 +6,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pool_server import PoolCoordinator, PoolDatabase, is_lost_competitive_round_error
+from pool_server import PoolCoordinator, PoolDatabase, is_lost_competitive_round_error, utc_now
 from app.services.wallet import create_wallet
 
 
@@ -112,6 +112,80 @@ def test_stats_reports_lost_competitive_rounds_without_error_status(tmp_path):
     )
 
     assert coordinator.stats()["tasks"] == [{"status": "lost", "count": 1}]
+
+
+def test_stats_reports_pool_performance_and_won_blocks(tmp_path):
+    worker_wallet = create_wallet("worker")
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    with db.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO pool_workers (worker_id, name, payout_address, registered_at, last_seen_at)
+            VALUES ('worker-1', 'Worker 1', ?, ?, ?)
+            """,
+            (worker_wallet["address"], utc_now(), utc_now()),
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_tasks (
+                pool_task_id, mainnet_task_id, status, range_start, range_end,
+                algorithm, raw_task_json, raw_reveal_json, created_at, completed_at
+            )
+            VALUES (
+                'pooltask_won', 'task_won', 'accepted', 1, 1,
+                'bbp_hex_v1', '{}', ?, '2026-06-05T00:00:00+00:00', '2026-06-05T00:01:00+00:00'
+            )
+            """,
+            ('{"block":{"height":77,"block_hash":"abc123","reward":1.5},"status":"accepted"}',),
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_tasks (
+                pool_task_id, mainnet_task_id, status, range_start, range_end,
+                algorithm, raw_task_json, error, created_at, completed_at
+            )
+            VALUES (
+                'pooltask_lost', 'task_lost', 'lost', 1, 1,
+                'bbp_hex_v1', '{}', 'commit rejected: competitive round won by task_other at block 78',
+                '2026-06-05T00:02:00+00:00', '2026-06-05T00:03:00+00:00'
+            )
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_chunks (chunk_id, pool_task_id, worker_id, status, range_start, range_end, units, assigned_at, submitted_at)
+            VALUES ('chunk_1', 'pooltask_won', 'worker-1', 'completed', 1, 1, 1, ?, ?)
+            """,
+            (utc_now(), utc_now()),
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_shares (share_id, worker_id, pool_task_id, chunk_id, units, credited, created_at)
+            VALUES ('share_1', 'worker-1', 'pooltask_won', 'chunk_1', 1, 1, ?)
+            """,
+            (utc_now(),),
+        )
+
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size=1,
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=False,
+        pool_fee_percent=1,
+    )
+
+    stats = coordinator.stats()
+
+    assert stats["active_workers"] == 1
+    assert stats["won_blocks"][0]["height"] == 77
+    assert stats["won_blocks"][0]["reward"] == pytest.approx(1.5)
+    assert stats["performance"]["blocks_won"] == 1
+    assert stats["performance"]["lost_rounds"] == 1
+    assert stats["performance"]["win_rate_percent"] == pytest.approx(50.0)
 
 
 def test_auto_payout_submits_transfer_once_and_subtracts_pending(tmp_path, monkeypatch):

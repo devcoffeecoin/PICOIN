@@ -46,7 +46,7 @@
             <strong id="poolMainnet">-</strong>
           </article>
           <article>
-            <span>Workers</span>
+            <span>Active Workers</span>
             <strong id="poolWorkers">-</strong>
           </article>
           <article>
@@ -60,6 +60,18 @@
           <article>
             <span>Completed Tasks</span>
             <strong id="poolCompletedTasks">-</strong>
+          </article>
+          <article>
+            <span>Blocks Won</span>
+            <strong id="poolBlocksWon">-</strong>
+          </article>
+          <article>
+            <span>Win Rate</span>
+            <strong id="poolWinRate">-</strong>
+          </article>
+          <article>
+            <span>Pending Validation</span>
+            <strong id="poolPendingValidation">-</strong>
           </article>
           <article>
             <span>Pending Payouts</span>
@@ -79,6 +91,28 @@
           </article>
         </div>
         <div id="poolError" class="api-errors" aria-live="polite"></div>
+      </section>
+
+      <section class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Workers</p>
+          <h2>Active pool workers</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Worker</th>
+                <th>Name</th>
+                <th>Payout Wallet</th>
+                <th>Last Seen</th>
+              </tr>
+            </thead>
+            <tbody id="poolActiveWorkersTable">
+              <tr><td colspan="4" class="empty">Waiting for worker data</td></tr>
+            </tbody>
+          </table>
+        </div>
       </section>
 
       <section class="section">
@@ -124,6 +158,29 @@
         </div>
       </section>
 
+      <section class="section">
+        <div class="section-heading">
+          <p class="eyebrow">Blocks</p>
+          <h2>Blocks won by Pool 1</h2>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Height</th>
+                <th>Reward</th>
+                <th>Block Hash</th>
+                <th>Task</th>
+                <th>Completed</th>
+              </tr>
+            </thead>
+            <tbody id="poolWonBlocksTable">
+              <tr><td colspan="5" class="empty">No won blocks with final rewards yet</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
       <section class="section pool-grid">
         <div>
           <div class="section-heading">
@@ -136,10 +193,11 @@
                 <tr>
                   <th>Status</th>
                   <th>Count</th>
+                  <th>Meaning</th>
                 </tr>
               </thead>
               <tbody id="poolTasksTable">
-                <tr><td colspan="2" class="empty">Waiting for pool tasks</td></tr>
+                <tr><td colspan="3" class="empty">Waiting for pool tasks</td></tr>
               </tbody>
             </table>
           </div>
@@ -156,10 +214,11 @@
                 <tr>
                   <th>Status</th>
                   <th>Count</th>
+                  <th>Meaning</th>
                 </tr>
               </thead>
               <tbody id="poolChunksTable">
-                <tr><td colspan="2" class="empty">Waiting for pool chunks</td></tr>
+                <tr><td colspan="3" class="empty">Waiting for pool chunks</td></tr>
               </tbody>
             </table>
           </div>
@@ -193,6 +252,6 @@
       <span id="poolUpdated">Waiting for update</span>
     </footer>
 
-    <script src="./pool1.js?v=20260605-pool-auto-payouts"></script>
+    <script src="./pool1.js?v=20260605-pool-performance"></script>
   </body>
 </html>
