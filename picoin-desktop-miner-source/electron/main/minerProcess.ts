@@ -11,6 +11,7 @@ const DEFAULT_PROTOCOL_VERSION = "1.0";
 const MAINNET_GENESIS_HASH = "da286143167d14044c053fbb23fcf4673bb11bcd34fb1a11e5510ee8f8edb6e7";
 const MAINNET_TREASURY_WALLET = "PIE1EE818AA165EECC3F0CCF058F4FF7BC04517F8CD07385";
 const MAINNET_GOVERNANCE_WALLET = "PI251078EE911B17EDC747DB5BDF505649ECAF60F787AA23";
+const DEFAULT_POOL_URL = "https://pool1.picoin.science";
 const MAX_LOG_LINES = 15;
 const HTTP_TIMEOUT_SECONDS = "60";
 const HTTP_MAX_RETRIES = "3";
@@ -25,6 +26,7 @@ let hashrate = "0 H/s";
 let activeWorkers = 0;
 let activeIntensity = 0;
 let idleDelaySeconds = 1;
+let activeMiningMode: "direct" | "pool" = "direct";
 let latestSegmentLength: number | null = null;
 let latestComputeMs: number | null = null;
 
@@ -129,6 +131,8 @@ export function startMiner(config: {
     minerName: string;
     rewardWallet: string;
     apiNodeUrl: string;
+    miningMode?: "direct" | "pool";
+    poolUrl?: string;
     networkId: string;
     chainId: string;
     miningIntensity: number;
@@ -148,10 +152,13 @@ export function startMiner(config: {
     const sleepSeconds = idleDelayFromIntensity(normalizedIntensity);
     const networkId = configValue(config.networkId, DEFAULT_NETWORK_ID);
     const chainId = configValue(config.chainId, DEFAULT_CHAIN_ID);
+    const miningMode = config.miningMode === "pool" ? "pool" : "direct";
+    const poolUrl = configValue(config.poolUrl, DEFAULT_POOL_URL);
     
     activeIntensity = normalizedIntensity;
     activeWorkers = workers;
     idleDelaySeconds = sleepSeconds;
+    activeMiningMode = miningMode;
     hashrate = "0 H/s";
     latestSegmentLength = null;
     latestComputeMs = null;
@@ -189,10 +196,35 @@ export function startMiner(config: {
       String(workers),
     ];
 
+    if (miningMode === "pool") {
+      args.splice(
+        0,
+        args.length,
+        "-u",
+        "client.py",
+        "--identity",
+        identityPath,
+        "pool-mine",
+        "--pool-url",
+        poolUrl,
+        "--name",
+        config.minerName,
+        "--payout-address",
+        config.rewardWallet,
+        "--loops",
+        "999999",
+        "--sleep",
+        String(sleepSeconds),
+        "--workers",
+        String(workers),
+      );
+    }
+
     addLog(`Starting Picoin miner with ${workers} workers`);
+    addLog(`Mining mode: ${miningMode}`);
     addLog(`Mining intensity: ${normalizedIntensity}%`);
     addLog(`Idle delay: ${sleepSeconds}s`);
-    addLog(`API node: ${config.apiNodeUrl}`);
+    addLog(miningMode === "pool" ? `Pool URL: ${poolUrl}` : `API node: ${config.apiNodeUrl}`);
     addLog(`Network: ${env.PICOIN_NETWORK}`);
     addLog(`Chain ID: ${env.PICOIN_CHAIN_ID}`);
     addLog(`Identity: ${identityPath}`);
@@ -281,6 +313,7 @@ export function stopMiner() {
   currentTask = "Miner stopped";
   hashrate = "0 H/s";
   activeWorkers = 0;
+  activeMiningMode = "direct";
   addLog("Miner stopped by user");
 
   return { ok: true, message: "Miner stopped" };
@@ -294,6 +327,7 @@ export function getMinerStatus() {
     workers: activeWorkers,
     miningIntensity: activeIntensity,
     idleDelaySeconds,
+    miningMode: activeMiningMode,
     logs: lastLogs,
     running: minerProcess !== null,
   };
@@ -337,6 +371,8 @@ export function registerMiner(config: {
   minerName: string;
   rewardWallet: string;
   apiNodeUrl: string;
+  miningMode?: "direct" | "pool";
+  poolUrl?: string;
   networkId: string;
   chainId: string;
 }) {
@@ -344,6 +380,8 @@ export function registerMiner(config: {
   const identityPath = getIdentityPath();
   const networkId = configValue(config.networkId, DEFAULT_NETWORK_ID);
   const chainId = configValue(config.chainId, DEFAULT_CHAIN_ID);
+  const miningMode = config.miningMode === "pool" ? "pool" : "direct";
+  const poolUrl = configValue(config.poolUrl, DEFAULT_POOL_URL);
 
   const env = {
     ...process.env,
@@ -373,27 +411,45 @@ export function registerMiner(config: {
 
   addLog(`Register core path: ${corePath}`);
   addLog(`Register identity path: ${identityPath}`);
+  addLog(`Register mode: ${miningMode}`);
   addLog(`Register network: ${env.PICOIN_NETWORK}`);
   addLog(`Register chain ID: ${env.PICOIN_CHAIN_ID}`);
   addLog(`Python: ${pythonExecutable}`);
 
+  const args =
+    miningMode === "pool"
+      ? [
+          "-u",
+          "client.py",
+          "--identity",
+          identityPath,
+          "pool-register",
+          "--pool-url",
+          poolUrl,
+          "--name",
+          config.minerName,
+          "--payout-address",
+          config.rewardWallet,
+        ]
+      : [
+          "-u",
+          "client.py",
+          "--server",
+          config.apiNodeUrl,
+          "--identity",
+          identityPath,
+          "mine",
+          "--loops",
+          "1",
+          "--sleep",
+          "1",
+          "--workers",
+          "1",
+        ];
+
   const result = spawn(
     pythonExecutable,
-    [
-      "-u",
-      "client.py",
-      "--server",
-      config.apiNodeUrl,
-      "--identity",
-      identityPath,
-      "mine",
-      "--loops",
-      "1",
-      "--sleep",
-      "1",
-      "--workers",
-      "1",
-    ],
+    args,
     {
       cwd: corePath,
       env,

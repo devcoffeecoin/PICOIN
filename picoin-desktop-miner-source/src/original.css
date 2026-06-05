@@ -43,3 +43,27 @@ button svg{
 .metric strong{
   word-break:break-word;
 }
+
+.segmented-control{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:4px;
+  padding:4px;
+  border:1px solid rgba(255,255,255,.1);
+  border-radius:8px;
+  background:#05080eb8;
+}
+
+.segmented-control button{
+  min-height:38px;
+  border-radius:6px;
+  background:transparent;
+  color:#a9b5ca;
+  cursor:pointer;
+}
+
+.segmented-control button.active{
+  background:#47dcb8;
+  color:#04100e;
+  font-weight:800;
+}

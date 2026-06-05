@@ -1,8 +1,10 @@
 import argparse
 import json
 import os
+import socket
 import sys
 import time
+import uuid
 from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
@@ -28,6 +30,7 @@ DEFAULT_IDENTITY_PATH = Path("miner_identity.json")
 AUTO_REGISTER_IDENTITY = os.getenv("PICOIN_AUTO_REGISTER_IDENTITY", "1").strip().lower() not in {"0", "false", "no"}
 MINER_REWARD_ADDRESS = os.getenv("PICOIN_MINER_REWARD_ADDRESS", "").strip()
 RETRY_STATUS_CODES = {429, 500, 502, 503, 504}
+DEFAULT_POOL_URL = "https://pool1.picoin.science"
 
 
 def http_timeout_seconds() -> float:
@@ -342,6 +345,109 @@ def mine_once(server_url: str, identity: dict[str, Any], workers: int) -> bool:
     return False
 
 
+def pool_headers(token: str | None) -> dict[str, str]:
+    if not token:
+        return {}
+    return {"Authorization": f"Bearer {token}"}
+
+
+def pool_worker_identity_path(identity_path: Path) -> Path:
+    return identity_path.with_name("pool_worker_identity.json")
+
+
+def load_or_create_pool_worker_id(identity_path: Path, requested_worker_id: str | None, name: str) -> str:
+    requested = (requested_worker_id or "").strip()
+    if requested:
+        return requested
+
+    path = pool_worker_identity_path(identity_path)
+    if path.exists():
+        try:
+            saved = json.loads(path.read_text(encoding="utf-8"))
+            worker_id = str(saved.get("worker_id") or "").strip()
+            if worker_id:
+                return worker_id
+        except (OSError, ValueError):
+            pass
+
+    worker_id = f"poolworker_{uuid.uuid4().hex[:16]}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "worker_id": worker_id,
+                "name": name,
+                "host": socket.gethostname(),
+                "created_at": utc_now(),
+            },
+            indent=2,
+            sort_keys=True,
+        ),
+        encoding="utf-8",
+    )
+    return worker_id
+
+
+def pool_register_worker(
+    pool_url: str,
+    *,
+    worker_id: str,
+    name: str,
+    payout_address: str,
+    auth_token: str | None,
+) -> dict[str, Any]:
+    response = request_with_retries(
+        "POST",
+        f"{pool_url}/workers/register",
+        json={"worker_id": worker_id, "name": name, "payout_address": payout_address},
+        headers=pool_headers(auth_token),
+    )
+    return response.json()
+
+
+def pool_mine_once(pool_url: str, worker_id: str, auth_token: str | None, workers: int) -> bool:
+    response = request_with_retries(
+        "GET",
+        f"{pool_url}/work/next",
+        params={"worker_id": worker_id},
+        headers=pool_headers(auth_token),
+    )
+    work = response.json()
+    if work.get("status") != "work":
+        print(f"Pool idle: {work.get('message', 'no pool work available')}")
+        return False
+
+    print(
+        "Task assigned: "
+        f"pool chunk {work['chunk_id']} positions {work['range_start']}..{work['range_end']} "
+        f"using {work['algorithm']}"
+    )
+    compute_started = now_perf()
+    segment = calculate_segment_with_workers(int(work["range_start"]), int(work["range_end"]), work["algorithm"], workers)
+    compute_ms = elapsed_ms(compute_started)
+    print(f"Calculated segment length: {len(segment)}")
+    print(f"Compute time: {compute_ms} ms")
+    print(f"Workers: {workers}")
+
+    submit = request_with_retries(
+        "POST",
+        f"{pool_url}/work/submit",
+        json={
+            "worker_id": worker_id,
+            "chunk_id": work["chunk_id"],
+            "segment": segment,
+            "compute_ms": compute_ms,
+        },
+        headers=pool_headers(auth_token),
+    )
+    result = submit.json()
+    print(
+        f"Pool chunk accepted: {work['chunk_id']} "
+        f"units={result.get('units')} compute_ms={compute_ms}"
+    )
+    return True
+
+
 def command_register(args: argparse.Namespace) -> int:
     identity = register(args.server.rstrip("/"), args.name, args.identity, args.overwrite)
     print(f"Miner registered: {identity['miner_id']} ({identity['name']})")
@@ -368,6 +474,56 @@ def command_mine(args: argparse.Namespace) -> int:
 
     print(f"Done. accepted={accepted} attempts={attempts}")
     return 0 if accepted == attempts else 1
+
+
+def command_pool_register(args: argparse.Namespace) -> int:
+    pool_url = args.pool_url.rstrip("/")
+    payout_address = (args.payout_address or MINER_REWARD_ADDRESS).strip()
+    if not payout_address:
+        raise RuntimeError("pool payout address is required")
+    worker_id = load_or_create_pool_worker_id(args.identity, args.worker_id, args.name)
+    result = pool_register_worker(
+        pool_url,
+        worker_id=worker_id,
+        name=args.name,
+        payout_address=payout_address,
+        auth_token=args.auth_token.strip() or None,
+    )
+    print(f"Pool worker registered: {result.get('worker_id', worker_id)}")
+    print(f"Pool URL: {pool_url}")
+    print(f"Payout wallet: {payout_address}")
+    print(f"Worker identity: {pool_worker_identity_path(args.identity)}")
+    return 0
+
+
+def command_pool_mine(args: argparse.Namespace) -> int:
+    pool_url = args.pool_url.rstrip("/")
+    payout_address = (args.payout_address or MINER_REWARD_ADDRESS).strip()
+    if not payout_address:
+        raise RuntimeError("pool payout address is required")
+    worker_id = load_or_create_pool_worker_id(args.identity, args.worker_id, args.name)
+    auth_token = args.auth_token.strip() or None
+    pool_register_worker(
+        pool_url,
+        worker_id=worker_id,
+        name=args.name,
+        payout_address=payout_address,
+        auth_token=auth_token,
+    )
+
+    completed = 0
+    attempts = 0
+    loops = 1 if args.once else args.loops
+    for index in range(loops):
+        attempts += 1
+        print(f"Pool mining attempt {index + 1}/{loops} as {worker_id}")
+        if pool_mine_once(pool_url, worker_id, auth_token, args.workers):
+            completed += 1
+        if index + 1 < loops:
+            time.sleep(args.sleep)
+
+    print(f"Done. completed_chunks={completed} attempts={attempts}")
+    return 0
 
 
 def command_stats(args: argparse.Namespace) -> int:
@@ -397,6 +553,26 @@ def parse_args() -> argparse.Namespace:
     mine_parser.add_argument("--sleep", type=float, default=1.0, help="Seconds between attempts")
     mine_parser.add_argument("--workers", type=int, default=1, help="Parallel workers for BBP segment calculation")
     mine_parser.set_defaults(func=command_mine)
+
+    pool_register_parser = subparsers.add_parser("pool-register", help="Register this machine as a pool worker")
+    pool_register_parser.add_argument("--pool-url", default=DEFAULT_POOL_URL, help="Pool API base URL")
+    pool_register_parser.add_argument("--worker-id", default="", help="Optional stable worker id")
+    pool_register_parser.add_argument("--name", default=socket.gethostname(), help="Worker display name")
+    pool_register_parser.add_argument("--payout-address", default="", help="PI wallet that should receive pool payouts")
+    pool_register_parser.add_argument("--auth-token", default=os.getenv("PICOIN_POOL_TOKEN", ""), help="Optional private pool token")
+    pool_register_parser.set_defaults(func=command_pool_register)
+
+    pool_mine_parser = subparsers.add_parser("pool-mine", help="Mine chunks from a Picoin pool")
+    pool_mine_parser.add_argument("--pool-url", default=DEFAULT_POOL_URL, help="Pool API base URL")
+    pool_mine_parser.add_argument("--worker-id", default="", help="Optional stable worker id")
+    pool_mine_parser.add_argument("--name", default=socket.gethostname(), help="Worker display name")
+    pool_mine_parser.add_argument("--payout-address", default="", help="PI wallet that should receive pool payouts")
+    pool_mine_parser.add_argument("--auth-token", default=os.getenv("PICOIN_POOL_TOKEN", ""), help="Optional private pool token")
+    pool_mine_parser.add_argument("--once", action="store_true", help="Mine exactly one pool chunk")
+    pool_mine_parser.add_argument("--loops", type=int, default=1, help="Number of pool mining attempts")
+    pool_mine_parser.add_argument("--sleep", type=float, default=1.0, help="Seconds between attempts")
+    pool_mine_parser.add_argument("--workers", type=int, default=1, help="Parallel workers for BBP chunk calculation")
+    pool_mine_parser.set_defaults(func=command_pool_mine)
 
     stats_parser = subparsers.add_parser("stats", help="Show registered miner stats")
     stats_parser.set_defaults(func=command_stats)

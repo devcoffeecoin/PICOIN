@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlparse
 
 import requests
 
-from pool_accounting import assemble_segment, split_range, summarize_shares
+from pool_accounting import assemble_segment, split_range, summarize_payouts, summarize_shares
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -29,6 +29,7 @@ from app.core.crypto import hash_result  # noqa: E402
 from app.core.merkle import merkle_root  # noqa: E402
 from app.core.performance import elapsed_ms, now_perf  # noqa: E402
 from app.core.pi import calculate_pi_segment  # noqa: E402
+from app.services.wallet import is_valid_address  # noqa: E402
 from miner.client import (  # noqa: E402
     commit_result,
     get_task_for_identity,
@@ -162,6 +163,8 @@ class PoolCoordinator:
         poll_seconds: float,
         chunk_timeout_seconds: int,
         verify_chunks: bool,
+        require_worker_payout: bool,
+        pool_fee_percent: float,
     ) -> None:
         self.db = db
         self.server_url = server_url.rstrip("/")
@@ -170,6 +173,8 @@ class PoolCoordinator:
         self.poll_seconds = max(0.5, poll_seconds)
         self.chunk_timeout_seconds = max(5, chunk_timeout_seconds)
         self.verify_chunks = verify_chunks
+        self.require_worker_payout = require_worker_payout
+        self.pool_fee_percent = max(0.0, min(100.0, float(pool_fee_percent)))
         self.stop_event = threading.Event()
 
     def start(self) -> threading.Thread:
@@ -194,6 +199,9 @@ class PoolCoordinator:
         worker_id = worker_id.strip()
         if not worker_id:
             raise ValueError("worker_id is required")
+        normalized_payout = self._normalize_payout_address(payout_address)
+        if self.require_worker_payout and not normalized_payout:
+            raise ValueError("payout_address is required for public pool workers")
         now = utc_now()
         with self.db._lock, self.db.connect() as connection:
             connection.execute(
@@ -202,10 +210,10 @@ class PoolCoordinator:
                 VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(worker_id) DO UPDATE SET
                     name = COALESCE(excluded.name, pool_workers.name),
-                    payout_address = COALESCE(excluded.payout_address, pool_workers.payout_address),
+                    payout_address = COALESCE(pool_workers.payout_address, excluded.payout_address),
                     last_seen_at = excluded.last_seen_at
                 """,
-                (worker_id, name, payout_address, now, now),
+                (worker_id, name, normalized_payout, now, now),
             )
         return {"status": "ok", "worker_id": worker_id, "checked_at": utc_now()}
 
@@ -213,8 +221,25 @@ class PoolCoordinator:
         worker_id = worker_id.strip()
         if not worker_id:
             raise ValueError("worker_id is required")
-        self.register_worker(worker_id, None, None)
         with self.db._lock, self.db.connect() as connection:
+            worker = connection.execute(
+                "SELECT worker_id, payout_address FROM pool_workers WHERE worker_id = ?",
+                (worker_id,),
+            ).fetchone()
+            now = utc_now()
+            if worker is None:
+                if self.require_worker_payout:
+                    raise ValueError("worker must register with payout_address before requesting work")
+                connection.execute(
+                    """
+                    INSERT INTO pool_workers (worker_id, name, payout_address, registered_at, last_seen_at)
+                    VALUES (?, NULL, NULL, ?, ?)
+                    """,
+                    (worker_id, now, now),
+                )
+            elif self.require_worker_payout and not worker["payout_address"]:
+                raise ValueError("worker payout_address is required before requesting work")
+
             row = connection.execute(
                 """
                 SELECT c.*, t.mainnet_task_id, t.algorithm
@@ -228,7 +253,6 @@ class PoolCoordinator:
             ).fetchone()
             if row is None:
                 return {"status": "idle", "message": "no pool work available", "checked_at": utc_now()}
-            now = utc_now()
             connection.execute(
                 """
                 UPDATE pool_chunks
@@ -319,6 +343,16 @@ class PoolCoordinator:
                 (now, worker_id),
             )
         return {"status": "accepted", "chunk_id": chunk_id, "units": units, "checked_at": utc_now()}
+
+    def _normalize_payout_address(self, payout_address: str | None) -> str | None:
+        if payout_address is None:
+            return None
+        normalized = str(payout_address).strip().upper()
+        if not normalized:
+            return None
+        if not is_valid_address(normalized):
+            raise ValueError("payout_address must be a valid PI wallet address")
+        return normalized
 
     def ensure_active_task(self) -> None:
         with self.db._lock, self.db.connect() as connection:
@@ -514,6 +548,17 @@ class PoolCoordinator:
     def stats(self) -> dict[str, Any]:
         with self.db._lock, self.db.connect() as connection:
             workers = connection.execute("SELECT COUNT(*) AS count FROM pool_workers").fetchone()["count"]
+            worker_rows = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT worker_id, name, payout_address, registered_at, last_seen_at
+                    FROM pool_workers
+                    ORDER BY last_seen_at DESC
+                    LIMIT 250
+                    """
+                ).fetchall()
+            ]
             tasks = [
                 dict(row)
                 for row in connection.execute(
@@ -540,12 +585,13 @@ class PoolCoordinator:
                 dict(row)
                 for row in connection.execute(
                     """
-                    SELECT worker_id, units
+                    SELECT worker_id, pool_task_id, units
                     FROM pool_shares
                     WHERE credited = 1
                     """
                 ).fetchall()
             ]
+            task_rewards = self._accepted_task_rewards(connection)
             recent_events = [
                 dict(row)
                 for row in connection.execute(
@@ -562,17 +608,76 @@ class PoolCoordinator:
             "miner_id": self.identity.get("miner_id"),
             "mainnet_server": self.server_url,
             "workers": workers,
+            "worker_details": worker_rows,
             "tasks": tasks,
             "chunks": chunks,
             "credited_shares": summarize_shares(share_rows),
+            "payouts": summarize_payouts(
+                task_rewards=task_rewards,
+                share_rows=share_rows,
+                worker_rows=worker_rows,
+                pool_fee_percent=self.pool_fee_percent,
+            ),
             "events": recent_events,
             "checked_at": utc_now(),
         }
+
+    def payouts(self) -> dict[str, Any]:
+        return {
+            "status": "ok",
+            "miner_id": self.identity.get("miner_id"),
+            "payouts": self.stats()["payouts"],
+            "checked_at": utc_now(),
+        }
+
+    def workers(self) -> dict[str, Any]:
+        with self.db._lock, self.db.connect() as connection:
+            rows = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT worker_id, name, payout_address, registered_at, last_seen_at
+                    FROM pool_workers
+                    ORDER BY last_seen_at DESC
+                    LIMIT 250
+                    """
+                ).fetchall()
+            ]
+        return {"status": "ok", "count": len(rows), "workers": rows, "checked_at": utc_now()}
+
+    def _accepted_task_rewards(self, connection: sqlite3.Connection) -> list[dict[str, Any]]:
+        rewards: list[dict[str, Any]] = []
+        rows = connection.execute(
+            """
+            SELECT pool_task_id, raw_reveal_json
+            FROM pool_tasks
+            WHERE status = 'accepted'
+              AND raw_reveal_json IS NOT NULL
+            """
+        ).fetchall()
+        for row in rows:
+            try:
+                reveal = json.loads(row["raw_reveal_json"])
+            except (TypeError, ValueError):
+                continue
+            block = reveal.get("block") if isinstance(reveal, dict) else None
+            if not isinstance(block, dict):
+                continue
+            reward = block.get("reward")
+            try:
+                reward_amount = float(reward)
+            except (TypeError, ValueError):
+                continue
+            if reward_amount <= 0:
+                continue
+            rewards.append({"pool_task_id": row["pool_task_id"], "reward": reward_amount})
+        return rewards
 
 
 class PoolHandler(BaseHTTPRequestHandler):
     coordinator: PoolCoordinator
     auth_token: str | None = None
+    public_workers: bool = False
 
     def log_message(self, format: str, *args: Any) -> None:
         return
@@ -589,8 +694,12 @@ class PoolHandler(BaseHTTPRequestHandler):
                 self.send_json({"status": "ok", "checked_at": utc_now()})
             elif parsed.path == "/stats":
                 self.send_json(self.coordinator.stats())
+            elif parsed.path == "/payouts":
+                self.send_json(self.coordinator.payouts())
+            elif parsed.path == "/workers":
+                self.send_json(self.coordinator.workers())
             elif parsed.path == "/work/next":
-                self.require_auth()
+                self.require_worker_auth()
                 query = parse_qs(parsed.query)
                 worker_id = (query.get("worker_id") or [""])[0]
                 self.send_json(self.coordinator.claim_work(worker_id))
@@ -605,7 +714,7 @@ class PoolHandler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         try:
             if parsed.path in {"/workers/register", "/work/submit"}:
-                self.require_auth()
+                self.require_worker_auth()
             payload = self.read_json()
             if parsed.path == "/workers/register":
                 self.send_json(
@@ -639,6 +748,11 @@ class PoolHandler(BaseHTTPRequestHandler):
         if bearer == f"Bearer {self.auth_token}" or token == self.auth_token:
             return
         raise PermissionError("invalid pool token")
+
+    def require_worker_auth(self) -> None:
+        if self.public_workers:
+            return
+        self.require_auth()
 
     def read_json(self) -> dict[str, Any]:
         length = int(self.headers.get("Content-Length", "0") or 0)
@@ -674,6 +788,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chunk-timeout-seconds", type=int, default=45)
     parser.add_argument("--pool-name", default="picoin-pool")
     parser.add_argument("--auth-token", default=os.getenv("PICOIN_POOL_TOKEN", ""))
+    parser.add_argument("--public-workers", action="store_true", help="Allow workers to register, claim, and submit without a shared token")
+    parser.add_argument("--require-worker-payout", action="store_true", help="Require every worker to register a valid PI payout address")
+    parser.add_argument("--pool-fee-percent", type=float, default=0.0, help="Operator fee shown in payout accounting")
     parser.add_argument("--trust-workers", action="store_true", help="Skip pool-side chunk verification")
     return parser.parse_args()
 
@@ -690,10 +807,13 @@ def main() -> int:
         poll_seconds=args.poll_seconds,
         chunk_timeout_seconds=args.chunk_timeout_seconds,
         verify_chunks=not args.trust_workers,
+        require_worker_payout=bool(args.require_worker_payout or args.public_workers),
+        pool_fee_percent=args.pool_fee_percent,
     )
     coordinator.start()
     PoolHandler.coordinator = coordinator
     PoolHandler.auth_token = args.auth_token.strip() or None
+    PoolHandler.public_workers = bool(args.public_workers)
     httpd = ThreadingHTTPServer((args.host, args.port), PoolHandler)
     print(f"Picoin pool server listening on http://{args.host}:{args.port}")
     print(f"Pool miner identity: {identity.get('miner_id')}")

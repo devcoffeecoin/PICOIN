@@ -18,7 +18,9 @@ type MinerStatus = "stopped" | "starting" | "mining" | "error";
 type MinerSettings = {
   minerName: string;
   rewardWallet: string;
+  miningMode: "direct" | "pool";
   apiUrl: string;
+  poolUrl: string;
   networkId: string;
   chainId: string;
   miningIntensity: number;
@@ -36,10 +38,13 @@ const SETTINGS_STORAGE_KEY = "picoin-desktop-miner-settings";
 const MAINNET_NETWORK_ID = "picoin-mainnet-v1";
 const MAINNET_CHAIN_ID = "314159";
 const CANONICAL_MAINNET_API = "https://api.picoin.science";
+const DEFAULT_POOL_URL = "https://pool1.picoin.science";
 const DEFAULT_SETTINGS: MinerSettings = {
   minerName: "Picoin Desktop Miner",
   rewardWallet: "",
+  miningMode: "direct",
   apiUrl: CANONICAL_MAINNET_API,
+  poolUrl: DEFAULT_POOL_URL,
   networkId: MAINNET_NETWORK_ID,
   chainId: MAINNET_CHAIN_ID,
   miningIntensity: 75,
@@ -57,7 +62,9 @@ export default function App() {
   const [apiStatus, setApiStatus] = useState("offline");
   const [minerName, setMinerName] = useState(savedSettings.minerName);
   const [rewardWallet, setRewardWallet] = useState(savedSettings.rewardWallet);
+  const [miningMode, setMiningMode] = useState<"direct" | "pool">(savedSettings.miningMode);
   const [apiUrl, setApiUrl] = useState(savedSettings.apiUrl);
+  const [poolUrl, setPoolUrl] = useState(savedSettings.poolUrl);
   const [networkId, setNetworkId] = useState(savedSettings.networkId);
   const [chainId, setChainId] = useState(savedSettings.chainId);
   const [logs, setLogs] = useState<string[]>([]);
@@ -82,6 +89,8 @@ export default function App() {
       minerName,
       rewardWallet,
       apiNodeUrl: apiUrl,
+      miningMode,
+      poolUrl,
       networkId,
       chainId,
       miningIntensity,
@@ -131,6 +140,8 @@ async function registerMiner() {
       minerName,
       rewardWallet,
       apiNodeUrl: apiUrl,
+      miningMode,
+      poolUrl,
       networkId,
       chainId,
     });
@@ -186,12 +197,14 @@ async function registerMiner() {
     saveSettings({
       minerName,
       rewardWallet,
+      miningMode,
       apiUrl,
+      poolUrl,
       networkId,
       chainId,
       miningIntensity,
     });
-  }, [minerName, rewardWallet, apiUrl, networkId, chainId, miningIntensity]);
+  }, [minerName, rewardWallet, miningMode, apiUrl, poolUrl, networkId, chainId, miningIntensity]);
 
   useEffect(() => {
     void refreshStatus();
@@ -262,7 +275,7 @@ async function registerMiner() {
                 <Metric icon={<Power />} label="Status" value={status} />
                 <Metric icon={<Gauge />} label="Hashrate" value={hashrate} />
                 <Metric icon={<Cpu />} label="CPU" value={status === "mining" ? `${activeIntensity}% / ${activeWorkers} workers` : `${miningIntensity}% ready`} />
-                <Metric icon={<Network />} label="API" value={apiStatus} />
+                <Metric icon={<Network />} label="Mode" value={miningMode} />
               </div>
 
               <div className="button-row">
@@ -281,7 +294,7 @@ async function registerMiner() {
             <section className="panel">
               <h2>Current Task</h2>
               <div className="large-value">{currentTask}</div>
-              <p className="muted">API node: {apiUrl}</p>
+              <p className="muted">{miningMode === "pool" ? `pool URL: ${poolUrl}` : `API node: ${apiUrl}`}</p>
               <p className="muted">network_id: {networkId}</p>
               <p className="muted">chain_id: {chainId}</p>
               <p className="muted">mining intensity: {status === "mining" ? activeIntensity : miningIntensity}%</p>
@@ -319,8 +332,33 @@ async function registerMiner() {
               </label>
 
               <label className="form-row">
+                <span>Mining mode</span>
+                <div className="segmented-control">
+                  <button
+                    type="button"
+                    className={miningMode === "direct" ? "active" : ""}
+                    onClick={() => setMiningMode("direct")}
+                  >
+                    Direct
+                  </button>
+                  <button
+                    type="button"
+                    className={miningMode === "pool" ? "active" : ""}
+                    onClick={() => setMiningMode("pool")}
+                  >
+                    Pool
+                  </button>
+                </div>
+              </label>
+
+              <label className="form-row">
                 <span>API node URL</span>
                 <input value={apiUrl} onChange={(e) => setApiUrl(e.target.value)} />
+              </label>
+
+              <label className="form-row">
+                <span>Pool URL</span>
+                <input value={poolUrl} onChange={(e) => setPoolUrl(e.target.value)} placeholder="https://pool1.picoin.science" />
               </label>
 
               <label className="form-row">
@@ -379,7 +417,8 @@ async function registerMiner() {
               <h2>API Connection</h2>
               <div className="metric-list">
                 <Metric icon={<Power />} label="Status" value={apiStatus} />
-                <Metric icon={<Network />} label="Node" value={apiUrl} />
+                <Metric icon={<Network />} label="Mode" value={miningMode} />
+                <Metric icon={<Network />} label={miningMode === "pool" ? "Pool" : "Node"} value={miningMode === "pool" ? poolUrl : apiUrl} />
                 <Metric icon={<Network />} label="Network" value={networkId} />
                 <Metric icon={<Activity />} label="Chain ID" value={chainId} />
                 <Metric icon={<Cpu />} label="Applied CPU" value={`${activeIntensity}% / ${activeWorkers} workers`} />
@@ -415,6 +454,8 @@ function loadSavedSettings(): MinerSettings {
     const merged = {
       ...DEFAULT_SETTINGS,
       ...saved,
+      miningMode: saved.miningMode === "pool" ? "pool" : "direct",
+      poolUrl: String(saved.poolUrl || DEFAULT_SETTINGS.poolUrl).trim().replace(/\/$/, ""),
       miningIntensity: Number(saved.miningIntensity || DEFAULT_SETTINGS.miningIntensity),
     };
 

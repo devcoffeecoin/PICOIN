@@ -12,8 +12,10 @@
     creditedWorkers: document.getElementById("poolCreditedWorkers"),
     activeTasks: document.getElementById("poolActiveTasks"),
     completedTasks: document.getElementById("poolCompletedTasks"),
+    pendingPayouts: document.getElementById("poolPendingPayouts"),
     error: document.getElementById("poolError"),
     sharesTable: document.getElementById("poolSharesTable"),
+    payoutsTable: document.getElementById("poolPayoutsTable"),
     tasksTable: document.getElementById("poolTasksTable"),
     chunksTable: document.getElementById("poolChunksTable"),
     eventsTable: document.getElementById("poolEventsTable"),
@@ -35,6 +37,11 @@
   function pct(value) {
     const numeric = Number(value || 0);
     return `${(numeric * 100).toFixed(2)}%`;
+  }
+
+  function pi(value) {
+    const numeric = Number(value || 0);
+    return `${numeric.toFixed(6)} PI`;
   }
 
   function escapeHtml(value) {
@@ -118,6 +125,26 @@
       .join("");
   }
 
+  function renderPayouts(payouts) {
+    const rows = asArray(payouts && payouts.workers);
+    if (!rows.length) {
+      els.payoutsTable.innerHTML = `<tr><td colspan="4" class="empty">No pending payouts yet</td></tr>`;
+      return;
+    }
+    els.payoutsTable.innerHTML = rows
+      .map(
+        (worker) => `
+          <tr>
+            <td class="mono">${escapeHtml(worker.worker_id)}</td>
+            <td class="mono">${escapeHtml(worker.payout_address || "-")}</td>
+            <td>${fmt(Number(worker.units || 0), 0)}</td>
+            <td>${pi(worker.pending_amount)}</td>
+          </tr>
+        `,
+      )
+      .join("");
+  }
+
   function renderEvents(events) {
     const rows = asArray(events);
     if (!rows.length) {
@@ -142,6 +169,7 @@
     const activeTasks = statusCount(tasks, ["active", "gathering", "submitting", "validation_pending"]);
     const completedTasks = statusCount(tasks, ["accepted", "submitted", "validation_pending"]);
     const shares = stats.credited_shares || {};
+    const payouts = stats.payouts || {};
 
     els.minerId.textContent = fmt(stats.miner_id);
     els.mainnet.textContent = fmt(stats.mainnet_server);
@@ -149,8 +177,10 @@
     els.creditedWorkers.textContent = fmt(Object.keys(shares).length, 0);
     els.activeTasks.textContent = fmt(activeTasks, 0);
     els.completedTasks.textContent = fmt(completedTasks, 0);
+    els.pendingPayouts.textContent = pi(payouts.pending_total);
 
     renderShares(shares);
+    renderPayouts(payouts);
     renderStatusRows(els.tasksTable, tasks);
     renderStatusRows(els.chunksTable, asArray(stats.chunks));
     renderEvents(stats.events);
@@ -173,4 +203,3 @@
   refresh();
   window.setInterval(refresh, refreshMs);
 })();
-
