@@ -1,0 +1,7 @@
+config.json
+pool.sqlite3
+*.db
+*.sqlite3
+pool_identity.json
+*_identity.json
+

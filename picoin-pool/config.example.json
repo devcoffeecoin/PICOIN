@@ -1,0 +1,11 @@
+{
+  "server": "https://api.picoin.science",
+  "host": "127.0.0.1",
+  "port": 9321,
+  "chunk_size": 2,
+  "poll_seconds": 3,
+  "chunk_timeout_seconds": 45,
+  "pool_name": "community-picoin-pool",
+  "auth_token": "CHANGE_ME_PRIVATE_POOL_TOKEN"
+}
+

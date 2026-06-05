@@ -50,6 +50,7 @@ The public testnet has been used for launch rehearsals and can still be studied 
 | `picoin-desktop-wallet/` | Desktop wallet, API based, no embedded node |
 | `picoin-desktop-miner-source/` | Desktop miner UI and packaged mining client |
 | `picoin-desktop-validator/` | Desktop validator UI with embedded local node and validator stake flow |
+| `picoin-pool/` | Optional alpha pool coordinator and worker software; mainnet sees each pool as one normal miner |
 | `api/` | Supporting API/frontend glue used by deployments |
 
 ## Environment Files
