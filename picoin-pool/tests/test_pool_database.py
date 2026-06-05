@@ -6,7 +6,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from pool_server import PoolCoordinator, PoolDatabase, is_lost_competitive_round_error, utc_now
+from pool_server import PoolCoordinator, PoolDatabase, is_lost_competitive_round_error, parse_iso_timestamp, utc_now
 from app.services.wallet import create_wallet
 
 
@@ -186,6 +186,155 @@ def test_stats_reports_pool_performance_and_won_blocks(tmp_path):
     assert stats["performance"]["blocks_won"] == 1
     assert stats["performance"]["lost_rounds"] == 1
     assert stats["performance"]["win_rate_percent"] == pytest.approx(50.0)
+
+
+def test_auto_chunk_size_uses_active_workers(tmp_path, monkeypatch):
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size="auto",
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=False,
+        pool_fee_percent=0,
+    )
+    for index in range(8):
+        coordinator.register_worker(f"worker-{index}", f"Worker {index}", None)
+
+    monkeypatch.setattr(
+        "pool_server.get_task_for_identity",
+        lambda *_: {
+            "status": "assigned",
+            "task_id": "task_auto",
+            "range_start": 10,
+            "range_end": 18,
+            "algorithm": "bbp_hex_v1",
+        },
+    )
+
+    coordinator.ensure_active_task()
+
+    with db.connect() as connection:
+        chunks = connection.execute(
+            """
+            SELECT range_start, range_end, units
+            FROM pool_chunks
+            ORDER BY range_start
+            """
+        ).fetchall()
+        event = connection.execute(
+            """
+            SELECT payload_json
+            FROM pool_events
+            WHERE message = 'pool task created'
+            ORDER BY event_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    assert [(row["range_start"], row["range_end"], row["units"]) for row in chunks] == [
+        (10, 10, 1),
+        (11, 11, 1),
+        (12, 12, 1),
+        (13, 13, 1),
+        (14, 14, 1),
+        (15, 15, 1),
+        (16, 16, 1),
+        (17, 17, 1),
+        (18, 18, 1),
+    ]
+    assert event is not None
+    assert '"chunk_mode":"auto"' in event["payload_json"]
+    assert '"active_workers":8' in event["payload_json"]
+
+
+def test_idle_worker_claim_updates_last_seen_for_auto_chunking(tmp_path):
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size="auto",
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=False,
+        pool_fee_percent=0,
+    )
+
+    coordinator.register_worker("worker-1", "Worker 1", None)
+    with db.connect() as connection:
+        connection.execute(
+            "UPDATE pool_workers SET last_seen_at = '2026-01-01T00:00:00+00:00' WHERE worker_id = 'worker-1'"
+        )
+
+    result = coordinator.claim_work("worker-1")
+
+    assert result["status"] == "idle"
+    with db.connect() as connection:
+        worker = connection.execute(
+            "SELECT last_seen_at FROM pool_workers WHERE worker_id = 'worker-1'"
+        ).fetchone()
+        assert coordinator._active_worker_count(connection) == 1
+
+    assert parse_iso_timestamp(worker["last_seen_at"]) > parse_iso_timestamp("2026-01-01T00:00:00+00:00")
+
+
+def test_stats_reports_pool_hashrate_from_recent_worker_chunks(tmp_path):
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    now = utc_now()
+    with db.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO pool_workers (worker_id, name, payout_address, registered_at, last_seen_at)
+            VALUES ('worker-1', 'Worker 1', NULL, ?, ?),
+                   ('worker-2', 'Worker 2', NULL, ?, ?)
+            """,
+            (now, now, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_tasks (
+                pool_task_id, mainnet_task_id, status, range_start, range_end,
+                algorithm, raw_task_json, created_at
+            )
+            VALUES ('pooltask_rate', 'task_rate', 'gathering', 1, 3, 'bbp_hex_v1', '{}', ?)
+            """,
+            (now,),
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_chunks (
+                chunk_id, pool_task_id, worker_id, status, range_start, range_end,
+                units, compute_ms, assigned_at, submitted_at
+            )
+            VALUES ('chunk_1', 'pooltask_rate', 'worker-1', 'completed', 1, 2, 2, 1000, ?, ?),
+                   ('chunk_2', 'pooltask_rate', 'worker-2', 'completed', 3, 3, 1, 500, ?, ?)
+            """,
+            (now, now, now, now),
+        )
+
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size="auto",
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=False,
+        pool_fee_percent=0,
+    )
+
+    stats = coordinator.stats()
+
+    assert stats["hashrate"]["pool_hashrate_hps"] == pytest.approx(4.0)
+    assert stats["hashrate"]["active_hashrate_workers"] == 2
+    assert stats["performance"]["pool_hashrate_hps"] == pytest.approx(4.0)
+    assert stats["performance"]["active_hashrate_workers"] == 2
 
 
 def test_auto_payout_submits_transfer_once_and_subtracts_pending(tmp_path, monkeypatch):

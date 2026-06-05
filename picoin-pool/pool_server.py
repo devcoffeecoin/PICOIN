@@ -215,7 +215,7 @@ class PoolCoordinator:
         db: PoolDatabase,
         server_url: str,
         identity: dict[str, Any],
-        chunk_size: int,
+        chunk_size: int | str | None,
         poll_seconds: float,
         chunk_timeout_seconds: int,
         verify_chunks: bool,
@@ -229,7 +229,7 @@ class PoolCoordinator:
         self.db = db
         self.server_url = server_url.rstrip("/")
         self.identity = identity
-        self.chunk_size = max(1, chunk_size)
+        self.chunk_size = self._normalize_chunk_size(chunk_size)
         self.poll_seconds = max(0.5, poll_seconds)
         self.chunk_timeout_seconds = max(5, chunk_timeout_seconds)
         self.verify_chunks = verify_chunks
@@ -241,6 +241,17 @@ class PoolCoordinator:
         self.payout_fee = max(0.0, float(payout_fee))
         self._last_payout_attempt = 0.0
         self.stop_event = threading.Event()
+
+    @staticmethod
+    def _normalize_chunk_size(chunk_size: int | str | None) -> int | None:
+        if chunk_size is None:
+            return None
+        if isinstance(chunk_size, str):
+            value = chunk_size.strip().lower()
+            if value in {"", "auto", "0"}:
+                return None
+            chunk_size = int(value)
+        return max(1, int(chunk_size))
 
     def start(self) -> threading.Thread:
         thread = threading.Thread(target=self.run, name="picoin-pool-coordinator", daemon=True)
@@ -306,6 +317,10 @@ class PoolCoordinator:
             elif self.require_worker_payout and not worker["payout_address"]:
                 raise ValueError("worker payout_address is required before requesting work")
 
+            connection.execute(
+                "UPDATE pool_workers SET last_seen_at = ? WHERE worker_id = ?",
+                (now, worker_id),
+            )
             row = connection.execute(
                 """
                 SELECT c.*, t.mainnet_task_id, t.algorithm
@@ -318,7 +333,7 @@ class PoolCoordinator:
                 """
             ).fetchone()
             if row is None:
-                return {"status": "idle", "message": "no pool work available", "checked_at": utc_now()}
+                return {"status": "idle", "message": "no pool work available", "checked_at": now}
             connection.execute(
                 """
                 UPDATE pool_chunks
@@ -442,9 +457,12 @@ class PoolCoordinator:
             return
 
         pool_task_id = f"pooltask_{uuid.uuid4().hex[:16]}"
-        chunks = split_range(int(task["range_start"]), int(task["range_end"]), self.chunk_size)
+        range_start = int(task["range_start"])
+        range_end = int(task["range_end"])
         now = utc_now()
         with self.db._lock, self.db.connect() as connection:
+            chunk_size, active_workers, task_units = self._resolve_chunk_size(connection, range_start, range_end)
+            chunks = split_range(range_start, range_end, chunk_size)
             try:
                 connection.execute(
                     """
@@ -487,8 +505,39 @@ class PoolCoordinator:
         self.db.event(
             "info",
             "pool task created",
-            {"mainnet_task_id": task["task_id"], "chunks": len(chunks), "pool_task_id": pool_task_id},
+            {
+                "active_workers": active_workers,
+                "chunk_mode": "fixed" if self.chunk_size else "auto",
+                "chunk_size": chunk_size,
+                "chunks": len(chunks),
+                "mainnet_task_id": task["task_id"],
+                "pool_task_id": pool_task_id,
+                "task_units": task_units,
+            },
         )
+
+    def _resolve_chunk_size(
+        self,
+        connection: sqlite3.Connection,
+        range_start: int,
+        range_end: int,
+    ) -> tuple[int, int, int]:
+        task_units = range_end - range_start + 1
+        if task_units <= 0:
+            raise ValueError("task range_end must be >= range_start")
+        if self.chunk_size:
+            return self.chunk_size, 0, task_units
+
+        active_workers = self._active_worker_count(connection)
+        target_workers = max(1, min(active_workers, task_units))
+        chunk_size = max(1, task_units // target_workers)
+        return chunk_size, active_workers, task_units
+
+    def _active_worker_count(self, connection: sqlite3.Connection, window_seconds: int = 300) -> int:
+        cutoff = time.time() - max(1, int(window_seconds))
+        rows = connection.execute("SELECT last_seen_at FROM pool_workers").fetchall()
+        count = sum(1 for row in rows if parse_iso_timestamp(row["last_seen_at"]) >= cutoff)
+        return max(1, count)
 
     def expire_stale_assignments(self) -> None:
         cutoff = time.time() - self.chunk_timeout_seconds
@@ -689,11 +738,13 @@ class PoolCoordinator:
             ]
             active_worker_rows = self._active_workers(worker_rows)
             credited_shares = summarize_shares(share_rows)
+            hashrate = self._hashrate_summary(connection)
             performance = self._performance_summary(
                 tasks=tasks,
                 chunks=chunks,
                 active_worker_rows=active_worker_rows,
                 credited_worker_count=len(credited_shares),
+                hashrate=hashrate,
                 won_blocks=task_rewards,
                 validation_pending_tasks=validation_pending_tasks,
             )
@@ -706,6 +757,12 @@ class PoolCoordinator:
             "active_workers": len(active_worker_rows),
             "active_worker_window_seconds": 300,
             "active_worker_details": active_worker_rows,
+            "chunking": {
+                "mode": "fixed" if self.chunk_size else "auto",
+                "fixed_chunk_size": self.chunk_size,
+                "active_worker_window_seconds": 300,
+            },
+            "hashrate": hashrate,
             "tasks": tasks,
             "chunks": chunks,
             "credited_shares": credited_shares,
@@ -816,6 +873,50 @@ class PoolCoordinator:
         active.sort(key=lambda row: str(row.get("last_seen_at") or ""), reverse=True)
         return active
 
+    def _hashrate_summary(self, connection: sqlite3.Connection, window_seconds: int = 300) -> dict[str, Any]:
+        cutoff = time.time() - max(1, int(window_seconds))
+        latest_by_worker: dict[str, dict[str, Any]] = {}
+        rows = connection.execute(
+            """
+            SELECT worker_id, units, compute_ms, submitted_at
+            FROM pool_chunks
+            WHERE status = 'completed'
+              AND worker_id IS NOT NULL
+              AND COALESCE(compute_ms, 0) > 0
+              AND submitted_at IS NOT NULL
+            ORDER BY submitted_at DESC
+            """
+        ).fetchall()
+        for row in rows:
+            worker_id = str(row["worker_id"] or "")
+            if not worker_id or worker_id in latest_by_worker:
+                continue
+            submitted_at = parse_iso_timestamp(row["submitted_at"])
+            if submitted_at < cutoff:
+                continue
+            units = int(row["units"] or 0)
+            compute_ms = int(row["compute_ms"] or 0)
+            if units <= 0 or compute_ms <= 0:
+                continue
+            rate = units / (compute_ms / 1000)
+            latest_by_worker[worker_id] = {
+                "worker_id": worker_id,
+                "hashrate_hps": round(rate, 4),
+                "units": units,
+                "compute_ms": compute_ms,
+                "submitted_at": row["submitted_at"],
+            }
+
+        worker_rates = sorted(latest_by_worker.values(), key=lambda item: float(item["hashrate_hps"]), reverse=True)
+        pool_hashrate = sum(float(row["hashrate_hps"]) for row in worker_rates)
+        return {
+            "window_seconds": max(1, int(window_seconds)),
+            "pool_hashrate_hps": round(pool_hashrate, 4),
+            "active_hashrate_workers": len(worker_rates),
+            "avg_worker_hashrate_hps": round(pool_hashrate / len(worker_rates), 4) if worker_rates else 0.0,
+            "workers": worker_rates,
+        }
+
     def _performance_summary(
         self,
         *,
@@ -823,6 +924,7 @@ class PoolCoordinator:
         chunks: list[dict[str, Any]],
         active_worker_rows: list[dict[str, Any]],
         credited_worker_count: int,
+        hashrate: dict[str, Any],
         won_blocks: list[dict[str, Any]],
         validation_pending_tasks: int,
     ) -> dict[str, Any]:
@@ -834,6 +936,8 @@ class PoolCoordinator:
         win_rate = (blocks_won / finished_competitive_rounds) if finished_competitive_rounds else 0.0
         return {
             "active_workers": len(active_worker_rows),
+            "pool_hashrate_hps": float(hashrate.get("pool_hashrate_hps") or 0.0),
+            "active_hashrate_workers": int(hashrate.get("active_hashrate_workers") or 0),
             "active_worker_window_seconds": 300,
             "credited_workers": credited_worker_count,
             "blocks_won": blocks_won,
@@ -1133,7 +1237,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=9321)
     parser.add_argument("--db", type=Path, default=Path("picoin-pool/pool.sqlite3"))
-    parser.add_argument("--chunk-size", type=int, default=2)
+    parser.add_argument(
+        "--chunk-size",
+        default="auto",
+        help="Pool chunk size. Use 'auto' to split each task by active workers, or a positive integer for fixed chunks.",
+    )
     parser.add_argument("--poll-seconds", type=float, default=3.0)
     parser.add_argument("--chunk-timeout-seconds", type=int, default=45)
     parser.add_argument("--pool-name", default="picoin-pool")

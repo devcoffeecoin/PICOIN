@@ -9,6 +9,8 @@
     minerId: document.getElementById("poolMinerId"),
     mainnet: document.getElementById("poolMainnet"),
     workers: document.getElementById("poolWorkers"),
+    chunking: document.getElementById("poolChunking"),
+    hashrate: document.getElementById("poolHashrate"),
     creditedWorkers: document.getElementById("poolCreditedWorkers"),
     activeTasks: document.getElementById("poolActiveTasks"),
     completedTasks: document.getElementById("poolCompletedTasks"),
@@ -50,6 +52,14 @@
   function pi(value) {
     const numeric = Number(value || 0);
     return `${numeric.toFixed(6)} PI`;
+  }
+
+  function rate(value) {
+    const numeric = Number(value || 0);
+    if (!Number.isFinite(numeric) || numeric <= 0) return "0 H/s";
+    if (numeric >= 1000000) return `${fmt(numeric / 1000000, 2)} MH/s`;
+    if (numeric >= 1000) return `${fmt(numeric / 1000, 2)} kH/s`;
+    return `${fmt(numeric, 2)} H/s`;
   }
 
   function shortHash(value, size = 10) {
@@ -257,10 +267,16 @@
     const payouts = stats.payouts || {};
     const autoPayouts = stats.auto_payouts || {};
     const performance = stats.performance || {};
+    const chunking = stats.chunking || {};
+    const hashrate = stats.hashrate || {};
 
     els.minerId.textContent = fmt(stats.miner_id);
     els.mainnet.textContent = fmt(stats.mainnet_server);
     els.workers.textContent = `${fmt(Number(performance.active_workers || stats.active_workers || 0), 0)} / ${fmt(Number(stats.workers || 0), 0)}`;
+    els.chunking.textContent = chunking.mode === "fixed"
+      ? `Fixed / ${fmt(chunking.fixed_chunk_size)}`
+      : "Auto";
+    els.hashrate.textContent = rate(performance.pool_hashrate_hps || hashrate.pool_hashrate_hps);
     els.creditedWorkers.textContent = fmt(Object.keys(shares).length, 0);
     els.activeTasks.textContent = fmt(Number(performance.active_tasks || statusCount(tasks, ["active", "gathering", "submitting", "validation_pending"])), 0);
     els.completedTasks.textContent = fmt(Number(performance.completed_tasks || statusCount(tasks, ["accepted", "submitted", "validation_pending"])), 0);

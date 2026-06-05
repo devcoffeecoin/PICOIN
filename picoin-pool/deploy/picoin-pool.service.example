@@ -15,7 +15,7 @@ Environment=PICOIN_PROTOCOL_VERSION=1.0
 Environment=PICOIN_GENESIS_HASH=da286143167d14044c053fbb23fcf4673bb11bcd34fb1a11e5510ee8f8edb6e7
 Environment=PICOIN_TREASURY_WALLET=PIE1EE818AA165EECC3F0CCF058F4FF7BC04517F8CD07385
 Environment=PICOIN_GOVERNANCE_WALLET=PI251078EE911B17EDC747DB5BDF505649ECAF60F787AA23
-ExecStart=/opt/picoin/src/PICOIN/.venv/bin/python /opt/picoin/src/PICOIN/picoin-pool/pool_server.py --server https://api.picoin.science --identity /var/lib/picoin-pool/pool_identity.json --db /var/lib/picoin-pool/pool.sqlite3 --host 127.0.0.1 --port 9321 --pool-name pool1 --chunk-size 1 --poll-seconds 15 --public-workers --pool-fee-percent 1 --payout-wallet /var/lib/picoin-pool/payout_wallet.json --payout-interval-seconds 7200 --payout-min-amount 0.1
+ExecStart=/opt/picoin/src/PICOIN/.venv/bin/python /opt/picoin/src/PICOIN/picoin-pool/pool_server.py --server https://api.picoin.science --identity /var/lib/picoin-pool/pool_identity.json --db /var/lib/picoin-pool/pool.sqlite3 --host 127.0.0.1 --port 9321 --pool-name pool1 --chunk-size auto --poll-seconds 15 --public-workers --pool-fee-percent 1 --payout-wallet /var/lib/picoin-pool/payout_wallet.json --payout-interval-seconds 7200 --payout-min-amount 0.1
 Restart=always
 RestartSec=5
 
