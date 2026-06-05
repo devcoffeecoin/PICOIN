@@ -53,14 +53,16 @@ class PoolDatabase:
         self.init()
 
     def connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=30)
+        connection = sqlite3.connect(self.path, timeout=60)
         connection.row_factory = sqlite3.Row
-        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute("PRAGMA busy_timeout=60000")
         connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
     def init(self) -> None:
         with self._lock, self.connect() as connection:
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute("PRAGMA synchronous=NORMAL")
             connection.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS pool_workers (
@@ -124,13 +126,28 @@ class PoolDatabase:
             )
 
     def event(self, level: str, message: str, payload: dict[str, Any] | None = None) -> None:
-        with self._lock, self.connect() as connection:
-            connection.execute(
-                """
-                INSERT INTO pool_events (created_at, level, message, payload_json)
-                VALUES (?, ?, ?, ?)
-                """,
-                (utc_now(), level, message, json_dumps(payload or {})),
+        try:
+            with self._lock, self.connect() as connection:
+                connection.execute(
+                    """
+                    INSERT INTO pool_events (created_at, level, message, payload_json)
+                    VALUES (?, ?, ?, ?)
+                    """,
+                    (utc_now(), level, message, json_dumps(payload or {})),
+                )
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc).lower():
+                raise
+            print(
+                json_dumps(
+                    {
+                        "created_at": utc_now(),
+                        "level": level,
+                        "message": message,
+                        "payload": payload or {},
+                        "warning": "pool event skipped because sqlite database was locked",
+                    }
+                )
             )
 
 
