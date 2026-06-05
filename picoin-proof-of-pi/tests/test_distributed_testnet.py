@@ -347,6 +347,84 @@ def test_select_reconcile_peers_filters_local_stale_and_wrong_identity(tmp_path,
     assert {peer["peer_address"] for peer in selected} == {"http://peer-a:8000", "http://peer-b:8000"}
 
 
+def test_select_reconcile_peers_prefers_public_bootstraps_over_noisy_validators(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "peer-select-public-bootstrap.sqlite3")
+    monkeypatch.setattr("app.services.network.BOOTSTRAP_PEERS", ["http://api.picoin.science"], raising=False)
+
+    candidate_a = register_peer(
+        node_id="mainnet-bootstrap-candidate-a",
+        peer_address="http://178.62.30.17:8000",
+        peer_type="bootstrap",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    candidate_b = register_peer(
+        node_id="mainnet-bootstrap-candidate-b",
+        peer_address="http://138.68.139.141:8000",
+        peer_type="bootstrap",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    seed_bootstrap = register_peer(
+        node_id="bootstrap",
+        peer_address="http://api.picoin.science",
+        peer_type="bootstrap",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    public_full = register_peer(
+        node_id="public-full-node",
+        peer_address="http://203.0.113.10:8000",
+        peer_type="full",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    register_peer(
+        node_id="validator-loopback",
+        peer_address="http://127.0.0.1:8131",
+        peer_type="validator",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    register_peer(
+        node_id="validator-placeholder",
+        peer_address="http://ваш-ip:8000",
+        peer_type="validator",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    noisy_validator = register_peer(
+        node_id="validator-noisy",
+        peer_address="http://165.227.181.138:8000",
+        peer_type="validator",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+
+    selected = select_reconcile_peers(limit=5)
+    selected_addresses = [peer["peer_address"] for peer in selected]
+
+    assert set(selected_addresses[:2]) == {candidate_a["peer_address"], candidate_b["peer_address"]}
+    assert seed_bootstrap["peer_address"] in selected_addresses[:3]
+    assert selected_addresses.index(public_full["peer_address"]) < selected_addresses.index(noisy_validator["peer_address"])
+    assert "http://127.0.0.1:8131" not in selected_addresses
+    assert "http://ваш-ip:8000" not in selected_addresses
+
+
 def test_reconcile_connected_peers_attempts_multiple_selected_peers(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "peer-reconcile-multiple.sqlite3")
 
