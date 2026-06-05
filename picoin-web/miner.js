@@ -36,6 +36,15 @@ function shortHash(value) {
   return `${text.slice(0, 10)}...${text.slice(-8)}`;
 }
 
+function minerDisplayName(minerLike, miners = []) {
+  const minerId = typeof minerLike === "string" ? minerLike : minerLike?.miner_id;
+  if (!minerId) return "-";
+  const match = miners.find((miner) => miner?.miner_id === minerId);
+  const name = String(minerLike?.name || minerLike?.miner_name || match?.name || "").trim();
+  if (!name || name === minerId) return minerId;
+  return `${name}:${minerId}`;
+}
+
 function formatDate(value) {
   if (!value) return "-";
   const date = new Date(value);
@@ -240,7 +249,7 @@ function renderMiners(miners) {
     .map(
       (miner) => `
         <tr>
-          <td class="mono">${escapeHtml(miner.miner_id)}</td>
+          <td class="mono">${escapeHtml(minerDisplayName(miner))}</td>
           <td><span class="status-pill ${statusClass(miner.online_status)}">${escapeHtml(miner.online_status)}</span></td>
           <td class="hash" title="${escapeHtml(miner.reward_address)}">${escapeHtml(shortHash(miner.reward_address))}</td>
           <td>${fmt(miner.accepted_blocks, 0)}</td>
@@ -265,7 +274,7 @@ function renderBlocks(blocks, context = {}) {
           <td>${fmt(block.height, 0)}</td>
           <td class="hash" title="${escapeHtml(block.block_hash)}">${escapeHtml(shortHash(block.block_hash))}</td>
           <td class="hash" title="${escapeHtml(block.result_hash)}">${escapeHtml(shortHash(block.result_hash))}</td>
-          <td class="mono">${escapeHtml(block.miner_id)}</td>
+          <td class="mono">${escapeHtml(minerDisplayName(block, context.miners || []))}</td>
           <td>${fmt(block.range_start, 0)}..${fmt(block.range_end, 0)}</td>
           <td>${fmt(block.difficulty, 4)}</td>
           <td>${escapeHtml(fmtRate(block.work_rate_hps || block.hashrate_hps))}</td>
@@ -398,7 +407,7 @@ async function searchMiner(query) {
   }
   renderSummary(result);
   renderMiners(result.miners || []);
-  renderBlocks(result.recent_blocks || [], result.summary || {});
+  renderBlocks(result.recent_blocks || [], { ...(result.summary || {}), miners: result.miners || [] });
 }
 
 $("minerLookupButton")?.addEventListener("click", () => {
