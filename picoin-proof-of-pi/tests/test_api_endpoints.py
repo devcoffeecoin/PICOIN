@@ -37,6 +37,34 @@ def test_node_sync_status_endpoint_returns_200(tmp_path, monkeypatch) -> None:
     assert response.status_code == 200
 
 
+def test_mempool_inventory_returns_pending_hashes_without_full_payload(tmp_path, monkeypatch) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO mempool_transactions (
+                tx_hash, tx_type, sender, recipient, amount, amount_units, nonce, fee, fee_units,
+                payload, public_key, signature, status, propagated,
+                expires_at, created_at, updated_at
+            )
+            VALUES (?, 'transfer', 'sender-a', 'recipient-a', 0, 0, 1, 0, 10,
+                '{}', 'ed25519:public', 'ed25519:signature', 'pending', 0,
+                '2099-01-01T00:00:00+00:00', '2026-06-04T00:00:00+00:00', '2026-06-04T00:00:00+00:00')
+            """,
+            ("e" * 64,),
+        )
+
+    response = client.get("/mempool/inventory")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "pending"
+    assert payload["count"] == 1
+    assert payload["transactions"][0]["tx_hash"] == "e" * 64
+    assert "payload" not in payload["transactions"][0]
+    assert "signature" not in payload["transactions"][0]
+
+
 def test_node_blocks_receive_gossips_new_pending_block(tmp_path, monkeypatch) -> None:
     client = _build_test_client(tmp_path, monkeypatch)
     calls: list[dict] = []

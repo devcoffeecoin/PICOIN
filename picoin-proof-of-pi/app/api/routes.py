@@ -100,6 +100,7 @@ from app.services.network import (
     heartbeat_peer,
     discover_peers,
     list_mempool,
+    list_mempool_inventory,
     list_peers,
     list_recent_transactions,
     node_identity,
@@ -568,6 +569,17 @@ def mempool(status: str | None = Query(None), limit: int = Query(100, ge=1, le=5
     if response is not None:
         response.headers["Cache-Control"] = "no-store"
     return list_mempool(status, limit)
+
+
+@router.get("/mempool/inventory")
+def mempool_inventory(
+    status: str | None = Query("pending"),
+    limit: int = Query(100, ge=1, le=500),
+    response: Response = None,
+) -> dict:
+    if response is not None:
+        response.headers["Cache-Control"] = "no-store"
+    return list_mempool_inventory(status, limit)
 
 
 @router.get("/transactions/recent", response_model=list[MempoolTransactionResponse])
