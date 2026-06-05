@@ -858,6 +858,8 @@ Phase 3 alpha evidence:
 - [x] Deployed Phase 3 mempool inventory build `ee0bac9` to bootstrap candidates A (`178.62.30.17`), B (`138.68.139.141`), and C (`159.89.115.183`); each candidate returned `/mempool/inventory` with `HTTP 200`, `picoin-node` and `picoin-reconciler` active, miner/validator/auditor disabled, healthy replay, and no divergence
 - [x] Production web smoke for `/api/bootstrap-a`, `/api/bootstrap-b`, and `/api/bootstrap-c` passed with `required=3`, `allowed_lag=5`, `status=ok`, `healthy_routes=3`, and `errors=0` at heights `4994`, `4993`, and `4995`
 - [x] Direct bootstrap candidate verifier passed with `required=3`, `allowed_lag=5`, `errors=0`, and read-only degraded health accepted for no local validator quorum; one warning remains under observation for candidate B checkpoint `snapshot_hash` mismatch while checkpoint block hash, state root, balances hash, validators hash, pending rewards hash, protocol params hash, and retarget events hash matched the reference
+- [x] Deployed Phase 3 selector fix `2e91e04` to bootstrap candidates A, B, and C; clean `POST /node/reconcile?limit=2` selected only the other bootstrap candidates on each node, with low error counts (A=`1`, B=`2`, C=`2`) and no fallback to noisy validator, loopback, or placeholder peers
+- [x] Post-selector-fix bootstrap candidate verifier passed with `required=3`, `allowed_lag=5`, `errors=0`, and `warnings=1`; production web smoke for `/api/bootstrap-a`, `/api/bootstrap-b`, and `/api/bootstrap-c` passed with `status=ok`, `healthy_routes=3`, `errors=0`, and route lags A=`0`, B=`1`, C=`4`
 
 ### Phase 4: Decentralized Mempool And Block Candidate Construction
 
