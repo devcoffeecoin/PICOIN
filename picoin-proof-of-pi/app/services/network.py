@@ -944,6 +944,8 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
         "peer_address": peer_address,
         "identity_registered": False,
         "peers_seen": 0,
+        "mempool_inventory_seen": 0,
+        "mempool_inventory_missing": 0,
         "transactions_seen": 0,
         "transactions_imported": 0,
         "proposals_seen": 0,
@@ -996,7 +998,7 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
         result["errors"].append(f"peers: {exc}")
 
     try:
-        tx_rows = requests.get(f"{peer_address}/mempool?limit=100", timeout=GOSSIP_TIMEOUT_SECONDS).json()
+        tx_rows = _fetch_peer_mempool_transactions(peer_address, result, limit=100)
         for tx in tx_rows:
             result["transactions_seen"] += 1
             try:
@@ -1044,6 +1046,63 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
     with get_connection() as connection:
         _record_sync_event(connection, None, "peer_reconcile", "outbound", "completed", result)
     return result
+
+
+def _fetch_peer_mempool_transactions(
+    peer_address: str,
+    result: dict[str, Any],
+    *,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    try:
+        inventory_response = requests.get(
+            f"{peer_address}/mempool/inventory?status=pending&limit={int(limit)}",
+            timeout=GOSSIP_TIMEOUT_SECONDS,
+        )
+        inventory_response.raise_for_status()
+        inventory_payload = inventory_response.json()
+        inventory_rows = (
+            inventory_payload.get("transactions", [])
+            if isinstance(inventory_payload, dict)
+            else inventory_payload
+        )
+        result["mempool_inventory_seen"] = len(inventory_rows)
+        tx_hashes = [
+            str(item.get("tx_hash") or "")
+            for item in inventory_rows
+            if isinstance(item, dict) and isinstance(item.get("tx_hash"), str) and len(str(item.get("tx_hash"))) == 64
+        ]
+        missing_hashes = _missing_mempool_tx_hashes(tx_hashes)
+        result["mempool_inventory_missing"] = len(missing_hashes)
+        rows: list[dict[str, Any]] = []
+        for tx_hash in missing_hashes:
+            tx_response = requests.get(f"{peer_address}/tx/{tx_hash}", timeout=GOSSIP_TIMEOUT_SECONDS)
+            tx_response.raise_for_status()
+            rows.append(tx_response.json())
+        return rows
+    except Exception as inventory_exc:
+        result["mempool_inventory_error"] = str(inventory_exc)
+        try:
+            return requests.get(f"{peer_address}/mempool?limit={int(limit)}", timeout=GOSSIP_TIMEOUT_SECONDS).json()
+        except Exception as fallback_exc:
+            raise NetworkError(
+                502,
+                f"mempool inventory failed: {inventory_exc}; mempool fallback failed: {fallback_exc}",
+            ) from fallback_exc
+
+
+def _missing_mempool_tx_hashes(tx_hashes: list[str]) -> list[str]:
+    unique_hashes = list(dict.fromkeys(tx_hashes))
+    if not unique_hashes:
+        return []
+    placeholders = ",".join("?" for _ in unique_hashes)
+    with get_connection() as connection:
+        rows = connection.execute(
+            f"SELECT tx_hash FROM mempool_transactions WHERE tx_hash IN ({placeholders})",
+            tuple(unique_hashes),
+        ).fetchall()
+    existing = {str(row["tx_hash"]) for row in rows}
+    return [tx_hash for tx_hash in unique_hashes if tx_hash not in existing]
 
 
 def sync_blocks_until(
@@ -1182,6 +1241,30 @@ def list_mempool(status: str | None = None, limit: int = 100) -> list[dict[str, 
     params = (*params, limit)
     with get_connection() as connection:
         return [_decode_tx(row_to_dict(row)) for row in connection.execute(query, params).fetchall()]
+
+
+def list_mempool_inventory(status: str | None = "pending", limit: int = 100) -> dict[str, Any]:
+    expire_mempool_transactions()
+    query = """
+        SELECT tx_hash, status, sender, recipient, nonce, fee_units, updated_at, created_at
+        FROM mempool_transactions
+    """
+    params: tuple[Any, ...]
+    if status:
+        query += " WHERE status = ?"
+        params = (status,)
+    else:
+        params = ()
+    query += " ORDER BY updated_at DESC, created_at DESC LIMIT ?"
+    params = (*params, limit)
+    with get_connection() as connection:
+        rows = [row_to_dict(row) for row in connection.execute(query, params).fetchall()]
+    return {
+        "status": status,
+        "count": len(rows),
+        "transactions": rows,
+        "checked_at": _now(),
+    }
 
 
 def list_recent_transactions(status: str | None = None, address: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
