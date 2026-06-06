@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlparse
 
 import requests
 
-from pool_accounting import assemble_segment, split_range, split_range_balanced, summarize_payouts, summarize_shares
+from pool_accounting import WorkChunk, assemble_segment, split_range, split_range_balanced, summarize_payouts, summarize_shares
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -231,7 +231,9 @@ class PoolCoordinator:
         self.db = db
         self.server_url = server_url.rstrip("/")
         self.identity = identity
-        self.chunk_size = self._normalize_chunk_size(chunk_size)
+        normalized_chunk_size = self._normalize_chunk_size(chunk_size)
+        self.hybrid_race = normalized_chunk_size == "hybrid-race"
+        self.chunk_size = normalized_chunk_size if isinstance(normalized_chunk_size, int) else None
         self.poll_seconds = max(0.5, poll_seconds)
         self.chunk_timeout_seconds = max(5, chunk_timeout_seconds)
         self.verify_chunks = verify_chunks
@@ -247,15 +249,31 @@ class PoolCoordinator:
         self.stop_event = threading.Event()
 
     @staticmethod
-    def _normalize_chunk_size(chunk_size: int | str | None) -> int | None:
+    def _normalize_chunk_size(chunk_size: int | str | None) -> int | str | None:
         if chunk_size is None:
             return None
         if isinstance(chunk_size, str):
             value = chunk_size.strip().lower()
             if value in {"", "auto", "0"}:
                 return None
+            if value in {"hybrid", "hybrid-race", "hybrid_race"}:
+                return "hybrid-race"
             chunk_size = int(value)
         return max(1, int(chunk_size))
+
+    def _configured_chunk_mode(self) -> str:
+        if self.chunk_size:
+            return "fixed"
+        if self.hybrid_race:
+            return "hybrid-race"
+        return "auto"
+
+    def _configured_chunk_strategy(self) -> str:
+        if self.chunk_size:
+            return "fixed"
+        if self.hybrid_race:
+            return "hybrid_race"
+        return "one_unit_speculative_queue"
 
     def start(self) -> threading.Thread:
         thread = threading.Thread(target=self.run, name="picoin-pool-coordinator", daemon=True)
@@ -422,7 +440,9 @@ class PoolCoordinator:
         with self.db._lock, self.db.connect() as connection:
             row = connection.execute(
                 """
-                SELECT c.*, t.algorithm, t.status AS task_status
+                SELECT c.*, t.mainnet_task_id, t.algorithm, t.status AS task_status,
+                       t.range_start AS task_range_start,
+                       t.range_end AS task_range_end
                 FROM pool_chunks c
                 JOIN pool_tasks t ON t.pool_task_id = c.pool_task_id
                 WHERE c.chunk_id = ?
@@ -431,27 +451,30 @@ class PoolCoordinator:
             ).fetchone()
             if row is None:
                 raise ValueError("unknown chunk_id")
-            if row["status"] == "completed":
-                return {
-                    "status": "stale",
-                    "chunk_id": chunk_id,
-                    "units": 0,
-                    "message": "chunk already completed by another worker",
-                    "checked_at": utc_now(),
-                }
-            if row["status"] not in {"assigned", "pending"} or row["task_status"] not in {"gathering", "active"}:
-                return {
-                    "status": "stale",
-                    "chunk_id": chunk_id,
-                    "units": 0,
-                    "message": "chunk is no longer active",
-                    "checked_at": utc_now(),
-                }
             row_data = dict(row)
 
         expected_len = int(row_data["range_end"]) - int(row_data["range_start"]) + 1
         if len(segment) != expected_len:
             raise ValueError("segment length does not match chunk range")
+        if row_data["status"] == "completed":
+            full_race_result = self._credit_late_full_task_race_share(row_data, worker_id, compute_ms)
+            if full_race_result is not None:
+                return full_race_result
+            return {
+                "status": "stale",
+                "chunk_id": chunk_id,
+                "units": 0,
+                "message": "chunk already completed by another worker",
+                "checked_at": utc_now(),
+            }
+        if row_data["status"] not in {"assigned", "pending"} or row_data["task_status"] not in {"gathering", "active"}:
+            return {
+                "status": "stale",
+                "chunk_id": chunk_id,
+                "units": 0,
+                "message": "chunk is no longer active",
+                "checked_at": utc_now(),
+            }
         if self.verify_chunks:
             expected = calculate_pi_segment(int(row_data["range_start"]), int(row_data["range_end"]), row_data["algorithm"])
             if segment != expected.upper():
@@ -519,6 +542,122 @@ class PoolCoordinator:
             self._schedule_finalize_task(str(row_data["pool_task_id"]))
         return {"status": "accepted", "chunk_id": chunk_id, "units": units, "checked_at": utc_now()}
 
+    def _is_full_task_race_row(self, row_data: dict[str, Any]) -> bool:
+        if not self.hybrid_race:
+            return False
+        try:
+            task_start = int(row_data["task_range_start"])
+            task_end = int(row_data["task_range_end"])
+            chunk_start = int(row_data["range_start"])
+            chunk_end = int(row_data["range_end"])
+            units = int(row_data["units"])
+        except (TypeError, ValueError, KeyError):
+            return False
+        return chunk_start == task_start and chunk_end == task_end and units == task_end - task_start + 1
+
+    def _credit_late_full_task_race_share(
+        self,
+        row_data: dict[str, Any],
+        worker_id: str,
+        compute_ms: int,
+    ) -> dict[str, Any] | None:
+        if not self._is_full_task_race_row(row_data):
+            return None
+        if row_data.get("task_status") not in {"gathering", "submitting"}:
+            return None
+
+        winner_ms = max(1, int(row_data.get("compute_ms") or 0))
+        worker_ms = max(1, int(compute_ms or 0))
+        task_units = max(1, int(row_data.get("units") or 0))
+        credit_units = max(0, min(task_units, (task_units * winner_ms) // worker_ms))
+        if credit_units <= 0:
+            return {
+                "status": "stale",
+                "chunk_id": row_data["chunk_id"],
+                "units": 0,
+                "message": "full task race submit was too slow for share credit",
+                "checked_at": utc_now(),
+            }
+
+        now = utc_now()
+        with self.db._lock, self.db.connect() as connection:
+            current = connection.execute(
+                """
+                SELECT c.status, c.compute_ms, t.status AS task_status
+                FROM pool_chunks c
+                JOIN pool_tasks t ON t.pool_task_id = c.pool_task_id
+                WHERE c.chunk_id = ?
+                """,
+                (row_data["chunk_id"],),
+            ).fetchone()
+            if current is None or current["status"] != "completed" or current["task_status"] not in {"gathering", "submitting"}:
+                return None
+            existing = connection.execute(
+                """
+                SELECT 1
+                FROM pool_shares
+                WHERE pool_task_id = ?
+                  AND chunk_id = ?
+                  AND worker_id = ?
+                LIMIT 1
+                """,
+                (row_data["pool_task_id"], row_data["chunk_id"], worker_id),
+            ).fetchone()
+            if existing is not None:
+                return {
+                    "status": "stale",
+                    "chunk_id": row_data["chunk_id"],
+                    "units": 0,
+                    "message": "worker already credited for full task race",
+                    "checked_at": now,
+                }
+            connection.execute(
+                """
+                INSERT INTO pool_shares (share_id, worker_id, pool_task_id, chunk_id, units, credited, created_at)
+                VALUES (?, ?, ?, ?, ?, 0, ?)
+                """,
+                (
+                    f"share_{uuid.uuid4().hex[:16]}",
+                    worker_id,
+                    row_data["pool_task_id"],
+                    row_data["chunk_id"],
+                    credit_units,
+                    now,
+                ),
+            )
+            connection.execute(
+                "UPDATE pool_workers SET last_seen_at = ? WHERE worker_id = ?",
+                (now, worker_id),
+            )
+            connection.execute(
+                """
+                INSERT INTO pool_events (created_at, level, message, payload_json)
+                VALUES (?, 'info', 'pool full task race share credited', ?)
+                """,
+                (
+                    now,
+                    json_dumps(
+                        {
+                            "chunk_id": row_data["chunk_id"],
+                            "credit_units": credit_units,
+                            "mainnet_task_id": row_data.get("mainnet_task_id"),
+                            "pool_task_id": row_data["pool_task_id"],
+                            "task_units": task_units,
+                            "winner_compute_ms": winner_ms,
+                            "worker_compute_ms": worker_ms,
+                            "worker_id": worker_id,
+                        }
+                    ),
+                ),
+            )
+        return {
+            "status": "accepted",
+            "chunk_id": row_data["chunk_id"],
+            "units": credit_units,
+            "message": "full task race share credited",
+            "checked_at": now,
+        }
+
     def _normalize_payout_address(self, payout_address: str | None) -> str | None:
         if payout_address is None:
             return None
@@ -561,7 +700,7 @@ class PoolCoordinator:
         range_end = int(task["range_end"])
         now = utc_now()
         with self.db._lock, self.db.connect() as connection:
-            chunks, chunk_size, active_workers, task_units, target_chunks = self._resolve_chunks(
+            chunks, chunk_size, active_workers, task_units, target_chunks, chunk_strategy = self._resolve_chunks(
                 connection,
                 range_start,
                 range_end,
@@ -610,8 +749,8 @@ class PoolCoordinator:
             "pool task created",
             {
                 "active_workers": active_workers,
-                "chunk_mode": "fixed" if self.chunk_size else "auto",
-                "chunk_strategy": "fixed" if self.chunk_size else "one_unit_speculative_queue",
+                "chunk_mode": self._configured_chunk_mode(),
+                "chunk_strategy": chunk_strategy,
                 "chunk_size": chunk_size,
                 "target_chunks": target_chunks,
                 "chunks": len(chunks),
@@ -627,19 +766,23 @@ class PoolCoordinator:
         connection: sqlite3.Connection,
         range_start: int,
         range_end: int,
-    ) -> tuple[list[Any], int, int, int, int]:
+    ) -> tuple[list[Any], int, int, int, int, str]:
         task_units = range_end - range_start + 1
         if task_units <= 0:
             raise ValueError("task range_end must be >= range_start")
         if self.chunk_size:
             chunks = split_range(range_start, range_end, self.chunk_size)
-            return chunks, self.chunk_size, 0, task_units, len(chunks)
+            return chunks, self.chunk_size, 0, task_units, len(chunks), "fixed"
 
         active_workers = self._active_worker_count(connection)
+        if self.hybrid_race and task_units > active_workers:
+            chunks = [WorkChunk(range_start, range_end)]
+            return chunks, task_units, active_workers, task_units, 1, "full_task_race"
+
         target_chunks = task_units
         chunks = split_range_balanced(range_start, range_end, target_chunks)
         chunk_size = max(chunk.units for chunk in chunks)
-        return chunks, chunk_size, active_workers, task_units, target_chunks
+        return chunks, chunk_size, active_workers, task_units, target_chunks, "one_unit_speculative_queue"
 
     def _active_worker_count(self, connection: sqlite3.Connection, window_seconds: int = 300) -> int:
         cutoff = time.time() - max(1, int(window_seconds))
@@ -1170,12 +1313,13 @@ class PoolCoordinator:
             "active_worker_window_seconds": 300,
             "active_worker_details": active_worker_rows,
             "chunking": {
-                "mode": "fixed" if self.chunk_size else "auto",
+                "mode": self._configured_chunk_mode(),
                 "fixed_chunk_size": self.chunk_size,
                 "active_worker_window_seconds": 300,
-                "strategy": "fixed" if self.chunk_size else "one_unit_speculative_queue",
+                "strategy": self._configured_chunk_strategy(),
+                "hybrid_full_task_when": "task_units > active_workers" if self.hybrid_race else None,
                 "target_chunks_per_active_worker": None,
-                "target_units_per_chunk": 1 if self.chunk_size is None else self.chunk_size,
+                "target_units_per_chunk": None if self.hybrid_race else (1 if self.chunk_size is None else self.chunk_size),
                 "speculative_assignment": self.speculative_chunks,
             },
             "settlement": {
@@ -1687,7 +1831,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--chunk-size",
         default="auto",
-        help="Pool chunk size. Use 'auto' to split each task by active workers, or a positive integer for fixed chunks.",
+        help=(
+            "Pool chunk size. Use 'auto' for one unit per chunk, 'hybrid-race' to use full-task racing "
+            "when task units exceed active workers, or a positive integer for fixed chunks."
+        ),
     )
     parser.add_argument("--poll-seconds", type=float, default=3.0)
     parser.add_argument("--chunk-timeout-seconds", type=int, default=45)

@@ -47,7 +47,14 @@ python picoin-pool/pool_server.py \
 
 The first run auto-registers `pool_identity.json` as a normal miner, using the same official miner registration flow.
 If `--payout-wallet` is omitted, automatic transfers are disabled and the pool only reports pending payout balances.
-With `--chunk-size auto`, the pool creates one useful chunk per task unit: 10 units become 10 chunks, no matter how many workers are online. Fast workers finish a chunk and immediately ask for another. If all chunks are already assigned and more workers ask for work, the pool can hand out speculative duplicate attempts over the assigned chunks. The first valid submit completes the chunk and receives the share; later duplicate submits are marked stale and receive no share. Operators can pass a positive integer to force fixed chunk sizes, or `--disable-speculative-chunks` to turn off duplicate assignment.
+With `--chunk-size auto`, the pool creates one useful chunk per task unit: 10 units become 10 chunks, no matter how many workers are online. Fast workers finish a chunk and immediately ask for another. If all chunks are already assigned and more workers ask for work, the pool can hand out speculative duplicate attempts over the assigned chunks. The first valid submit completes the chunk and receives the share; later duplicate submits are marked stale and receive no share.
+
+With `--chunk-size hybrid-race`, the pool switches per task:
+
+- If `task_units > active_workers`, it creates one full-task chunk and gives that same full range to workers as a race. The first complete submit wins `task_units` shares and triggers commit/reveal. Other complete submits that arrive while the task is still open receive `floor(task_units * winner_compute_ms / worker_compute_ms)` shares. Workers that do not submit before the task closes receive 0.
+- If `task_units <= active_workers`, it creates one chunk per unit, the same as `auto`.
+
+Operators can pass a positive integer to force fixed chunk sizes, or `--disable-speculative-chunks` to turn off duplicate assignment.
 
 For the first hosted pool, the intended public API is:
 

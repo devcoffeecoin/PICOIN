@@ -789,6 +789,119 @@ def test_auto_chunk_size_creates_one_chunk_per_unit_regardless_worker_count(tmp_
     assert chunks[-1]["range_end"] == 199
 
 
+def test_hybrid_race_uses_full_task_when_units_exceed_workers(tmp_path, monkeypatch):
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size="hybrid-race",
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=False,
+        pool_fee_percent=0,
+    )
+    for index in range(3):
+        coordinator.register_worker(f"worker-{index}", f"Worker {index}", None)
+
+    monkeypatch.setattr(
+        "pool_server.get_task_for_identity",
+        lambda *_: {
+            "status": "assigned",
+            "task_id": "task_hybrid_full",
+            "range_start": 100,
+            "range_end": 109,
+            "algorithm": "bbp_hex_v1",
+        },
+    )
+
+    coordinator.ensure_active_task()
+
+    with db.connect() as connection:
+        chunks = connection.execute(
+            """
+            SELECT range_start, range_end, units
+            FROM pool_chunks
+            ORDER BY range_start
+            """
+        ).fetchall()
+        event = connection.execute(
+            """
+            SELECT payload_json
+            FROM pool_events
+            WHERE message = 'pool task created'
+            ORDER BY event_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    assert [(row["range_start"], row["range_end"], row["units"]) for row in chunks] == [(100, 109, 10)]
+    assert event is not None
+    assert '"chunk_mode":"hybrid-race"' in event["payload_json"]
+    assert '"chunk_strategy":"full_task_race"' in event["payload_json"]
+    assert '"active_workers":3' in event["payload_json"]
+    assert '"target_chunks":1' in event["payload_json"]
+
+
+def test_hybrid_race_uses_one_unit_chunks_when_workers_cover_units(tmp_path, monkeypatch):
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size="hybrid-race",
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=False,
+        pool_fee_percent=0,
+    )
+    for index in range(10):
+        coordinator.register_worker(f"worker-{index}", f"Worker {index}", None)
+
+    monkeypatch.setattr(
+        "pool_server.get_task_for_identity",
+        lambda *_: {
+            "status": "assigned",
+            "task_id": "task_hybrid_units",
+            "range_start": 200,
+            "range_end": 209,
+            "algorithm": "bbp_hex_v1",
+        },
+    )
+
+    coordinator.ensure_active_task()
+
+    with db.connect() as connection:
+        chunks = connection.execute(
+            """
+            SELECT range_start, range_end, units
+            FROM pool_chunks
+            ORDER BY range_start
+            """
+        ).fetchall()
+        event = connection.execute(
+            """
+            SELECT payload_json
+            FROM pool_events
+            WHERE message = 'pool task created'
+            ORDER BY event_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    assert len(chunks) == 10
+    assert [(row["range_start"], row["range_end"], row["units"]) for row in chunks] == [
+        (position, position, 1) for position in range(200, 210)
+    ]
+    assert event is not None
+    assert '"chunk_mode":"hybrid-race"' in event["payload_json"]
+    assert '"chunk_strategy":"one_unit_speculative_queue"' in event["payload_json"]
+    assert '"active_workers":10' in event["payload_json"]
+    assert '"target_chunks":10' in event["payload_json"]
+
+
 def test_submit_last_chunk_schedules_immediate_finalize(tmp_path, monkeypatch):
     db = PoolDatabase(tmp_path / "pool.sqlite3")
     coordinator = PoolCoordinator(
@@ -931,6 +1044,97 @@ def test_speculative_chunk_assignment_first_valid_submit_wins(tmp_path):
         ("primary", "slow-worker", None),
         ("speculative", "fast-worker", "slow-worker"),
     ]
+
+
+def test_hybrid_full_task_race_late_submit_gets_time_weighted_shares(tmp_path, monkeypatch):
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size="hybrid-race",
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=False,
+        pool_fee_percent=0,
+    )
+    now = utc_now()
+    with db.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO pool_workers (worker_id, name, payout_address, registered_at, last_seen_at)
+            VALUES ('winner-worker', 'Winner', NULL, ?, ?),
+                   ('late-worker', 'Late', NULL, ?, ?)
+            """,
+            (now, now, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_tasks (
+                pool_task_id, mainnet_task_id, status, range_start, range_end,
+                algorithm, raw_task_json, created_at
+            )
+            VALUES ('pooltask_full_race', 'task_full_race', 'gathering', 50, 59, 'bbp_hex_v1', '{}', ?)
+            """,
+            (now,),
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_chunks (chunk_id, pool_task_id, status, range_start, range_end, units)
+            VALUES ('chunk_full_race', 'pooltask_full_race', 'pending', 50, 59, 10)
+            """
+        )
+
+    scheduled: list[str] = []
+    monkeypatch.setattr(coordinator, "_schedule_finalize_task", scheduled.append)
+
+    winner_work = coordinator.claim_work("winner-worker")
+    late_work = coordinator.claim_work("late-worker")
+
+    assert winner_work["assignment_mode"] == "primary"
+    assert late_work["assignment_mode"] == "speculative"
+    assert late_work["chunk_id"] == winner_work["chunk_id"]
+
+    winner_result = coordinator.submit_work("winner-worker", "chunk_full_race", "1234567890", 1000)
+    late_result = coordinator.submit_work("late-worker", "chunk_full_race", "1234567890", 2500)
+    duplicate_result = coordinator.submit_work("late-worker", "chunk_full_race", "1234567890", 2500)
+
+    assert winner_result["status"] == "accepted"
+    assert winner_result["units"] == 10
+    assert late_result["status"] == "accepted"
+    assert late_result["units"] == 4
+    assert duplicate_result["status"] == "stale"
+    assert scheduled == ["pooltask_full_race"]
+    with db.connect() as connection:
+        shares = connection.execute(
+            """
+            SELECT worker_id, units
+            FROM pool_shares
+            WHERE chunk_id = 'chunk_full_race'
+            ORDER BY created_at
+            """
+        ).fetchall()
+        event = connection.execute(
+            """
+            SELECT payload_json
+            FROM pool_events
+            WHERE message = 'pool full task race share credited'
+            ORDER BY event_id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+
+    assert [(row["worker_id"], row["units"]) for row in shares] == [
+        ("winner-worker", 10),
+        ("late-worker", 4),
+    ]
+    assert event is not None
+    payload = json.loads(event["payload_json"])
+    assert payload["credit_units"] == 4
+    assert payload["task_units"] == 10
+    assert payload["winner_compute_ms"] == 1000
+    assert payload["worker_compute_ms"] == 2500
 
 
 def test_idle_worker_claim_updates_last_seen_for_auto_chunking(tmp_path):
