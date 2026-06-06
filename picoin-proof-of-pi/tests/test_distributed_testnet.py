@@ -195,6 +195,47 @@ def test_block_hash_debug_accepts_historical_fraud_field_schema(tmp_path, monkey
     assert debug["matched_variant"] is not None
 
 
+def test_get_blocks_since_uses_consensus_vote_id_order_for_validator_rewards(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "block-sync-consensus-votes.sqlite3")
+
+    miner_key = generate_keypair()
+    miner = register_miner("block-sync-consensus-votes-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    timestamp = "2026-05-12T00:00:00+00:00"
+
+    with get_connection() as connection:
+        block_hash = get_block(1)["block_hash"]
+        proposal_row = connection.execute(
+            "SELECT proposal_id FROM consensus_block_proposals WHERE block_hash = ?",
+            (block_hash,),
+        ).fetchone()
+        proposal_id = proposal_row["proposal_id"]
+        connection.execute(
+            """
+            INSERT INTO consensus_votes (
+                vote_id, proposal_id, block_hash, validator_id, approved, reason,
+                signature, signed_at, created_at
+            )
+            VALUES (?, ?, ?, ?, 1, 'approved', 'signature-a', ?, ?)
+            """,
+            ("vote_a", proposal_id, block_hash, "validator_a", timestamp, timestamp),
+        )
+        connection.execute(
+            """
+            INSERT INTO ledger_entries (
+                account_id, account_type, amount, amount_units, balance_after,
+                balance_after_units, entry_type, block_height, related_id, description, created_at
+            )
+            VALUES (?, 'validator', 0.1, 10000000, 0.1, 10000000, 'validator_reward', 1, ?, 'test reward', ?)
+            """,
+            ("validator_a", proposal_id, timestamp),
+        )
+
+    block = get_blocks_since(0)["blocks"][0]
+
+    assert block["validator_reward"]["validator_ids"] == ["validator_a"]
+
+
 def test_peer_registry_and_heartbeat(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "peers.sqlite3")
 

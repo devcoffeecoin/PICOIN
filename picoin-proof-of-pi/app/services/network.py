@@ -678,7 +678,7 @@ def _validator_reward_ids_for_related_id(connection: Any, related_id: str, limit
         SELECT validator_id
         FROM consensus_votes
         WHERE proposal_id = ? AND approved = 1
-        ORDER BY created_at ASC, id ASC
+        ORDER BY created_at ASC, vote_id ASC
         LIMIT ?
         """,
         (related_id, limit),
