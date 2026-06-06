@@ -862,7 +862,7 @@ class PoolCoordinator:
                 dict(row)
                 for row in connection.execute(
                     """
-                    SELECT status, error, raw_reveal_json
+                    SELECT status, error, raw_task_json, raw_reveal_json, completed_at
                     FROM pool_tasks
                     """
                 ).fetchall()
@@ -993,6 +993,8 @@ class PoolCoordinator:
         error = str(row.get("error") or "")
         if status == "error" and is_lost_competitive_round_error(error):
             return "lost"
+        if status == "unsettled":
+            return "unsettled"
 
         try:
             reveal = json.loads(row.get("raw_reveal_json") or "{}")
@@ -1004,8 +1006,21 @@ class PoolCoordinator:
         block = reveal.get("block")
         reveal_status = reveal.get("status")
         if reveal_status == "validation_pending" and not isinstance(block, dict):
+            if self._validation_pending_reveal_expired(row):
+                return "unsettled"
             return "validation_pending"
         return status
+
+    def _validation_pending_reveal_expired(self, row: dict[str, Any]) -> bool:
+        try:
+            raw_task = json.loads(row.get("raw_task_json") or "{}")
+        except (TypeError, ValueError):
+            raw_task = {}
+        if not isinstance(raw_task, dict):
+            raw_task = {}
+
+        expires_at = parse_iso_timestamp(raw_task.get("expires_at"))
+        return bool(expires_at and expires_at <= time.time())
 
     def _accepted_task_rewards(self, connection: sqlite3.Connection) -> list[dict[str, Any]]:
         rewards: list[dict[str, Any]] = []
@@ -1048,7 +1063,7 @@ class PoolCoordinator:
     def _validation_pending_task_count(self, connection: sqlite3.Connection) -> int:
         rows = connection.execute(
             """
-            SELECT status, raw_reveal_json
+            SELECT status, raw_task_json, raw_reveal_json, completed_at
             FROM pool_tasks
             WHERE raw_reveal_json IS NOT NULL
               AND status = 'validation_pending'
@@ -1062,7 +1077,11 @@ class PoolCoordinator:
                 continue
             block = reveal.get("block") if isinstance(reveal, dict) else None
             reveal_status = reveal.get("status") if isinstance(reveal, dict) else None
-            if block is None and reveal_status == "validation_pending":
+            if (
+                block is None
+                and reveal_status == "validation_pending"
+                and not self._validation_pending_reveal_expired(dict(row))
+            ):
                 pending += 1
         return pending
 
@@ -1141,6 +1160,7 @@ class PoolCoordinator:
             "credited_workers": credited_worker_count,
             "blocks_won": blocks_won,
             "validation_pending_tasks": validation_pending_tasks,
+            "unsettled_tasks": int(task_counts.get("unsettled", 0)),
             "lost_rounds": lost_rounds,
             "finished_competitive_rounds": finished_competitive_rounds,
             "win_rate": round(win_rate, 6),

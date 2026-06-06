@@ -504,6 +504,8 @@ def test_new_pool_task_does_not_close_validation_pending_tasks(tmp_path):
 
 def test_stats_does_not_count_historical_accepted_reveal_as_validation_pending(tmp_path):
     db = PoolDatabase(tmp_path / "pool.sqlite3")
+    expired_task = {"expires_at": "2000-01-01T00:00:00+00:00"}
+    active_task = {"expires_at": "2999-01-01T00:00:00+00:00"}
     with db.connect() as connection:
         connection.execute(
             """
@@ -513,10 +515,10 @@ def test_stats_does_not_count_historical_accepted_reveal_as_validation_pending(t
             )
             VALUES (
                 'pooltask_old_accepted', 'task_old_accepted', 'accepted', 1, 1,
-                'bbp_hex_v1', '{}', ?, '2026-06-05T00:00:30+00:00', '2026-06-05T00:01:30+00:00'
+                'bbp_hex_v1', ?, ?, '2026-06-05T00:00:30+00:00', '2026-06-05T00:01:30+00:00'
             )
             """,
-            ('{"accepted":true,"status":"validation_pending","block":null}',),
+            (json.dumps(expired_task), '{"accepted":true,"status":"validation_pending","block":null}'),
         )
         connection.execute(
             """
@@ -526,10 +528,10 @@ def test_stats_does_not_count_historical_accepted_reveal_as_validation_pending(t
             )
             VALUES (
                 'pooltask_pending', 'task_pending', 'validation_pending', 1, 1,
-                'bbp_hex_v1', '{}', ?, '2026-06-05T00:02:30+00:00', '2026-06-05T00:03:30+00:00'
+                'bbp_hex_v1', ?, ?, '2026-06-05T00:02:30+00:00', '2026-06-05T00:03:30+00:00'
             )
             """,
-            ('{"accepted":true,"status":"validation_pending","block":null}',),
+            (json.dumps(active_task), '{"accepted":true,"status":"validation_pending","block":null}'),
         )
 
     coordinator = PoolCoordinator(
@@ -546,8 +548,12 @@ def test_stats_does_not_count_historical_accepted_reveal_as_validation_pending(t
 
     stats = coordinator.stats()
 
-    assert stats["tasks"] == [{"status": "validation_pending", "count": 2}]
+    assert stats["tasks"] == [
+        {"status": "unsettled", "count": 1},
+        {"status": "validation_pending", "count": 1},
+    ]
     assert stats["performance"]["validation_pending_tasks"] == 1
+    assert stats["performance"]["unsettled_tasks"] == 1
 
 
 def test_auto_chunk_size_uses_active_workers(tmp_path, monkeypatch):
