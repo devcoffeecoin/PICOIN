@@ -678,7 +678,7 @@ def test_reconcile_mainnet_task_statuses_uses_task_status_endpoint(tmp_path, mon
     assert stats["completed_tasks"] == 3
 
 
-def test_auto_chunk_size_uses_active_workers(tmp_path, monkeypatch):
+def test_auto_chunk_size_avoids_micro_chunks_for_small_tasks(tmp_path, monkeypatch):
     db = PoolDatabase(tmp_path / "pool.sqlite3")
     coordinator = PoolCoordinator(
         db=db,
@@ -726,14 +726,10 @@ def test_auto_chunk_size_uses_active_workers(tmp_path, monkeypatch):
         ).fetchone()
 
     assert [(row["range_start"], row["range_end"], row["units"]) for row in chunks] == [
-        (10, 10, 1),
-        (11, 11, 1),
-        (12, 12, 1),
-        (13, 13, 1),
-        (14, 14, 1),
-        (15, 15, 1),
-        (16, 16, 1),
-        (17, 17, 1),
+        (10, 11, 2),
+        (12, 13, 2),
+        (14, 15, 2),
+        (16, 17, 2),
         (18, 18, 1),
     ]
     assert event is not None
@@ -764,7 +760,7 @@ def test_auto_chunk_size_uses_fine_queue_for_mixed_worker_capacity(tmp_path, mon
             "status": "assigned",
             "task_id": "task_auto",
             "range_start": 100,
-            "range_end": 108,
+            "range_end": 199,
             "algorithm": "bbp_hex_v1",
         },
     )
@@ -780,10 +776,72 @@ def test_auto_chunk_size_uses_fine_queue_for_mixed_worker_capacity(tmp_path, mon
             """
         ).fetchall()
 
-    assert len(chunks) == 9
-    assert all(row["units"] == 1 for row in chunks)
+    assert len(chunks) == 12
+    assert max(row["units"] for row in chunks) == 9
     assert chunks[0]["range_start"] == 100
-    assert chunks[-1]["range_end"] == 108
+    assert chunks[-1]["range_end"] == 199
+
+
+def test_submit_last_chunk_schedules_immediate_finalize(tmp_path, monkeypatch):
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size=1,
+        poll_seconds=15,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=False,
+        pool_fee_percent=0,
+    )
+    now = utc_now()
+    with db.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO pool_workers (worker_id, name, payout_address, registered_at, last_seen_at)
+            VALUES ('worker-1', 'Worker 1', NULL, ?, ?)
+            """,
+            (now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_tasks (
+                pool_task_id, mainnet_task_id, status, range_start, range_end,
+                algorithm, raw_task_json, created_at
+            )
+            VALUES ('pooltask_ready', 'task_ready', 'gathering', 1, 2, 'bbp_hex_v1', '{}', ?)
+            """,
+            (now,),
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_chunks (
+                chunk_id, pool_task_id, worker_id, status, range_start, range_end,
+                segment, units, compute_ms, assigned_at, submitted_at
+            )
+            VALUES ('chunk_done', 'pooltask_ready', 'worker-1', 'completed', 1, 1, '1', 1, 100, ?, ?)
+            """,
+            (now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_chunks (
+                chunk_id, pool_task_id, worker_id, status, range_start, range_end,
+                units, assigned_at
+            )
+            VALUES ('chunk_last', 'pooltask_ready', 'worker-1', 'assigned', 2, 2, 1, ?)
+            """,
+            (now,),
+        )
+
+    scheduled: list[str] = []
+    monkeypatch.setattr(coordinator, "_schedule_finalize_task", scheduled.append)
+
+    result = coordinator.submit_work("worker-1", "chunk_last", "2", 25)
+
+    assert result["status"] == "accepted"
+    assert scheduled == ["pooltask_ready"]
 
 
 def test_idle_worker_claim_updates_last_seen_for_auto_chunking(tmp_path):

@@ -427,6 +427,22 @@ class PoolCoordinator:
                 "UPDATE pool_workers SET last_seen_at = ? WHERE worker_id = ?",
                 (now, worker_id),
             )
+            remaining = connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM pool_chunks
+                WHERE pool_task_id = ?
+                  AND status != 'completed'
+                """,
+                (row_data["pool_task_id"],),
+            ).fetchone()["count"]
+            task = connection.execute(
+                "SELECT status FROM pool_tasks WHERE pool_task_id = ?",
+                (row_data["pool_task_id"],),
+            ).fetchone()
+            ready_to_finalize = int(remaining or 0) == 0 and task is not None and task["status"] == "gathering"
+        if ready_to_finalize:
+            self._schedule_finalize_task(str(row_data["pool_task_id"]))
         return {"status": "accepted", "chunk_id": chunk_id, "units": units, "checked_at": utc_now()}
 
     def _normalize_payout_address(self, payout_address: str | None) -> str | None:
@@ -540,7 +556,10 @@ class PoolCoordinator:
             return self.chunk_size, 0, task_units
 
         active_workers = self._active_worker_count(connection)
-        target_chunks = min(task_units, max(1, active_workers * 4))
+        if task_units <= max(12, active_workers * 3):
+            target_chunks = min(task_units, max(1, active_workers))
+        else:
+            target_chunks = min(task_units, max(1, active_workers * 4))
         chunk_size = max(1, (task_units + target_chunks - 1) // target_chunks)
         return chunk_size, active_workers, task_units
 
@@ -594,16 +613,39 @@ class PoolCoordinator:
         for task in tasks:
             self.finalize_task(dict(task))
 
+    def _schedule_finalize_task(self, pool_task_id: str) -> None:
+        thread = threading.Thread(
+            target=self._finalize_task_by_id,
+            args=(pool_task_id,),
+            name=f"picoin-pool-finalize-{pool_task_id}",
+            daemon=True,
+        )
+        thread.start()
+
+    def _finalize_task_by_id(self, pool_task_id: str) -> None:
+        try:
+            with self.db._lock, self.db.connect() as connection:
+                row = connection.execute(
+                    "SELECT * FROM pool_tasks WHERE pool_task_id = ?",
+                    (pool_task_id,),
+                ).fetchone()
+            if row is not None:
+                self.finalize_task(dict(row))
+        except Exception as exc:  # pragma: no cover - background safety net
+            self.db.event("error", "pool task finalize thread failed", {"pool_task_id": pool_task_id, "error": str(exc)})
+
     def finalize_task(self, pool_task: dict[str, Any]) -> None:
         pool_task_id = pool_task["pool_task_id"]
         task = json.loads(pool_task["raw_task_json"])
         started = now_perf()
         try:
             with self.db._lock, self.db.connect() as connection:
-                connection.execute(
-                    "UPDATE pool_tasks SET status = 'submitting' WHERE pool_task_id = ?",
+                cursor = connection.execute(
+                    "UPDATE pool_tasks SET status = 'submitting' WHERE pool_task_id = ? AND status = 'gathering'",
                     (pool_task_id,),
                 )
+                if cursor.rowcount == 0:
+                    return
                 chunks = [
                     dict(row)
                     for row in connection.execute(

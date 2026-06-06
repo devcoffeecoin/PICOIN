@@ -37,6 +37,7 @@ python picoin-pool/pool_server.py \
   --port 9321 \
   --pool-name pool1 \
   --chunk-size auto \
+  --poll-seconds 2 \
   --public-workers \
   --pool-fee-percent 1 \
   --payout-wallet /var/lib/picoin-pool/payout_wallet.json \
