@@ -765,6 +765,32 @@ def test_sync_blocks_drains_replay_backlog_with_bounded_batch(tmp_path, monkeypa
     assert result["replay"]["replay_stalled"] is True
 
 
+def test_sync_blocks_skips_peer_fetch_when_replay_already_divergent(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "sync-replay-already-divergent.sqlite3")
+    block = {
+        "height": 1,
+        "previous_hash": "f" * 64,
+        "block_hash": "a" * 64,
+        "timestamp": "2026-05-12T00:00:00+00:00",
+    }
+    receive_block_header(block, source_peer_id="peer-a")
+    replay_finalized_blocks()
+
+    def fail_get(*args, **kwargs):
+        raise AssertionError("divergent replay should not fetch peer blocks")
+
+    monkeypatch.setattr("app.services.network.requests.get", fail_get)
+
+    result = sync_blocks_until("http://peer-a:8000", limit=10)
+
+    assert result["blocks_seen"] == 0
+    assert result["blocks_imported"] == 0
+    assert result["replay"]["status"] == "skipped"
+    assert result["replay"]["reason"] == "replay divergent; restore required"
+    assert result["replay"]["sync_status"] == "divergent"
+    assert result["replay"]["divergence_detected"] is True
+
+
 def test_sync_blocks_can_trigger_opt_in_auto_recovery_after_divergence(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "sync-auto-recovery.sqlite3")
     block = {

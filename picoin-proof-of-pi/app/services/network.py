@@ -1169,6 +1169,24 @@ def sync_blocks_until(
     result["sync_from_height"] = sync_from_height
     result["catch_up_start_height"] = sync_from_height
 
+    try:
+        from app.services.consensus import get_replay_status
+
+        replay_status = get_replay_status()
+        if bool(replay_status.get("divergence_detected")) or int(
+            replay_status.get("replay_consecutive_failures") or 0
+        ) > 0:
+            result["replay"] = {
+                "status": "skipped",
+                "reason": "replay divergent; restore required",
+                **replay_status,
+            }
+            if AUTO_RECOVERY_ENABLED:
+                result["auto_recovery"] = recover_from_peer_snapshot(peer_address, source="auto-recovery")
+            return result
+    except Exception as exc:
+        result["errors"].append(f"replay status: {exc}")
+
     rounds = 0
     max_rounds = 20
     while rounds < max_rounds:
