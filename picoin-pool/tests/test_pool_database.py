@@ -424,7 +424,7 @@ def test_reconcile_won_blocks_marks_pending_task_lost_when_round_has_other_winne
     assert reveal["block"] is None
 
 
-def test_new_pool_task_closes_obsolete_validation_pending_tasks(tmp_path):
+def test_new_pool_task_does_not_close_validation_pending_tasks(tmp_path):
     db = PoolDatabase(tmp_path / "pool.sqlite3")
     with db.connect() as connection:
         connection.execute(
@@ -490,15 +490,15 @@ def test_new_pool_task_closes_obsolete_validation_pending_tasks(tmp_path):
 
     reveal = json.loads(row["raw_reveal_json"])
     old_accepted_reveal = json.loads(old_accepted["raw_reveal_json"])
-    assert row["status"] == "lost"
-    assert row["error"] == "mainnet assigned newer pool task task_new; previous validation round closed"
-    assert reveal["accepted"] is False
-    assert reveal["status"] == "lost"
+    assert row["status"] == "validation_pending"
+    assert row["error"] is None
+    assert reveal["accepted"] is True
+    assert reveal["status"] == "validation_pending"
     assert reveal["block"] is None
-    assert old_accepted["status"] == "lost"
-    assert old_accepted["error"] == "mainnet assigned newer pool task task_new; previous validation round closed"
-    assert old_accepted_reveal["accepted"] is False
-    assert old_accepted_reveal["status"] == "lost"
+    assert old_accepted["status"] == "accepted"
+    assert old_accepted["error"] is None
+    assert old_accepted_reveal["accepted"] is True
+    assert old_accepted_reveal["status"] == "validation_pending"
     assert old_accepted_reveal["block"] is None
 
 
@@ -546,6 +546,7 @@ def test_stats_does_not_count_historical_accepted_reveal_as_validation_pending(t
 
     stats = coordinator.stats()
 
+    assert stats["tasks"] == [{"status": "validation_pending", "count": 2}]
     assert stats["performance"]["validation_pending_tasks"] == 1
 
 

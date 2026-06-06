@@ -450,10 +450,6 @@ class PoolCoordinator:
                 """
             ).fetchone()
             if active is not None:
-                self.close_obsolete_validation_pending_tasks(
-                    current_mainnet_task_id=str(active["mainnet_task_id"]),
-                    reason=f"mainnet assigned newer pool task {active['mainnet_task_id']}; previous validation round closed",
-                )
                 return
 
         try:
@@ -468,11 +464,6 @@ class PoolCoordinator:
         if task.get("status") != "assigned":
             self.db.event("info", "mainnet did not assign pool work", {"status": task.get("status")})
             return
-
-        self.close_obsolete_validation_pending_tasks(
-            current_mainnet_task_id=str(task["task_id"]),
-            reason=f"mainnet assigned newer pool task {task['task_id']}; previous validation round closed",
-        )
 
         pool_task_id = f"pooltask_{uuid.uuid4().hex[:16]}"
         range_start = int(task["range_start"])
@@ -687,65 +678,6 @@ class PoolCoordinator:
                 )
             self.db.event(level, message, {"pool_task_id": pool_task_id, "error": error})
 
-    def close_obsolete_validation_pending_tasks(self, *, current_mainnet_task_id: str, reason: str) -> dict[str, Any]:
-        current_mainnet_task_id = str(current_mainnet_task_id or "").strip()
-        if not current_mainnet_task_id:
-            return {"closed": 0}
-
-        now = utc_now()
-        closed = 0
-        events: list[dict[str, Any]] = []
-        with self.db._lock, self.db.connect() as connection:
-            rows = connection.execute(
-                """
-                SELECT pool_task_id, mainnet_task_id, status, raw_reveal_json
-                FROM pool_tasks
-                WHERE status IN ('accepted', 'submitted', 'validation_pending')
-                  AND mainnet_task_id != ?
-                """,
-                (current_mainnet_task_id,),
-            ).fetchall()
-            for row in rows:
-                try:
-                    reveal = json.loads(row["raw_reveal_json"])
-                except (TypeError, ValueError):
-                    reveal = {}
-                if not isinstance(reveal, dict):
-                    reveal = {}
-                if isinstance(reveal.get("block"), dict):
-                    continue
-                if reveal.get("status") != "validation_pending":
-                    continue
-                reveal["accepted"] = False
-                reveal["status"] = "lost"
-                reveal["message"] = reason
-                reveal["block"] = None
-                cursor = connection.execute(
-                    """
-                    UPDATE pool_tasks
-                    SET status = 'lost',
-                        error = ?,
-                        raw_reveal_json = ?,
-                        completed_at = COALESCE(completed_at, ?)
-                    WHERE pool_task_id = ?
-                      AND status IN ('accepted', 'submitted', 'validation_pending')
-                    """,
-                    (reason, json_dumps(reveal), now, row["pool_task_id"]),
-                )
-                if cursor.rowcount:
-                    closed += 1
-                    events.append(
-                        {
-                            "pool_task_id": row["pool_task_id"],
-                            "mainnet_task_id": row["mainnet_task_id"],
-                            "current_mainnet_task_id": current_mainnet_task_id,
-                            "reason": reason,
-                        }
-                    )
-        for event in events:
-            self.db.event("info", "pool task lost competitive round", event)
-        return {"closed": closed}
-
     def reconcile_won_blocks(self) -> dict[str, Any]:
         pending = self._pending_settlement_tasks()
         result: dict[str, Any] = {
@@ -926,27 +858,22 @@ class PoolCoordinator:
                     """
                 ).fetchall()
             ]
-            tasks = [
+            task_rows = [
                 dict(row)
                 for row in connection.execute(
                     """
-                    SELECT
-                        CASE
-                            WHEN status = 'error' AND error LIKE 'commit rejected: competitive round won by %'
-                            THEN 'lost'
-                            ELSE status
-                        END AS status,
-                        COUNT(*) AS count
+                    SELECT status, error, raw_reveal_json
                     FROM pool_tasks
-                    GROUP BY
-                        CASE
-                            WHEN status = 'error' AND error LIKE 'commit rejected: competitive round won by %'
-                            THEN 'lost'
-                            ELSE status
-                        END
-                    ORDER BY status
                     """
                 ).fetchall()
+            ]
+            task_counts: dict[str, int] = {}
+            for row in task_rows:
+                status = self._display_task_status(row)
+                task_counts[status] = task_counts.get(status, 0) + 1
+            tasks = [
+                {"status": status, "count": count}
+                for status, count in sorted(task_counts.items(), key=lambda item: item[0])
             ]
             chunks = [
                 dict(row)
@@ -1060,6 +987,25 @@ class PoolCoordinator:
                 ).fetchall()
             ]
         return {"status": "ok", "count": len(rows), "workers": rows, "checked_at": utc_now()}
+
+    def _display_task_status(self, row: dict[str, Any]) -> str:
+        status = str(row.get("status") or "unknown")
+        error = str(row.get("error") or "")
+        if status == "error" and is_lost_competitive_round_error(error):
+            return "lost"
+
+        try:
+            reveal = json.loads(row.get("raw_reveal_json") or "{}")
+        except (TypeError, ValueError):
+            reveal = {}
+        if not isinstance(reveal, dict):
+            reveal = {}
+
+        block = reveal.get("block")
+        reveal_status = reveal.get("status")
+        if reveal_status == "validation_pending" and not isinstance(block, dict):
+            return "validation_pending"
+        return status
 
     def _accepted_task_rewards(self, connection: sqlite3.Connection) -> list[dict[str, Any]]:
         rewards: list[dict[str, Any]] = []
