@@ -60,6 +60,11 @@ def mine_once(pool_url: str, worker_id: str, token: str | None, request_timeout:
         print(f"Pool idle: {work.get('message', 'no work')}")
         return False
 
+    assignment_mode = str(work.get("assignment_mode") or "primary")
+    print(
+        f"Pool work received: {work['chunk_id']} {work['range_start']}..{work['range_end']} "
+        f"mode={assignment_mode}"
+    )
     started = now_perf()
     segment = calculate_pi_segment(int(work["range_start"]), int(work["range_end"]), work["algorithm"])
     compute_ms = elapsed_ms(started)
@@ -80,6 +85,12 @@ def mine_once(pool_url: str, worker_id: str, token: str | None, request_timeout:
         print(f"Pool submit failed: {exc}")
         return False
     result: dict[str, Any] = submit.json()
+    if result.get("status") != "accepted":
+        print(
+            f"Pool chunk not credited: {work['chunk_id']} "
+            f"status={result.get('status')} message={result.get('message', '')}"
+        )
+        return False
     print(
         f"Submitted {work['chunk_id']} {work['range_start']}..{work['range_end']} "
         f"units={result.get('units')} compute_ms={compute_ms}"

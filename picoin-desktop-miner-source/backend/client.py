@@ -431,11 +431,12 @@ def pool_mine_once(pool_url: str, worker_id: str, auth_token: str | None, worker
 
     _pool_idle_polls = 0
     units = int(work["range_end"]) - int(work["range_start"]) + 1
+    assignment_mode = str(work.get("assignment_mode") or "primary")
     print(
         "Pool work received: "
         f"task={work.get('task_id')} chunk={work['chunk_id']} "
         f"range={work['range_start']}..{work['range_end']} units={units} "
-        f"algorithm={work['algorithm']}"
+        f"algorithm={work['algorithm']} assignment={assignment_mode}"
     )
     compute_started = now_perf()
     segment = calculate_segment_with_workers(int(work["range_start"]), int(work["range_end"]), work["algorithm"], workers)
@@ -457,6 +458,12 @@ def pool_mine_once(pool_url: str, worker_id: str, auth_token: str | None, worker
         headers=pool_headers(auth_token),
     )
     result = submit.json()
+    if result.get("status") != "accepted":
+        print(
+            f"Pool chunk not credited: {work['chunk_id']} "
+            f"status={result.get('status')} message={result.get('message', '')}"
+        )
+        return False
     print(
         f"Pool chunk accepted: {work['chunk_id']} "
         f"range={work['range_start']}..{work['range_end']} "

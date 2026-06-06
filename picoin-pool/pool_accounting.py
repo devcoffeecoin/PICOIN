@@ -33,6 +33,27 @@ def split_range(range_start: int, range_end: int, chunk_size: int) -> list[WorkC
     return chunks
 
 
+def split_range_balanced(range_start: int, range_end: int, target_chunks: int) -> list[WorkChunk]:
+    if range_start < 1:
+        raise ValueError("range_start must be >= 1")
+    if range_end < range_start:
+        raise ValueError("range_end must be >= range_start")
+
+    units = range_end - range_start + 1
+    chunk_count = max(1, min(int(target_chunks or 1), units))
+    base_units = units // chunk_count
+    extra_units = units % chunk_count
+
+    chunks: list[WorkChunk] = []
+    current = range_start
+    for index in range(chunk_count):
+        chunk_units = base_units + (1 if index < extra_units else 0)
+        chunk_end = current + chunk_units - 1
+        chunks.append(WorkChunk(current, chunk_end))
+        current = chunk_end + 1
+    return chunks
+
+
 def assemble_segment(range_start: int, range_end: int, chunks: Iterable[dict[str, Any]]) -> str:
     expected = range_start
     pieces: list[str] = []

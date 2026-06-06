@@ -17,7 +17,7 @@ from urllib.parse import parse_qs, urlparse
 
 import requests
 
-from pool_accounting import assemble_segment, split_range, summarize_payouts, summarize_shares
+from pool_accounting import assemble_segment, split_range, split_range_balanced, summarize_payouts, summarize_shares
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -221,6 +221,7 @@ class PoolCoordinator:
         verify_chunks: bool,
         require_worker_payout: bool,
         pool_fee_percent: float,
+        speculative_chunks: bool = True,
         payout_wallet: dict[str, Any] | None = None,
         payout_interval_seconds: int = 7200,
         payout_min_amount: float = 0.1,
@@ -236,6 +237,7 @@ class PoolCoordinator:
         self.verify_chunks = verify_chunks
         self.require_worker_payout = require_worker_payout
         self.pool_fee_percent = max(0.0, min(100.0, float(pool_fee_percent)))
+        self.speculative_chunks = bool(speculative_chunks)
         self.payout_wallet = payout_wallet
         self.payout_interval_seconds = max(1, int(payout_interval_seconds))
         self.payout_min_amount = max(0.0, float(payout_min_amount))
@@ -336,16 +338,44 @@ class PoolCoordinator:
                 LIMIT 1
                 """
             ).fetchone()
+            assignment_mode = "primary"
+            if row is None and self.speculative_chunks:
+                row = connection.execute(
+                    """
+                    SELECT c.*, t.mainnet_task_id, t.algorithm
+                    FROM pool_chunks c
+                    JOIN pool_tasks t ON t.pool_task_id = c.pool_task_id
+                    WHERE c.status = 'assigned'
+                      AND t.status IN ('gathering', 'active')
+                    ORDER BY CASE WHEN c.worker_id = ? THEN 1 ELSE 0 END,
+                             COALESCE(c.assigned_at, '') ASC,
+                             RANDOM()
+                    LIMIT 1
+                    """,
+                    (worker_id,),
+                ).fetchone()
+                if row is not None:
+                    assignment_mode = "speculative"
             if row is None:
                 return {"status": "idle", "message": "no pool work available", "checked_at": now}
-            connection.execute(
-                """
-                UPDATE pool_chunks
-                SET status = 'assigned', worker_id = ?, assigned_at = ?
-                WHERE chunk_id = ? AND status = 'pending'
-                """,
-                (worker_id, now, row["chunk_id"]),
-            )
+            if assignment_mode == "primary":
+                connection.execute(
+                    """
+                    UPDATE pool_chunks
+                    SET status = 'assigned', worker_id = ?, assigned_at = ?
+                    WHERE chunk_id = ? AND status = 'pending'
+                    """,
+                    (worker_id, now, row["chunk_id"]),
+                )
+            else:
+                connection.execute(
+                    """
+                    UPDATE pool_chunks
+                    SET worker_id = ?, assigned_at = ?
+                    WHERE chunk_id = ? AND status = 'assigned'
+                    """,
+                    (worker_id, now, row["chunk_id"]),
+                )
             connection.execute(
                 "UPDATE pool_workers SET last_seen_at = ? WHERE worker_id = ?",
                 (now, worker_id),
@@ -358,6 +388,7 @@ class PoolCoordinator:
                 "range_start": row["range_start"],
                 "range_end": row["range_end"],
                 "algorithm": row["algorithm"],
+                "assignment_mode": assignment_mode,
                 "checked_at": now,
             }
 
@@ -368,7 +399,7 @@ class PoolCoordinator:
         with self.db._lock, self.db.connect() as connection:
             row = connection.execute(
                 """
-                SELECT c.*, t.algorithm
+                SELECT c.*, t.algorithm, t.status AS task_status
                 FROM pool_chunks c
                 JOIN pool_tasks t ON t.pool_task_id = c.pool_task_id
                 WHERE c.chunk_id = ?
@@ -377,8 +408,22 @@ class PoolCoordinator:
             ).fetchone()
             if row is None:
                 raise ValueError("unknown chunk_id")
-            if row["status"] != "assigned" or row["worker_id"] != worker_id:
-                raise ValueError("chunk is not assigned to this worker")
+            if row["status"] == "completed":
+                return {
+                    "status": "stale",
+                    "chunk_id": chunk_id,
+                    "units": 0,
+                    "message": "chunk already completed by another worker",
+                    "checked_at": utc_now(),
+                }
+            if row["status"] not in {"assigned", "pending"} or row["task_status"] not in {"gathering", "active"}:
+                return {
+                    "status": "stale",
+                    "chunk_id": chunk_id,
+                    "units": 0,
+                    "message": "chunk is no longer active",
+                    "checked_at": utc_now(),
+                }
             row_data = dict(row)
 
         expected_len = int(row_data["range_end"]) - int(row_data["range_start"]) + 1
@@ -392,7 +437,7 @@ class PoolCoordinator:
                         """
                         UPDATE pool_chunks
                         SET status = 'pending', worker_id = NULL, assigned_at = NULL
-                        WHERE chunk_id = ?
+                        WHERE chunk_id = ? AND status != 'completed'
                         """,
                         (chunk_id,),
                     )
@@ -409,13 +454,19 @@ class PoolCoordinator:
             cursor = connection.execute(
                 """
                 UPDATE pool_chunks
-                SET status = 'completed', segment = ?, compute_ms = ?, submitted_at = ?
-                WHERE chunk_id = ? AND status = 'assigned' AND worker_id = ?
+                SET status = 'completed', worker_id = ?, segment = ?, compute_ms = ?, submitted_at = ?
+                WHERE chunk_id = ? AND status IN ('assigned', 'pending')
                 """,
-                (segment, max(0, int(compute_ms or 0)), now, chunk_id, worker_id),
+                (worker_id, segment, max(0, int(compute_ms or 0)), now, chunk_id),
             )
             if cursor.rowcount == 0:
-                raise ValueError("chunk assignment changed before submission completed")
+                return {
+                    "status": "stale",
+                    "chunk_id": chunk_id,
+                    "units": 0,
+                    "message": "chunk already completed by another worker",
+                    "checked_at": now,
+                }
             connection.execute(
                 """
                 INSERT INTO pool_shares (share_id, worker_id, pool_task_id, chunk_id, units, credited, created_at)
@@ -487,8 +538,11 @@ class PoolCoordinator:
         range_end = int(task["range_end"])
         now = utc_now()
         with self.db._lock, self.db.connect() as connection:
-            chunk_size, active_workers, task_units = self._resolve_chunk_size(connection, range_start, range_end)
-            chunks = split_range(range_start, range_end, chunk_size)
+            chunks, chunk_size, active_workers, task_units, target_chunks = self._resolve_chunks(
+                connection,
+                range_start,
+                range_end,
+            )
             try:
                 connection.execute(
                     """
@@ -536,32 +590,36 @@ class PoolCoordinator:
                 "chunk_mode": "fixed" if self.chunk_size else "auto",
                 "chunk_strategy": "fixed" if self.chunk_size else "adaptive_work_queue",
                 "chunk_size": chunk_size,
+                "target_chunks": target_chunks,
                 "chunks": len(chunks),
                 "mainnet_task_id": task["task_id"],
                 "pool_task_id": pool_task_id,
                 "task_units": task_units,
+                "speculative_chunks": self.speculative_chunks,
             },
         )
 
-    def _resolve_chunk_size(
+    def _resolve_chunks(
         self,
         connection: sqlite3.Connection,
         range_start: int,
         range_end: int,
-    ) -> tuple[int, int, int]:
+    ) -> tuple[list[Any], int, int, int, int]:
         task_units = range_end - range_start + 1
         if task_units <= 0:
             raise ValueError("task range_end must be >= range_start")
         if self.chunk_size:
-            return self.chunk_size, 0, task_units
+            chunks = split_range(range_start, range_end, self.chunk_size)
+            return chunks, self.chunk_size, 0, task_units, len(chunks)
 
         active_workers = self._active_worker_count(connection)
         if task_units <= max(12, active_workers * 3):
             target_chunks = min(task_units, max(1, active_workers))
         else:
             target_chunks = min(task_units, max(1, active_workers * 4))
-        chunk_size = max(1, (task_units + target_chunks - 1) // target_chunks)
-        return chunk_size, active_workers, task_units
+        chunks = split_range_balanced(range_start, range_end, target_chunks)
+        chunk_size = max(chunk.units for chunk in chunks)
+        return chunks, chunk_size, active_workers, task_units, target_chunks
 
     def _active_worker_count(self, connection: sqlite3.Connection, window_seconds: int = 300) -> int:
         cutoff = time.time() - max(1, int(window_seconds))
@@ -1097,6 +1155,7 @@ class PoolCoordinator:
                 "active_worker_window_seconds": 300,
                 "strategy": "fixed" if self.chunk_size else "adaptive_work_queue",
                 "target_chunks_per_active_worker": 4,
+                "speculative_assignment": self.speculative_chunks,
             },
             "settlement": {
                 "block_limit": self.settlement_block_limit,
@@ -1621,6 +1680,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--payout-min-amount", type=float, default=0.1, help="Minimum worker pending balance before auto payout")
     parser.add_argument("--payout-fee", type=float, default=0.0, help="Network fee attached to each automatic payout transaction")
     parser.add_argument("--settlement-block-limit", type=int, default=100, help="Recent mainnet blocks checked when settling validation-pending pool tasks")
+    parser.add_argument(
+        "--disable-speculative-chunks",
+        action="store_true",
+        help="Disable duplicate assignment of already-assigned chunks when workers are idle",
+    )
     parser.add_argument("--trust-workers", action="store_true", help="Skip pool-side chunk verification")
     return parser.parse_args()
 
@@ -1640,6 +1704,7 @@ def main() -> int:
         verify_chunks=not args.trust_workers,
         require_worker_payout=bool(args.require_worker_payout or args.public_workers),
         pool_fee_percent=args.pool_fee_percent,
+        speculative_chunks=not args.disable_speculative_chunks,
         payout_wallet=payout_wallet,
         payout_interval_seconds=args.payout_interval_seconds,
         payout_min_amount=args.payout_min_amount,
