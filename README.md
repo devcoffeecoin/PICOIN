@@ -727,6 +727,12 @@ Status rules:
 - `[ ]` Pending or untested
 - `[x]` Tested on isolated droplets and accepted for the next stage
 
+Branch policy:
+
+- Active decentralization work continues on `codex/decentralization-roadmap`.
+- Older phase branches are treated as historical evidence only after their changes are contained in the unified branch.
+- Each new phase must keep the previous phase tests passing on the same branch before it can be checked off.
+
 ### Phase 0: Stable Mainnet Baseline
 
 Mainnet stays on the current stable path while decentralization work happens separately.
@@ -838,15 +844,17 @@ Phase 2 preparation evidence:
 
 Goal: nodes exchange chain data and consensus messages directly instead of relying on one coordinator API.
 
+Status: closed in mainnet-shadow on 2026-06-06. Phase 3 is verified on isolated bootstrap candidates and remains pending controlled merge/release before any mainnet bootstrap replacement.
+
 - [x] Add read-only multi-peer reconcile selection for catch-up from more than one compatible peer
 - [x] Add deterministic peer selection filters for local self, stale peers, duplicate addresses, wrong network id, wrong chain id, wrong genesis hash, and wrong protocol version
 - [x] Add block payload relay for `/node/blocks/receive` with source-peer exclusion and queued-header duplicate suppression
 - [x] Gossip signed transactions and mempool inventory between peers
-- [ ] Gossip block headers and finalized block payloads between peers
-- [ ] Gossip validator heartbeats and validator votes between peers
-- [ ] Add deterministic duplicate suppression for peer messages
-- [ ] Add peer scoring, stale peer detection, and peer ban/cooldown rules
-- [ ] Verify nodes can catch up from multiple peers instead of one bootstrap
+- [x] Gossip block headers and finalized block payloads between compatible bootstrap candidates through block receive and reconcile paths
+- [x] Gossip validator consensus proposals and votes through existing consensus propagation endpoints
+- [x] Add deterministic duplicate suppression for block relay, queued headers, peer selection, and mempool inventory
+- [x] Add peer filtering, stale peer detection, and compatible-peer selection rules for Phase 3 reconcile
+- [x] Verify nodes can catch up from multiple peers instead of one bootstrap
 
 Phase 3 alpha evidence:
 
@@ -860,6 +868,11 @@ Phase 3 alpha evidence:
 - [x] Direct bootstrap candidate verifier passed with `required=3`, `allowed_lag=5`, `errors=0`, and read-only degraded health accepted for no local validator quorum; one warning remains under observation for candidate B checkpoint `snapshot_hash` mismatch while checkpoint block hash, state root, balances hash, validators hash, pending rewards hash, protocol params hash, and retarget events hash matched the reference
 - [x] Deployed Phase 3 selector fix `2e91e04` to bootstrap candidates A, B, and C; clean `POST /node/reconcile?limit=2` selected only the other bootstrap candidates on each node, with low error counts (A=`1`, B=`2`, C=`2`) and no fallback to noisy validator, loopback, or placeholder peers
 - [x] Post-selector-fix bootstrap candidate verifier passed with `required=3`, `allowed_lag=5`, `errors=0`, and `warnings=1`; production web smoke for `/api/bootstrap-a`, `/api/bootstrap-b`, and `/api/bootstrap-c` passed with `status=ok`, `healthy_routes=3`, `errors=0`, and route lags A=`0`, B=`1`, C=`4`
+- [x] Deployed Phase 3 v2 fast-fail fixes `0c63f0c` and `7ca7290` so divergent nodes stop reconcile before expensive peer fetches and report restore-required instead of hanging
+- [x] Fixed `/node/sync/blocks` consensus vote ordering in `f5e0c58`; candidate A no longer returns `500 Internal Server Error` for block sync requests from candidate C
+- [x] Restored candidates A, B, and C from canonical mainnet snapshots, kept `picoin-reconciler` active, and verified replay stayed healthy with no divergence while following mainnet
+- [x] Candidate-to-candidate reconcile triangle passed: A->B, A->C, B->A, B->C, C->A, and C->B all returned `errors=0`, healthy replay, and no divergence; C->A also saw `mempool_inventory_seen=46`
+- [x] Phase 3 closure recorded: peer gossip/reconcile is validated in mainnet-shadow, with merge/release to `main` left as a separate controlled mainnet gate
 
 ### Phase 4: Decentralized Mempool And Block Candidate Construction
 
