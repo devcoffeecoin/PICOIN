@@ -881,7 +881,7 @@ Goal: every full node can independently validate transaction ordering and recons
 Status: in progress on the unified `codex/decentralization-roadmap` branch.
 
 - [x] Define canonical transaction selection rules for competitive rounds
-- [ ] Verify deterministic nonce ordering, fee ordering, and tx merkle root generation across nodes
+- [x] Verify deterministic nonce ordering, fee ordering, and tx merkle root generation across nodes
 - [ ] Propagate signed transactions without exposing private keys
 - [ ] Add conflict handling for replaced, expired, failed, or already-confirmed transactions
 - [ ] Verify candidate block replay produces identical state roots across nodes
@@ -892,6 +892,13 @@ Phase 4.1 evidence:
 - [x] Added tests proving equal-fee transactions select by deterministic `tx_hash` even when local `created_at` differs between nodes
 - [x] Added tests proving task snapshots use the same canonical mempool order and produce the expected `tx_merkle_root`
 - [x] Regression tests passed for wallet transaction flow, mempool inventory reconcile, fee-priority nonce ordering, mined block transaction merkle roots, and Phase 3 peer gossip/reconcile paths
+
+Phase 4.2 evidence:
+
+- [x] Transaction mempool expiration now derives from the signed transaction timestamp plus `MEMPOOL_TX_TTL_SECONDS`, not from the local node receive clock
+- [x] `created_at` remains local operational metadata, while `expires_at` is deterministic for the same signed transaction on every node
+- [x] Added a regression test proving delayed local receipt changes `created_at` but not canonical `expires_at`
+- [x] Full distributed testnet regression passed after the change: `68 passed`
 
 ### Phase 5: Miner Task Independence
 

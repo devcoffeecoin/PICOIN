@@ -28,7 +28,6 @@ from app.core.settings import (
     MAX_MEMPOOL_TXS_PER_ACCOUNT,
     MAX_TX_SIZE_BYTES,
     MEMPOOL_MAX_FEE,
-    MEMPOOL_TX_TTL_SECONDS,
     MIN_TX_FEE_UNITS,
     NETWORK_ID,
     NODE_ID,
@@ -52,6 +51,7 @@ from app.services.state import (
     latest_checkpoint_in_connection,
     restore_imported_snapshot_state,
 )
+from app.services.transactions import canonical_transaction_expires_at, canonical_transaction_timestamp
 from app.services.wallet import (
     address_matches_public_key,
     is_valid_address,
@@ -826,7 +826,7 @@ def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str
         raise
     
     timestamp = _now()
-    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=MEMPOOL_TX_TTL_SECONDS)).isoformat()
+    expires_at = canonical_transaction_expires_at(tx)
     payload_json = json.dumps(_unsigned_from_tx(tx), sort_keys=True)
     inserted = False
     with get_connection() as connection:
@@ -1402,6 +1402,11 @@ def _validate_signed_transaction(tx: dict[str, Any]) -> None:
     
     if _tx_amount_units(tx) < 0:
         raise NetworkError(422, "amount must be >= 0")
+
+    try:
+        canonical_transaction_timestamp(tx["timestamp"])
+    except (TypeError, ValueError) as exc:
+        raise NetworkError(422, "invalid transaction timestamp") from exc
     
     if tx["tx_type"] == "transfer" and not is_valid_address(tx.get("recipient")):
         raise NetworkError(422, "transfer transaction requires a valid PI recipient")

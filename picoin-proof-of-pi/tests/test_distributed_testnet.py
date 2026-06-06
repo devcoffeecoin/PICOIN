@@ -1,10 +1,11 @@
 import json
+from datetime import datetime, timedelta
 
 import pytest
 
 from app.core.crypto import canonical_json, hash_result
 from app.core.pi import calculate_pi_segment
-from app.core.settings import CHAIN_ID, GENESIS_HASH, NETWORK_ID, PROTOCOL_VERSION
+from app.core.settings import CHAIN_ID, GENESIS_HASH, MEMPOOL_TX_TTL_SECONDS, NETWORK_ID, PROTOCOL_VERSION
 from app.core.signatures import build_submission_signature_payload, generate_keypair, sign_payload
 from app.db.database import get_connection, init_db
 from app.models.schemas import SignedTransactionRequest
@@ -1019,6 +1020,39 @@ def test_signed_transaction_request_preserves_signed_timestamp(tmp_path, monkeyp
 
     assert payload["timestamp"] == tx["timestamp"]
     submit_transaction(payload)
+
+
+def test_transaction_expiration_uses_signed_timestamp_not_receive_time(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "signed-expiration.sqlite3")
+    monkeypatch.setattr("app.services.network._now", lambda: "2026-05-14T12:30:00+00:00")
+
+    wallet = create_wallet("alice")
+    recipient = create_wallet("bob")
+    tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="transfer",
+        sender=wallet["address"],
+        recipient=recipient["address"],
+        amount=1,
+        nonce=1,
+        timestamp="2026-05-14T12:00:00Z",
+    )
+
+    submit_transaction(tx)
+
+    expected_expires_at = (
+        datetime.fromisoformat("2026-05-14T12:00:00+00:00") + timedelta(seconds=MEMPOOL_TX_TTL_SECONDS)
+    ).isoformat()
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT created_at, expires_at FROM mempool_transactions WHERE tx_hash = ?",
+            (tx["tx_hash"],),
+        ).fetchone()
+
+    assert row is not None
+    assert row["created_at"] == "2026-05-14T12:30:00+00:00"
+    assert row["expires_at"] == expected_expires_at
 
 
 def test_nonce_zero_is_rejected_at_submission(tmp_path, monkeypatch) -> None:
