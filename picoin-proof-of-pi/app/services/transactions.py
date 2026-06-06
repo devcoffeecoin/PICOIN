@@ -90,13 +90,17 @@ def canonical_selected_tx_hashes_hash(tx_hashes: list[str] | tuple[str, ...] | N
     return selected_tx_hashes_hash(tx_hashes)
 
 
+def canonical_mempool_selection_order_sql() -> str:
+    return "fee_units DESC, tx_hash ASC"
+
+
 def select_transactions_for_task(connection: Any, max_count: int, chain_height: int) -> list[dict[str, Any]]:
     rows = connection.execute(
-        """
+        f"""
         SELECT *
         FROM mempool_transactions
         WHERE status = 'pending'
-        ORDER BY fee_units DESC, created_at ASC, tx_hash ASC
+        ORDER BY {canonical_mempool_selection_order_sql()}
         """,
     ).fetchall()
     max_count = max(0, int(max_count))
