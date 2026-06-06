@@ -1030,6 +1030,77 @@ def test_duplicate_nonce_is_rejected(tmp_path, monkeypatch) -> None:
         submit_transaction(second)
 
 
+def test_terminal_duplicate_transaction_is_idempotent(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "terminal-duplicate.sqlite3")
+
+    wallet = create_wallet("alice")
+    recipient = create_wallet("bob")
+    tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="transfer",
+        sender=wallet["address"],
+        recipient=recipient["address"],
+        amount=1,
+        nonce=1,
+    )
+    submit_transaction(tx)
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE mempool_transactions SET status = 'confirmed', block_height = 1 WHERE tx_hash = ?",
+            (tx["tx_hash"],),
+        )
+
+    duplicate = submit_transaction(tx, propagated=True)
+
+    assert duplicate["tx_hash"] == tx["tx_hash"]
+    assert duplicate["status"] == "confirmed"
+    assert duplicate["block_height"] == 1
+
+
+def test_failed_nonce_can_be_replaced_by_new_transaction(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "failed-nonce-replacement.sqlite3")
+
+    wallet = create_wallet("alice")
+    first_recipient = create_wallet("bob")
+    second_recipient = create_wallet("carol")
+    first = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="transfer",
+        sender=wallet["address"],
+        recipient=first_recipient["address"],
+        amount=1,
+        nonce=1,
+    )
+    second = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="transfer",
+        sender=wallet["address"],
+        recipient=second_recipient["address"],
+        amount=1,
+        nonce=1,
+    )
+    submit_transaction(first)
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE mempool_transactions SET status = 'failed', failure_reason = 'test failure' WHERE tx_hash = ?",
+            (first["tx_hash"],),
+        )
+
+    replacement = submit_transaction(second)
+
+    with get_connection() as connection:
+        first_row = connection.execute(
+            "SELECT status FROM mempool_transactions WHERE tx_hash = ?",
+            (first["tx_hash"],),
+        ).fetchone()
+    assert first_row is None
+    assert replacement["tx_hash"] == second["tx_hash"]
+    assert replacement["status"] == "pending"
+
+
 def test_invalid_signature_is_rejected(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "invalid-signature.sqlite3")
 

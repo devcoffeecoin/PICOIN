@@ -883,7 +883,7 @@ Status: in progress on the unified `codex/decentralization-roadmap` branch.
 - [x] Define canonical transaction selection rules for competitive rounds
 - [x] Verify deterministic nonce ordering, fee ordering, and tx merkle root generation across nodes
 - [x] Propagate signed transactions without exposing private keys
-- [ ] Add conflict handling for replaced, expired, failed, or already-confirmed transactions
+- [x] Add conflict handling for replaced, expired, failed, or already-confirmed transactions
 - [ ] Verify candidate block replay produces identical state roots across nodes
 
 Phase 4.1 evidence:
@@ -905,6 +905,13 @@ Phase 4.3 evidence:
 - [x] Transaction gossip now sanitizes outbound payloads to signed public transaction fields only
 - [x] Added a regression test proving `private_key` and local-only extra fields are stripped before `/tx/receive` gossip
 - [x] Full distributed testnet regression passed after the change: `69 passed`
+
+Phase 4.4 evidence:
+
+- [x] Re-submitting a transaction already known in a terminal status is idempotent and returns the local transaction state instead of creating reconcile/gossip noise
+- [x] Added a regression test proving an already-confirmed transaction can be received again without error
+- [x] Added a regression test proving a failed same-nonce transaction can be replaced by a new transaction
+- [x] Full distributed testnet regression passed after the change: `71 passed`
 
 ### Phase 5: Miner Task Independence
 

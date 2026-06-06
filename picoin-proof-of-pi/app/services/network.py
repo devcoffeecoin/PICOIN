@@ -835,10 +835,7 @@ def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str
             (tx["tx_hash"],),
         ).fetchone()
         if existing is not None:
-            if existing["status"] in TERMINAL_TX_STATUSES:
-                logger.info(f"[TX_SUBMIT] Duplicate tx {tx_hash}: already {existing['status']}")
-                raise NetworkError(409, f"transaction already {existing['status']}")
-            logger.debug(f"[TX_SUBMIT] Tx {tx_hash} already pending, returning existing")
+            logger.debug(f"[TX_SUBMIT] Tx {tx_hash} already {existing['status']}, returning existing")
             return get_transaction(tx["tx_hash"]) or {}
         
         nonce_conflict = connection.execute(
