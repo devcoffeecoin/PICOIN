@@ -882,7 +882,7 @@ Status: in progress on the unified `codex/decentralization-roadmap` branch.
 
 - [x] Define canonical transaction selection rules for competitive rounds
 - [x] Verify deterministic nonce ordering, fee ordering, and tx merkle root generation across nodes
-- [ ] Propagate signed transactions without exposing private keys
+- [x] Propagate signed transactions without exposing private keys
 - [ ] Add conflict handling for replaced, expired, failed, or already-confirmed transactions
 - [ ] Verify candidate block replay produces identical state roots across nodes
 
@@ -899,6 +899,12 @@ Phase 4.2 evidence:
 - [x] `created_at` remains local operational metadata, while `expires_at` is deterministic for the same signed transaction on every node
 - [x] Added a regression test proving delayed local receipt changes `created_at` but not canonical `expires_at`
 - [x] Full distributed testnet regression passed after the change: `68 passed`
+
+Phase 4.3 evidence:
+
+- [x] Transaction gossip now sanitizes outbound payloads to signed public transaction fields only
+- [x] Added a regression test proving `private_key` and local-only extra fields are stripped before `/tx/receive` gossip
+- [x] Full distributed testnet regression passed after the change: `69 passed`
 
 ### Phase 5: Miner Task Independence
 

@@ -724,6 +724,56 @@ def test_submit_transaction_marks_propagated_after_gossip_success(tmp_path, monk
     assert stored["propagated"] is True
 
 
+def test_transaction_gossip_strips_private_and_extra_fields(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "submit-gossip-public-only.sqlite3")
+
+    register_peer(
+        node_id="validator-1",
+        peer_address="http://validator-1:8000",
+        peer_type="validator",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+
+    posted_payloads: list[dict] = []
+
+    class Response:
+        status_code = 201
+
+    def fake_post(url, json=None, timeout=0):
+        posted_payloads.append(dict(json or {}))
+        return Response()
+
+    monkeypatch.setattr("app.services.network.requests.post", fake_post)
+
+    wallet = create_wallet("alice")
+    recipient = create_wallet("bob")
+    tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="transfer",
+        sender=wallet["address"],
+        recipient=recipient["address"],
+        amount=1,
+        nonce=1,
+    )
+    tx["private_key"] = wallet["private_key"]
+    tx["local_only_note"] = "must not leave this node"
+
+    submit_transaction(tx)
+
+    assert len(posted_payloads) == 1
+    outbound = posted_payloads[0]
+    assert "private_key" not in outbound
+    assert "local_only_note" not in outbound
+    assert outbound["tx_hash"] == tx["tx_hash"]
+    assert outbound["public_key"] == tx["public_key"]
+    assert outbound["signature"] == tx["signature"]
+    assert outbound["payload"] == tx["payload"]
+
+
 def test_receive_block_header_queues_tip_mismatch_for_ancestor_sync(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "header-tip-mismatch.sqlite3")
     block = {

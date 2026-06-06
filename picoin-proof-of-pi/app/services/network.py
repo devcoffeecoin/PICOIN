@@ -895,7 +895,7 @@ def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str
     accepted = get_transaction(tx["tx_hash"]) or {}
     if inserted and not propagated:
         logger.debug(f"[TX_SUBMIT] Gossiping transaction {tx_hash} to peers")
-        gossip_result = gossip_json("/tx/receive", tx, "tx_gossip")
+        gossip_result = gossip_json("/tx/receive", _public_transaction_payload(tx), "tx_gossip")
         try:
             succeeded = int(gossip_result.get("succeeded", 0))
         except Exception:
@@ -1445,6 +1445,15 @@ def _unsigned_from_tx(tx: dict[str, Any]) -> dict[str, Any]:
         network_id=tx.get("network_id", NETWORK_ID),
         chain_id=tx.get("chain_id", CHAIN_ID),
     )
+
+
+def _public_transaction_payload(tx: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **_unsigned_from_tx(tx),
+        "public_key": tx["public_key"],
+        "signature": tx["signature"],
+        "tx_hash": tx["tx_hash"],
+    }
 
 
 def _tx_amount_units(tx: dict[str, Any]) -> int:
