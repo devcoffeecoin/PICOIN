@@ -444,6 +444,19 @@ def test_new_pool_task_closes_obsolete_validation_pending_tasks(tmp_path):
             """
             INSERT INTO pool_tasks (
                 pool_task_id, mainnet_task_id, status, range_start, range_end,
+                algorithm, raw_task_json, raw_reveal_json, created_at, completed_at
+            )
+            VALUES (
+                'pooltask_old_accepted', 'task_old_accepted', 'accepted', 1, 1,
+                'bbp_hex_v1', '{}', ?, '2026-06-05T00:00:30+00:00', '2026-06-05T00:01:30+00:00'
+            )
+            """,
+            ('{"accepted":true,"status":"validation_pending","block":null}',),
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_tasks (
+                pool_task_id, mainnet_task_id, status, range_start, range_end,
                 algorithm, raw_task_json, created_at
             )
             VALUES (
@@ -471,13 +484,69 @@ def test_new_pool_task_closes_obsolete_validation_pending_tasks(tmp_path):
         row = connection.execute(
             "SELECT status, error, raw_reveal_json FROM pool_tasks WHERE pool_task_id = 'pooltask_old'"
         ).fetchone()
+        old_accepted = connection.execute(
+            "SELECT status, error, raw_reveal_json FROM pool_tasks WHERE pool_task_id = 'pooltask_old_accepted'"
+        ).fetchone()
 
     reveal = json.loads(row["raw_reveal_json"])
+    old_accepted_reveal = json.loads(old_accepted["raw_reveal_json"])
     assert row["status"] == "lost"
     assert row["error"] == "mainnet assigned newer pool task task_new; previous validation round closed"
     assert reveal["accepted"] is False
     assert reveal["status"] == "lost"
     assert reveal["block"] is None
+    assert old_accepted["status"] == "lost"
+    assert old_accepted["error"] == "mainnet assigned newer pool task task_new; previous validation round closed"
+    assert old_accepted_reveal["accepted"] is False
+    assert old_accepted_reveal["status"] == "lost"
+    assert old_accepted_reveal["block"] is None
+
+
+def test_stats_does_not_count_historical_accepted_reveal_as_validation_pending(tmp_path):
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    with db.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO pool_tasks (
+                pool_task_id, mainnet_task_id, status, range_start, range_end,
+                algorithm, raw_task_json, raw_reveal_json, created_at, completed_at
+            )
+            VALUES (
+                'pooltask_old_accepted', 'task_old_accepted', 'accepted', 1, 1,
+                'bbp_hex_v1', '{}', ?, '2026-06-05T00:00:30+00:00', '2026-06-05T00:01:30+00:00'
+            )
+            """,
+            ('{"accepted":true,"status":"validation_pending","block":null}',),
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_tasks (
+                pool_task_id, mainnet_task_id, status, range_start, range_end,
+                algorithm, raw_task_json, raw_reveal_json, created_at, completed_at
+            )
+            VALUES (
+                'pooltask_pending', 'task_pending', 'validation_pending', 1, 1,
+                'bbp_hex_v1', '{}', ?, '2026-06-05T00:02:30+00:00', '2026-06-05T00:03:30+00:00'
+            )
+            """,
+            ('{"accepted":true,"status":"validation_pending","block":null}',),
+        )
+
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size=1,
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=False,
+        pool_fee_percent=0,
+    )
+
+    stats = coordinator.stats()
+
+    assert stats["performance"]["validation_pending_tasks"] == 1
 
 
 def test_auto_chunk_size_uses_active_workers(tmp_path, monkeypatch):

@@ -698,9 +698,9 @@ class PoolCoordinator:
         with self.db._lock, self.db.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT pool_task_id, mainnet_task_id, raw_reveal_json
+                SELECT pool_task_id, mainnet_task_id, status, raw_reveal_json
                 FROM pool_tasks
-                WHERE status = 'validation_pending'
+                WHERE status IN ('accepted', 'submitted', 'validation_pending')
                   AND mainnet_task_id != ?
                 """,
                 (current_mainnet_task_id,),
@@ -714,6 +714,8 @@ class PoolCoordinator:
                     reveal = {}
                 if isinstance(reveal.get("block"), dict):
                     continue
+                if reveal.get("status") != "validation_pending":
+                    continue
                 reveal["accepted"] = False
                 reveal["status"] = "lost"
                 reveal["message"] = reason
@@ -726,7 +728,7 @@ class PoolCoordinator:
                         raw_reveal_json = ?,
                         completed_at = COALESCE(completed_at, ?)
                     WHERE pool_task_id = ?
-                      AND status = 'validation_pending'
+                      AND status IN ('accepted', 'submitted', 'validation_pending')
                     """,
                     (reason, json_dumps(reveal), now, row["pool_task_id"]),
                 )
@@ -1103,7 +1105,7 @@ class PoolCoordinator:
             SELECT status, raw_reveal_json
             FROM pool_tasks
             WHERE raw_reveal_json IS NOT NULL
-              AND status IN ('accepted', 'submitted', 'validation_pending')
+              AND status = 'validation_pending'
             """
         ).fetchall()
         pending = 0
