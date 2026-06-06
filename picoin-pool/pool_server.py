@@ -272,6 +272,7 @@ class PoolCoordinator:
         self.expire_stale_assignments()
         self.finalize_ready_tasks()
         self.reconcile_won_blocks()
+        self.expire_unsettled_validation_pending_tasks()
         self.ensure_active_task()
         self.maybe_run_payouts()
 
@@ -782,6 +783,51 @@ class PoolCoordinator:
                 )
         return result
 
+    def expire_unsettled_validation_pending_tasks(self) -> dict[str, Any]:
+        now_timestamp = time.time()
+        now = utc_now()
+        changed = 0
+        with self.db._lock, self.db.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT pool_task_id, raw_task_json, raw_reveal_json
+                FROM pool_tasks
+                WHERE status = 'validation_pending'
+                  AND raw_reveal_json IS NOT NULL
+                """
+            ).fetchall()
+            for row in rows:
+                try:
+                    raw_task = json.loads(row["raw_task_json"] or "{}")
+                    reveal = json.loads(row["raw_reveal_json"] or "{}")
+                except (TypeError, ValueError):
+                    continue
+                if not isinstance(raw_task, dict) or not isinstance(reveal, dict):
+                    continue
+                if reveal.get("status") != "validation_pending":
+                    continue
+                if isinstance(reveal.get("block"), dict):
+                    continue
+
+                expires_at = parse_iso_timestamp(raw_task.get("expires_at"))
+                if not expires_at or expires_at > now_timestamp:
+                    continue
+
+                cursor = connection.execute(
+                    """
+                    UPDATE pool_tasks
+                    SET status = 'unsettled',
+                        completed_at = COALESCE(completed_at, ?)
+                    WHERE pool_task_id = ?
+                      AND status = 'validation_pending'
+                    """,
+                    (now, row["pool_task_id"]),
+                )
+                changed += int(cursor.rowcount or 0)
+        if changed:
+            self.db.event("info", "expired pool validation-pending tasks moved to unsettled", {"count": changed})
+        return {"unsettled": changed}
+
     def _pending_settlement_tasks(self) -> dict[str, dict[str, Any]]:
         pending: dict[str, dict[str, Any]] = {}
         with self.db._lock, self.db.connect() as connection:
@@ -1152,6 +1198,8 @@ class PoolCoordinator:
         lost_rounds = int(task_counts.get("lost", 0))
         finished_competitive_rounds = blocks_won + lost_rounds
         win_rate = (blocks_won / finished_competitive_rounds) if finished_competitive_rounds else 0.0
+        active_tasks = sum(int(task_counts.get(status, 0)) for status in ("active", "gathering", "submitting"))
+        completed_tasks = max(0, sum(task_counts.values()) - active_tasks - validation_pending_tasks)
         return {
             "active_workers": len(active_worker_rows),
             "pool_hashrate_hps": float(hashrate.get("pool_hashrate_hps") or 0.0),
@@ -1165,8 +1213,8 @@ class PoolCoordinator:
             "finished_competitive_rounds": finished_competitive_rounds,
             "win_rate": round(win_rate, 6),
             "win_rate_percent": round(win_rate * 100, 2),
-            "active_tasks": sum(int(task_counts.get(status, 0)) for status in ("active", "gathering", "submitting")),
-            "completed_tasks": sum(int(task_counts.get(status, 0)) for status in ("accepted", "submitted")),
+            "active_tasks": active_tasks,
+            "completed_tasks": completed_tasks,
             "available_chunks": int(chunk_counts.get("pending", 0)),
             "assigned_chunks": int(chunk_counts.get("assigned", 0)),
             "completed_chunks": int(chunk_counts.get("completed", 0)),

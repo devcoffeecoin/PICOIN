@@ -105,6 +105,16 @@
     }, 0);
   }
 
+  function totalStatusCount(items) {
+    return asArray(items).reduce((total, item) => total + Number(item.count || 0), 0);
+  }
+
+  function completedTaskFallback(tasks) {
+    const active = statusCount(tasks, ["active", "gathering", "submitting"]);
+    const pendingValidation = statusCount(tasks, ["validation_pending"]);
+    return Math.max(0, totalStatusCount(tasks) - active - pendingValidation);
+  }
+
   async function fetchJson(path) {
     const controller = new AbortController();
     const timeout = window.setTimeout(() => controller.abort(), 12000);
@@ -134,6 +144,7 @@
     rejected: "Mainnet rejected the submission",
     submitted: "Submitted and waiting for final state",
     submitting: "Pool is assembling and submitting the answer",
+    unsettled: "Historical reveal without a final block recorded by the pool",
     validation_pending: "External validators are checking the reveal",
   };
 
@@ -278,8 +289,8 @@
       : "Auto";
     els.hashrate.textContent = rate(performance.pool_hashrate_hps || hashrate.pool_hashrate_hps);
     els.creditedWorkers.textContent = fmt(Object.keys(shares).length, 0);
-    els.activeTasks.textContent = fmt(Number(performance.active_tasks || statusCount(tasks, ["active", "gathering", "submitting", "validation_pending"])), 0);
-    els.completedTasks.textContent = fmt(Number(performance.completed_tasks || statusCount(tasks, ["accepted", "submitted", "validation_pending"])), 0);
+    els.activeTasks.textContent = fmt(Number(performance.active_tasks ?? statusCount(tasks, ["active", "gathering", "submitting"])), 0);
+    els.completedTasks.textContent = fmt(Number(performance.completed_tasks ?? completedTaskFallback(tasks)), 0);
     els.blocksWon.textContent = fmt(Number(performance.blocks_won || 0), 0);
     els.winRate.textContent = `${Number(performance.win_rate_percent || 0).toFixed(2)}%`;
     els.pendingValidation.textContent = fmt(Number(performance.validation_pending_tasks || 0), 0);

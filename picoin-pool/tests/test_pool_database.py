@@ -187,6 +187,8 @@ def test_stats_reports_pool_performance_and_won_blocks(tmp_path):
     assert stats["performance"]["blocks_won"] == 1
     assert stats["performance"]["lost_rounds"] == 1
     assert stats["performance"]["win_rate_percent"] == pytest.approx(50.0)
+    assert stats["performance"]["active_tasks"] == 0
+    assert stats["performance"]["completed_tasks"] == 2
 
 
 def test_validation_pending_reveal_stays_pending_without_final_block(tmp_path, monkeypatch):
@@ -554,6 +556,56 @@ def test_stats_does_not_count_historical_accepted_reveal_as_validation_pending(t
     ]
     assert stats["performance"]["validation_pending_tasks"] == 1
     assert stats["performance"]["unsettled_tasks"] == 1
+    assert stats["performance"]["active_tasks"] == 0
+    assert stats["performance"]["completed_tasks"] == 1
+
+
+def test_expired_validation_pending_task_moves_to_unsettled(tmp_path):
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    with db.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO pool_tasks (
+                pool_task_id, mainnet_task_id, status, range_start, range_end,
+                algorithm, raw_task_json, raw_reveal_json, created_at, completed_at
+            )
+            VALUES (
+                'pooltask_expired', 'task_expired', 'validation_pending', 1, 1,
+                'bbp_hex_v1', ?, ?, '2026-06-05T00:00:00+00:00', '2026-06-05T00:01:00+00:00'
+            )
+            """,
+            (
+                json.dumps({"expires_at": "2000-01-01T00:00:00+00:00"}),
+                '{"accepted":true,"status":"validation_pending","block":null}',
+            ),
+        )
+
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size=1,
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=False,
+        pool_fee_percent=0,
+    )
+
+    result = coordinator.expire_unsettled_validation_pending_tasks()
+
+    with db.connect() as connection:
+        row = connection.execute(
+            "SELECT status FROM pool_tasks WHERE pool_task_id = 'pooltask_expired'"
+        ).fetchone()
+
+    stats = coordinator.stats()
+    assert result == {"unsettled": 1}
+    assert row["status"] == "unsettled"
+    assert stats["performance"]["validation_pending_tasks"] == 0
+    assert stats["performance"]["unsettled_tasks"] == 1
+    assert stats["performance"]["active_tasks"] == 0
+    assert stats["performance"]["completed_tasks"] == 1
 
 
 def test_auto_chunk_size_uses_active_workers(tmp_path, monkeypatch):
