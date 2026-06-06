@@ -225,6 +225,7 @@ class PoolCoordinator:
         payout_interval_seconds: int = 7200,
         payout_min_amount: float = 0.1,
         payout_fee: float = 0.0,
+        settlement_block_limit: int = 100,
     ) -> None:
         self.db = db
         self.server_url = server_url.rstrip("/")
@@ -239,6 +240,7 @@ class PoolCoordinator:
         self.payout_interval_seconds = max(1, int(payout_interval_seconds))
         self.payout_min_amount = max(0.0, float(payout_min_amount))
         self.payout_fee = max(0.0, float(payout_fee))
+        self.settlement_block_limit = max(1, min(500, int(settlement_block_limit)))
         self._last_payout_attempt = 0.0
         self.stop_event = threading.Event()
 
@@ -269,6 +271,7 @@ class PoolCoordinator:
     def tick(self) -> None:
         self.expire_stale_assignments()
         self.finalize_ready_tasks()
+        self.reconcile_won_blocks()
         self.ensure_active_task()
         self.maybe_run_payouts()
 
@@ -618,10 +621,14 @@ class PoolCoordinator:
                 raise RuntimeError(f"commit rejected: {challenge.get('message')}")
             reveal = reveal_samples(self.server_url, task, self.identity, segment, root, challenge)
             credited = bool(reveal.get("accepted") or reveal.get("status") == "validation_pending")
+            reveal_status = reveal.get("status")
+            reveal_block = reveal.get("block")
             status = "submitted" if credited else "rejected"
-            if reveal.get("accepted"):
+            if reveal_status == "validation_pending" and not isinstance(reveal_block, dict):
+                status = "validation_pending"
+            elif reveal.get("accepted") and isinstance(reveal_block, dict):
                 status = "accepted"
-            elif reveal.get("status") == "validation_pending":
+            elif reveal_status == "validation_pending":
                 status = "validation_pending"
 
             with self.db._lock, self.db.connect() as connection:
@@ -664,6 +671,112 @@ class PoolCoordinator:
                     (status, error, utc_now(), pool_task_id),
                 )
             self.db.event(level, message, {"pool_task_id": pool_task_id, "error": error})
+
+    def reconcile_won_blocks(self) -> dict[str, Any]:
+        pending = self._pending_settlement_tasks()
+        result: dict[str, Any] = {
+            "checked": len(pending),
+            "settled": 0,
+            "block_limit": self.settlement_block_limit,
+        }
+        if not pending:
+            return result
+
+        try:
+            blocks = self._fetch_recent_mainnet_blocks()
+        except requests.RequestException as exc:
+            self.db.event("warning", "pool settlement block lookup failed", {"error": str(exc)})
+            result["error"] = str(exc)
+            return result
+
+        now = utc_now()
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            task_id = str(block.get("task_id") or "")
+            if task_id not in pending:
+                continue
+            row = pending[task_id]
+            reveal = dict(row["reveal"])
+            reveal["accepted"] = True
+            reveal["status"] = "accepted"
+            reveal["message"] = "settled from mainnet block"
+            reveal["block"] = self._normalize_block_payload(block)
+            with self.db._lock, self.db.connect() as connection:
+                cursor = connection.execute(
+                    """
+                    UPDATE pool_tasks
+                    SET status = 'accepted',
+                        raw_reveal_json = ?,
+                        completed_at = COALESCE(completed_at, ?)
+                    WHERE pool_task_id = ?
+                      AND status IN ('accepted', 'submitted', 'validation_pending')
+                    """,
+                    (json_dumps(reveal), now, row["pool_task_id"]),
+                )
+            if cursor.rowcount:
+                result["settled"] += 1
+                self.db.event(
+                    "info",
+                    "pool task settled from mainnet block",
+                    {
+                        "pool_task_id": row["pool_task_id"],
+                        "mainnet_task_id": task_id,
+                        "height": block.get("height"),
+                        "block_hash": block.get("block_hash") or block.get("hash"),
+                    },
+                )
+        return result
+
+    def _pending_settlement_tasks(self) -> dict[str, dict[str, Any]]:
+        pending: dict[str, dict[str, Any]] = {}
+        with self.db._lock, self.db.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT pool_task_id, mainnet_task_id, status, raw_reveal_json
+                FROM pool_tasks
+                WHERE raw_reveal_json IS NOT NULL
+                  AND status IN ('accepted', 'submitted', 'validation_pending')
+                """
+            ).fetchall()
+        for row in rows:
+            try:
+                reveal = json.loads(row["raw_reveal_json"])
+            except (TypeError, ValueError):
+                continue
+            if not isinstance(reveal, dict):
+                continue
+            block = reveal.get("block")
+            if isinstance(block, dict):
+                continue
+            reveal_status = reveal.get("status")
+            if reveal_status != "validation_pending" and row["status"] not in ("submitted", "validation_pending"):
+                continue
+            pending[str(row["mainnet_task_id"])] = {
+                "pool_task_id": row["pool_task_id"],
+                "mainnet_task_id": row["mainnet_task_id"],
+                "reveal": reveal,
+            }
+        return pending
+
+    def _fetch_recent_mainnet_blocks(self) -> list[dict[str, Any]]:
+        response = requests.get(
+            f"{self.server_url}/blocks",
+            params={"limit": self.settlement_block_limit},
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        blocks = payload.get("blocks", payload) if isinstance(payload, dict) else payload
+        if not isinstance(blocks, list):
+            return []
+        return [block for block in blocks if isinstance(block, dict)]
+
+    def _normalize_block_payload(self, block: dict[str, Any]) -> dict[str, Any]:
+        payload = dict(block)
+        if "block_hash" not in payload and "hash" in payload:
+            payload["block_hash"] = payload.get("hash")
+        return payload
 
     def stats(self) -> dict[str, Any]:
         with self.db._lock, self.db.connect() as connection:
@@ -764,6 +877,9 @@ class PoolCoordinator:
                 "active_worker_window_seconds": 300,
                 "strategy": "fixed" if self.chunk_size else "adaptive_work_queue",
                 "target_chunks_per_active_worker": 4,
+            },
+            "settlement": {
+                "block_limit": self.settlement_block_limit,
             },
             "hashrate": hashrate,
             "tasks": tasks,
@@ -1256,6 +1372,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--payout-interval-seconds", type=int, default=7200, help="Seconds between automatic payout runs")
     parser.add_argument("--payout-min-amount", type=float, default=0.1, help="Minimum worker pending balance before auto payout")
     parser.add_argument("--payout-fee", type=float, default=0.0, help="Network fee attached to each automatic payout transaction")
+    parser.add_argument("--settlement-block-limit", type=int, default=100, help="Recent mainnet blocks checked when settling validation-pending pool tasks")
     parser.add_argument("--trust-workers", action="store_true", help="Skip pool-side chunk verification")
     return parser.parse_args()
 
@@ -1279,6 +1396,7 @@ def main() -> int:
         payout_interval_seconds=args.payout_interval_seconds,
         payout_min_amount=args.payout_min_amount,
         payout_fee=args.payout_fee,
+        settlement_block_limit=args.settlement_block_limit,
     )
     coordinator.start()
     PoolHandler.coordinator = coordinator

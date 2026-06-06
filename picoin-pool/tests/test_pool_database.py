@@ -1,3 +1,4 @@
+import json
 import sqlite3
 import sys
 from pathlib import Path
@@ -186,6 +187,171 @@ def test_stats_reports_pool_performance_and_won_blocks(tmp_path):
     assert stats["performance"]["blocks_won"] == 1
     assert stats["performance"]["lost_rounds"] == 1
     assert stats["performance"]["win_rate_percent"] == pytest.approx(50.0)
+
+
+def test_validation_pending_reveal_stays_pending_without_final_block(tmp_path, monkeypatch):
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    task = {
+        "task_id": "task_pending",
+        "range_start": 1,
+        "range_end": 3,
+        "algorithm": "bbp_hex_v1",
+    }
+    with db.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO pool_workers (worker_id, name, payout_address, registered_at, last_seen_at)
+            VALUES ('worker-1', 'Worker 1', NULL, ?, ?)
+            """,
+            (utc_now(), utc_now()),
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_tasks (
+                pool_task_id, mainnet_task_id, status, range_start, range_end,
+                algorithm, raw_task_json, created_at
+            )
+            VALUES ('pooltask_pending', 'task_pending', 'gathering', 1, 3, 'bbp_hex_v1', ?, ?)
+            """,
+            (json.dumps(task), utc_now()),
+        )
+        connection.executemany(
+            """
+            INSERT INTO pool_chunks (
+                chunk_id, pool_task_id, worker_id, status, range_start, range_end,
+                segment, units, compute_ms, assigned_at, submitted_at
+            )
+            VALUES (?, 'pooltask_pending', 'worker-1', 'completed', ?, ?, ?, 1, 100, ?, ?)
+            """,
+            [
+                ("chunk_1", 1, 1, "1", utc_now(), utc_now()),
+                ("chunk_2", 2, 2, "2", utc_now(), utc_now()),
+                ("chunk_3", 3, 3, "3", utc_now(), utc_now()),
+            ],
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_shares (share_id, worker_id, pool_task_id, chunk_id, units, credited, created_at)
+            VALUES ('share_1', 'worker-1', 'pooltask_pending', 'chunk_1', 1, 0, ?)
+            """,
+            (utc_now(),),
+        )
+
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size=1,
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=False,
+        pool_fee_percent=0,
+    )
+
+    monkeypatch.setattr("pool_server.commit_result", lambda *_: {"accepted": True, "challenge": "ok"})
+    monkeypatch.setattr(
+        "pool_server.reveal_samples",
+        lambda *_: {
+            "accepted": True,
+            "status": "validation_pending",
+            "block": None,
+            "validation": {"job_id": "job_1"},
+        },
+    )
+
+    with db.connect() as connection:
+        pool_task = dict(connection.execute("SELECT * FROM pool_tasks WHERE pool_task_id = 'pooltask_pending'").fetchone())
+
+    coordinator.finalize_task(pool_task)
+
+    with db.connect() as connection:
+        row = connection.execute(
+            "SELECT status, raw_reveal_json FROM pool_tasks WHERE pool_task_id = 'pooltask_pending'"
+        ).fetchone()
+        share = connection.execute("SELECT credited FROM pool_shares WHERE share_id = 'share_1'").fetchone()
+
+    reveal = json.loads(row["raw_reveal_json"])
+    assert row["status"] == "validation_pending"
+    assert reveal["status"] == "validation_pending"
+    assert reveal["block"] is None
+    assert share["credited"] == 1
+
+
+def test_reconcile_won_blocks_settles_validation_pending_task(tmp_path, monkeypatch):
+    worker_wallet = create_wallet("worker")
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    with db.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO pool_workers (worker_id, name, payout_address, registered_at, last_seen_at)
+            VALUES ('worker-1', 'Worker 1', ?, ?, ?)
+            """,
+            (worker_wallet["address"], utc_now(), utc_now()),
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_tasks (
+                pool_task_id, mainnet_task_id, status, range_start, range_end,
+                algorithm, raw_task_json, raw_reveal_json, created_at, completed_at
+            )
+            VALUES (
+                'pooltask_pending', 'task_pending', 'validation_pending', 1, 1,
+                'bbp_hex_v1', '{}', ?, '2026-06-05T00:00:00+00:00', '2026-06-05T00:01:00+00:00'
+            )
+            """,
+            ('{"accepted":true,"status":"validation_pending","block":null}',),
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_shares (share_id, worker_id, pool_task_id, chunk_id, units, credited, created_at)
+            VALUES ('share_1', 'worker-1', 'pooltask_pending', 'chunk_1', 1, 1, ?)
+            """,
+            (utc_now(),),
+        )
+
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size=1,
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=False,
+        pool_fee_percent=0,
+        settlement_block_limit=100,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_fetch_recent_mainnet_blocks",
+        lambda: [
+            {
+                "height": 77,
+                "hash": "abc123",
+                "task_id": "task_pending",
+                "miner_id": "miner_pool",
+                "reward": 1.5,
+            }
+        ],
+    )
+
+    result = coordinator.reconcile_won_blocks()
+
+    with db.connect() as connection:
+        row = connection.execute(
+            "SELECT status, raw_reveal_json FROM pool_tasks WHERE pool_task_id = 'pooltask_pending'"
+        ).fetchone()
+
+    reveal = json.loads(row["raw_reveal_json"])
+    stats = coordinator.stats()
+
+    assert result["settled"] == 1
+    assert row["status"] == "accepted"
+    assert reveal["status"] == "accepted"
+    assert reveal["block"]["block_hash"] == "abc123"
+    assert stats["won_blocks"][0]["height"] == 77
+    assert stats["payouts"]["pending_total"] == pytest.approx(1.5)
 
 
 def test_auto_chunk_size_uses_active_workers(tmp_path, monkeypatch):
