@@ -441,9 +441,19 @@ class PoolCoordinator:
     def ensure_active_task(self) -> None:
         with self.db._lock, self.db.connect() as connection:
             active = connection.execute(
-                "SELECT 1 FROM pool_tasks WHERE status IN ('active', 'gathering', 'submitting') LIMIT 1"
+                """
+                SELECT mainnet_task_id
+                FROM pool_tasks
+                WHERE status IN ('active', 'gathering', 'submitting')
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
             ).fetchone()
             if active is not None:
+                self.close_obsolete_validation_pending_tasks(
+                    current_mainnet_task_id=str(active["mainnet_task_id"]),
+                    reason=f"mainnet assigned newer pool task {active['mainnet_task_id']}; previous validation round closed",
+                )
                 return
 
         try:
@@ -458,6 +468,11 @@ class PoolCoordinator:
         if task.get("status") != "assigned":
             self.db.event("info", "mainnet did not assign pool work", {"status": task.get("status")})
             return
+
+        self.close_obsolete_validation_pending_tasks(
+            current_mainnet_task_id=str(task["task_id"]),
+            reason=f"mainnet assigned newer pool task {task['task_id']}; previous validation round closed",
+        )
 
         pool_task_id = f"pooltask_{uuid.uuid4().hex[:16]}"
         range_start = int(task["range_start"])
@@ -671,6 +686,63 @@ class PoolCoordinator:
                     (status, error, utc_now(), pool_task_id),
                 )
             self.db.event(level, message, {"pool_task_id": pool_task_id, "error": error})
+
+    def close_obsolete_validation_pending_tasks(self, *, current_mainnet_task_id: str, reason: str) -> dict[str, Any]:
+        current_mainnet_task_id = str(current_mainnet_task_id or "").strip()
+        if not current_mainnet_task_id:
+            return {"closed": 0}
+
+        now = utc_now()
+        closed = 0
+        events: list[dict[str, Any]] = []
+        with self.db._lock, self.db.connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT pool_task_id, mainnet_task_id, raw_reveal_json
+                FROM pool_tasks
+                WHERE status = 'validation_pending'
+                  AND mainnet_task_id != ?
+                """,
+                (current_mainnet_task_id,),
+            ).fetchall()
+            for row in rows:
+                try:
+                    reveal = json.loads(row["raw_reveal_json"])
+                except (TypeError, ValueError):
+                    reveal = {}
+                if not isinstance(reveal, dict):
+                    reveal = {}
+                if isinstance(reveal.get("block"), dict):
+                    continue
+                reveal["accepted"] = False
+                reveal["status"] = "lost"
+                reveal["message"] = reason
+                reveal["block"] = None
+                cursor = connection.execute(
+                    """
+                    UPDATE pool_tasks
+                    SET status = 'lost',
+                        error = ?,
+                        raw_reveal_json = ?,
+                        completed_at = COALESCE(completed_at, ?)
+                    WHERE pool_task_id = ?
+                      AND status = 'validation_pending'
+                    """,
+                    (reason, json_dumps(reveal), now, row["pool_task_id"]),
+                )
+                if cursor.rowcount:
+                    closed += 1
+                    events.append(
+                        {
+                            "pool_task_id": row["pool_task_id"],
+                            "mainnet_task_id": row["mainnet_task_id"],
+                            "current_mainnet_task_id": current_mainnet_task_id,
+                            "reason": reason,
+                        }
+                    )
+        for event in events:
+            self.db.event("info", "pool task lost competitive round", event)
+        return {"closed": closed}
 
     def reconcile_won_blocks(self) -> dict[str, Any]:
         pending = self._pending_settlement_tasks()
