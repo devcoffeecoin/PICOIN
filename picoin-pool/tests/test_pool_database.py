@@ -587,6 +587,19 @@ def test_reconcile_mainnet_task_statuses_uses_task_status_endpoint(tmp_path, mon
             """,
             ('{"accepted":true,"status":"validation_pending","block":null}',),
         )
+        connection.execute(
+            """
+            INSERT INTO pool_tasks (
+                pool_task_id, mainnet_task_id, status, range_start, range_end,
+                algorithm, raw_task_json, raw_reveal_json, created_at, completed_at
+            )
+            VALUES (
+                'pooltask_unsettled', 'task_unsettled', 'unsettled', 3, 3,
+                'bbp_hex_v1', '{}', ?, '2026-06-05T00:04:00+00:00', '2026-06-05T00:05:00+00:00'
+            )
+            """,
+            ('{"accepted":true,"status":"validation_pending","block":null}',),
+        )
 
     coordinator = PoolCoordinator(
         db=db,
@@ -609,6 +622,14 @@ def test_reconcile_mainnet_task_statuses_uses_task_status_endpoint(tmp_path, mon
                 "block": {"height": 88, "block_hash": "winner", "reward": 1.25},
                 "validation": {"status": "approved"},
             }
+        if task_id == "task_unsettled":
+            return {
+                "status": "expired",
+                "task_status": "expired",
+                "message": "task expired on mainnet",
+                "block": None,
+                "validation": None,
+            }
         return {
             "status": "stale",
             "task_status": "stale",
@@ -628,13 +649,17 @@ def test_reconcile_mainnet_task_statuses_uses_task_status_endpoint(tmp_path, mon
         winner = connection.execute(
             "SELECT status, error, raw_reveal_json FROM pool_tasks WHERE pool_task_id = 'pooltask_winner'"
         ).fetchone()
+        unsettled = connection.execute(
+            "SELECT status, error, raw_reveal_json FROM pool_tasks WHERE pool_task_id = 'pooltask_unsettled'"
+        ).fetchone()
 
     pending_reveal = json.loads(pending["raw_reveal_json"])
     winner_reveal = json.loads(winner["raw_reveal_json"])
+    unsettled_reveal = json.loads(unsettled["raw_reveal_json"])
     stats = coordinator.stats()
 
-    assert result["checked"] == 2
-    assert result["updated"] == 2
+    assert result["checked"] == 3
+    assert result["updated"] == 3
     assert pending["status"] == "stale"
     assert pending["error"] == "competitive round won by task_other at block 88"
     assert pending_reveal["status"] == "stale"
@@ -643,9 +668,14 @@ def test_reconcile_mainnet_task_statuses_uses_task_status_endpoint(tmp_path, mon
     assert winner["error"] is None
     assert winner_reveal["status"] == "accepted"
     assert winner_reveal["block"]["height"] == 88
+    assert unsettled["status"] == "expired"
+    assert unsettled["error"] == "task expired on mainnet"
+    assert unsettled_reveal["status"] == "expired"
     assert stats["performance"]["blocks_won"] == 1
-    assert stats["performance"]["non_winning_rounds"] == 1
-    assert stats["performance"]["completed_tasks"] == 2
+    assert stats["performance"]["non_winning_rounds"] == 2
+    assert stats["performance"]["completed_tasks"] == 3
+    assert stats["active_tasks"] == 0
+    assert stats["completed_tasks"] == 3
 
 
 def test_auto_chunk_size_uses_active_workers(tmp_path, monkeypatch):

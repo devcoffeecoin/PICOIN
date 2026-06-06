@@ -812,7 +812,7 @@ class PoolCoordinator:
                 """
                 SELECT pool_task_id, mainnet_task_id, status, raw_reveal_json
                 FROM pool_tasks
-                WHERE status IN ('submitted', 'validation_pending')
+                WHERE status IN ('submitted', 'validation_pending', 'unsettled')
                   AND raw_reveal_json IS NOT NULL
                 ORDER BY completed_at DESC, created_at DESC
                 LIMIT ?
@@ -883,7 +883,7 @@ class PoolCoordinator:
                     raw_reveal_json = ?,
                     completed_at = COALESCE(completed_at, ?)
                 WHERE pool_task_id = ?
-                  AND status IN ('submitted', 'validation_pending')
+                  AND status IN ('submitted', 'validation_pending', 'unsettled')
                 """,
                 (update_status, error, json_dumps(reveal), utc_now(), row["pool_task_id"]),
             )
@@ -1065,6 +1065,8 @@ class PoolCoordinator:
             "credited_shares": credited_shares,
             "won_blocks": task_rewards[:20],
             "performance": performance,
+            "active_tasks": performance["active_tasks"],
+            "completed_tasks": performance["completed_tasks"],
             "payouts": summarize_payouts(
                 task_rewards=task_rewards,
                 share_rows=share_rows,
