@@ -272,7 +272,7 @@ class PoolCoordinator:
         self.expire_stale_assignments()
         self.finalize_ready_tasks()
         self.reconcile_won_blocks()
-        self.expire_unsettled_validation_pending_tasks()
+        self.reconcile_mainnet_task_statuses()
         self.ensure_active_task()
         self.maybe_run_payouts()
 
@@ -783,50 +783,121 @@ class PoolCoordinator:
                 )
         return result
 
-    def expire_unsettled_validation_pending_tasks(self) -> dict[str, Any]:
-        now_timestamp = time.time()
-        now = utc_now()
-        changed = 0
+    def reconcile_mainnet_task_statuses(self, limit: int = 50) -> dict[str, Any]:
+        rows = self._pending_mainnet_status_tasks(limit=limit)
+        result: dict[str, Any] = {"checked": len(rows), "updated": 0, "errors": 0, "statuses": {}}
+        for row in rows:
+            task_id = str(row.get("mainnet_task_id") or "")
+            if not task_id:
+                continue
+            try:
+                payload = self._fetch_mainnet_task_status(task_id)
+            except requests.RequestException as exc:
+                result["errors"] += 1
+                self.db.event(
+                    "warning",
+                    "pool task status lookup failed",
+                    {"mainnet_task_id": task_id, "error": str(exc)},
+                )
+                continue
+            status = str(payload.get("status") or "unknown")
+            result["statuses"][status] = int(result["statuses"].get(status, 0)) + 1
+            if self._apply_mainnet_task_status(row, payload):
+                result["updated"] += 1
+        return result
+
+    def _pending_mainnet_status_tasks(self, limit: int = 50) -> list[dict[str, Any]]:
         with self.db._lock, self.db.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT pool_task_id, raw_task_json, raw_reveal_json
+                SELECT pool_task_id, mainnet_task_id, status, raw_reveal_json
                 FROM pool_tasks
-                WHERE status = 'validation_pending'
+                WHERE status IN ('submitted', 'validation_pending')
                   AND raw_reveal_json IS NOT NULL
-                """
+                ORDER BY completed_at DESC, created_at DESC
+                LIMIT ?
+                """,
+                (max(1, int(limit)),),
             ).fetchall()
-            for row in rows:
-                try:
-                    raw_task = json.loads(row["raw_task_json"] or "{}")
-                    reveal = json.loads(row["raw_reveal_json"] or "{}")
-                except (TypeError, ValueError):
-                    continue
-                if not isinstance(raw_task, dict) or not isinstance(reveal, dict):
-                    continue
-                if reveal.get("status") != "validation_pending":
-                    continue
-                if isinstance(reveal.get("block"), dict):
-                    continue
+        return [dict(row) for row in rows]
 
-                expires_at = parse_iso_timestamp(raw_task.get("expires_at"))
-                if not expires_at or expires_at > now_timestamp:
-                    continue
+    def _fetch_mainnet_task_status(self, task_id: str) -> dict[str, Any]:
+        response = requests.get(f"{self.server_url}/tasks/{task_id}/status", timeout=20)
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise requests.RequestException("task status response was not an object")
+        return payload
 
-                cursor = connection.execute(
-                    """
-                    UPDATE pool_tasks
-                    SET status = 'unsettled',
-                        completed_at = COALESCE(completed_at, ?)
-                    WHERE pool_task_id = ?
-                      AND status = 'validation_pending'
-                    """,
-                    (now, row["pool_task_id"]),
-                )
-                changed += int(cursor.rowcount or 0)
-        if changed:
-            self.db.event("info", "expired pool validation-pending tasks moved to unsettled", {"count": changed})
-        return {"unsettled": changed}
+    def _apply_mainnet_task_status(self, row: dict[str, Any], payload: dict[str, Any]) -> bool:
+        status = str(payload.get("status") or "").strip()
+        if not status:
+            return False
+
+        try:
+            reveal = json.loads(row.get("raw_reveal_json") or "{}")
+        except (TypeError, ValueError):
+            reveal = {}
+        if not isinstance(reveal, dict):
+            reveal = {}
+
+        block = payload.get("block")
+        validation = payload.get("validation")
+        message = str(payload.get("message") or f"mainnet task status is {status}")
+        update_status: str | None = None
+        error: str | None = None
+
+        if status == "accepted" and isinstance(block, dict):
+            update_status = "accepted"
+            reveal["accepted"] = True
+            reveal["status"] = "accepted"
+            reveal["message"] = message
+            reveal["block"] = self._normalize_block_payload(block)
+            error = None
+        elif status == "validation_pending":
+            update_status = "validation_pending"
+            reveal["accepted"] = True
+            reveal["status"] = "validation_pending"
+            reveal["message"] = message
+            reveal["block"] = None
+            error = None
+        elif status in {"expired", "stale", "rejected"}:
+            update_status = status
+            reveal["accepted"] = False
+            reveal["status"] = status
+            reveal["message"] = message
+            reveal["block"] = None
+            error = message
+        else:
+            return False
+
+        if isinstance(validation, dict):
+            reveal["validation"] = validation
+
+        with self.db._lock, self.db.connect() as connection:
+            cursor = connection.execute(
+                """
+                UPDATE pool_tasks
+                SET status = ?,
+                    error = ?,
+                    raw_reveal_json = ?,
+                    completed_at = COALESCE(completed_at, ?)
+                WHERE pool_task_id = ?
+                  AND status IN ('submitted', 'validation_pending')
+                """,
+                (update_status, error, json_dumps(reveal), utc_now(), row["pool_task_id"]),
+            )
+        if cursor.rowcount:
+            self.db.event(
+                "info",
+                "pool task status reconciled from mainnet",
+                {
+                    "pool_task_id": row["pool_task_id"],
+                    "mainnet_task_id": row["mainnet_task_id"],
+                    "status": update_status,
+                },
+            )
+        return bool(cursor.rowcount)
 
     def _pending_settlement_tasks(self) -> dict[str, dict[str, Any]]:
         pending: dict[str, dict[str, Any]] = {}
@@ -1052,21 +1123,8 @@ class PoolCoordinator:
         block = reveal.get("block")
         reveal_status = reveal.get("status")
         if reveal_status == "validation_pending" and not isinstance(block, dict):
-            if self._validation_pending_reveal_expired(row):
-                return "unsettled"
             return "validation_pending"
         return status
-
-    def _validation_pending_reveal_expired(self, row: dict[str, Any]) -> bool:
-        try:
-            raw_task = json.loads(row.get("raw_task_json") or "{}")
-        except (TypeError, ValueError):
-            raw_task = {}
-        if not isinstance(raw_task, dict):
-            raw_task = {}
-
-        expires_at = parse_iso_timestamp(raw_task.get("expires_at"))
-        return bool(expires_at and expires_at <= time.time())
 
     def _accepted_task_rewards(self, connection: sqlite3.Connection) -> list[dict[str, Any]]:
         rewards: list[dict[str, Any]] = []
@@ -1109,7 +1167,7 @@ class PoolCoordinator:
     def _validation_pending_task_count(self, connection: sqlite3.Connection) -> int:
         rows = connection.execute(
             """
-            SELECT status, raw_task_json, raw_reveal_json, completed_at
+            SELECT status, raw_reveal_json
             FROM pool_tasks
             WHERE raw_reveal_json IS NOT NULL
               AND status = 'validation_pending'
@@ -1123,11 +1181,7 @@ class PoolCoordinator:
                 continue
             block = reveal.get("block") if isinstance(reveal, dict) else None
             reveal_status = reveal.get("status") if isinstance(reveal, dict) else None
-            if (
-                block is None
-                and reveal_status == "validation_pending"
-                and not self._validation_pending_reveal_expired(dict(row))
-            ):
+            if block is None and reveal_status == "validation_pending":
                 pending += 1
         return pending
 
@@ -1196,7 +1250,8 @@ class PoolCoordinator:
         chunk_counts = {str(row["status"]): int(row.get("count") or 0) for row in chunks}
         blocks_won = len(won_blocks)
         lost_rounds = int(task_counts.get("lost", 0))
-        finished_competitive_rounds = blocks_won + lost_rounds
+        non_winning_rounds = sum(int(task_counts.get(status, 0)) for status in ("lost", "stale", "expired", "rejected"))
+        finished_competitive_rounds = blocks_won + non_winning_rounds
         win_rate = (blocks_won / finished_competitive_rounds) if finished_competitive_rounds else 0.0
         active_tasks = sum(int(task_counts.get(status, 0)) for status in ("active", "gathering", "submitting"))
         completed_tasks = max(0, sum(task_counts.values()) - active_tasks - validation_pending_tasks)
@@ -1210,6 +1265,7 @@ class PoolCoordinator:
             "validation_pending_tasks": validation_pending_tasks,
             "unsettled_tasks": int(task_counts.get("unsettled", 0)),
             "lost_rounds": lost_rounds,
+            "non_winning_rounds": non_winning_rounds,
             "finished_competitive_rounds": finished_competitive_rounds,
             "win_rate": round(win_rate, 6),
             "win_rate_percent": round(win_rate * 100, 2),

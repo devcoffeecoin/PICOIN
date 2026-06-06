@@ -3555,6 +3555,88 @@ def get_blocks(limit: int | None = None) -> list[dict[str, Any]]:
         return [_decode_block(row_to_dict(row)) for row in rows]
 
 
+def get_task_status(task_id: str) -> dict[str, Any] | None:
+    task_id = str(task_id or "").strip()
+    if not task_id:
+        return None
+
+    with get_connection() as connection:
+        _expire_assigned_tasks(connection)
+        task = row_to_dict(connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone())
+        if task is None:
+            return None
+
+        block = _decode_block(row_to_dict(connection.execute("SELECT * FROM blocks WHERE task_id = ?", (task_id,)).fetchone()))
+        job = row_to_dict(
+            connection.execute(
+                """
+                SELECT *
+                FROM validation_jobs
+                WHERE task_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (task_id,),
+            ).fetchone()
+        )
+
+        validation: dict[str, Any] | None = None
+        if job is not None:
+            vote_counts = _validation_vote_counts(connection, job["job_id"])
+            params = _protocol_params_for_task(connection, {**task, **job})
+            required = _effective_required_validator_approvals(connection, params)
+            validation = {
+                "job_id": job["job_id"],
+                "status": job["status"],
+                "result_reason": job.get("result_reason"),
+                "approvals": vote_counts["approvals"],
+                "rejections": vote_counts["rejections"],
+                "total_votes": vote_counts["approvals"] + vote_counts["rejections"],
+                "required_approvals": required,
+                "required_rejections": required,
+                "created_at": job.get("created_at"),
+                "completed_at": job.get("completed_at"),
+                "finalized_at": job.get("finalized_at"),
+            }
+
+        task_status = str(task.get("status") or "")
+        status = task_status
+        message = f"task status is {task_status}"
+        if block is not None:
+            status = "accepted"
+            message = "block accepted"
+        elif task_status == "revealed" and validation is not None and validation["status"] == "pending":
+            status = "validation_pending"
+            message = "reveal accepted; waiting for external validator"
+        elif validation is not None and validation["status"] in {"approved", "rejected", "expired"}:
+            if validation["status"] == "approved":
+                status = "accepted" if block is not None else task_status
+            elif validation["status"] == "expired":
+                status = "expired"
+            elif validation["status"] == "rejected" and task_status not in {"stale", "expired"}:
+                status = "rejected"
+            message = validation.get("result_reason") or message
+
+        return {
+            "task_id": task["task_id"],
+            "miner_id": task["miner_id"],
+            "status": status,
+            "task_status": task_status,
+            "message": message,
+            "assignment_seed": task.get("assignment_seed"),
+            "assignment_mode": task.get("assignment_mode"),
+            "competitive_round_height": task.get("competitive_round_height"),
+            "range_start": task.get("range_start"),
+            "range_end": task.get("range_end"),
+            "algorithm": task.get("algorithm"),
+            "created_at": task.get("created_at"),
+            "expires_at": task.get("expires_at"),
+            "submitted_at": task.get("submitted_at"),
+            "block": block,
+            "validation": validation,
+        }
+
+
 def get_block(height: int) -> dict[str, Any] | None:
     with get_connection() as connection:
         row = connection.execute("SELECT * FROM blocks WHERE height = ?", (height,)).fetchone()

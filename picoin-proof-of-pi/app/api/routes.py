@@ -179,6 +179,7 @@ from app.services.mining import (
     get_recent_events,
     get_retroactive_audits,
     get_stats,
+    get_task_status,
     get_validation_job,
     get_validation_jobs_health,
     get_validator,
@@ -1107,6 +1108,14 @@ def next_task(
     if task is None:
         raise HTTPException(status_code=404, detail="miner not found; re-register miner or pass public_key")
     return task
+
+
+@router.get("/tasks/{task_id}/status")
+def task_status(task_id: str) -> dict:
+    status = get_task_status(task_id)
+    if status is None:
+        raise HTTPException(status_code=404, detail="task not found")
+    return status
 
 
 @router.post("/tasks/submit", response_model=TaskSubmitResponse)

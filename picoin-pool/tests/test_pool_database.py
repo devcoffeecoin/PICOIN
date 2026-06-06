@@ -504,10 +504,8 @@ def test_new_pool_task_does_not_close_validation_pending_tasks(tmp_path):
     assert old_accepted_reveal["block"] is None
 
 
-def test_stats_does_not_count_historical_accepted_reveal_as_validation_pending(tmp_path):
+def test_stats_separates_unsettled_from_active_validation_pending(tmp_path):
     db = PoolDatabase(tmp_path / "pool.sqlite3")
-    expired_task = {"expires_at": "2000-01-01T00:00:00+00:00"}
-    active_task = {"expires_at": "2999-01-01T00:00:00+00:00"}
     with db.connect() as connection:
         connection.execute(
             """
@@ -516,11 +514,11 @@ def test_stats_does_not_count_historical_accepted_reveal_as_validation_pending(t
                 algorithm, raw_task_json, raw_reveal_json, created_at, completed_at
             )
             VALUES (
-                'pooltask_old_accepted', 'task_old_accepted', 'accepted', 1, 1,
+                'pooltask_unsettled', 'task_unsettled', 'unsettled', 1, 1,
                 'bbp_hex_v1', ?, ?, '2026-06-05T00:00:30+00:00', '2026-06-05T00:01:30+00:00'
             )
             """,
-            (json.dumps(expired_task), '{"accepted":true,"status":"validation_pending","block":null}'),
+            ("{}", '{"accepted":true,"status":"validation_pending","block":null}'),
         )
         connection.execute(
             """
@@ -533,7 +531,7 @@ def test_stats_does_not_count_historical_accepted_reveal_as_validation_pending(t
                 'bbp_hex_v1', ?, ?, '2026-06-05T00:02:30+00:00', '2026-06-05T00:03:30+00:00'
             )
             """,
-            (json.dumps(active_task), '{"accepted":true,"status":"validation_pending","block":null}'),
+            ("{}", '{"accepted":true,"status":"validation_pending","block":null}'),
         )
 
     coordinator = PoolCoordinator(
@@ -560,7 +558,7 @@ def test_stats_does_not_count_historical_accepted_reveal_as_validation_pending(t
     assert stats["performance"]["completed_tasks"] == 1
 
 
-def test_expired_validation_pending_task_moves_to_unsettled(tmp_path):
+def test_reconcile_mainnet_task_statuses_uses_task_status_endpoint(tmp_path, monkeypatch):
     db = PoolDatabase(tmp_path / "pool.sqlite3")
     with db.connect() as connection:
         connection.execute(
@@ -570,14 +568,24 @@ def test_expired_validation_pending_task_moves_to_unsettled(tmp_path):
                 algorithm, raw_task_json, raw_reveal_json, created_at, completed_at
             )
             VALUES (
-                'pooltask_expired', 'task_expired', 'validation_pending', 1, 1,
-                'bbp_hex_v1', ?, ?, '2026-06-05T00:00:00+00:00', '2026-06-05T00:01:00+00:00'
+                'pooltask_pending', 'task_pending', 'validation_pending', 1, 1,
+                'bbp_hex_v1', '{}', ?, '2026-06-05T00:00:00+00:00', '2026-06-05T00:01:00+00:00'
             )
             """,
-            (
-                json.dumps({"expires_at": "2000-01-01T00:00:00+00:00"}),
-                '{"accepted":true,"status":"validation_pending","block":null}',
-            ),
+            ('{"accepted":true,"status":"validation_pending","block":null}',),
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_tasks (
+                pool_task_id, mainnet_task_id, status, range_start, range_end,
+                algorithm, raw_task_json, raw_reveal_json, created_at, completed_at
+            )
+            VALUES (
+                'pooltask_winner', 'task_winner', 'validation_pending', 2, 2,
+                'bbp_hex_v1', '{}', ?, '2026-06-05T00:02:00+00:00', '2026-06-05T00:03:00+00:00'
+            )
+            """,
+            ('{"accepted":true,"status":"validation_pending","block":null}',),
         )
 
     coordinator = PoolCoordinator(
@@ -592,20 +600,52 @@ def test_expired_validation_pending_task_moves_to_unsettled(tmp_path):
         pool_fee_percent=0,
     )
 
-    result = coordinator.expire_unsettled_validation_pending_tasks()
+    def fake_status(task_id):
+        if task_id == "task_winner":
+            return {
+                "status": "accepted",
+                "task_status": "accepted",
+                "message": "block accepted",
+                "block": {"height": 88, "block_hash": "winner", "reward": 1.25},
+                "validation": {"status": "approved"},
+            }
+        return {
+            "status": "stale",
+            "task_status": "stale",
+            "message": "competitive round won by task_other at block 88",
+            "block": None,
+            "validation": {"status": "rejected"},
+        }
+
+    monkeypatch.setattr(coordinator, "_fetch_mainnet_task_status", fake_status)
+
+    result = coordinator.reconcile_mainnet_task_statuses()
 
     with db.connect() as connection:
-        row = connection.execute(
-            "SELECT status FROM pool_tasks WHERE pool_task_id = 'pooltask_expired'"
+        pending = connection.execute(
+            "SELECT status, error, raw_reveal_json FROM pool_tasks WHERE pool_task_id = 'pooltask_pending'"
+        ).fetchone()
+        winner = connection.execute(
+            "SELECT status, error, raw_reveal_json FROM pool_tasks WHERE pool_task_id = 'pooltask_winner'"
         ).fetchone()
 
+    pending_reveal = json.loads(pending["raw_reveal_json"])
+    winner_reveal = json.loads(winner["raw_reveal_json"])
     stats = coordinator.stats()
-    assert result == {"unsettled": 1}
-    assert row["status"] == "unsettled"
-    assert stats["performance"]["validation_pending_tasks"] == 0
-    assert stats["performance"]["unsettled_tasks"] == 1
-    assert stats["performance"]["active_tasks"] == 0
-    assert stats["performance"]["completed_tasks"] == 1
+
+    assert result["checked"] == 2
+    assert result["updated"] == 2
+    assert pending["status"] == "stale"
+    assert pending["error"] == "competitive round won by task_other at block 88"
+    assert pending_reveal["status"] == "stale"
+    assert pending_reveal["validation"]["status"] == "rejected"
+    assert winner["status"] == "accepted"
+    assert winner["error"] is None
+    assert winner_reveal["status"] == "accepted"
+    assert winner_reveal["block"]["height"] == 88
+    assert stats["performance"]["blocks_won"] == 1
+    assert stats["performance"]["non_winning_rounds"] == 1
+    assert stats["performance"]["completed_tasks"] == 2
 
 
 def test_auto_chunk_size_uses_active_workers(tmp_path, monkeypatch):

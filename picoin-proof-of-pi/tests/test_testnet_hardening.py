@@ -27,6 +27,7 @@ from app.services.mining import (
     commit_task,
     create_next_task,
     get_protocol,
+    get_task_status,
     get_validation_job,
     record_validator_heartbeat,
     register_miner,
@@ -194,6 +195,11 @@ def test_full_commit_reveal_flow_accepts_block_after_three_validator_votes(tmp_p
         tx_fee_total_units=int(task["tx_fee_total_units"]),
     )
     assert reveal["status"] == "validation_pending"
+    pending_status = get_task_status(task["task_id"])
+    assert pending_status["status"] == "validation_pending"
+    assert pending_status["task_status"] == "revealed"
+    assert pending_status["block"] is None
+    assert pending_status["validation"]["status"] == "pending"
 
     first_response = _vote_next_job(first_validator["validator_id"], first_keys["private_key"])
     second_response = _vote_next_job(second_validator["validator_id"], second_keys["private_key"])
@@ -205,6 +211,11 @@ def test_full_commit_reveal_flow_accepts_block_after_three_validator_votes(tmp_p
     assert third_response["block"]["height"] == 1
     assert third_response["block"]["validator_reward"]["pool"] == 0.31416
     assert third_response["approvals"] == 3
+    accepted_status = get_task_status(task["task_id"])
+    assert accepted_status["status"] == "accepted"
+    assert accepted_status["task_status"] == "accepted"
+    assert accepted_status["block"]["height"] == 1
+    assert accepted_status["validation"]["status"] == "approved"
 
 
 def _register_miner_with_keys(name: str) -> tuple[dict, dict]:
