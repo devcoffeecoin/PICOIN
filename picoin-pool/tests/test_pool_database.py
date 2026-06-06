@@ -354,6 +354,76 @@ def test_reconcile_won_blocks_settles_validation_pending_task(tmp_path, monkeypa
     assert stats["payouts"]["pending_total"] == pytest.approx(1.5)
 
 
+def test_reconcile_won_blocks_marks_pending_task_lost_when_round_has_other_winner(tmp_path, monkeypatch):
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    raw_task = {
+        "task_id": "task_pending",
+        "range_start": 1,
+        "range_end": 1,
+        "algorithm": "bbp_hex_v1",
+        "competitive_round_height": 77,
+    }
+    with db.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO pool_tasks (
+                pool_task_id, mainnet_task_id, status, range_start, range_end,
+                algorithm, raw_task_json, raw_reveal_json, created_at, completed_at
+            )
+            VALUES (
+                'pooltask_pending', 'task_pending', 'validation_pending', 1, 1,
+                'bbp_hex_v1', ?, ?, '2026-06-05T00:00:00+00:00', '2026-06-05T00:01:00+00:00'
+            )
+            """,
+            (
+                json.dumps(raw_task),
+                '{"accepted":true,"status":"validation_pending","block":null}',
+            ),
+        )
+
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size=1,
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=False,
+        pool_fee_percent=0,
+        settlement_block_limit=100,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_fetch_recent_mainnet_blocks",
+        lambda: [
+            {
+                "height": 77,
+                "block_hash": "winner_hash",
+                "task_id": "task_other",
+                "miner_id": "miner_other",
+                "reward": 1.5,
+            }
+        ],
+    )
+
+    result = coordinator.reconcile_won_blocks()
+
+    with db.connect() as connection:
+        row = connection.execute(
+            "SELECT status, error, raw_reveal_json FROM pool_tasks WHERE pool_task_id = 'pooltask_pending'"
+        ).fetchone()
+
+    reveal = json.loads(row["raw_reveal_json"])
+    assert result["settled"] == 0
+    assert result["lost"] == 1
+    assert row["status"] == "lost"
+    assert row["error"] == "competitive round won by task_other at block 77"
+    assert reveal["accepted"] is False
+    assert reveal["status"] == "lost"
+    assert reveal["block"] is None
+
+
 def test_auto_chunk_size_uses_active_workers(tmp_path, monkeypatch):
     db = PoolDatabase(tmp_path / "pool.sqlite3")
     coordinator = PoolCoordinator(

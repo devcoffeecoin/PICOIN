@@ -689,41 +689,89 @@ class PoolCoordinator:
             result["error"] = str(exc)
             return result
 
-        now = utc_now()
+        blocks_by_task_id: dict[str, dict[str, Any]] = {}
+        blocks_by_height: dict[int, dict[str, Any]] = {}
         for block in blocks:
             if not isinstance(block, dict):
                 continue
             task_id = str(block.get("task_id") or "")
-            if task_id not in pending:
+            if task_id:
+                blocks_by_task_id[task_id] = block
+            height = self._int_or_none(block.get("height"))
+            if height is not None:
+                blocks_by_height[height] = block
+
+        now = utc_now()
+        for task_id, row in pending.items():
+            block = blocks_by_task_id.get(task_id)
+            if block is not None:
+                reveal = dict(row["reveal"])
+                reveal["accepted"] = True
+                reveal["status"] = "accepted"
+                reveal["message"] = "settled from mainnet block"
+                reveal["block"] = self._normalize_block_payload(block)
+                with self.db._lock, self.db.connect() as connection:
+                    cursor = connection.execute(
+                        """
+                        UPDATE pool_tasks
+                        SET status = 'accepted',
+                            raw_reveal_json = ?,
+                            completed_at = COALESCE(completed_at, ?)
+                        WHERE pool_task_id = ?
+                          AND status IN ('accepted', 'submitted', 'validation_pending')
+                        """,
+                        (json_dumps(reveal), now, row["pool_task_id"]),
+                    )
+                if cursor.rowcount:
+                    result["settled"] += 1
+                    self.db.event(
+                        "info",
+                        "pool task settled from mainnet block",
+                        {
+                            "pool_task_id": row["pool_task_id"],
+                            "mainnet_task_id": task_id,
+                            "height": block.get("height"),
+                            "block_hash": block.get("block_hash") or block.get("hash"),
+                        },
+                    )
                 continue
-            row = pending[task_id]
+
+            round_height = row.get("competitive_round_height")
+            winning_block = blocks_by_height.get(round_height) if round_height is not None else None
+            winning_task_id = str((winning_block or {}).get("task_id") or "")
+            if winning_block is None or not winning_task_id or winning_task_id == task_id:
+                continue
+
+            error = f"competitive round won by {winning_task_id} at block {winning_block.get('height')}"
             reveal = dict(row["reveal"])
-            reveal["accepted"] = True
-            reveal["status"] = "accepted"
-            reveal["message"] = "settled from mainnet block"
-            reveal["block"] = self._normalize_block_payload(block)
+            reveal["accepted"] = False
+            reveal["status"] = "lost"
+            reveal["message"] = error
+            reveal["block"] = None
             with self.db._lock, self.db.connect() as connection:
                 cursor = connection.execute(
                     """
                     UPDATE pool_tasks
-                    SET status = 'accepted',
+                    SET status = 'lost',
+                        error = ?,
                         raw_reveal_json = ?,
                         completed_at = COALESCE(completed_at, ?)
                     WHERE pool_task_id = ?
-                      AND status IN ('accepted', 'submitted', 'validation_pending')
+                      AND status IN ('submitted', 'validation_pending')
                     """,
-                    (json_dumps(reveal), now, row["pool_task_id"]),
+                    (error, json_dumps(reveal), now, row["pool_task_id"]),
                 )
             if cursor.rowcount:
-                result["settled"] += 1
+                result["lost"] = int(result.get("lost") or 0) + 1
                 self.db.event(
                     "info",
-                    "pool task settled from mainnet block",
+                    "pool task lost competitive round",
                     {
                         "pool_task_id": row["pool_task_id"],
                         "mainnet_task_id": task_id,
-                        "height": block.get("height"),
-                        "block_hash": block.get("block_hash") or block.get("hash"),
+                        "winner_task_id": winning_task_id,
+                        "height": winning_block.get("height"),
+                        "block_hash": winning_block.get("block_hash") or winning_block.get("hash"),
                     },
                 )
         return result
@@ -733,7 +781,7 @@ class PoolCoordinator:
         with self.db._lock, self.db.connect() as connection:
             rows = connection.execute(
                 """
-                SELECT pool_task_id, mainnet_task_id, status, raw_reveal_json
+                SELECT pool_task_id, mainnet_task_id, status, raw_task_json, raw_reveal_json
                 FROM pool_tasks
                 WHERE raw_reveal_json IS NOT NULL
                   AND status IN ('accepted', 'submitted', 'validation_pending')
@@ -752,10 +800,15 @@ class PoolCoordinator:
             reveal_status = reveal.get("status")
             if reveal_status != "validation_pending" and row["status"] not in ("submitted", "validation_pending"):
                 continue
+            try:
+                raw_task = json.loads(row["raw_task_json"])
+            except (TypeError, ValueError):
+                raw_task = {}
             pending[str(row["mainnet_task_id"])] = {
                 "pool_task_id": row["pool_task_id"],
                 "mainnet_task_id": row["mainnet_task_id"],
                 "reveal": reveal,
+                "competitive_round_height": self._int_or_none(raw_task.get("competitive_round_height")),
             }
         return pending
 
@@ -777,6 +830,13 @@ class PoolCoordinator:
         if "block_hash" not in payload and "hash" in payload:
             payload["block_hash"] = payload.get("hash")
         return payload
+
+    @staticmethod
+    def _int_or_none(value: Any) -> int | None:
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
 
     def stats(self) -> dict[str, Any]:
         with self.db._lock, self.db.connect() as connection:
@@ -1065,8 +1125,8 @@ class PoolCoordinator:
             "finished_competitive_rounds": finished_competitive_rounds,
             "win_rate": round(win_rate, 6),
             "win_rate_percent": round(win_rate * 100, 2),
-            "active_tasks": sum(int(task_counts.get(status, 0)) for status in ("active", "gathering", "submitting", "validation_pending")),
-            "completed_tasks": sum(int(task_counts.get(status, 0)) for status in ("accepted", "submitted", "validation_pending")),
+            "active_tasks": sum(int(task_counts.get(status, 0)) for status in ("active", "gathering", "submitting")),
+            "completed_tasks": sum(int(task_counts.get(status, 0)) for status in ("accepted", "submitted")),
             "available_chunks": int(chunk_counts.get("pending", 0)),
             "assigned_chunks": int(chunk_counts.get("assigned", 0)),
             "completed_chunks": int(chunk_counts.get("completed", 0)),
