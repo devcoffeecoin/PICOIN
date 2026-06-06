@@ -912,9 +912,25 @@ def test_speculative_chunk_assignment_first_valid_submit_wins(tmp_path):
         shares = connection.execute(
             "SELECT worker_id, units FROM pool_shares WHERE chunk_id = 'chunk_race'"
         ).fetchall()
+        assignment_events = connection.execute(
+            """
+            SELECT payload_json
+            FROM pool_events
+            WHERE message = 'pool chunk assigned'
+            ORDER BY event_id
+            """
+        ).fetchall()
 
     assert dict(chunk) == {"status": "completed", "worker_id": "fast-worker"}
     assert [(row["worker_id"], row["units"]) for row in shares] == [("fast-worker", 1)]
+    assignment_payloads = [json.loads(row["payload_json"]) for row in assignment_events]
+    assert [
+        (payload["assignment_mode"], payload["worker_id"], payload["previous_worker_id"])
+        for payload in assignment_payloads
+    ] == [
+        ("primary", "slow-worker", None),
+        ("speculative", "fast-worker", "slow-worker"),
+    ]
 
 
 def test_idle_worker_claim_updates_last_seen_for_auto_chunking(tmp_path):

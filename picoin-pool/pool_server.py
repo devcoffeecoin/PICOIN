@@ -377,6 +377,29 @@ class PoolCoordinator:
                     (worker_id, now, row["chunk_id"]),
                 )
             connection.execute(
+                """
+                INSERT INTO pool_events (created_at, level, message, payload_json)
+                VALUES (?, 'info', 'pool chunk assigned', ?)
+                """,
+                (
+                    now,
+                    json_dumps(
+                        {
+                            "assignment_mode": assignment_mode,
+                            "chunk_id": row["chunk_id"],
+                            "mainnet_task_id": row["mainnet_task_id"],
+                            "pool_task_id": row["pool_task_id"],
+                            "previous_assigned_at": row["assigned_at"],
+                            "previous_worker_id": row["worker_id"],
+                            "range_end": row["range_end"],
+                            "range_start": row["range_start"],
+                            "units": row["units"],
+                            "worker_id": worker_id,
+                        }
+                    ),
+                ),
+            )
+            connection.execute(
                 "UPDATE pool_workers SET last_seen_at = ? WHERE worker_id = ?",
                 (now, worker_id),
             )
