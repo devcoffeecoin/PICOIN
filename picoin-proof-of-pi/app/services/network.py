@@ -968,6 +968,19 @@ def gossip_json(
     }
 
 
+def _local_replay_restore_required_status() -> dict[str, Any] | None:
+    from app.services.consensus import get_replay_status
+
+    replay_status = get_replay_status()
+    if bool(replay_status.get("divergence_detected")) or replay_status.get("sync_status") == "divergent":
+        return {
+            "status": "skipped",
+            "reason": "replay divergent; restore required",
+            **replay_status,
+        }
+    return None
+
+
 def reconcile_peer(peer_address: str) -> dict[str, Any]:
     peer_address = peer_address.rstrip("/")
     result = {
@@ -991,6 +1004,20 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
         "headers_skipped_pre_snapshot": 0,
         "errors": [],
     }
+    try:
+        restore_required = _local_replay_restore_required_status()
+        if restore_required is not None:
+            result["replay"] = restore_required
+            result["headers_skipped_pre_snapshot"] = int(
+                restore_required.get("headers_skipped_pre_snapshot") or 0
+            )
+            result["errors"].append("replay divergent; restore required")
+            with get_connection() as connection:
+                _record_sync_event(connection, None, "peer_reconcile", "outbound", "skipped", result)
+            return result
+    except Exception as exc:
+        result["errors"].append(f"replay status: {exc}")
+
     try:
         identity = requests.get(f"{peer_address}/node/identity", timeout=GOSSIP_TIMEOUT_SECONDS).json()
         register_peer(
@@ -1170,17 +1197,9 @@ def sync_blocks_until(
     result["catch_up_start_height"] = sync_from_height
 
     try:
-        from app.services.consensus import get_replay_status
-
-        replay_status = get_replay_status()
-        if bool(replay_status.get("divergence_detected")) or int(
-            replay_status.get("replay_consecutive_failures") or 0
-        ) > 0:
-            result["replay"] = {
-                "status": "skipped",
-                "reason": "replay divergent; restore required",
-                **replay_status,
-            }
+        restore_required = _local_replay_restore_required_status()
+        if restore_required is not None:
+            result["replay"] = restore_required
             if AUTO_RECOVERY_ENABLED:
                 result["auto_recovery"] = recover_from_peer_snapshot(peer_address, source="auto-recovery")
             return result
