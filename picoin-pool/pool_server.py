@@ -588,7 +588,7 @@ class PoolCoordinator:
             {
                 "active_workers": active_workers,
                 "chunk_mode": "fixed" if self.chunk_size else "auto",
-                "chunk_strategy": "fixed" if self.chunk_size else "adaptive_work_queue",
+                "chunk_strategy": "fixed" if self.chunk_size else "one_unit_speculative_queue",
                 "chunk_size": chunk_size,
                 "target_chunks": target_chunks,
                 "chunks": len(chunks),
@@ -613,10 +613,7 @@ class PoolCoordinator:
             return chunks, self.chunk_size, 0, task_units, len(chunks)
 
         active_workers = self._active_worker_count(connection)
-        if task_units <= max(12, active_workers * 3):
-            target_chunks = min(task_units, max(1, active_workers))
-        else:
-            target_chunks = min(task_units, max(1, active_workers * 4))
+        target_chunks = task_units
         chunks = split_range_balanced(range_start, range_end, target_chunks)
         chunk_size = max(chunk.units for chunk in chunks)
         return chunks, chunk_size, active_workers, task_units, target_chunks
@@ -1153,8 +1150,9 @@ class PoolCoordinator:
                 "mode": "fixed" if self.chunk_size else "auto",
                 "fixed_chunk_size": self.chunk_size,
                 "active_worker_window_seconds": 300,
-                "strategy": "fixed" if self.chunk_size else "adaptive_work_queue",
-                "target_chunks_per_active_worker": 4,
+                "strategy": "fixed" if self.chunk_size else "one_unit_speculative_queue",
+                "target_chunks_per_active_worker": None,
+                "target_units_per_chunk": 1 if self.chunk_size is None else self.chunk_size,
                 "speculative_assignment": self.speculative_chunks,
             },
             "settlement": {

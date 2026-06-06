@@ -740,11 +740,11 @@ def test_auto_chunk_size_uses_one_unit_chunks_for_small_tasks_with_many_workers(
     assert event is not None
     assert '"chunk_mode":"auto"' in event["payload_json"]
     assert '"active_workers":10' in event["payload_json"]
-    assert '"chunk_strategy":"adaptive_work_queue"' in event["payload_json"]
+    assert '"chunk_strategy":"one_unit_speculative_queue"' in event["payload_json"]
     assert '"target_chunks":10' in event["payload_json"]
 
 
-def test_auto_chunk_size_uses_fine_queue_for_mixed_worker_capacity(tmp_path, monkeypatch):
+def test_auto_chunk_size_creates_one_chunk_per_unit_regardless_worker_count(tmp_path, monkeypatch):
     db = PoolDatabase(tmp_path / "pool.sqlite3")
     coordinator = PoolCoordinator(
         db=db,
@@ -782,8 +782,9 @@ def test_auto_chunk_size_uses_fine_queue_for_mixed_worker_capacity(tmp_path, mon
             """
         ).fetchall()
 
-    assert len(chunks) == 12
-    assert max(row["units"] for row in chunks) == 9
+    assert len(chunks) == 100
+    assert max(row["units"] for row in chunks) == 1
+    assert min(row["units"] for row in chunks) == 1
     assert chunks[0]["range_start"] == 100
     assert chunks[-1]["range_end"] == 199
 
