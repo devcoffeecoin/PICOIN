@@ -878,13 +878,13 @@ Phase 3 alpha evidence:
 
 Goal: every full node can independently validate transaction ordering and reconstruct the same candidate block state.
 
-Status: in progress on the unified `codex/decentralization-roadmap` branch.
+Status: closed on the unified `codex/decentralization-roadmap` branch.
 
 - [x] Define canonical transaction selection rules for competitive rounds
 - [x] Verify deterministic nonce ordering, fee ordering, and tx merkle root generation across nodes
 - [x] Propagate signed transactions without exposing private keys
 - [x] Add conflict handling for replaced, expired, failed, or already-confirmed transactions
-- [ ] Verify candidate block replay produces identical state roots across nodes
+- [x] Verify candidate block replay produces identical state roots across nodes
 
 Phase 4.1 evidence:
 
@@ -912,6 +912,12 @@ Phase 4.4 evidence:
 - [x] Added a regression test proving an already-confirmed transaction can be received again without error
 - [x] Added a regression test proving a failed same-nonce transaction can be replaced by a new transaction
 - [x] Full distributed testnet regression passed after the change: `71 passed`
+
+Phase 4.5 evidence:
+
+- [x] Added a two-node SQLite replay regression with identical signed transactions but opposite local mempool `created_at` ordering
+- [x] Both simulated nodes selected the same tx hashes, produced the same tx commitment, applied the same transactions, and calculated the same candidate `state_root`
+- [x] Full distributed testnet regression passed after the change: `72 passed`
 
 ### Phase 5: Miner Task Independence
 

@@ -66,7 +66,12 @@ from app.services.treasury import (
     SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID,
     get_scientific_development_treasury,
 )
-from app.services.transactions import get_wallet_nonce_status, select_block_transactions
+from app.services.transactions import (
+    apply_block_transactions,
+    get_wallet_nonce_status,
+    select_block_transactions,
+    transaction_commitment,
+)
 from app.services.wallet import (
     address_from_public_key,
     address_matches_public_key,
@@ -1279,6 +1284,88 @@ def test_mined_block_confirms_signed_transfer_with_transaction_merkle_root(tmp_p
     assert get_balance_amount(recipient["address"]) == pytest.approx(1.0)
     assert get_balance_amount(miner["miner_id"]) == pytest.approx(2.51328 + 0.01)
     assert chain["valid"] is True
+
+
+def test_candidate_block_replay_matches_across_nodes_with_local_mempool_drift(tmp_path, monkeypatch) -> None:
+    first_sender = create_wallet("alice-candidate")
+    second_sender = create_wallet("bob-candidate")
+    first_recipient = create_wallet("carol-candidate")
+    second_recipient = create_wallet("dave-candidate")
+    miner_id = "miner_candidate_replay"
+    first_tx = sign_transaction(
+        private_key=first_sender["private_key"],
+        public_key=first_sender["public_key"],
+        tx_type="transfer",
+        sender=first_sender["address"],
+        recipient=first_recipient["address"],
+        amount=1.0,
+        nonce=1,
+        fee=0.01,
+        timestamp="2026-05-14T12:00:00+00:00",
+    )
+    second_tx = sign_transaction(
+        private_key=second_sender["private_key"],
+        public_key=second_sender["public_key"],
+        tx_type="transfer",
+        sender=second_sender["address"],
+        recipient=second_recipient["address"],
+        amount=1.0,
+        nonce=1,
+        fee=0.01,
+        timestamp="2026-05-14T12:00:01+00:00",
+    )
+    block_timestamp = "2026-05-14T12:01:00+00:00"
+
+    def replay_candidate(db_name: str, created_at_by_hash: dict[str, str]) -> dict:
+        _init_network_db(tmp_path, monkeypatch, db_name)
+        _fund_wallet_from_genesis(first_sender["address"], 2.0)
+        _fund_wallet_from_genesis(second_sender["address"], 2.0)
+        submit_transaction(first_tx)
+        submit_transaction(second_tx)
+        with get_connection() as connection:
+            for tx_hash, created_at in created_at_by_hash.items():
+                connection.execute(
+                    "UPDATE mempool_transactions SET created_at = ? WHERE tx_hash = ?",
+                    (created_at, tx_hash),
+                )
+            selected = select_block_transactions(connection, limit=10)
+            commitment = transaction_commitment(selected)
+            applied = apply_block_transactions(
+                connection,
+                miner_id=miner_id,
+                block_height=1,
+                transactions=selected,
+                timestamp=block_timestamp,
+            )
+            state_root = calculate_state_root(connection, 1, block_timestamp)
+        return {
+            "miner_id": miner_id,
+            "tx_hashes": [tx["tx_hash"] for tx in selected],
+            "commitment": commitment,
+            "applied": applied,
+            "state_root": state_root,
+        }
+
+    node_a = replay_candidate(
+        "candidate-replay-a.sqlite3",
+        {
+            first_tx["tx_hash"]: "2026-05-14T12:00:30+00:00",
+            second_tx["tx_hash"]: "2026-05-14T12:00:00+00:00",
+        },
+    )
+    node_b = replay_candidate(
+        "candidate-replay-b.sqlite3",
+        {
+            first_tx["tx_hash"]: "2026-05-14T12:00:00+00:00",
+            second_tx["tx_hash"]: "2026-05-14T12:00:30+00:00",
+        },
+    )
+
+    assert node_a["miner_id"] == node_b["miner_id"]
+    assert node_a["tx_hashes"] == node_b["tx_hashes"] == sorted([first_tx["tx_hash"], second_tx["tx_hash"]])
+    assert node_a["commitment"] == node_b["commitment"]
+    assert node_a["applied"] == node_b["applied"]
+    assert node_a["state_root"] == node_b["state_root"]
 
 
 def test_wallet_nonce_status_tracks_pending_and_confirmed_transactions(tmp_path, monkeypatch) -> None:
