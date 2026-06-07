@@ -27,6 +27,63 @@ from app.core.settings import CHAIN_ID, NETWORK_ID
 DEFAULT_IDENTITY_PATH = Path("miner_identity.json")
 AUTO_REGISTER_IDENTITY = os.getenv("PICOIN_AUTO_REGISTER_IDENTITY", "1").strip().lower() not in {"0", "false", "no"}
 MINER_REWARD_ADDRESS = os.getenv("PICOIN_MINER_REWARD_ADDRESS", "").strip()
+TASK_UNAVAILABLE_LOG_INTERVAL_SECONDS = 30.0
+_last_task_unavailable_log_at = 0.0
+_task_unavailable_polls = 0
+
+
+class TaskUnavailable(Exception):
+    def __init__(self, detail: str, retry_after_seconds: float | None = None) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.retry_after_seconds = retry_after_seconds
+
+
+def response_detail(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict) and payload.get("detail"):
+        return str(payload["detail"])
+    text = response.text.strip()
+    return text or response.reason or "no mining task available"
+
+
+def response_retry_after_seconds(response: requests.Response) -> float | None:
+    value = response.headers.get("Retry-After")
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        return None
+
+
+def task_response_json(response: requests.Response) -> dict[str, Any]:
+    if response.status_code == 429:
+        raise TaskUnavailable(response_detail(response), response_retry_after_seconds(response))
+    response.raise_for_status()
+    return response.json()
+
+
+def log_task_unavailable(exc: TaskUnavailable) -> None:
+    global _last_task_unavailable_log_at, _task_unavailable_polls
+    _task_unavailable_polls += 1
+    current = time.monotonic()
+    if current - _last_task_unavailable_log_at < TASK_UNAVAILABLE_LOG_INTERVAL_SECONDS:
+        return
+    retry = (
+        f" retry_after={exc.retry_after_seconds:g}s"
+        if exc.retry_after_seconds is not None
+        else ""
+    )
+    print(
+        "No mining task available yet: "
+        f"{exc.detail}.{retry} idle_polls={_task_unavailable_polls}"
+    )
+    _last_task_unavailable_log_at = current
+    _task_unavailable_polls = 0
 
 
 def utc_now() -> str:
@@ -103,8 +160,7 @@ def register(server_url: str, name: str, identity_path: Path, overwrite: bool) -
 
 def get_task(server_url: str, miner_id: str) -> dict[str, Any]:
     response = requests.get(f"{server_url}/tasks/next", params={"miner_id": miner_id}, timeout=20)
-    response.raise_for_status()
-    return response.json()
+    return task_response_json(response)
 
 
 def get_task_for_identity(server_url: str, identity: dict[str, Any]) -> dict[str, Any]:
@@ -116,8 +172,7 @@ def get_task_for_identity(server_url: str, identity: dict[str, Any]) -> dict[str
     }
     params = {key: value for key, value in params.items() if value}
     response = requests.get(f"{server_url}/tasks/next", params=params, timeout=20)
-    response.raise_for_status()
-    return response.json()
+    return task_response_json(response)
 
 
 def get_miner(server_url: str, miner_id: str) -> dict[str, Any]:
@@ -264,7 +319,11 @@ def reveal_samples(
 
 
 def mine_once(server_url: str, identity: dict[str, Any], workers: int) -> bool:
-    task = get_task_for_identity(server_url, identity)
+    try:
+        task = get_task_for_identity(server_url, identity)
+    except TaskUnavailable as exc:
+        log_task_unavailable(exc)
+        return False
     print(
         "Task assigned: "
         f"{task['task_id']} positions {task['range_start']}..{task['range_end']} "
