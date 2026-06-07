@@ -878,7 +878,7 @@ Phase 3 alpha evidence:
 
 Goal: every full node can independently validate transaction ordering and reconstruct the same candidate block state.
 
-Status: implemented in code-level regression tests on the unified `codex/decentralization-roadmap` branch, but not closed. Phase 4 remains pending isolated multi-node operational acceptance before it can be checked off as complete.
+Status: implemented in code-level regression tests on the unified `codex/decentralization-roadmap` branch. Isolated multi-node lab acceptance is in progress: mempool gossip and canonical transaction snapshot construction passed on candidates A, B, and C; candidate state-root replay and restart/catch-up evidence remain before full closure.
 
 - [x] Define canonical transaction selection rules for competitive rounds
 - [x] Verify deterministic nonce ordering, fee ordering, and tx merkle root generation across nodes
@@ -919,11 +919,17 @@ Phase 4.5 evidence:
 - [x] Both simulated nodes selected the same tx hashes, produced the same tx commitment, applied the same transactions, and calculated the same candidate `state_root`
 - [x] Full distributed testnet regression passed after the change: `72 passed`
 
+Phase 4.6 operational evidence:
+
+- [x] Deployed the unified `codex/decentralization-roadmap` branch to isolated Phase 4 lab candidates A (`178.62.30.17`), B (`138.68.139.141`), and C (`159.89.115.183`) with miner, validator, and auditor disabled
+- [x] Submitted a controlled signed transaction set through different candidates and reconciled candidate-to-candidate until all three `/mempool/inventory` responses contained the same seven transaction hashes
+- [x] Registered independent test miners on A, B, and C and verified every candidate selected the same canonical transaction order, `tx_merkle_root=85477e6cd0c95615776a2000b4c8221605976f7fb624923b2c29295cd6a15146`, `selected_tx_hashes_hash=86acba5df06c4a07f05b0b6554203acc9a1045c379b57b941fe65254578c624d`, `tx_count=7`, and `tx_fee_total_units=14000`
+
 Phase 4 operational acceptance gates:
 
-- [ ] Deploy the unified `codex/decentralization-roadmap` branch to independent bootstrap candidates with miner, validator, and auditor disabled
-- [ ] Submit the same signed transaction set through different candidates and verify mempool inventory gossip reaches the full candidate set
-- [ ] Verify every candidate derives the same canonical transaction order and `tx_merkle_root` for the same competitive round
+- [x] Deploy the unified `codex/decentralization-roadmap` branch to independent bootstrap candidates with miner, validator, and auditor disabled
+- [x] Submit the same signed transaction set through different candidates and verify mempool inventory gossip reaches the full candidate set
+- [x] Verify every candidate derives the same canonical transaction order and `tx_merkle_root` for the same competitive round
 - [ ] Verify candidate block reconstruction produces matching state roots across candidates after catch-up/replay
 - [ ] Verify replaced, expired, failed, already-confirmed, and duplicate transactions remain deterministic across candidates
 - [ ] Run a restart/catch-up cycle after transaction gossip and verify replay stays healthy with no divergence
