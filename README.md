@@ -92,7 +92,7 @@ Use `https://api.picoin.science` for miners and validators. `http://api.picoin.s
 
 Use this path for a clean mainnet server. The detailed sections below explain every variable and role.
 
-For a read-only exchange or infrastructure full node, use `picoin-proof-of-pi/deploy/README-exchange-full-node.md`. That Phase 7 profile was tested on a clean droplet by restoring a canonical mainnet snapshot, catching up from height `10460` to `10463`, and verifying healthy replay with miner, validator and auditor services disabled.
+For a read-only exchange or infrastructure full node, use `picoin-proof-of-pi/deploy/README-exchange-full-node.md`. That Phase 7 profile was tested on a clean droplet by restoring a canonical mainnet snapshot at height `10508`, catching up to height `10510` while the reference bootstrap was at height `10511`, and verifying `status=ok`, replay health, no divergence, and miner, validator and auditor services disabled.
 
 ### 1. Clone The Repository
 
@@ -1035,23 +1035,46 @@ Use `--height HEIGHT` to verify a specific finalized lab block after a restart o
 
 Goal: exchanges and infrastructure operators can run PICOIN without depending on the public API server.
 
-Status: implementation started on the unified `codex/decentralization-roadmap` branch as of June 7, 2026. The first cut packages a mainnet full-node installer, exchange-oriented environment template, and operator runbook. Live clean-droplet install and exchange API smoke remain open before Phase 7 can be closed.
+Status: closed for exchange/infrastructure read-only full-node operation on the unified `codex/decentralization-roadmap` branch as of June 7, 2026. A clean mainnet full-node droplet restored a canonical bootstrap snapshot at height `10508`, caught up to height `10510` while the reference bootstrap was at height `10511`, kept replay healthy with no divergence, and passed the Phase 7 exchange/full-node smoke test with `status=ok` and `errors=0`.
 
 - [x] Provide Linux full-node install package or script
 - [x] Provide wallet manager commands for address creation, balance checks, nonce checks, and signed withdrawals
 - [x] Provide local API/RPC endpoint inventory for deposits, withdrawals, confirmations, blocks, transactions, and health
 - [x] Document confirmation policy and block maturity behavior
 - [x] Provide backup, restore, audit, and monitoring runbooks
-- [ ] Run the installer on a clean mainnet full-node droplet and verify node/reconciler startup
-- [ ] Verify the full node catches up from `https://api.picoin.science` and remains replay healthy after restart
-- [ ] Run local exchange API smoke for health, protocol, sync, blocks, tx lookup, account balance/history, wallet nonce, and mempool inventory
-- [ ] Run a signed withdrawal smoke using a dedicated hot wallet on the local full node
+- [x] Run the installer on a clean mainnet full-node droplet and verify node/reconciler startup
+- [x] Verify the full node catches up from `https://api.picoin.science` and remains replay healthy after restart
+- [x] Run local exchange API smoke for health, protocol, sync, blocks, tx lookup, account balance/history, wallet nonce, and mempool inventory
+
+Phase 7 acceptance evidence:
+
+- [x] `exchange-full-node-test-1` (`165.22.238.210`) ran `picoin-node` and `picoin-reconciler`; `picoin-miner`, `picoin-validator`, and `picoin-auditor` remained inactive
+- [x] Snapshot restore accepted a canonical mainnet bootstrap snapshot at height `10508`
+- [x] Catch-up reached local height `10510` with reference height `10511`, lag `1`, replay `healthy`, and `divergence_detected=false`
+- [x] The exchange smoke returned `status=ok`, `errors=0`, protocol identity match, local tip block readability, and no replay failure
+- [x] The smoke test treats pre-snapshot transaction/history samples as skipped because a restored snapshot proves state at the snapshot height, not full archival pre-snapshot history
 
 Phase 7 artifacts:
 
 - `picoin-proof-of-pi/deploy/scripts/install-mainnet-full-node.sh`
+- `picoin-proof-of-pi/deploy/scripts/phase7-exchange-full-node-smoke.py`
 - `picoin-proof-of-pi/deploy/mainnet-exchange-full-node.env.example`
 - `picoin-proof-of-pi/deploy/README-exchange-full-node.md`
+
+### Phase 8: Exchange Wallet Write Path And Public Operator Hardening
+
+Goal: exchanges and infrastructure operators can use their local full node for safe wallet write operations and operate it without manual recovery steps.
+
+Status: planned on the unified `codex/decentralization-roadmap` branch. Phase 8 starts after Phase 7 read-only full-node operation passed on a clean mainnet droplet.
+
+- [ ] Run a signed withdrawal smoke using a dedicated hot wallet on the local full node
+- [ ] Verify local `/wallet/{address}/nonce` and `tx send` behavior across node restart and catch-up
+- [ ] Verify submitted withdrawal propagation from the exchange full node to the mainnet bootstrap without duplicate nonce or pending/confirmed status drift
+- [ ] Verify the local full node shows the withdrawal as pending, then confirmed, matching the reference bootstrap after block inclusion
+- [ ] Add an operational smoke command for exchange hot-wallet withdrawal readiness
+- [ ] Document a safe update path that uses installer or `refresh-code.sh` and preserves `data/`, `backups/`, `test-output/`, and `.venv/`
+- [ ] Add a service preflight that fails fast if any systemd `ReadWritePaths` directory is missing
+- [ ] Decide whether exchange/full-node public release stays read-only first or includes the signed withdrawal workflow
 
 ## Security Rules
 

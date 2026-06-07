@@ -13,6 +13,24 @@ It keeps these services disabled unless the operator explicitly opts in:
 - `picoin-validator`
 - `picoin-auditor`
 
+## Phase 7 Validation
+
+Phase 7 was validated on a clean mainnet full-node droplet on June 7, 2026:
+
+- Node id: `exchange-full-node-test-1`
+- Public address: `http://165.22.238.210:8000`
+- Runtime services: `picoin-node` and `picoin-reconciler`
+- Disabled services: `picoin-miner`, `picoin-validator`, and `picoin-auditor`
+- Snapshot restore height: `10508`
+- Local catch-up height: `10510`
+- Reference bootstrap height during smoke: `10511`
+- Lag: `1` block, within the `5` block smoke-test limit
+- Replay: `healthy`
+- Divergence: `false`
+- Phase 7 smoke: `status=ok`, `errors=0`
+
+When a node is restored from a snapshot, balances are proven at the snapshot height and later blocks are replayed from there. Pre-snapshot transaction and account-history rows are not treated as archival proof; the smoke test skips pre-snapshot transaction samples and compares exchange reads only for post-snapshot activity.
+
 ## Install
 
 Run on a clean Ubuntu 22.04/24.04 server:
@@ -52,6 +70,8 @@ The installer creates or refreshes:
 /var/backups/picoin-mainnet-exchange-full-node
 /etc/picoin/picoin.env
 ```
+
+For code refreshes on an existing full node, prefer rerunning the installer or `deploy/scripts/refresh-code.sh`. Do not run a raw `rsync --delete` into `/opt/picoin/picoin-proof-of-pi` unless `data/`, `backups/`, `test-output/`, and `.venv/` are excluded or recreated before restarting systemd. The service sandbox declares those paths in `ReadWritePaths`, and systemd fails with `status=226/NAMESPACE` if any declared writable path is missing.
 
 ## Verify Sync
 
