@@ -988,6 +988,7 @@ Status: implementation started on the unified `codex/decentralization-roadmap` b
 - [x] Persist certificate hash, canonical block payload, and approving validator vote payloads with the accepted block
 - [x] Expose certificate retrieval through `GET /blocks/{height}/finality`
 - [x] Add an operational verifier script for A/B/C certificate checks: `picoin-proof-of-pi/deploy/scripts/phase6-finality-verify.py`
+- [x] Export finality certificates through `/node/sync/blocks` and persist valid certificates when replay imports finalized blocks
 - [ ] Reject conflicting certificates for the same height unless deterministic rules select one valid canonical block
 - [ ] Add slashing evidence for validators that sign conflicting blocks at the same height
 - [ ] Verify all full nodes can validate finality certificates from disk after restart
@@ -995,6 +996,7 @@ Status: implementation started on the unified `codex/decentralization-roadmap` b
 Phase 6 local evidence recorded on June 7, 2026:
 
 - `tests/test_validator_reputation.py::test_block_is_accepted_after_validator_quorum` verifies certificate creation after three validator approvals, stored certificate lookup by block height, certificate block/task/job links, and validator signature verification from the stored payloads.
+- `tests/test_validator_reputation.py::test_finality_certificate_exports_and_imports_with_block_sync` verifies `/node/sync/blocks` exports certificates and a clean replay/import database persists the certificate with a reconstructed approved validation job.
 - `tests/test_api_endpoints.py::test_block_finality_endpoint_returns_certificate` verifies the `/blocks/{height}/finality` API route returns persisted certificates.
 - `tests/test_testnet_hardening.py::test_full_commit_reveal_flow_accepts_block_after_three_validator_votes` still passes with certificate creation attached to the quorum finalization path.
 

@@ -653,8 +653,39 @@ def get_blocks_since(from_height: int, limit: int = 100) -> dict[str, Any]:
                 (block["height"],),
             ).fetchall()
             block["transactions"] = [_decode_tx(row_to_dict(tx_row)) for tx_row in tx_rows]
+            certificate = _finality_certificate_for_block(connection, int(block["height"]))
+            if certificate is not None:
+                block["finality_certificate"] = certificate
             blocks.append(block)
     return {"from_height": from_height, "count": len(blocks), "blocks": blocks}
+
+
+def _finality_certificate_for_block(connection: Any, height: int) -> dict[str, Any] | None:
+    row = row_to_dict(
+        connection.execute(
+            "SELECT * FROM finality_certificates WHERE block_height = ?",
+            (int(height),),
+        ).fetchone()
+    )
+    if row is None:
+        return None
+    return {
+        "block_height": int(row["block_height"]),
+        "block_hash": row["block_hash"],
+        "task_id": row["task_id"],
+        "job_id": row["job_id"],
+        "miner_id": row["miner_id"],
+        "network_id": row["network_id"],
+        "chain_id": json.loads(row["payload_json"]).get("chain_id", row["chain_id"]),
+        "protocol_version": row["protocol_version"],
+        "protocol_params_id": row.get("protocol_params_id"),
+        "required_approvals": int(row["required_approvals"]),
+        "approval_count": int(row["approval_count"]),
+        "certificate_hash": row["certificate_hash"],
+        "payload": json.loads(row.get("payload_json") or "{}"),
+        "votes": json.loads(row.get("votes_json") or "[]"),
+        "created_at": row["created_at"],
+    }
 
 
 def _validator_reward_ids_for_related_id(connection: Any, related_id: str, limit: int) -> list[str]:

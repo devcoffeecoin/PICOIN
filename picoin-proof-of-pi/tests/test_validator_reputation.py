@@ -7,6 +7,7 @@ from app.core.signatures import (
     verify_payload_signature,
 )
 from app.db.database import get_connection, init_db
+from app.services.consensus import _import_finalized_block
 from app.services.mining import (
     MiningError,
     _accept_block_in_connection,
@@ -21,6 +22,7 @@ from app.services.mining import (
     register_validator,
     submit_validation_result,
 )
+from app.services.network import get_blocks_since
 from app.services.transactions import canonical_empty_tx_merkle_root, canonical_selected_tx_hashes_hash
 
 
@@ -187,6 +189,66 @@ def test_block_is_accepted_after_validator_quorum(tmp_path, monkeypatch) -> None
     assert get_validator(second_validator["validator_id"])["total_rewards"] == 0.10472
     assert get_validator(third_validator["validator_id"])["accepted_jobs"] == 1
     assert get_validator(third_validator["validator_id"])["total_rewards"] == 0.10472
+
+
+def test_finality_certificate_exports_and_imports_with_block_sync(tmp_path, monkeypatch) -> None:
+    source_db_path = tmp_path / "validator-finality-source.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", source_db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", source_db_path)
+    init_db(source_db_path)
+
+    miner_id = _register_miner("miner-finality-sync")
+    first_keys = generate_keypair()
+    second_keys = generate_keypair()
+    third_keys = generate_keypair()
+    validators = [
+        (first_keys, register_validator("sync-validator-one", first_keys["public_key"])),
+        (second_keys, register_validator("sync-validator-two", second_keys["public_key"])),
+        (third_keys, register_validator("sync-validator-three", third_keys["public_key"])),
+    ]
+    job_id, task_id = _insert_validation_job(miner_id, validators[0][1]["validator_id"], suffix="finality")
+    signed_at = "2026-05-10T00:00:00+00:00"
+    final_response = None
+    for index, (keys, validator) in enumerate(validators, start=1):
+        reason = f"accepted by sync validator {index}"
+        final_response = submit_validation_result(
+            job_id=job_id,
+            validator_id=validator["validator_id"],
+            approved=True,
+            reason=reason,
+            signature=_sign_validation_result(
+                keys["private_key"],
+                job_id,
+                validator["validator_id"],
+                task_id,
+                True,
+                reason,
+                signed_at,
+            ),
+            signed_at=signed_at,
+        )
+
+    assert final_response is not None
+    assert final_response["status"] == "approved"
+    exported_block = get_blocks_since(0)["blocks"][0]
+    assert exported_block["finality_certificate"]["certificate_hash"] == final_response["finality_certificate"]["certificate_hash"]
+
+    target_db_path = tmp_path / "validator-finality-target.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", target_db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", target_db_path)
+    init_db(target_db_path)
+    with get_connection() as connection:
+        imported = _import_finalized_block(connection, exported_block, "proposal_finality_sync")
+        stored = connection.execute(
+            "SELECT certificate_hash, block_hash, task_id, job_id FROM finality_certificates WHERE block_height = 1"
+        ).fetchone()
+
+    assert imported is True
+    assert stored is not None
+    assert stored["certificate_hash"] == exported_block["finality_certificate"]["certificate_hash"]
+    assert stored["block_hash"] == exported_block["block_hash"]
+    assert stored["task_id"] == task_id
+    assert stored["job_id"] == job_id
 
 
 def test_duplicate_validation_job_for_accepted_task_is_idempotent(tmp_path, monkeypatch) -> None:
