@@ -878,7 +878,7 @@ Phase 3 alpha evidence:
 
 Goal: every full node can independently validate transaction ordering and reconstruct the same candidate block state.
 
-Status: closed on the unified `codex/decentralization-roadmap` branch.
+Status: implemented in code-level regression tests on the unified `codex/decentralization-roadmap` branch, but not closed. Phase 4 remains pending isolated multi-node operational acceptance before it can be checked off as complete.
 
 - [x] Define canonical transaction selection rules for competitive rounds
 - [x] Verify deterministic nonce ordering, fee ordering, and tx merkle root generation across nodes
@@ -918,6 +918,16 @@ Phase 4.5 evidence:
 - [x] Added a two-node SQLite replay regression with identical signed transactions but opposite local mempool `created_at` ordering
 - [x] Both simulated nodes selected the same tx hashes, produced the same tx commitment, applied the same transactions, and calculated the same candidate `state_root`
 - [x] Full distributed testnet regression passed after the change: `72 passed`
+
+Phase 4 operational acceptance gates:
+
+- [ ] Deploy the unified `codex/decentralization-roadmap` branch to independent bootstrap candidates with miner, validator, and auditor disabled
+- [ ] Submit the same signed transaction set through different candidates and verify mempool inventory gossip reaches the full candidate set
+- [ ] Verify every candidate derives the same canonical transaction order and `tx_merkle_root` for the same competitive round
+- [ ] Verify candidate block reconstruction produces matching state roots across candidates after catch-up/replay
+- [ ] Verify replaced, expired, failed, already-confirmed, and duplicate transactions remain deterministic across candidates
+- [ ] Run a restart/catch-up cycle after transaction gossip and verify replay stays healthy with no divergence
+- [ ] Record candidate heights, hashes, mempool counts, tx commitments, state roots, and replay health before marking Phase 4 closed
 
 ### Phase 5: Miner Task Independence
 
