@@ -265,6 +265,11 @@ def _normalize_reward_address(reward_address: str | None) -> str | None:
     return normalized
 
 
+def miner_id_from_public_key(public_key: str) -> str:
+    normalized = str(public_key or "").strip()
+    return f"miner_{sha256_text(canonical_json({'public_key': normalized}))[:16]}"
+
+
 def register_miner(name: str, public_key: str | None = None, reward_address: str | None = None) -> dict[str, Any]:
     if public_key is None:
         raise MiningError(400, "public_key is required")
@@ -274,9 +279,61 @@ def register_miner(name: str, public_key: str | None = None, reward_address: str
         raise MiningError(400, str(exc)) from exc
     reward_address = _normalize_reward_address(reward_address)
 
-    miner_id = f"miner_{uuid.uuid4().hex[:16]}"
     timestamp = utc_now()
     with get_connection() as connection:
+        existing = row_to_dict(
+            connection.execute(
+                """
+                SELECT *
+                FROM miners
+                WHERE public_key = ?
+                ORDER BY registered_at ASC, miner_id ASC
+                LIMIT 1
+                """,
+                (public_key,),
+            ).fetchone()
+        )
+        if existing is not None:
+            connection.execute(
+                """
+                UPDATE miners
+                SET name = COALESCE(NULLIF(?, ''), name),
+                    reward_address = COALESCE(?, reward_address),
+                    last_seen_at = ?,
+                    last_heartbeat_at = ?,
+                    online_status = 'online',
+                    protocol_version = ?
+                WHERE miner_id = ?
+                """,
+                (
+                    (name or existing["miner_id"])[:80],
+                    reward_address,
+                    timestamp,
+                    timestamp,
+                    PROTOCOL_VERSION,
+                    existing["miner_id"],
+                ),
+            )
+            _ensure_balance_account(connection, existing["miner_id"], "miner")
+            if reward_address:
+                _ensure_balance_account(connection, reward_address, "wallet")
+            row = connection.execute("SELECT * FROM miners WHERE miner_id = ?", (existing["miner_id"],)).fetchone()
+            return enrich_miner(row_to_dict(row))
+
+        miner_id = miner_id_from_public_key(public_key)
+        collision = connection.execute(
+            """
+            SELECT public_key
+            FROM miners
+            WHERE miner_id = ?
+              AND COALESCE(public_key, '') != ?
+            LIMIT 1
+            """,
+            (miner_id, public_key),
+        ).fetchone()
+        if collision is not None:
+            raise MiningError(409, "miner id collision for public_key")
+
         connection.execute(
             """
             INSERT INTO miners (
@@ -284,6 +341,14 @@ def register_miner(name: str, public_key: str | None = None, reward_address: str
                 last_seen_at, last_heartbeat_at, online_status, protocol_version, enabled
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, 'online', ?, 1)
+            ON CONFLICT(miner_id) DO UPDATE SET
+                name = COALESCE(NULLIF(excluded.name, ''), miners.name),
+                public_key = COALESCE(miners.public_key, excluded.public_key),
+                reward_address = COALESCE(excluded.reward_address, miners.reward_address),
+                last_seen_at = excluded.last_seen_at,
+                last_heartbeat_at = excluded.last_heartbeat_at,
+                online_status = 'online',
+                protocol_version = excluded.protocol_version
             """,
             (miner_id, name, public_key, reward_address, timestamp, timestamp, timestamp, PROTOCOL_VERSION),
         )

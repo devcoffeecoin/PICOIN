@@ -14,10 +14,12 @@ from app.services.mining import (
     create_next_task,
     get_full_economic_audit,
     get_validation_job,
+    miner_id_from_public_key,
     record_validator_heartbeat,
     register_miner,
     submit_task,
 )
+from app.services.wallet import create_wallet
 
 
 def _heartbeat_validator(
@@ -152,6 +154,59 @@ def test_competitive_round_assignment_gives_miners_same_round_range(tmp_path, mo
     assert first_task["competitive_round_height"] == 1
     assert second_task["competitive_round_height"] == 1
     assert first_task["competitive_round_previous_hash"] == second_task["competitive_round_previous_hash"]
+
+
+def test_register_miner_reuses_portable_identity_for_public_key(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-portable-miner.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    keypair = generate_keypair()
+    first_reward = create_wallet("portable-first-reward")
+    second_reward = create_wallet("portable-second-reward")
+
+    first = register_miner("portable-a", keypair["public_key"], first_reward["address"])
+    second = register_miner("portable-b", keypair["public_key"], second_reward["address"])
+
+    expected_miner_id = miner_id_from_public_key(keypair["public_key"])
+    assert first["miner_id"] == expected_miner_id
+    assert second["miner_id"] == expected_miner_id
+    assert second["name"] == "portable-b"
+    assert second["reward_address"] == second_reward["address"]
+    with get_connection() as connection:
+        rows = connection.execute(
+            "SELECT miner_id, public_key FROM miners WHERE public_key = ?",
+            (keypair["public_key"],),
+        ).fetchall()
+    assert [row["miner_id"] for row in rows] == [expected_miner_id]
+
+
+def test_task_assignment_restores_deterministic_miner_identity_on_peer(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-deterministic-miner-restore.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr(mining_service, "MINING_TASK_MODE", "competitive_round")
+    init_db(db_path)
+
+    keypair = generate_keypair()
+    miner_id = miner_id_from_public_key(keypair["public_key"])
+    task = create_next_task(
+        miner_id,
+        public_key=keypair["public_key"],
+        name="portable-peer-miner",
+    )
+
+    assert task is not None
+    assert task["miner_id"] == miner_id
+    assert task["status"] == "assigned"
+    with get_connection() as connection:
+        miner = connection.execute(
+            "SELECT miner_id, name, public_key FROM miners WHERE miner_id = ?",
+            (miner_id,),
+        ).fetchone()
+    assert miner["name"] == "portable-peer-miner"
+    assert miner["public_key"] == keypair["public_key"]
 
 
 def test_competitive_round_stops_new_assignments_while_reveal_is_pending(tmp_path, monkeypatch) -> None:
