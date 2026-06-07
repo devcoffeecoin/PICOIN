@@ -1032,11 +1032,23 @@ Use `--height HEIGHT` to verify a specific finalized lab block after a restart o
 
 Goal: exchanges and infrastructure operators can run PICOIN without depending on the public API server.
 
-- [ ] Provide Linux full-node install package or script
-- [ ] Provide wallet manager commands for address creation, balance checks, nonce checks, and signed withdrawals
-- [ ] Provide local API/RPC endpoints for deposits, withdrawals, confirmations, blocks, transactions, and health
-- [ ] Document confirmation policy and block maturity behavior
-- [ ] Provide backup, restore, audit, and monitoring runbooks
+Status: implementation started on the unified `codex/decentralization-roadmap` branch as of June 7, 2026. The first cut packages a mainnet full-node installer, exchange-oriented environment template, and operator runbook. Live clean-droplet install and exchange API smoke remain open before Phase 7 can be closed.
+
+- [x] Provide Linux full-node install package or script
+- [x] Provide wallet manager commands for address creation, balance checks, nonce checks, and signed withdrawals
+- [x] Provide local API/RPC endpoint inventory for deposits, withdrawals, confirmations, blocks, transactions, and health
+- [x] Document confirmation policy and block maturity behavior
+- [x] Provide backup, restore, audit, and monitoring runbooks
+- [ ] Run the installer on a clean mainnet full-node droplet and verify node/reconciler startup
+- [ ] Verify the full node catches up from `https://api.picoin.science` and remains replay healthy after restart
+- [ ] Run local exchange API smoke for health, protocol, sync, blocks, tx lookup, account balance/history, wallet nonce, and mempool inventory
+- [ ] Run a signed withdrawal smoke using a dedicated hot wallet on the local full node
+
+Phase 7 artifacts:
+
+- `picoin-proof-of-pi/deploy/scripts/install-mainnet-full-node.sh`
+- `picoin-proof-of-pi/deploy/mainnet-exchange-full-node.env.example`
+- `picoin-proof-of-pi/deploy/README-exchange-full-node.md`
 
 ## Security Rules
 
@@ -1058,6 +1070,7 @@ Use separate wallets for treasury, governance, miner rewards, validator rewards,
 | Document | Purpose |
 | --- | --- |
 | `picoin-proof-of-pi/deploy/README-mainnet.md` | Mainnet deployment runbook |
+| `picoin-proof-of-pi/deploy/README-exchange-full-node.md` | Phase 7 exchange/infrastructure full-node install and operations |
 | `picoin-proof-of-pi/deploy/README-full-node-phase1.md` | Decentralization Phase 1 full-node verification lab |
 | `picoin-proof-of-pi/deploy/README-mainnet-shadow-full-node.md` | Phase 1B read-only mainnet shadow full-node verification |
 | `picoin-proof-of-pi/deploy/README-bootstrap-phase2.md` | Phase 2 public bootstrap candidate and failover verification |
