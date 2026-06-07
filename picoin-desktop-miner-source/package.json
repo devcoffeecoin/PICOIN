@@ -1,6 +1,6 @@
 {
   "name": "picoin-desktop-miner",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "private": true,
   "main": "dist-electron/electron/main/main.js",
   "scripts": {
