@@ -7,7 +7,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import pool_server
 from pool_server import PoolCoordinator, PoolDatabase, is_lost_competitive_round_error, parse_iso_timestamp, utc_now
+from miner.client import TaskUnavailable
 from app.services.wallet import create_wallet
 
 
@@ -77,6 +79,42 @@ def test_public_pool_requires_valid_worker_payout(tmp_path):
 
     assert row["name"] == "Worker 1 renamed"
     assert row["payout_address"] == "PIE1EE818AA165EECC3F0CCF058F4FF7BC04517F8CD07385"
+
+
+def test_pool_treats_mainnet_task_429_as_idle_info(tmp_path, monkeypatch):
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size=1,
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=False,
+        pool_fee_percent=0,
+    )
+
+    def unavailable(*args, **kwargs):
+        raise TaskUnavailable("competitive round is waiting for validation; retry after next block", 7)
+
+    monkeypatch.setattr(pool_server, "get_task_for_identity", unavailable)
+
+    coordinator.ensure_active_task()
+
+    with db.connect() as connection:
+        task_count = connection.execute("SELECT COUNT(*) FROM pool_tasks").fetchone()[0]
+        event = connection.execute(
+            "SELECT level, message, payload_json FROM pool_events ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+
+    assert task_count == 0
+    assert event["level"] == "info"
+    assert event["message"] == "mainnet did not assign pool work"
+    payload = json.loads(event["payload_json"])
+    assert payload["status"] == "unavailable"
+    assert "waiting for validation" in payload["detail"]
+    assert payload["retry_after_seconds"] == 7
 
 
 def test_stats_reports_lost_competitive_rounds_without_error_status(tmp_path):

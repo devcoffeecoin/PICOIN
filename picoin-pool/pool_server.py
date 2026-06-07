@@ -41,6 +41,7 @@ from app.core.performance import elapsed_ms, now_perf  # noqa: E402
 from app.core.pi import calculate_pi_segment  # noqa: E402
 from app.services.wallet import address_from_public_key, address_matches_public_key, is_valid_address, sign_transaction  # noqa: E402
 from miner.client import (  # noqa: E402
+    TaskUnavailable,
     commit_result,
     get_task_for_identity,
     load_or_register_identity,
@@ -701,7 +702,17 @@ class PoolCoordinator:
 
         try:
             task = get_task_for_identity(self.server_url, self.identity)
+        except TaskUnavailable as exc:
+            payload: dict[str, Any] = {"status": "unavailable", "detail": exc.detail}
+            if exc.retry_after_seconds is not None:
+                payload["retry_after_seconds"] = exc.retry_after_seconds
+            self.db.event("info", "mainnet did not assign pool work", payload)
+            return
         except requests.HTTPError as exc:
+            response = getattr(exc, "response", None)
+            if getattr(response, "status_code", None) == 429:
+                self.db.event("info", "mainnet did not assign pool work", {"status": "unavailable", "error": str(exc)})
+                return
             self.db.event("warning", "mainnet task request failed", {"error": str(exc)})
             return
         except requests.RequestException as exc:
