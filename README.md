@@ -924,13 +924,14 @@ Phase 4.6 operational evidence:
 - [x] Deployed the unified `codex/decentralization-roadmap` branch to isolated Phase 4 lab candidates A (`178.62.30.17`), B (`138.68.139.141`), and C (`159.89.115.183`) with miner, validator, and auditor disabled
 - [x] Submitted a controlled signed transaction set through different candidates and reconciled candidate-to-candidate until all three `/mempool/inventory` responses contained the same seven transaction hashes
 - [x] Registered independent test miners on A, B, and C and verified every candidate selected the same canonical transaction order, `tx_merkle_root=85477e6cd0c95615776a2000b4c8221605976f7fb624923b2c29295cd6a15146`, `selected_tx_hashes_hash=86acba5df06c4a07f05b0b6554203acc9a1045c379b57b941fe65254578c624d`, `tx_count=7`, and `tx_fee_total_units=14000`
+- [x] Replayed the selected seven transaction hashes against temporary SQLite copies on A, B, and C; each node applied all seven transactions with `rejected=[]` and produced matching `state_root=63b35aa71fc38b9d7da52c506d565263b794affafebe707d0f6bde95b3315a98`
 
 Phase 4 operational acceptance gates:
 
 - [x] Deploy the unified `codex/decentralization-roadmap` branch to independent bootstrap candidates with miner, validator, and auditor disabled
 - [x] Submit the same signed transaction set through different candidates and verify mempool inventory gossip reaches the full candidate set
 - [x] Verify every candidate derives the same canonical transaction order and `tx_merkle_root` for the same competitive round
-- [ ] Verify candidate block reconstruction produces matching state roots across candidates after catch-up/replay
+- [x] Verify candidate block reconstruction produces matching state roots across candidates after catch-up/replay
 - [ ] Verify replaced, expired, failed, already-confirmed, and duplicate transactions remain deterministic across candidates
 - [ ] Run a restart/catch-up cycle after transaction gossip and verify replay stays healthy with no divergence
 - [ ] Record candidate heights, hashes, mempool counts, tx commitments, state roots, and replay health before marking Phase 4 closed
