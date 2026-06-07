@@ -293,7 +293,7 @@ Submit a signed withdrawal:
 
 ```bash
 TO="PI_DESTINATION_ADDRESS"
-sudo -u picoin .venv/bin/python -m picoin wallet \
+sudo -u picoin .venv/bin/python -m picoin tx \
   --server http://127.0.0.1:8000 \
   send \
   --wallet /var/lib/picoin/exchange-wallets/hot-wallet.json \
@@ -310,6 +310,70 @@ sudo -u picoin .venv/bin/python -m picoin tx \
   --server http://127.0.0.1:8000 \
   status --hash "$TX_HASH"
 ```
+
+## Phase 8 Withdrawal Write-Path Smoke
+
+Use the Phase 8 smoke before enabling an exchange or payment processor withdrawal path. By default it is a safe preflight and does not spend funds:
+
+```bash
+cd /opt/picoin/picoin-proof-of-pi
+
+sudo -u picoin -E python3 deploy/scripts/phase8-exchange-withdrawal-smoke.py \
+  --local http://127.0.0.1:8000 \
+  --reference https://api.picoin.science \
+  --wallet /var/lib/picoin/exchange-wallets/hot-wallet.json \
+  --to PI_DESTINATION_ADDRESS \
+  --amount 0.001 \
+  --fee 0.001
+```
+
+The preflight checks local/reference health, protocol identity, replay divergence, height lag, wallet address/public-key match, wallet network/chain metadata, local/reference wallet balance parity, sufficient local balance, and local/reference nonce parity.
+
+To send a real signed withdrawal through the local full node and require the reference bootstrap to see the same transaction:
+
+```bash
+sudo -u picoin -E python3 deploy/scripts/phase8-exchange-withdrawal-smoke.py \
+  --local http://127.0.0.1:8000 \
+  --reference https://api.picoin.science \
+  --wallet /var/lib/picoin/exchange-wallets/hot-wallet.json \
+  --to PI_DESTINATION_ADDRESS \
+  --amount 0.001 \
+  --fee 0.001 \
+  --submit \
+  --require-reference-seen \
+  --wait-seconds 180
+```
+
+For a final block-inclusion drill, keep mining active and require confirmation parity:
+
+```bash
+sudo -u picoin -E python3 deploy/scripts/phase8-exchange-withdrawal-smoke.py \
+  --local http://127.0.0.1:8000 \
+  --reference https://api.picoin.science \
+  --wallet /var/lib/picoin/exchange-wallets/hot-wallet.json \
+  --to PI_DESTINATION_ADDRESS \
+  --amount 0.001 \
+  --fee 0.001 \
+  --submit \
+  --require-reference-seen \
+  --require-confirmed \
+  --wait-seconds 900
+```
+
+The report intentionally prints only public wallet metadata, balances, nonces, transaction hash, and transaction status. It never prints the wallet private key.
+
+## Service Preflight
+
+Before restarting services after a manual code refresh, verify systemd writable paths:
+
+```bash
+cd /opt/picoin/picoin-proof-of-pi
+sudo deploy/scripts/picoin-service-preflight.sh --fix --repo-dir /opt/picoin/picoin-proof-of-pi
+sudo systemctl daemon-reload
+sudo systemctl restart picoin-node picoin-reconciler
+```
+
+`refresh-code.sh` runs this preflight automatically. This prevents `status=226/NAMESPACE` failures when systemd `ReadWritePaths` directories such as `data/`, `backups/`, or `test-output/` are missing.
 
 ## Deposit Confirmation Policy
 

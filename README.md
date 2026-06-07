@@ -1065,16 +1065,21 @@ Phase 7 artifacts:
 
 Goal: exchanges and infrastructure operators can use their local full node for safe wallet write operations and operate it without manual recovery steps.
 
-Status: planned on the unified `codex/decentralization-roadmap` branch. Phase 8 starts after Phase 7 read-only full-node operation passed on a clean mainnet droplet.
+Status: implementation ready for live validation on the unified `codex/decentralization-roadmap` branch. This phase closes the current decentralization/operator-readiness route once a funded hot-wallet withdrawal smoke passes through a local full node and is observed by the reference bootstrap without nonce or confirmation drift.
 
 - [ ] Run a signed withdrawal smoke using a dedicated hot wallet on the local full node
 - [ ] Verify local `/wallet/{address}/nonce` and `tx send` behavior across node restart and catch-up
 - [ ] Verify submitted withdrawal propagation from the exchange full node to the mainnet bootstrap without duplicate nonce or pending/confirmed status drift
 - [ ] Verify the local full node shows the withdrawal as pending, then confirmed, matching the reference bootstrap after block inclusion
-- [ ] Add an operational smoke command for exchange hot-wallet withdrawal readiness
-- [ ] Document a safe update path that uses installer or `refresh-code.sh` and preserves `data/`, `backups/`, `test-output/`, and `.venv/`
-- [ ] Add a service preflight that fails fast if any systemd `ReadWritePaths` directory is missing
+- [x] Add an operational smoke command for exchange hot-wallet withdrawal readiness
+- [x] Document a safe update path that uses installer or `refresh-code.sh` and preserves `data/`, `backups/`, `test-output/`, and `.venv/`
+- [x] Add a service preflight that fails fast if any systemd `ReadWritePaths` directory is missing
 - [ ] Decide whether exchange/full-node public release stays read-only first or includes the signed withdrawal workflow
+
+Phase 8 artifacts:
+
+- `picoin-proof-of-pi/deploy/scripts/phase8-exchange-withdrawal-smoke.py`
+- `picoin-proof-of-pi/deploy/scripts/picoin-service-preflight.sh`
 
 ## Security Rules
 
