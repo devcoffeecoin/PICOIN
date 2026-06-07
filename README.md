@@ -943,11 +943,26 @@ Phase 4 operational acceptance gates:
 
 Goal: miners can request the same canonical competitive round work from any healthy node.
 
+Status: pending isolated multi-node operational acceptance on the unified `codex/decentralization-roadmap` branch. Phase 5 must prove miner failover and round consistency before any mainnet rollout.
+
 - [ ] Derive competitive task ranges from canonical height, previous block hash, and protocol params
 - [ ] Allow multiple full nodes to serve the same round without creating conflicting work
 - [ ] Verify first valid reveal wins independent of which node assigned the task
 - [ ] Verify late reveals become stale consistently across nodes
 - [ ] Verify miners can fail over to another node without losing identity or reward wallet configuration
+
+Phase 5 operational acceptance gates:
+
+- [ ] Deploy the unified `codex/decentralization-roadmap` branch to isolated candidates A, B, and C with the same canonical lab state and with production miner, validator, and auditor services disabled
+- [ ] Register the same test miner public key and reward wallet on A, B, and C, then verify each node reports the same miner identity metadata without requiring private keys on the node
+- [ ] Before requesting work, verify A/B/C agree on `network_id`, `chain_id`, `genesis_hash`, `protocol_version`, `effective_latest_block_height`, `effective_latest_block_hash`, and active protocol params
+- [ ] Request `/tasks/next` from A, B, and C for the same test miner identity and compare the canonical round fields: assignment mode, competitive round height, previous block hash, protocol params id, algorithm, segment size, sample count, assignment seed basis, range start/end, task expiration, tx commitment fields, and reward address
+- [ ] Verify task requests against alternate healthy nodes do not create incompatible active work for the same miner identity; expected idle/rate-limit responses must not terminate Linux miner or Desktop miner processes
+- [ ] Run a controlled miner failover loop that alternates endpoints A -> B -> C while preserving the same miner identity and reward wallet, and record every assigned task, idle response, error-free retry, and selected endpoint
+- [ ] Submit a valid commit/reveal from a task assigned by one candidate, reconcile A/B/C, and verify the winning or validation-pending task status is consistent across all candidates
+- [ ] Submit a competing or late reveal from another candidate after the canonical winner/round advances, reconcile A/B/C, and verify all candidates mark the late task `stale` or rejected with the same deterministic reason
+- [ ] Restart one candidate after task assignment and another after reveal, then reconcile the triangle and verify miner identity, active task state, replay health, and task outcomes remain consistent with no divergence
+- [ ] Record final Phase 5 evidence: candidate heights/hashes, protocol params id, task ids, assignment seeds, ranges, commit/reveal responses, task statuses, winner/late-task outcomes, miner reward address, replay health, and divergence status before marking Phase 5 closed
 
 ### Phase 6: Validator Finality Certificates
 
