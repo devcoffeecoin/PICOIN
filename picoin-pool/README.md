@@ -10,7 +10,7 @@
 4. Pool workers calculate chunks and submit them back to the pool.
 5. The pool verifies each chunk, assembles the full segment, signs `/tasks/commit`, and signs `/tasks/reveal`.
 6. If mainnet accepts the reveal or creates a validation job, the pool records credited shares for the workers that contributed chunks.
-7. For accepted blocks, `/stats` and `/payouts` calculate each worker's pending payout from the accepted reward and credited units, after the pool operator fee.
+7. When the pool wins a block, `/stats` and `/payouts` calculate that block's reward over the closed work window from the previous pool block to the new pool block. Credited shares from stale, lost, validation-pending, and winning pool tasks inside that window all participate.
 8. If a payout wallet is configured, the pool automatically sends worker payouts on the configured interval once a worker reaches the minimum payout.
 
 This means the pool does not multiply mining identities. It gives a community a way to share one miner's reward internally if that pool miner wins a block.
@@ -42,11 +42,13 @@ python picoin-pool/pool_server.py \
   --pool-fee-percent 1 \
   --payout-wallet /var/lib/picoin-pool/payout_wallet.json \
   --payout-interval-seconds 7200 \
-  --payout-min-amount 0.1
+  --payout-min-amount 0.1 \
+  --payout-confirmation-grace-seconds 600
 ```
 
 The first run auto-registers `pool_identity.json` as a normal miner, using the same official miner registration flow.
 If `--payout-wallet` is omitted, automatic transfers are disabled and the pool only reports pending payout balances.
+Submitted payouts remain reserved while the pool waits for mainnet confirmation. If mainnet still cannot find a payout after `--payout-confirmation-grace-seconds`, the pool marks that payout as `error` and releases the amount back to the worker's pending balance so it can be retried.
 
 ## Pool Mining Modes
 
@@ -201,11 +203,31 @@ winner_shares = task_units
 late_worker_shares = floor(task_units * winner_compute_ms / worker_compute_ms)
 ```
 
-The pool does not create extra mainnet rewards. If the pool wins a block, accepted-block payouts are calculated from the pool reward, minus the configured pool fee, divided by credited shares:
+The pool does not create extra mainnet rewards. If the pool wins a block, payouts are calculated from the work window that just closed:
+
+```text
+first won block window  = all credited shares before the first pool block was completed
+next won block window   = credited shares after the previous pool block and up to this pool block
+current open window     = credited shares after the latest pool block
+```
+
+Each closed window distributes that block reward, minus the configured pool fee, by credited shares:
 
 ```text
 worker_reward = reward_after_fee * worker_shares / total_credited_shares
 ```
+
+The public `/stats` response keeps these views separate:
+
+```text
+credited_shares/current_round_shares = open window since the latest pool block
+last_round_shares                    = closed window for the latest pool block
+lifetime_shares                      = audit history, not the current payout window
+payouts.pending_total                = unpaid amount still reserved for workers
+payouts.operator_top_up_total        = extra operator funding needed if old payments already exceeded recalculated worker balances
+```
+
+If a worker's balance is below `--payout-min-amount`, it stays pending and is included in later payout runs. It is not reset or erased.
 
 When the pool is started with `--trust-workers`, the coordinator does not recalculate every worker submission. It still checks basic shape, records shares, assembles the pool result, and lets mainnet validators verify the final commit/reveal.
 
@@ -405,6 +427,7 @@ picoin-pool/deploy/nginx-pool1.conf.example
 
 - This is an alpha pool coordinator, not a custody product.
 - Automatic payouts require a configured payout wallet file on the pool server.
+- The pool operator fee (`--pool-fee-percent`) is accounting retained by the operator. The payout transaction fee (`--payout-fee`) is separate and defaults to `0.0`.
 - A pool is one mainnet miner identity, so it can still receive `429 Too Many Requests` or wait for the next competitive block like any other miner.
 - If mainnet task sizes are small, pooling mostly helps reward sharing. It does not make one identity mathematically equivalent to many independent miners.
 - Production pool operators should add HTTPS, monitoring, payout policy, abuse controls, backups, and clear community rules before accepting public workers.

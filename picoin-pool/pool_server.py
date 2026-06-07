@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from datetime import datetime, timezone
+from decimal import Decimal, ROUND_DOWN
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -17,7 +18,15 @@ from urllib.parse import parse_qs, urlparse
 
 import requests
 
-from pool_accounting import WorkChunk, assemble_segment, split_range, split_range_balanced, summarize_payouts, summarize_shares
+from pool_accounting import (
+    WorkChunk,
+    assemble_segment,
+    filter_shares_by_window,
+    split_range,
+    split_range_balanced,
+    summarize_round_window_payouts,
+    summarize_shares,
+)
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -58,6 +67,11 @@ def parse_iso_timestamp(value: str | None) -> float:
         return datetime.fromisoformat(str(value).replace("Z", "+00:00")).timestamp()
     except ValueError:
         return 0.0
+
+
+def floor_picoin_units(amount: Any) -> int:
+    value = Decimal(str(amount or "0")).quantize(Decimal("0.000001"), rounding=ROUND_DOWN)
+    return int((value * Decimal("1000000")).to_integral_value(rounding=ROUND_DOWN))
 
 
 def load_payout_wallet(path: Path | None) -> dict[str, Any] | None:
@@ -226,6 +240,7 @@ class PoolCoordinator:
         payout_interval_seconds: int = 7200,
         payout_min_amount: float = 0.1,
         payout_fee: float = 0.0,
+        payout_confirmation_grace_seconds: int = 600,
         settlement_block_limit: int = 100,
     ) -> None:
         self.db = db
@@ -244,6 +259,7 @@ class PoolCoordinator:
         self.payout_interval_seconds = max(1, int(payout_interval_seconds))
         self.payout_min_amount = max(0.0, float(payout_min_amount))
         self.payout_fee = max(0.0, float(payout_fee))
+        self.payout_confirmation_grace_seconds = max(1, int(payout_confirmation_grace_seconds))
         self.settlement_block_limit = max(1, min(500, int(settlement_block_limit)))
         self._last_payout_attempt = 0.0
         self.stop_event = threading.Event()
@@ -294,6 +310,7 @@ class PoolCoordinator:
         self.reconcile_won_blocks()
         self.reconcile_mainnet_task_statuses()
         self.ensure_active_task()
+        self.reconcile_payout_statuses()
         self.maybe_run_payouts()
 
     def register_worker(self, worker_id: str, name: str | None, payout_address: str | None) -> dict[str, Any]:
@@ -1270,13 +1287,23 @@ class PoolCoordinator:
                 dict(row)
                 for row in connection.execute(
                     """
-                    SELECT worker_id, pool_task_id, units
+                    SELECT worker_id, pool_task_id, units, created_at
                     FROM pool_shares
                     WHERE credited = 1
                     """
                 ).fetchall()
             ]
             task_rewards = self._accepted_task_rewards(connection)
+            latest_reward_window = self._latest_reward_window(task_rewards)
+            current_round_share_rows = filter_shares_by_window(
+                share_rows,
+                start_at=latest_reward_window["current_start_at"],
+            )
+            last_round_share_rows = filter_shares_by_window(
+                share_rows,
+                start_at=latest_reward_window["last_start_at"],
+                end_at=latest_reward_window["last_end_at"],
+            )
             validation_pending_tasks = self._validation_pending_task_count(connection)
             payout_rows = self._paid_payout_rows(connection)
             payout_history = self._payout_history(connection)
@@ -1292,13 +1319,15 @@ class PoolCoordinator:
                 ).fetchall()
             ]
             active_worker_rows = self._active_workers(worker_rows)
-            credited_shares = summarize_shares(share_rows)
+            current_round_shares = summarize_shares(current_round_share_rows)
+            last_round_shares = summarize_shares(last_round_share_rows)
+            lifetime_shares = summarize_shares(share_rows)
             hashrate = self._hashrate_summary(connection)
             performance = self._performance_summary(
                 tasks=tasks,
                 chunks=chunks,
                 active_worker_rows=active_worker_rows,
-                credited_worker_count=len(credited_shares),
+                credited_worker_count=len(current_round_shares),
                 hashrate=hashrate,
                 won_blocks=task_rewards,
                 validation_pending_tasks=validation_pending_tasks,
@@ -1328,12 +1357,16 @@ class PoolCoordinator:
             "hashrate": hashrate,
             "tasks": tasks,
             "chunks": chunks,
-            "credited_shares": credited_shares,
+            "credited_shares": current_round_shares,
+            "current_round_shares": current_round_shares,
+            "last_round_shares": last_round_shares,
+            "lifetime_shares": lifetime_shares,
+            "share_windows": latest_reward_window,
             "won_blocks": task_rewards[:20],
             "performance": performance,
             "active_tasks": performance["active_tasks"],
             "completed_tasks": performance["completed_tasks"],
-            "payouts": summarize_payouts(
+            "payouts": summarize_round_window_payouts(
                 task_rewards=task_rewards,
                 share_rows=share_rows,
                 worker_rows=worker_rows,
@@ -1431,6 +1464,23 @@ class PoolCoordinator:
                 }
             )
         return rewards
+
+    @staticmethod
+    def _latest_reward_window(task_rewards: list[dict[str, Any]]) -> dict[str, Any]:
+        ordered = sorted(task_rewards, key=lambda row: parse_iso_timestamp(row.get("completed_at")))
+        if not ordered:
+            return {
+                "current_start_at": None,
+                "last_start_at": None,
+                "last_end_at": None,
+            }
+        latest = ordered[-1]
+        previous = ordered[-2] if len(ordered) >= 2 else None
+        return {
+            "current_start_at": latest.get("completed_at"),
+            "last_start_at": previous.get("completed_at") if previous else None,
+            "last_end_at": latest.get("completed_at"),
+        }
 
     def _validation_pending_task_count(self, connection: sqlite3.Connection) -> int:
         rows = connection.execute(
@@ -1578,6 +1628,7 @@ class PoolCoordinator:
             "interval_seconds": self.payout_interval_seconds,
             "min_amount": self.payout_min_amount,
             "fee": self.payout_fee,
+            "confirmation_grace_seconds": self.payout_confirmation_grace_seconds,
         }
 
     def maybe_run_payouts(self) -> None:
@@ -1595,6 +1646,7 @@ class PoolCoordinator:
         if self.payout_wallet is None:
             return {"enabled": False, "eligible": 0, "submitted": 0, "errors": 0}
 
+        self.reconcile_payout_statuses()
         stats = self.stats()
         workers = [
             worker
@@ -1616,7 +1668,7 @@ class PoolCoordinator:
         fee_units = to_units(self.payout_fee)
         for worker in workers:
             payout_address = self._normalize_payout_address(worker.get("payout_address"))
-            amount_units = to_units(worker.get("pending_amount") or 0)
+            amount_units = floor_picoin_units(worker.get("pending_amount") or 0)
             if amount_units < min_units:
                 continue
             payout_id = f"payout_{uuid.uuid4().hex[:16]}"
@@ -1696,6 +1748,112 @@ class PoolCoordinator:
                 break
         return result
 
+    def reconcile_payout_statuses(self, limit: int = 100) -> dict[str, Any]:
+        with self.db._lock, self.db.connect() as connection:
+            rows = [
+                dict(row)
+                for row in connection.execute(
+                    """
+                    SELECT payout_id, tx_hash, status, created_at, updated_at
+                    FROM pool_payouts
+                    WHERE status IN ('submitting', 'submitted')
+                    ORDER BY created_at ASC
+                    LIMIT ?
+                    """,
+                    (max(1, int(limit)),),
+                ).fetchall()
+            ]
+
+        result = {"checked": len(rows), "confirmed": 0, "pending": 0, "expired": 0, "errors": 0}
+        for row in rows:
+            tx_hash = str(row.get("tx_hash") or "").strip()
+            if not tx_hash:
+                continue
+            try:
+                payload = self._fetch_payout_transaction(tx_hash)
+            except requests.RequestException as exc:
+                result["errors"] += 1
+                self.db.event(
+                    "warning",
+                    "payout transaction status lookup failed",
+                    {"payout_id": row.get("payout_id"), "tx_hash": tx_hash, "error": str(exc)},
+                )
+                continue
+
+            status = str(payload.get("status") or "").strip().lower()
+            detail = str(payload.get("detail") or payload.get("message") or "").strip()
+            empty_tx_response = not status and not any(
+                payload.get(key)
+                for key in ("tx_hash", "hash", "sender", "recipient", "amount", "block_height")
+            )
+            not_found = status in {"not_found", "missing"} or "not found" in detail.lower() or empty_tx_response
+            age_seconds = time.time() - parse_iso_timestamp(str(row.get("created_at") or row.get("updated_at") or ""))
+
+            if status == "confirmed":
+                self._update_payout_status(
+                    str(row["payout_id"]),
+                    "confirmed",
+                    raw_response=payload,
+                    error=None,
+                )
+                result["confirmed"] += 1
+                continue
+            if status in {"pending", "selected", "submitted", "mempool"}:
+                self._update_payout_status(
+                    str(row["payout_id"]),
+                    "submitted",
+                    raw_response=payload,
+                    error=None,
+                )
+                result["pending"] += 1
+                continue
+            if not_found and age_seconds < self.payout_confirmation_grace_seconds:
+                result["pending"] += 1
+                continue
+
+            if not_found:
+                error = f"payout transaction not found after {int(age_seconds)} seconds"
+            elif status in {"expired", "failed", "rejected", "error"}:
+                error = detail or f"payout transaction status is {status}"
+            else:
+                continue
+
+            self._update_payout_status(
+                str(row["payout_id"]),
+                "error",
+                raw_response=payload,
+                error=error,
+            )
+            result["expired"] += 1
+            self.db.event(
+                "warning",
+                "payout transaction released back to pending balance",
+                {"payout_id": row.get("payout_id"), "tx_hash": tx_hash, "error": error},
+            )
+        return result
+
+    def _update_payout_status(
+        self,
+        payout_id: str,
+        status: str,
+        *,
+        raw_response: dict[str, Any],
+        error: str | None,
+    ) -> None:
+        now = utc_now()
+        with self.db._lock, self.db.connect() as connection:
+            connection.execute(
+                """
+                UPDATE pool_payouts
+                SET status = ?,
+                    raw_response_json = ?,
+                    error = ?,
+                    updated_at = ?
+                WHERE payout_id = ?
+                """,
+                (status, json_dumps(raw_response), error, now, payout_id),
+            )
+
     def _fetch_wallet_nonce(self) -> int:
         response = requests.get(
             f"{self.server_url}/wallet/{self.payout_wallet['address']}/nonce",
@@ -1717,6 +1875,16 @@ class PoolCoordinator:
         if last_error is not None:
             raise last_error
         raise RuntimeError("no transaction submit endpoint returned a response")
+
+    def _fetch_payout_transaction(self, tx_hash: str) -> dict[str, Any]:
+        response = requests.get(f"{self.server_url}/tx/{tx_hash}", timeout=20)
+        if response.status_code == HTTPStatus.NOT_FOUND:
+            return {"status": "not_found", "detail": "transaction not found"}
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise requests.RequestException("transaction status response was not an object")
+        return payload
 
 
 class PoolHandler(BaseHTTPRequestHandler):
@@ -1847,6 +2015,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--payout-interval-seconds", type=int, default=7200, help="Seconds between automatic payout runs")
     parser.add_argument("--payout-min-amount", type=float, default=0.1, help="Minimum worker pending balance before auto payout")
     parser.add_argument("--payout-fee", type=float, default=0.0, help="Network fee attached to each automatic payout transaction")
+    parser.add_argument(
+        "--payout-confirmation-grace-seconds",
+        type=int,
+        default=600,
+        help="Seconds to keep an unconfirmed/not-found payout reserved before retrying it",
+    )
     parser.add_argument("--settlement-block-limit", type=int, default=100, help="Recent mainnet blocks checked when settling validation-pending pool tasks")
     parser.add_argument(
         "--disable-speculative-chunks",
@@ -1877,6 +2051,7 @@ def main() -> int:
         payout_interval_seconds=args.payout_interval_seconds,
         payout_min_amount=args.payout_min_amount,
         payout_fee=args.payout_fee,
+        payout_confirmation_grace_seconds=args.payout_confirmation_grace_seconds,
         settlement_block_limit=args.settlement_block_limit,
     )
     coordinator.start()
