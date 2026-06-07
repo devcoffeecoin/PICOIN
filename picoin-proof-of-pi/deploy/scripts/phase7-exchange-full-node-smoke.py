@@ -223,7 +223,15 @@ def main() -> int:
             severity="warning",
         )
 
-    if local_height > 0:
+    if local_height > 0 and snapshot_height > 0 and local_height <= snapshot_height:
+        check(
+            checks,
+            "local_tip_covered_by_snapshot_base",
+            True,
+            f"local_height={local_height} snapshot_height={snapshot_height}",
+            severity="warning",
+        )
+    elif local_height > 0:
         block = try_fetch(checks, local, f"/blocks/{local_height}", args.timeout, name="local_tip_block_readable")
         check(
             checks,
