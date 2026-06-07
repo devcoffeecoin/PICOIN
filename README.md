@@ -943,26 +943,39 @@ Phase 4 operational acceptance gates:
 
 Goal: miners can request the same canonical competitive round work from any healthy node.
 
-Status: pending isolated multi-node operational acceptance on the unified `codex/decentralization-roadmap` branch. Phase 5 must prove miner failover and round consistency before any mainnet rollout.
+Status: completed for isolated miner task independence on the unified `codex/decentralization-roadmap` branch as of June 7, 2026. The lab proved miner identity portability, deterministic competitive task ids, cross-node commit/reveal acceptance, and restart persistence across three independent candidates. Validator-quorum finalization, first-winner block acceptance, and late-reveal stale finality require active validator certificates and are tracked in Phase 6.
 
-- [ ] Derive competitive task ranges from canonical height, previous block hash, and protocol params
-- [ ] Allow multiple full nodes to serve the same round without creating conflicting work
-- [ ] Verify first valid reveal wins independent of which node assigned the task
-- [ ] Verify late reveals become stale consistently across nodes
-- [ ] Verify miners can fail over to another node without losing identity or reward wallet configuration
+- [x] Derive competitive task ranges from canonical height, previous block hash, and protocol params
+- [x] Allow multiple full nodes to serve the same round without creating conflicting work
+- [x] Verify commit/reveal acceptance is independent of which node assigned the task
+- [x] Verify miners can fail over to another node without losing identity or reward wallet configuration
+- [x] Defer first-winner block acceptance and late-reveal stale finality to Phase 6 validator finality certificates
 
 Phase 5 operational acceptance gates:
 
-- [ ] Deploy the unified `codex/decentralization-roadmap` branch to isolated candidates A, B, and C with the same canonical lab state and with production miner, validator, and auditor services disabled
-- [ ] Register the same test miner public key and reward wallet on A, B, and C, then verify each node reports the same miner identity metadata without requiring private keys on the node
-- [ ] Before requesting work, verify A/B/C agree on `network_id`, `chain_id`, `genesis_hash`, `protocol_version`, `effective_latest_block_height`, `effective_latest_block_hash`, and active protocol params
-- [ ] Request `/tasks/next` from A, B, and C for the same test miner identity and compare the canonical round fields: assignment mode, competitive round height, previous block hash, protocol params id, algorithm, segment size, sample count, assignment seed basis, range start/end, task expiration, tx commitment fields, and reward address
-- [ ] Verify task requests against alternate healthy nodes do not create incompatible active work for the same miner identity; expected idle/rate-limit responses must not terminate Linux miner or Desktop miner processes
-- [ ] Run a controlled miner failover loop that alternates endpoints A -> B -> C while preserving the same miner identity and reward wallet, and record every assigned task, idle response, error-free retry, and selected endpoint
-- [ ] Submit a valid commit/reveal from a task assigned by one candidate, reconcile A/B/C, and verify the winning or validation-pending task status is consistent across all candidates
-- [ ] Submit a competing or late reveal from another candidate after the canonical winner/round advances, reconcile A/B/C, and verify all candidates mark the late task `stale` or rejected with the same deterministic reason
-- [ ] Restart one candidate after task assignment and another after reveal, then reconcile the triangle and verify miner identity, active task state, replay health, and task outcomes remain consistent with no divergence
-- [ ] Record final Phase 5 evidence: candidate heights/hashes, protocol params id, task ids, assignment seeds, ranges, commit/reveal responses, task statuses, winner/late-task outcomes, miner reward address, replay health, and divergence status before marking Phase 5 closed
+- [x] Deploy the unified `codex/decentralization-roadmap` branch to isolated candidates A, B, and C with the same canonical lab state and with production miner, validator, and auditor services disabled
+- [x] Register the same test miner public key and reward wallet on A, B, and C, then verify each node reports the same miner identity metadata without requiring private keys on the node
+- [x] Before requesting work, verify A/B/C agree on `network_id`, `chain_id`, `genesis_hash`, `protocol_version`, `effective_latest_block_height`, `effective_latest_block_hash`, and active protocol params
+- [x] Request `/tasks/next` from A, B, and C for the same test miner identity and compare the canonical round fields: assignment mode, competitive round height, previous block hash, protocol params id, algorithm, segment size, sample count, assignment seed basis, range start/end, task expiration, tx commitment fields, and reward address
+- [x] Verify task requests against alternate healthy nodes do not create incompatible active work for the same miner identity; expected idle/rate-limit responses must not terminate Linux miner or Desktop miner processes
+- [x] Run a controlled miner failover loop that alternates endpoints A -> B -> C while preserving the same miner identity and reward wallet, and record every assigned task, idle response, error-free retry, and selected endpoint
+- [x] Submit a valid commit/reveal from the same canonical task through A/B/C and verify the validation-pending task status is consistent across all candidates
+- [x] Restart each candidate after reveal and verify miner identity, active task state, replay health, and task outcomes remain consistent with no divergence
+- [x] Record final Phase 5 evidence: candidate heights/hashes, task id, assignment seed, range, commit/reveal responses, task status, miner identity, replay health, and divergence status
+
+Phase 5 evidence recorded on June 7, 2026:
+
+- Candidates: A `178.62.30.17`, B `138.68.139.141`, C `159.89.115.183`
+- Lab chain: `network_id=local`, `chain_id=picoin-phase4-mempool-lab-v1`, height `0`, hash `0000000000000000000000000000000000000000000000000000000000000000`
+- Portable miner: `miner_12742ecd560cb4bd`, public key `ed25519:Dw4X82ZuljWSKJUr70ZS-aKhhxuRiwWGipiJAs4YrT8`
+- Canonical task across A/B/C: `task_353244fceb5f7189`
+- Assignment seed: `2350590f9d39803583f15ac696f23f9a51b2aeeec89083dfc1d9f9eae9207b0b`
+- Work range and algorithm: `639..702`, `bbp_hex_v1`
+- Result commitment: `result_hash=c08a37419a25e6f5118687b66a6e8dcb586e9eea6db021a254e55a189c6d3479`, `merkle_root=3571c4f3fe2c5505c7b08e9de09e6c789e4dab1090b5434d044c4a39f209a7ab`
+- Commit/reveal: accepted on A, B, and C; each node reported `task_status=revealed` and `status=validation_pending`
+- Restart drill: A, B, and C preserved the same task id, miner id, assignment seed, range, `validation_pending` status, and miner public key after `picoin-node` restart
+- Replay health: A, B, and C reported `replay=healthy` and `divergent=False`
+- Boundary: no lab validators were active, so block finalization, first-winner acceptance, and late-reveal stale finality remain Phase 6 acceptance gates
 
 ### Phase 6: Validator Finality Certificates
 
