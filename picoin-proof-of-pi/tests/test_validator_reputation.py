@@ -370,10 +370,24 @@ def test_quorum_finalization_failure_rejects_job_without_losing_vote(tmp_path, m
         job = connection.execute("SELECT status, result_reason FROM validation_jobs WHERE job_id = ?", (job_id,)).fetchone()
         task = connection.execute("SELECT status FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
         votes = connection.execute("SELECT COUNT(*) AS count FROM validation_votes WHERE job_id = ?", (job_id,)).fetchone()
+        blocks = connection.execute("SELECT COUNT(*) AS count FROM blocks WHERE task_id = ?", (task_id,)).fetchone()
+        rewards = connection.execute("SELECT COUNT(*) AS count FROM rewards WHERE related_id = ?", (task_id,)).fetchone()
+        ledger_entries = connection.execute(
+            "SELECT COUNT(*) AS count FROM ledger_entries WHERE related_id = ?",
+            (task_id,),
+        ).fetchone()
+        certificates = connection.execute(
+            "SELECT COUNT(*) AS count FROM finality_certificates WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
     assert job["status"] == "rejected"
     assert "transaction finalization failed" in job["result_reason"]
     assert task["status"] == "rejected"
     assert votes["count"] == 3
+    assert blocks["count"] == 0
+    assert rewards["count"] == 0
+    assert ledger_entries["count"] == 0
+    assert certificates["count"] == 0
 
 
 def test_genesis_balance_and_validator_stake_are_persisted(tmp_path, monkeypatch) -> None:

@@ -3523,6 +3523,8 @@ def submit_validation_result(
                     "required_approvals": required,
                     "required_rejections": required,
                 }
+            savepoint_name = "validation_block_finalization"
+            connection.execute(f"SAVEPOINT {savepoint_name}")
             try:
                 block = _accept_block_in_connection(
                     connection=connection,
@@ -3538,6 +3540,8 @@ def submit_validation_result(
                     validation_job_id=job_id,
                 )
             except TransactionExecutionError as exc:
+                connection.execute(f"ROLLBACK TO {savepoint_name}")
+                connection.execute(f"RELEASE {savepoint_name}")
                 finalized_at = utc_now()
                 raw_reason = str(exc)
                 is_competitive_stale = raw_reason.startswith("competitive round")
@@ -3579,6 +3583,7 @@ def submit_validation_result(
                     "required_approvals": required,
                     "required_rejections": required,
                 }
+            connection.execute(f"RELEASE {savepoint_name}")
             finalized_at = utc_now()
             _mark_validation_job_finalized(connection, job_id=job_id, finalized_at=finalized_at)
             connection.execute(
