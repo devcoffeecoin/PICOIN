@@ -21,9 +21,11 @@
     fee: document.getElementById("poolFee"),
     minPayout: document.getElementById("poolMinPayout"),
     autoPayouts: document.getElementById("poolAutoPayouts"),
+    accountingMode: document.getElementById("poolAccountingMode"),
     error: document.getElementById("poolError"),
     activeWorkersTable: document.getElementById("poolActiveWorkersTable"),
-    sharesTable: document.getElementById("poolSharesTable"),
+    currentWindow: document.getElementById("poolCurrentWindow"),
+    currentSharesTable: document.getElementById("poolCurrentSharesTable"),
     payoutsTable: document.getElementById("poolPayoutsTable"),
     wonBlocksTable: document.getElementById("poolWonBlocksTable"),
     tasksTable: document.getElementById("poolTasksTable"),
@@ -47,6 +49,12 @@
   function pct(value) {
     const numeric = Number(value || 0);
     return `${(numeric * 100).toFixed(2)}%`;
+  }
+
+  function feePct(value) {
+    const numeric = Number(value || 0);
+    if (!Number.isFinite(numeric)) return "-";
+    return `${numeric.toLocaleString("en-US", { maximumFractionDigits: 6 })}%`;
   }
 
   function pi(value) {
@@ -137,7 +145,7 @@
 
   const taskMeanings = {
     accepted: "Reveal accepted; reward counts only when a final block exists",
-    archived: "Old pool round kept for history",
+    archived: "Closed pool round kept off the active window",
     error: "Submission failed before reaching mainnet",
     expired: "Mainnet expired the task before it became a block",
     gathering: "Workers are computing chunks for this task",
@@ -146,12 +154,12 @@
     stale: "Mainnet closed the competitive round before this task became a block",
     submitted: "Submitted and waiting for final state",
     submitting: "Pool is assembling and submitting the answer",
-    unsettled: "Historical reveal without a final block recorded by the pool",
+    unsettled: "Reveal without a final block recorded by the pool",
     validation_pending: "External validators are checking the reveal",
   };
 
   const chunkMeanings = {
-    archived: "Old worker chunk kept for history",
+    archived: "Closed worker chunk kept off the active window",
     assigned: "A worker is computing this chunk",
     completed: "Returned by worker and accepted by pool",
     pending: "Available for active workers",
@@ -195,13 +203,13 @@
       .join("");
   }
 
-  function renderShares(shares) {
+  function renderShares(target, shares) {
     const rows = Object.entries(shares || {}).sort((a, b) => Number(b[1].units || 0) - Number(a[1].units || 0));
     if (!rows.length) {
-      els.sharesTable.innerHTML = `<tr><td colspan="3" class="empty">No credited shares yet</td></tr>`;
+      target.innerHTML = `<tr><td colspan="3" class="empty">No shares in the current reward window</td></tr>`;
       return;
     }
-    els.sharesTable.innerHTML = rows
+    target.innerHTML = rows
       .map(
         ([workerId, share]) => `
           <tr>
@@ -212,6 +220,13 @@
         `,
       )
       .join("");
+  }
+
+  function formatWindowStart(value) {
+    if (!value) return "Open from pool start until the first Pool 1 block";
+    const date = new Date(value);
+    if (!Number.isFinite(date.getTime())) return "Open reward window";
+    return `Open since latest Pool 1 block: ${date.toLocaleString()}`;
   }
 
   function renderPayouts(payouts) {
@@ -276,12 +291,13 @@
 
   function render(stats) {
     const tasks = asArray(stats.tasks);
-    const shares = stats.credited_shares || {};
+    const currentShares = stats.current_round_shares || stats.credited_shares || {};
     const payouts = stats.payouts || {};
     const autoPayouts = stats.auto_payouts || {};
     const performance = stats.performance || {};
     const chunking = stats.chunking || {};
     const hashrate = stats.hashrate || {};
+    const windows = stats.share_windows || {};
 
     els.minerId.textContent = fmt(stats.miner_id);
     els.mainnet.textContent = fmt(stats.mainnet_server);
@@ -290,21 +306,23 @@
       ? `Fixed / ${fmt(chunking.fixed_chunk_size)}`
       : "Auto";
     els.hashrate.textContent = rate(performance.pool_hashrate_hps || hashrate.pool_hashrate_hps);
-    els.creditedWorkers.textContent = fmt(Object.keys(shares).length, 0);
+    els.creditedWorkers.textContent = fmt(Object.keys(currentShares).length, 0);
     els.activeTasks.textContent = fmt(Number(performance.active_tasks ?? statusCount(tasks, ["active", "gathering", "submitting"])), 0);
     els.completedTasks.textContent = fmt(Number(performance.completed_tasks ?? completedTaskFallback(tasks)), 0);
     els.blocksWon.textContent = fmt(Number(performance.blocks_won || 0), 0);
     els.winRate.textContent = `${Number(performance.win_rate_percent || 0).toFixed(2)}%`;
     els.pendingValidation.textContent = fmt(Number(performance.validation_pending_tasks || 0), 0);
     els.pendingPayouts.textContent = pi(payouts.pending_total);
-    els.fee.textContent = `${Number(payouts.pool_fee_percent || 0).toFixed(2)}%`;
+    els.fee.textContent = feePct(payouts.pool_fee_percent);
     els.minPayout.textContent = pi(payouts.min_payout_amount);
     els.autoPayouts.textContent = autoPayouts.enabled
       ? `On / ${fmt(Number(autoPayouts.interval_seconds || 0), 0)}s`
       : "Off";
+    els.accountingMode.textContent = fmt(payouts.accounting_mode || "current window");
+    els.currentWindow.textContent = formatWindowStart(windows.current_start_at);
 
     renderActiveWorkers(stats.active_worker_details);
-    renderShares(shares);
+    renderShares(els.currentSharesTable, currentShares);
     renderPayouts(payouts);
     renderWonBlocks(stats.won_blocks);
     renderStatusRows(els.tasksTable, tasks, taskMeanings);
