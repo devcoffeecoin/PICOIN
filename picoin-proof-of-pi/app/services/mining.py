@@ -1585,6 +1585,27 @@ def _task_with_network_context(task: dict[str, Any] | None) -> dict[str, Any] | 
     return task
 
 
+def _competitive_task_id(miner_id: str, assignment: dict[str, Any], params: dict[str, Any]) -> str:
+    digest = sha256_text(
+        canonical_json(
+            {
+                "mode": COMPETITIVE_ROUND_ASSIGNMENT_MODE,
+                "network_id": NETWORK_ID,
+                "chain_id": CHAIN_ID,
+                "miner_id": miner_id,
+                "height": int(assignment.get("round_height") or 0),
+                "previous_hash": assignment.get("previous_hash"),
+                "assignment_seed": assignment.get("assignment_seed"),
+                "range_start": int(assignment["range_start"]),
+                "range_end": int(assignment["range_end"]),
+                "algorithm": params["algorithm"],
+                "protocol_params_id": params["id"],
+            }
+        )
+    )
+    return f"task_{digest[:16]}"
+
+
 def create_next_task(
     miner_id: str,
     *,
@@ -1672,13 +1693,24 @@ def create_next_task(
             if pooled_task is not None:
                 return _task_with_network_context(pooled_task)
 
-        task_id = f"task_{uuid.uuid4().hex[:16]}"
         if MINING_TASK_MODE == COMPETITIVE_ROUND_ASSIGNMENT_MODE:
             assignment = _competitive_round_assignment(connection, params)
             if _competitive_round_has_pending_validation_job(connection, assignment.get("assignment_seed")):
                 raise MiningError(429, "competitive round is waiting for validation; retry after next block")
             assignment_mode = COMPETITIVE_ROUND_ASSIGNMENT_MODE
+            task_id = _competitive_task_id(miner_id, assignment, params)
+            existing_round_task = row_to_dict(
+                connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+            )
+            if existing_round_task is not None:
+                if isinstance(existing_round_task.get("selected_tx_hashes"), str):
+                    try:
+                        existing_round_task["selected_tx_hashes"] = json.loads(existing_round_task["selected_tx_hashes"])
+                    except (TypeError, ValueError):
+                        existing_round_task["selected_tx_hashes"] = []
+                return _task_with_network_context(existing_round_task)
         else:
+            task_id = f"task_{uuid.uuid4().hex[:16]}"
             assignment = _assign_pseudo_random_range(connection, miner_id, task_id, params)
             assignment_mode = params["range_assignment_mode"]
         assignment_ms = elapsed_ms(started)

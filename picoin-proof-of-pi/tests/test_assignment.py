@@ -267,6 +267,29 @@ def test_task_response_network_context_signs_commit_without_local_defaults(tmp_p
     assert response["status"] == "committed"
 
 
+def test_competitive_task_id_is_portable_across_nodes(tmp_path, monkeypatch) -> None:
+    keypair = generate_keypair()
+    tasks = []
+
+    for node_name in ("a", "b"):
+        db_path = tmp_path / f"assignment-portable-task-{node_name}.sqlite3"
+        monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+        monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+        monkeypatch.setattr(mining_service, "MINING_TASK_MODE", "competitive_round")
+        init_db(db_path)
+
+        miner = register_miner("portable-task-miner", keypair["public_key"])
+        tasks.append(create_next_task(miner["miner_id"]))
+
+    assert tasks[0]["task_id"] == tasks[1]["task_id"]
+    assert tasks[0]["miner_id"] == tasks[1]["miner_id"]
+    assert tasks[0]["assignment_seed"] == tasks[1]["assignment_seed"]
+    assert tasks[0]["range_start"] == tasks[1]["range_start"]
+    assert tasks[0]["range_end"] == tasks[1]["range_end"]
+    assert tasks[0]["network_id"] == tasks[1]["network_id"]
+    assert tasks[0]["chain_id"] == tasks[1]["chain_id"]
+
+
 def test_competitive_round_stops_new_assignments_while_reveal_is_pending(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "assignment-competitive-round-pending-validation.sqlite3"
     monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
