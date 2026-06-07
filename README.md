@@ -987,6 +987,7 @@ Status: implementation started on the unified `codex/decentralization-roadmap` b
 - [x] Include quorum validator ids, signatures, reward addresses, public keys, and protocol params id in canonical payloads
 - [x] Persist certificate hash, canonical block payload, and approving validator vote payloads with the accepted block
 - [x] Expose certificate retrieval through `GET /blocks/{height}/finality`
+- [x] Add an operational verifier script for A/B/C certificate checks: `picoin-proof-of-pi/deploy/scripts/phase6-finality-verify.py`
 - [ ] Reject conflicting certificates for the same height unless deterministic rules select one valid canonical block
 - [ ] Add slashing evidence for validators that sign conflicting blocks at the same height
 - [ ] Verify all full nodes can validate finality certificates from disk after restart
@@ -996,6 +997,18 @@ Phase 6 local evidence recorded on June 7, 2026:
 - `tests/test_validator_reputation.py::test_block_is_accepted_after_validator_quorum` verifies certificate creation after three validator approvals, stored certificate lookup by block height, certificate block/task/job links, and validator signature verification from the stored payloads.
 - `tests/test_api_endpoints.py::test_block_finality_endpoint_returns_certificate` verifies the `/blocks/{height}/finality` API route returns persisted certificates.
 - `tests/test_testnet_hardening.py::test_full_commit_reveal_flow_accepts_block_after_three_validator_votes` still passes with certificate creation attached to the quorum finalization path.
+
+Phase 6 operational verifier:
+
+```bash
+python3 deploy/scripts/phase6-finality-verify.py \
+  --required 3 \
+  http://178.62.30.17:8000 \
+  http://138.68.139.141:8000 \
+  http://159.89.115.183:8000
+```
+
+Use `--height HEIGHT` to verify a specific finalized lab block after a restart or catch-up drill.
 
 ### Phase 7: Exchange And Infrastructure Full-Node Package
 
