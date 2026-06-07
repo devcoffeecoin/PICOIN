@@ -981,11 +981,21 @@ Phase 5 evidence recorded on June 7, 2026:
 
 Goal: a block becomes canonical by validator quorum certificate, not by one API database decision.
 
-- [ ] Define signed finality certificate schema for each block
-- [ ] Include quorum validator ids, signatures, reward addresses, and protocol params id in canonical payloads
+Status: implementation started on the unified `codex/decentralization-roadmap` branch as of June 7, 2026. The code now persists a deterministic `picoin-finality-v1` certificate when validator quorum accepts a block and exposes it through `/blocks/{height}/finality`. Isolated multi-node restart and conflicting-certificate drills remain open before Phase 6 can be closed.
+
+- [x] Define signed finality certificate schema for each block
+- [x] Include quorum validator ids, signatures, reward addresses, public keys, and protocol params id in canonical payloads
+- [x] Persist certificate hash, canonical block payload, and approving validator vote payloads with the accepted block
+- [x] Expose certificate retrieval through `GET /blocks/{height}/finality`
 - [ ] Reject conflicting certificates for the same height unless deterministic rules select one valid canonical block
 - [ ] Add slashing evidence for validators that sign conflicting blocks at the same height
 - [ ] Verify all full nodes can validate finality certificates from disk after restart
+
+Phase 6 local evidence recorded on June 7, 2026:
+
+- `tests/test_validator_reputation.py::test_block_is_accepted_after_validator_quorum` verifies certificate creation after three validator approvals, stored certificate lookup by block height, certificate block/task/job links, and validator signature verification from the stored payloads.
+- `tests/test_api_endpoints.py::test_block_finality_endpoint_returns_certificate` verifies the `/blocks/{height}/finality` API route returns persisted certificates.
+- `tests/test_testnet_hardening.py::test_full_commit_reveal_flow_accepts_block_after_three_validator_votes` still passes with certificate creation attached to the quorum finalization path.
 
 ### Phase 7: Exchange And Infrastructure Full-Node Package
 

@@ -440,6 +440,27 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 FOREIGN KEY(validator_id) REFERENCES validators(validator_id)
             );
 
+            CREATE TABLE IF NOT EXISTS finality_certificates (
+                block_height INTEGER PRIMARY KEY,
+                block_hash TEXT NOT NULL UNIQUE,
+                task_id TEXT NOT NULL UNIQUE,
+                job_id TEXT NOT NULL UNIQUE,
+                miner_id TEXT NOT NULL,
+                network_id TEXT NOT NULL,
+                chain_id TEXT NOT NULL,
+                protocol_version TEXT NOT NULL,
+                protocol_params_id INTEGER,
+                required_approvals INTEGER NOT NULL,
+                approval_count INTEGER NOT NULL,
+                certificate_hash TEXT NOT NULL UNIQUE,
+                payload_json TEXT NOT NULL,
+                votes_json TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                FOREIGN KEY(block_height) REFERENCES blocks(height),
+                FOREIGN KEY(task_id) REFERENCES tasks(task_id),
+                FOREIGN KEY(job_id) REFERENCES validation_jobs(job_id)
+            );
+
             CREATE TABLE IF NOT EXISTS submissions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 task_id TEXT NOT NULL,
@@ -816,6 +837,8 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_validation_jobs_status_created ON validation_jobs(status, created_at);
             CREATE INDEX IF NOT EXISTS idx_validation_votes_job ON validation_votes(job_id);
             CREATE INDEX IF NOT EXISTS idx_validation_votes_job_validator ON validation_votes(job_id, validator_id);
+            CREATE INDEX IF NOT EXISTS idx_finality_certificates_block_hash ON finality_certificates(block_hash);
+            CREATE INDEX IF NOT EXISTS idx_finality_certificates_task ON finality_certificates(task_id);
             CREATE INDEX IF NOT EXISTS idx_submissions_miner ON submissions(miner_id);
             CREATE INDEX IF NOT EXISTS idx_penalties_miner ON penalties(miner_id);
             CREATE INDEX IF NOT EXISTS idx_ledger_account ON ledger_entries(account_id);

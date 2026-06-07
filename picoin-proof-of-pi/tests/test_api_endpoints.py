@@ -1,3 +1,5 @@
+import json
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from app.api.routes import router
@@ -137,6 +139,73 @@ def test_node_blocks_receive_does_not_regossip_duplicate_header(tmp_path, monkey
     assert duplicate.json()["status"] == "known"
     assert duplicate.json()["reason"] == "block header already queued"
     assert calls == []
+
+
+def test_block_finality_endpoint_returns_certificate(tmp_path, monkeypatch) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+    miner = register_miner("finality-route-miner", generate_keypair()["public_key"])
+    with get_connection() as connection:
+        protocol_params_id = connection.execute("SELECT id FROM protocol_params WHERE active = 1").fetchone()["id"]
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at
+            )
+            VALUES ('task_finality_route', ?, 1, 64, 'bbp_hex_v1', 'accepted', ?, '2026-06-07T00:00:00+00:00')
+            """,
+            (miner["miner_id"], protocol_params_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO validation_jobs (
+                job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                samples, status, created_at
+            )
+            VALUES ('job_finality_route', 'task_finality_route', ?, ?, ?, ?, '[]', 'approved', '2026-06-07T00:00:01+00:00')
+            """,
+            (miner["miner_id"], "a" * 64, "b" * 64, "c" * 64),
+        )
+        connection.execute(
+            """
+            INSERT INTO blocks (
+                height, previous_hash, miner_id, range_start, range_end, algorithm,
+                result_hash, samples, timestamp, block_hash, reward, reward_units,
+                difficulty, task_id, protocol_params_id, protocol_version, validation_mode
+            )
+            VALUES (1, ?, ?, 1, 64, 'bbp_hex_v1', ?, '[]', '2026-06-07T00:00:02+00:00', ?, 2.51328, 251328000, 4.0,
+                    'task_finality_route', ?, '1.0', 'external_commit_reveal')
+            """,
+            ("0" * 64, miner["miner_id"], "a" * 64, "d" * 64, protocol_params_id),
+        )
+        payload = {
+            "version": "picoin-finality-v1",
+            "network_id": "local",
+            "chain_id": "test-chain",
+            "block": {"height": 1, "block_hash": "d" * 64, "task_id": "task_finality_route"},
+            "validation": {"job_id": "job_finality_route", "required_approvals": 1, "approval_count": 1},
+        }
+        connection.execute(
+            """
+            INSERT INTO finality_certificates (
+                block_height, block_hash, task_id, job_id, miner_id, network_id, chain_id,
+                protocol_version, protocol_params_id, required_approvals, approval_count,
+                certificate_hash, payload_json, votes_json, created_at
+            )
+            VALUES (1, ?, 'task_finality_route', 'job_finality_route', ?, 'local', 'test-chain',
+                    '1.0', ?, 1, 1, ?, ?, ?, '2026-06-07T00:00:03+00:00')
+            """,
+            ("d" * 64, miner["miner_id"], protocol_params_id, "f" * 64, json.dumps(payload), json.dumps([])),
+        )
+
+    response = client.get("/blocks/1/finality")
+
+    assert response.status_code == 200
+    certificate = response.json()
+    assert certificate["block_height"] == 1
+    assert certificate["block_hash"] == "d" * 64
+    assert certificate["task_id"] == "task_finality_route"
+    assert certificate["payload"]["version"] == "picoin-finality-v1"
 
 
 def test_tasks_next_endpoint_does_not_502_when_protocol_params_has_retarget_fields(tmp_path, monkeypatch) -> None:

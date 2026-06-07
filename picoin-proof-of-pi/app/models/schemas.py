@@ -243,6 +243,24 @@ class BlockResponse(BaseModel):
     fraud_detected_at: datetime | None = None
 
 
+class FinalityCertificateResponse(BaseModel):
+    block_height: int
+    block_hash: str
+    task_id: str
+    job_id: str
+    miner_id: str
+    network_id: str
+    chain_id: Any
+    protocol_version: str
+    protocol_params_id: int | None = None
+    required_approvals: int
+    approval_count: int
+    certificate_hash: str
+    payload: dict[str, Any]
+    votes: list[dict[str, Any]]
+    created_at: datetime
+
+
 class StatsResponse(BaseModel):
     miners: int
     tasks: int
@@ -1094,6 +1112,7 @@ class ValidationResultResponse(BaseModel):
     status: str
     message: str
     block: "BlockResponse | None" = None
+    finality_certificate: FinalityCertificateResponse | None = None
     approvals: int = 0
     rejections: int = 0
     required_approvals: int = 1

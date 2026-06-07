@@ -22,6 +22,7 @@ from app.models.schemas import (
     ConsensusVoteRequest,
     FaucetRequest,
     FaucetResponse,
+    FinalityCertificateResponse,
     HealthResponse,
     LedgerEntryResponse,
     MaintenanceCleanupResponse,
@@ -165,6 +166,7 @@ from app.services.mining import (
     get_balance,
     get_balances,
     get_block,
+    get_block_finality_certificate,
     get_blocks,
     get_ledger_entries,
     get_miners_status,
@@ -1238,6 +1240,14 @@ def blocks(limit: int | None = Query(None, ge=1, le=500)) -> list[dict]:
 @router.get("/blocks/verify", response_model=ChainVerificationResponse)
 def verify_blocks() -> dict:
     return verify_chain()
+
+
+@router.get("/blocks/{height}/finality", response_model=FinalityCertificateResponse)
+def block_finality_by_height(height: int) -> dict:
+    certificate = get_block_finality_certificate(height)
+    if certificate is None:
+        raise HTTPException(status_code=404, detail="finality certificate not found")
+    return certificate
 
 
 @router.get("/blocks/{height}", response_model=BlockResponse)

@@ -1,12 +1,18 @@
 import pytest
 
-from app.core.signatures import build_validation_result_signature_payload, generate_keypair, sign_payload
+from app.core.signatures import (
+    build_validation_result_signature_payload,
+    generate_keypair,
+    sign_payload,
+    verify_payload_signature,
+)
 from app.db.database import get_connection, init_db
 from app.services.mining import (
     MiningError,
     _accept_block_in_connection,
     get_audit_summary,
     get_balance,
+    get_block_finality_certificate,
     get_ledger_entries,
     get_validator,
     get_validators,
@@ -139,6 +145,32 @@ def test_block_is_accepted_after_validator_quorum(tmp_path, monkeypatch) -> None
     assert third_response["approvals"] == 3
     assert third_response["required_approvals"] == 3
     assert third_response["block"] is not None
+    finality_certificate = get_block_finality_certificate(third_response["block"]["height"])
+    assert third_response["finality_certificate"] == finality_certificate
+    assert finality_certificate is not None
+    assert finality_certificate["block_height"] == third_response["block"]["height"]
+    assert finality_certificate["block_hash"] == third_response["block"]["block_hash"]
+    assert finality_certificate["task_id"] == task_id
+    assert finality_certificate["job_id"] == job_id
+    assert finality_certificate["required_approvals"] == 3
+    assert finality_certificate["approval_count"] == 3
+    assert finality_certificate["payload"]["version"] == "picoin-finality-v1"
+    assert finality_certificate["payload"]["validation"]["status"] == "approved"
+    assert finality_certificate["payload"]["block"]["state_root"] == third_response["block"]["state_root"]
+    assert finality_certificate["payload"]["block"]["tx_count"] == 0
+    assert len(finality_certificate["certificate_hash"]) == 64
+    assert [vote["validator_id"] for vote in finality_certificate["votes"]] == [
+        first_validator["validator_id"],
+        second_validator["validator_id"],
+        third_validator["validator_id"],
+    ]
+    for vote in finality_certificate["votes"]:
+        assert "validator_reward_address" in vote
+        assert verify_payload_signature(
+            vote["validator_public_key"],
+            vote["signature_payload"],
+            vote["signature"],
+        )
     miner_balance = get_balance(miner_id)
     first_validator_balance = get_balance(first_validator["validator_id"])
     second_validator_balance = get_balance(second_validator["validator_id"])

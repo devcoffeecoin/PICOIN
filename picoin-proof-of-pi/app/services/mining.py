@@ -3590,6 +3590,13 @@ def submit_validation_result(
                 """,
                 (validator_id, reason, signature, validation_ms, finalized_at, job_id),
             )
+            finality_certificate = _create_finality_certificate(
+                connection,
+                block=block,
+                job_id=job_id,
+                required_approvals=required,
+                created_at=finalized_at,
+            )
             logger.info(
                 "validation task finalized job_id=%s task_id=%s block_height=%s finalization_ms=%s",
                 job_id,
@@ -3602,6 +3609,7 @@ def submit_validation_result(
                 "status": "approved",
                 "message": "block accepted by validator quorum",
                 "block": block,
+                "finality_certificate": finality_certificate,
                 "approvals": counts["approvals"],
                 "rejections": counts["rejections"],
                 "required_approvals": required,
@@ -3646,6 +3654,160 @@ def submit_validation_result(
         "required_approvals": required,
         "required_rejections": required,
     }
+
+
+def _create_finality_certificate(
+    connection: Any,
+    *,
+    block: dict[str, Any],
+    job_id: str,
+    required_approvals: int,
+    created_at: str,
+) -> dict[str, Any]:
+    existing = row_to_dict(
+        connection.execute(
+            "SELECT * FROM finality_certificates WHERE block_height = ? OR job_id = ?",
+            (int(block["height"]), job_id),
+        ).fetchone()
+    )
+    if existing is not None:
+        return _decode_finality_certificate(existing) or {}
+
+    job = row_to_dict(connection.execute("SELECT * FROM validation_jobs WHERE job_id = ?", (job_id,)).fetchone())
+    if job is None:
+        raise MiningError(500, "validation job not found while creating finality certificate")
+
+    vote_rows = connection.execute(
+        """
+        SELECT
+            validation_votes.job_id,
+            validation_votes.task_id,
+            validation_votes.validator_id,
+            validation_votes.approved,
+            validation_votes.reason,
+            validation_votes.signature,
+            validation_votes.signed_at,
+            validation_votes.validation_ms,
+            validation_votes.submit_result_latency_ms,
+            validation_votes.created_at,
+            validators.name AS validator_name,
+            validators.public_key AS validator_public_key,
+            validators.reward_address AS validator_reward_address
+        FROM validation_votes
+        LEFT JOIN validators ON validators.validator_id = validation_votes.validator_id
+        WHERE validation_votes.job_id = ?
+          AND validation_votes.approved = 1
+        ORDER BY validation_votes.created_at ASC, validation_votes.validator_id ASC
+        """,
+        (job_id,),
+    ).fetchall()
+    votes = [row_to_dict(row) for row in vote_rows]
+    approval_count = len(votes)
+    if approval_count < int(required_approvals):
+        raise MiningError(500, "not enough validator approvals to create finality certificate")
+
+    vote_payloads = []
+    for vote in votes:
+        signature_payload = build_validation_result_signature_payload(
+            job_id=vote["job_id"],
+            validator_id=vote["validator_id"],
+            task_id=vote["task_id"],
+            approved=True,
+            reason=vote["reason"],
+            signed_at=vote["signed_at"],
+        )
+        vote_payloads.append(
+            {
+                "validator_id": vote["validator_id"],
+                "validator_name": vote.get("validator_name"),
+                "validator_public_key": vote.get("validator_public_key"),
+                "validator_reward_address": vote.get("validator_reward_address"),
+                "approved": True,
+                "reason": vote["reason"],
+                "signature": vote["signature"],
+                "signed_at": vote["signed_at"],
+                "signature_payload": signature_payload,
+                "validation_ms": vote.get("validation_ms"),
+                "submit_result_latency_ms": vote.get("submit_result_latency_ms"),
+                "voted_at": vote["created_at"],
+            }
+        )
+
+    task_id = job["task_id"]
+    protocol_params_id = block.get("protocol_params_id")
+    payload = {
+        "version": "picoin-finality-v1",
+        "network_id": NETWORK_ID,
+        "chain_id": CHAIN_ID,
+        "protocol_version": block.get("protocol_version") or PROTOCOL_VERSION,
+        "protocol_params_id": protocol_params_id,
+        "block": {
+            "height": int(block["height"]),
+            "block_hash": block["block_hash"],
+            "previous_hash": block["previous_hash"],
+            "state_root": block.get("state_root"),
+            "miner_id": block["miner_id"],
+            "task_id": task_id,
+            "result_hash": block["result_hash"],
+            "merkle_root": block.get("merkle_root"),
+            "tx_merkle_root": block.get("tx_merkle_root"),
+            "tx_count": int(block.get("tx_count") or 0),
+            "tx_fee_total_units": int(job.get("tx_fee_total_units") or 0),
+            "selected_tx_hashes_hash": job.get("selected_tx_hashes_hash"),
+        },
+        "validation": {
+            "job_id": job_id,
+            "challenge_seed": job["challenge_seed"],
+            "sample_count": len(json.loads(job.get("samples") or "[]")),
+            "required_approvals": int(required_approvals),
+            "approval_count": approval_count,
+            "status": "approved",
+        },
+    }
+    votes_json = canonical_json(vote_payloads)
+    payload_json = canonical_json(payload)
+    certificate_hash = sha256_text(canonical_json({"payload": payload, "votes": vote_payloads}))
+
+    connection.execute(
+        """
+        INSERT INTO finality_certificates (
+            block_height, block_hash, task_id, job_id, miner_id, network_id, chain_id,
+            protocol_version, protocol_params_id, required_approvals, approval_count,
+            certificate_hash, payload_json, votes_json, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(block["height"]),
+            block["block_hash"],
+            task_id,
+            job_id,
+            block["miner_id"],
+            NETWORK_ID,
+            str(CHAIN_ID),
+            payload["protocol_version"],
+            protocol_params_id,
+            int(required_approvals),
+            approval_count,
+            certificate_hash,
+            payload_json,
+            votes_json,
+            created_at,
+        ),
+    )
+    stored = row_to_dict(
+        connection.execute("SELECT * FROM finality_certificates WHERE block_height = ?", (int(block["height"]),)).fetchone()
+    )
+    return _decode_finality_certificate(stored) or {}
+
+
+def get_block_finality_certificate(height: int) -> dict[str, Any] | None:
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT * FROM finality_certificates WHERE block_height = ?",
+            (int(height),),
+        ).fetchone()
+    return _decode_finality_certificate(row_to_dict(row))
 
 
 def get_blocks(limit: int | None = None) -> list[dict[str, Any]]:
@@ -6419,6 +6581,30 @@ def _decode_block(block: dict[str, Any] | None) -> dict[str, Any] | None:
     block["fee_reward"] = round(float(block.get("fee_reward") or 0), 8)
     block["fraudulent"] = bool(block.get("fraudulent", 0))
     return block
+
+
+def _decode_finality_certificate(certificate: dict[str, Any] | None) -> dict[str, Any] | None:
+    if certificate is None:
+        return None
+    payload = json.loads(certificate.get("payload_json") or "{}")
+    votes = json.loads(certificate.get("votes_json") or "[]")
+    return {
+        "block_height": int(certificate["block_height"]),
+        "block_hash": certificate["block_hash"],
+        "task_id": certificate["task_id"],
+        "job_id": certificate["job_id"],
+        "miner_id": certificate["miner_id"],
+        "network_id": certificate["network_id"],
+        "chain_id": payload.get("chain_id", certificate["chain_id"]),
+        "protocol_version": certificate["protocol_version"],
+        "protocol_params_id": certificate.get("protocol_params_id"),
+        "required_approvals": int(certificate["required_approvals"]),
+        "approval_count": int(certificate["approval_count"]),
+        "certificate_hash": certificate["certificate_hash"],
+        "payload": payload,
+        "votes": votes,
+        "created_at": certificate["created_at"],
+    }
 
 
 def _decode_retroactive_audit(audit: dict[str, Any] | None) -> dict[str, Any] | None:
