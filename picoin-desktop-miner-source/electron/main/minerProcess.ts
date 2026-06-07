@@ -118,6 +118,7 @@ function addLog(line: string) {
   if (clean.includes("Task assigned")) currentTask = clean;
   if (clean.includes("Pool worker active")) currentTask = "Pool connected. Waiting for available pool chunk";
   if (clean.includes("Pool connected. Waiting")) currentTask = "Pool connected. Waiting for available pool chunk";
+  if (clean.includes("No mining task available yet")) currentTask = "Connected. Waiting for next mining task";
   if (clean.includes("Pool work received")) currentTask = clean;
   if (clean.includes("Pool chunk computed")) currentTask = clean;
   if (clean.includes("Pool chunk accepted")) currentTask = clean;

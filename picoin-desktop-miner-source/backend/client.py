@@ -34,6 +34,63 @@ DEFAULT_POOL_URL = "https://pool1.picoin.science"
 POOL_IDLE_LOG_INTERVAL_SECONDS = 30.0
 _last_pool_idle_log_at = 0.0
 _pool_idle_polls = 0
+TASK_UNAVAILABLE_LOG_INTERVAL_SECONDS = 30.0
+_last_task_unavailable_log_at = 0.0
+_task_unavailable_polls = 0
+
+
+class TaskUnavailable(Exception):
+    def __init__(self, detail: str, retry_after_seconds: float | None = None) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.retry_after_seconds = retry_after_seconds
+
+
+def response_detail(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = None
+    if isinstance(payload, dict) and payload.get("detail"):
+        return str(payload["detail"])
+    text = response.text.strip()
+    return text or response.reason or "no mining task available"
+
+
+def response_retry_after_seconds(response: requests.Response) -> float | None:
+    value = response.headers.get("Retry-After")
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        return None
+
+
+def task_response_json(response: requests.Response) -> dict[str, Any]:
+    if response.status_code == 429:
+        raise TaskUnavailable(response_detail(response), response_retry_after_seconds(response))
+    response.raise_for_status()
+    return response.json()
+
+
+def log_task_unavailable(exc: TaskUnavailable) -> None:
+    global _last_task_unavailable_log_at, _task_unavailable_polls
+    _task_unavailable_polls += 1
+    current = time.monotonic()
+    if current - _last_task_unavailable_log_at < TASK_UNAVAILABLE_LOG_INTERVAL_SECONDS:
+        return
+    retry = (
+        f" retry_after={exc.retry_after_seconds:g}s"
+        if exc.retry_after_seconds is not None
+        else ""
+    )
+    print(
+        "No mining task available yet: "
+        f"{exc.detail}.{retry} idle_polls={_task_unavailable_polls}"
+    )
+    _last_task_unavailable_log_at = current
+    _task_unavailable_polls = 0
 
 
 def http_timeout_seconds() -> float:
@@ -52,13 +109,22 @@ def http_max_retries() -> int:
         return 3
 
 
-def request_with_retries(method: str, url: str, **kwargs: Any) -> requests.Response:
+def request_with_retries(
+    method: str,
+    url: str,
+    *,
+    allow_status_codes: set[int] | None = None,
+    **kwargs: Any,
+) -> requests.Response:
     timeout = kwargs.pop("timeout", http_timeout_seconds())
     max_retries = http_max_retries()
     last_error: requests.RequestException | None = None
+    allowed = allow_status_codes or set()
     for attempt in range(max_retries):
         try:
             response = requests.request(method, url, timeout=timeout, **kwargs)
+            if response.status_code in allowed:
+                return response
             if response.status_code in RETRY_STATUS_CODES and attempt + 1 < max_retries:
                 time.sleep(min(1.5 * (attempt + 1), 5.0))
                 continue
@@ -148,8 +214,13 @@ def register(server_url: str, name: str, identity_path: Path, overwrite: bool) -
 
 
 def get_task(server_url: str, miner_id: str) -> dict[str, Any]:
-    response = request_with_retries("GET", f"{server_url}/tasks/next", params={"miner_id": miner_id})
-    return response.json()
+    response = request_with_retries(
+        "GET",
+        f"{server_url}/tasks/next",
+        params={"miner_id": miner_id},
+        allow_status_codes={429},
+    )
+    return task_response_json(response)
 
 
 def get_task_for_identity(server_url: str, identity: dict[str, Any]) -> dict[str, Any]:
@@ -160,8 +231,13 @@ def get_task_for_identity(server_url: str, identity: dict[str, Any]) -> dict[str
         "reward_address": identity.get("reward_address"),
     }
     params = {key: value for key, value in params.items() if value}
-    response = request_with_retries("GET", f"{server_url}/tasks/next", params=params)
-    return response.json()
+    response = request_with_retries(
+        "GET",
+        f"{server_url}/tasks/next",
+        params=params,
+        allow_status_codes={429},
+    )
+    return task_response_json(response)
 
 
 def get_miner(server_url: str, miner_id: str) -> dict[str, Any]:
@@ -304,7 +380,11 @@ def reveal_samples(
 
 
 def mine_once(server_url: str, identity: dict[str, Any], workers: int) -> bool:
-    task = get_task_for_identity(server_url, identity)
+    try:
+        task = get_task_for_identity(server_url, identity)
+    except TaskUnavailable as exc:
+        log_task_unavailable(exc)
+        return False
     print(
         "Task assigned: "
         f"{task['task_id']} positions {task['range_start']}..{task['range_end']} "

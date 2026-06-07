@@ -58,7 +58,7 @@
             <strong id="poolHashrate">-</strong>
           </article>
           <article>
-            <span>Credited Workers</span>
+            <span>Open Round Workers</span>
             <strong id="poolCreditedWorkers">-</strong>
           </article>
           <article>
@@ -97,6 +97,10 @@
             <span>Auto Payouts</span>
             <strong id="poolAutoPayouts">-</strong>
           </article>
+          <article>
+            <span>Accounting</span>
+            <strong id="poolAccountingMode">-</strong>
+          </article>
         </div>
         <div id="poolError" class="api-errors" aria-live="polite"></div>
       </section>
@@ -126,8 +130,9 @@
       <section class="section">
         <div class="section-heading">
           <p class="eyebrow">Shares</p>
-          <h2>Credited worker shares</h2>
+          <h2>Open reward window</h2>
         </div>
+        <div class="pool-window-meta" id="poolCurrentWindow">Waiting for pool window</div>
         <div class="table-wrap">
           <table>
             <thead>
@@ -137,7 +142,7 @@
                 <th>Share</th>
               </tr>
             </thead>
-            <tbody id="poolSharesTable">
+            <tbody id="poolCurrentSharesTable">
               <tr><td colspan="3" class="empty">Waiting for pool data</td></tr>
             </tbody>
           </table>
@@ -260,6 +265,6 @@
       <span id="poolUpdated">Waiting for update</span>
     </footer>
 
-    <script src="./pool1.js?v=20260605-pool-auto-chunking"></script>
+    <script src="./pool1.js?v=20260607-pool-round-window"></script>
   </body>
 </html>

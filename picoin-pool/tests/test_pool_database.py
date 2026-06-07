@@ -7,7 +7,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import pool_server
 from pool_server import PoolCoordinator, PoolDatabase, is_lost_competitive_round_error, parse_iso_timestamp, utc_now
+from miner.client import TaskUnavailable
 from app.services.wallet import create_wallet
 
 
@@ -77,6 +79,42 @@ def test_public_pool_requires_valid_worker_payout(tmp_path):
 
     assert row["name"] == "Worker 1 renamed"
     assert row["payout_address"] == "PIE1EE818AA165EECC3F0CCF058F4FF7BC04517F8CD07385"
+
+
+def test_pool_treats_mainnet_task_429_as_idle_info(tmp_path, monkeypatch):
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size=1,
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=False,
+        pool_fee_percent=0,
+    )
+
+    def unavailable(*args, **kwargs):
+        raise TaskUnavailable("competitive round is waiting for validation; retry after next block", 7)
+
+    monkeypatch.setattr(pool_server, "get_task_for_identity", unavailable)
+
+    coordinator.ensure_active_task()
+
+    with db.connect() as connection:
+        task_count = connection.execute("SELECT COUNT(*) FROM pool_tasks").fetchone()[0]
+        event = connection.execute(
+            "SELECT level, message, payload_json FROM pool_events ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+
+    assert task_count == 0
+    assert event["level"] == "info"
+    assert event["message"] == "mainnet did not assign pool work"
+    payload = json.loads(event["payload_json"])
+    assert payload["status"] == "unavailable"
+    assert "waiting for validation" in payload["detail"]
+    assert payload["retry_after_seconds"] == 7
 
 
 def test_stats_reports_lost_competitive_rounds_without_error_status(tmp_path):
@@ -309,7 +347,7 @@ def test_reconcile_won_blocks_settles_validation_pending_task(tmp_path, monkeypa
             INSERT INTO pool_shares (share_id, worker_id, pool_task_id, chunk_id, units, credited, created_at)
             VALUES ('share_1', 'worker-1', 'pooltask_pending', 'chunk_1', 1, 1, ?)
             """,
-            (utc_now(),),
+            ("2026-06-05T00:00:30+00:00",),
         )
 
     coordinator = PoolCoordinator(
@@ -1297,3 +1335,353 @@ def test_auto_payout_submits_transfer_once_and_subtracts_pending(tmp_path, monke
     second = coordinator.run_payouts()
     assert second["submitted"] == 0
     assert len(submitted) == 1
+
+
+def test_auto_payout_submits_multiple_worker_transfers_with_incrementing_nonces(tmp_path, monkeypatch):
+    wallet = create_wallet("pool-payout")
+    alice_wallet = create_wallet("alice")
+    bob_wallet = create_wallet("bob")
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    with db.connect() as connection:
+        connection.executemany(
+            """
+            INSERT INTO pool_workers (worker_id, name, payout_address, registered_at, last_seen_at)
+            VALUES (?, ?, ?, '2026-06-05T00:00:00+00:00', '2026-06-05T00:00:00+00:00')
+            """,
+            [
+                ("alice", "Alice", alice_wallet["address"]),
+                ("bob", "Bob", bob_wallet["address"]),
+            ],
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_tasks (
+                pool_task_id, mainnet_task_id, status, range_start, range_end,
+                algorithm, raw_task_json, raw_reveal_json, created_at, completed_at
+            )
+            VALUES (
+                'pooltask_1', 'task_1', 'accepted', 1, 2,
+                'bbp_hex_v1', '{}', ?, '2026-06-05T00:00:00+00:00', '2026-06-05T00:01:00+00:00'
+            )
+            """,
+            ('{"block":{"reward":2.0}}',),
+        )
+        connection.executemany(
+            """
+            INSERT INTO pool_shares (share_id, worker_id, pool_task_id, chunk_id, units, credited, created_at)
+            VALUES (?, ?, 'pooltask_1', ?, 1, 1, ?)
+            """,
+            [
+                ("share_alice", "alice", "chunk_alice", "2026-06-05T00:00:20+00:00"),
+                ("share_bob", "bob", "chunk_bob", "2026-06-05T00:00:30+00:00"),
+            ],
+        )
+
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size=1,
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=True,
+        pool_fee_percent=1,
+        payout_wallet=wallet,
+        payout_interval_seconds=7200,
+        payout_min_amount=0.1,
+    )
+
+    submitted = []
+    monkeypatch.setattr(coordinator, "_fetch_wallet_nonce", lambda: 12)
+    monkeypatch.setattr(
+        coordinator,
+        "_submit_payout_transaction",
+        lambda tx: submitted.append(tx) or {"tx_hash": tx["tx_hash"], "status": "pending"},
+    )
+
+    result = coordinator.run_payouts()
+
+    assert result["submitted"] == 2
+    assert result["errors"] == 0
+    assert [tx["nonce"] for tx in submitted] == [12, 13]
+    assert {tx["recipient"] for tx in submitted} == {alice_wallet["address"], bob_wallet["address"]}
+    assert [tx["amount"] for tx in submitted] == ["0.990000", "0.990000"]
+    stats = coordinator.stats()
+    assert stats["payouts"]["paid_total"] == pytest.approx(1.98)
+    assert stats["payouts"]["pending_total"] == pytest.approx(0.0)
+
+
+def test_stats_pays_previous_window_and_resets_current_round_shares(tmp_path):
+    alice_wallet = create_wallet("alice")
+    bob_wallet = create_wallet("bob")
+    carol_wallet = create_wallet("carol")
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    with db.connect() as connection:
+        connection.executemany(
+            """
+            INSERT INTO pool_workers (worker_id, name, payout_address, registered_at, last_seen_at)
+            VALUES (?, ?, ?, '2026-06-05T00:00:00+00:00', '2026-06-05T00:00:00+00:00')
+            """,
+            [
+                ("alice", "Alice", alice_wallet["address"]),
+                ("bob", "Bob", bob_wallet["address"]),
+                ("carol", "Carol", carol_wallet["address"]),
+            ],
+        )
+        connection.executemany(
+            """
+            INSERT INTO pool_tasks (
+                pool_task_id, mainnet_task_id, status, range_start, range_end,
+                algorithm, raw_task_json, raw_reveal_json, error, created_at, completed_at
+            )
+            VALUES (?, ?, ?, 1, 1, 'bbp_hex_v1', '{}', ?, ?, ?, ?)
+            """,
+            [
+                (
+                    "pooltask_before_win",
+                    "task_before_win",
+                    "lost",
+                    '{"accepted":true,"status":"validation_pending","block":null}',
+                    "commit rejected: competitive round won by task_other at block 10",
+                    "2026-06-05T00:00:00+00:00",
+                    "2026-06-05T00:05:00+00:00",
+                ),
+                (
+                    "pooltask_win",
+                    "task_win",
+                    "accepted",
+                    '{"block":{"height":77,"block_hash":"abc123","reward":2.0},"status":"accepted"}',
+                    None,
+                    "2026-06-05T00:08:00+00:00",
+                    "2026-06-05T00:10:00+00:00",
+                ),
+                (
+                    "pooltask_after_win",
+                    "task_after_win",
+                    "lost",
+                    '{"accepted":true,"status":"validation_pending","block":null}',
+                    "commit rejected: competitive round won by task_other at block 11",
+                    "2026-06-05T00:11:00+00:00",
+                    "2026-06-05T00:12:00+00:00",
+                ),
+            ],
+        )
+        connection.executemany(
+            """
+            INSERT INTO pool_shares (share_id, worker_id, pool_task_id, chunk_id, units, credited, created_at)
+            VALUES (?, ?, ?, ?, 1, 1, ?)
+            """,
+            [
+                ("share_alice", "alice", "pooltask_before_win", "chunk_alice", "2026-06-05T00:04:00+00:00"),
+                ("share_bob", "bob", "pooltask_win", "chunk_bob", "2026-06-05T00:09:00+00:00"),
+                ("share_carol", "carol", "pooltask_after_win", "chunk_carol", "2026-06-05T00:12:00+00:00"),
+            ],
+        )
+
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size=1,
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=True,
+        pool_fee_percent=1,
+        payout_min_amount=0.1,
+    )
+
+    stats = coordinator.stats()
+    payout_workers = {worker["worker_id"]: worker for worker in stats["payouts"]["workers"]}
+
+    assert stats["payouts"]["accounting_mode"] == "round_window"
+    assert stats["payouts"]["pending_total"] == pytest.approx(1.98)
+    assert payout_workers["alice"]["pending_amount"] == pytest.approx(0.99)
+    assert payout_workers["bob"]["pending_amount"] == pytest.approx(0.99)
+    assert "carol" not in payout_workers
+    assert stats["credited_shares"] == stats["current_round_shares"]
+    assert stats["current_round_shares"]["carol"]["units"] == 1
+    assert set(stats["last_round_shares"]) == {"alice", "bob"}
+    assert set(stats["lifetime_shares"]) == {"alice", "bob", "carol"}
+
+
+def test_reconcile_payout_releases_not_found_submitted_payment(tmp_path, monkeypatch):
+    wallet = create_wallet("pool-payout")
+    worker_wallet = create_wallet("worker")
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    with db.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO pool_workers (worker_id, name, payout_address, registered_at, last_seen_at)
+            VALUES ('worker-1', 'Worker 1', ?, '2026-06-05T00:00:00+00:00', '2026-06-05T00:00:00+00:00')
+            """,
+            (worker_wallet["address"],),
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_tasks (
+                pool_task_id, mainnet_task_id, status, range_start, range_end,
+                algorithm, raw_task_json, raw_reveal_json, created_at, completed_at
+            )
+            VALUES (
+                'pooltask_1', 'task_1', 'accepted', 1, 1,
+                'bbp_hex_v1', '{}', ?, '2026-06-05T00:00:00+00:00', '2026-06-05T00:01:00+00:00'
+            )
+            """,
+            ('{"block":{"reward":1.0}}',),
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_shares (share_id, worker_id, pool_task_id, chunk_id, units, credited, created_at)
+            VALUES ('share_1', 'worker-1', 'pooltask_1', 'chunk_1', 1, 1, '2026-06-05T00:00:30+00:00')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_payouts (
+                payout_id, worker_id, payout_address, amount, amount_units,
+                fee, fee_units, tx_hash, status, raw_tx_json, created_at, updated_at
+            )
+            VALUES (
+                'payout_missing', 'worker-1', ?, 0.99, 990000,
+                0, 0, 'missing_tx', 'submitted', '{}',
+                '2026-06-05T00:00:00+00:00', '2026-06-05T00:00:00+00:00'
+            )
+            """,
+            (worker_wallet["address"],),
+        )
+
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size=1,
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=True,
+        pool_fee_percent=1,
+        payout_wallet=wallet,
+        payout_interval_seconds=7200,
+        payout_min_amount=0.1,
+        payout_confirmation_grace_seconds=1,
+    )
+    monkeypatch.setattr(coordinator, "_fetch_payout_transaction", lambda _tx_hash: {"detail": "transaction not found"})
+
+    result = coordinator.reconcile_payout_statuses()
+
+    assert result["expired"] == 1
+    with db.connect() as connection:
+        row = connection.execute("SELECT status, error FROM pool_payouts WHERE payout_id = 'payout_missing'").fetchone()
+    assert row["status"] == "error"
+    assert "not found" in row["error"]
+    stats = coordinator.stats()
+    assert stats["payouts"]["paid_total"] == pytest.approx(0.0)
+    assert stats["payouts"]["pending_total"] == pytest.approx(0.99)
+
+
+def test_reconcile_payout_marks_confirmed_payment(tmp_path, monkeypatch):
+    wallet = create_wallet("pool-payout")
+    worker_wallet = create_wallet("worker")
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    with db.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO pool_payouts (
+                payout_id, worker_id, payout_address, amount, amount_units,
+                fee, fee_units, tx_hash, status, raw_tx_json, created_at, updated_at
+            )
+            VALUES (
+                'payout_confirmed', 'worker-1', ?, 0.99, 990000,
+                0, 0, 'confirmed_tx', 'submitted', '{}',
+                '2026-06-05T00:00:00+00:00', '2026-06-05T00:00:00+00:00'
+            )
+            """,
+            (worker_wallet["address"],),
+        )
+
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size=1,
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=True,
+        pool_fee_percent=1,
+        payout_wallet=wallet,
+        payout_interval_seconds=7200,
+        payout_min_amount=0.1,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_fetch_payout_transaction",
+        lambda _tx_hash: {"status": "confirmed", "block_height": 123},
+    )
+
+    result = coordinator.reconcile_payout_statuses()
+
+    assert result["confirmed"] == 1
+    with db.connect() as connection:
+        row = connection.execute("SELECT status, raw_response_json FROM pool_payouts WHERE payout_id = 'payout_confirmed'").fetchone()
+    assert row["status"] == "confirmed"
+    assert json.loads(row["raw_response_json"])["block_height"] == 123
+
+
+def test_reconcile_payout_releases_empty_transaction_lookup_after_grace(tmp_path, monkeypatch):
+    wallet = create_wallet("pool-payout")
+    worker_wallet = create_wallet("worker")
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    with db.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO pool_payouts (
+                payout_id, worker_id, payout_address, amount, amount_units,
+                fee, fee_units, tx_hash, status, raw_tx_json, created_at, updated_at
+            )
+            VALUES (
+                'payout_empty', 'worker-1', ?, 0.25, 250000,
+                0, 0, 'empty_tx', 'submitted', '{}',
+                '2026-06-05T00:00:00+00:00', '2026-06-05T00:00:00+00:00'
+            )
+            """,
+            (worker_wallet["address"],),
+        )
+
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size=1,
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=True,
+        pool_fee_percent=1,
+        payout_wallet=wallet,
+        payout_interval_seconds=7200,
+        payout_min_amount=0.1,
+        payout_confirmation_grace_seconds=1,
+    )
+    monkeypatch.setattr(
+        coordinator,
+        "_fetch_payout_transaction",
+        lambda _tx_hash: {
+            "status": None,
+            "block_height": None,
+            "sender": None,
+            "recipient": None,
+            "amount": None,
+            "fee": None,
+        },
+    )
+
+    result = coordinator.reconcile_payout_statuses()
+
+    assert result["expired"] == 1
+    with db.connect() as connection:
+        row = connection.execute("SELECT status, error FROM pool_payouts WHERE payout_id = 'payout_empty'").fetchone()
+    assert row["status"] == "error"
+    assert "not found" in row["error"]
