@@ -1577,6 +1577,14 @@ def prune_stale_miners(older_than_seconds: int = PARTICIPANT_OFFLINE_SECONDS) ->
     return {"deleted": deleted, "older_than_seconds": older_than_seconds, "checked_at": utc_now()}
 
 
+def _task_with_network_context(task: dict[str, Any] | None) -> dict[str, Any] | None:
+    if task is None:
+        return None
+    task["network_id"] = NETWORK_ID
+    task["chain_id"] = CHAIN_ID
+    return task
+
+
 def create_next_task(
     miner_id: str,
     *,
@@ -1638,7 +1646,7 @@ def create_next_task(
                         409,
                         f"active task exceeds RETARGET_MAX_PI_POSITION={RETARGET_MAX_PI_POSITION_value}",
                     )
-                return task
+                return _task_with_network_context(task)
 
         recent_assignments = connection.execute(
             """
@@ -1662,7 +1670,7 @@ def create_next_task(
         if MINING_TASK_MODE != COMPETITIVE_ROUND_ASSIGNMENT_MODE:
             pooled_task = _claim_global_task_for_miner(connection, miner_id, params)
             if pooled_task is not None:
-                return pooled_task
+                return _task_with_network_context(pooled_task)
 
         task_id = f"task_{uuid.uuid4().hex[:16]}"
         if MINING_TASK_MODE == COMPETITIVE_ROUND_ASSIGNMENT_MODE:
@@ -1742,7 +1750,7 @@ def create_next_task(
                 task["selected_tx_hashes"] = json.loads(task["selected_tx_hashes"])
             except (TypeError, ValueError):
                 task["selected_tx_hashes"] = []
-    return task
+    return _task_with_network_context(task)
 
 
 def _restore_miner_identity(

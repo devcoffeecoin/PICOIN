@@ -127,6 +127,8 @@ class ValidatorResponse(BaseModel):
 class TaskResponse(BaseModel):
     task_id: str
     miner_id: str
+    network_id: str
+    chain_id: str | int
     range_start: int
     range_end: int
     algorithm: str
