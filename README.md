@@ -61,6 +61,7 @@ There are six tracked env examples. Treat them as the source of truth.
 | File | Use it for | Notes |
 | --- | --- | --- |
 | `picoin-proof-of-pi/deploy/mainnet.env.example` | Mainnet nodes, miners, validators | Production template. Every `CHANGE_ME` value must be replaced before services start. |
+| `picoin-proof-of-pi/deploy/mainnet-exchange-full-node.env.example` | Exchange/infrastructure full node | Read-only local API profile for exchanges, custodians, explorers and payment processors. Runs node + reconciler only. |
 | `picoin-proof-of-pi/deploy/mainnet-shadow-full-node.env.example` | Disposable mainnet shadow full node | Read-only template for Phase 1B reproduction tests. Do not use on the mainnet bootstrap. |
 | `picoin-proof-of-pi/deploy/mainnet-public-bootstrap-candidate.env.example` | Phase 2 public bootstrap candidate | Read-only public candidate template. Keep miner, validator, and auditor disabled; run reconciler so the candidate keeps up with mainnet. |
 | `picoin-proof-of-pi/deploy/phase1-full-node.env.example` | Isolated Phase 1 full-node lab | Test-only template with a non-mainnet network id, chain id, and genesis hash. |
@@ -90,6 +91,8 @@ Use `https://api.picoin.science` for miners and validators. `http://api.picoin.s
 ## Quick Start
 
 Use this path for a clean mainnet server. The detailed sections below explain every variable and role.
+
+For a read-only exchange or infrastructure full node, use `picoin-proof-of-pi/deploy/README-exchange-full-node.md`. That Phase 7 profile was tested on a clean droplet by restoring a canonical mainnet snapshot, catching up from height `10460` to `10463`, and verifying healthy replay with miner, validator and auditor services disabled.
 
 ### 1. Clone The Repository
 

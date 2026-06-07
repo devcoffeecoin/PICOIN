@@ -69,6 +69,86 @@ Healthy minimum:
 - `divergence_detected=false`.
 - `effective_latest_block_height` is catching up toward peers.
 
+For this read-only profile, `/health` may report `status=degraded` with only `not enough eligible validators for quorum`. That is acceptable because the exchange full node does not mine or validate. It must still report healthy replay and no divergence.
+
+## Fast Sync From Bootstrap Snapshot
+
+For a clean exchange/full-node install, prefer canonical snapshot restore before block replay. This avoids replaying the whole historical chain and gives the node a verified local state base.
+
+Download and validate the bootstrap snapshot:
+
+```bash
+cd /opt/picoin/picoin-proof-of-pi
+
+curl -sS --max-time 300 \
+  -o /tmp/mainnet-snapshot.json \
+  https://api.picoin.science/node/snapshots/export
+
+python3 - <<'PY'
+import json
+d=json.load(open("/tmp/mainnet-snapshot.json"))
+c=d.get("checkpoint") or {}
+print("valid=", d.get("valid"))
+print("issues=", d.get("issues"))
+print("height=", c.get("height"))
+print("snapshot_hash=", c.get("snapshot_hash"))
+PY
+```
+
+Import and restore the exact file that was validated:
+
+```bash
+cd /opt/picoin/picoin-proof-of-pi
+
+set -a
+. /etc/picoin/picoin.env
+set +a
+export PICOIN_HTTP_TIMEOUT_SECONDS=300
+
+sudo systemctl stop picoin-reconciler
+
+sudo -u picoin -E .venv/bin/python -m picoin node checkpoint \
+  --server http://127.0.0.1:8000 \
+  import \
+  --file /tmp/mainnet-snapshot.json \
+  --source phase7-exchange-full-node-bootstrap-file \
+  | tee /tmp/phase7-import.json
+
+SNAPSHOT_HASH=$(python3 - <<'PY'
+import json
+d=json.load(open("/tmp/phase7-import.json"))
+print((d.get("snapshot") or {}).get("snapshot_hash"))
+PY
+)
+
+curl -sS -X POST \
+  "http://127.0.0.1:8000/node/snapshots/$SNAPSHOT_HASH/restore" \
+  | tee /tmp/phase7-restore.json \
+  | python3 -m json.tool | head -160
+
+sudo systemctl restart picoin-node
+sleep 25
+sudo systemctl start picoin-reconciler
+```
+
+Verify the restored state:
+
+```bash
+curl -sS http://127.0.0.1:8000/node/sync-status | python3 -c '
+import json,sys
+d=json.load(sys.stdin); r=d.get("replay") or {}
+print("height=", d.get("effective_latest_block_height"))
+print("hash=", d.get("effective_latest_block_hash"))
+print("snapshot=", d.get("snapshot_height"))
+print("pending=", d.get("pending_replay_blocks"))
+print("queue=", r.get("queue_size"))
+print("headers=", r.get("header_queue_size"))
+print("replay=", r.get("sync_status"))
+print("divergent=", r.get("divergence_detected"))
+print("last_error=", r.get("last_error"))
+'
+```
+
 ## Catch Up From Bootstrap
 
 The reconciler runs continuously, but a manual catch-up is useful after first install:
@@ -91,6 +171,34 @@ print("replay=", r.get("sync_status"))
 print("divergent=", r.get("divergence_detected"))
 '
 ```
+
+Mempool duplicate or hash mismatch errors in the reconcile report are not automatically chain failures. The acceptance criteria are healthy replay, no divergence, empty replay queues, and local height within the allowed lag.
+
+## Operational Smoke Test
+
+Run the Phase 7 smoke test after snapshot restore and catch-up:
+
+```bash
+cd /opt/picoin/picoin-proof-of-pi
+
+python3 deploy/scripts/phase7-exchange-full-node-smoke.py \
+  --local http://127.0.0.1:8000 \
+  --reference https://api.picoin.science \
+  --allowed-lag 5
+```
+
+Optional account and transaction parity checks:
+
+```bash
+python3 deploy/scripts/phase7-exchange-full-node-smoke.py \
+  --local http://127.0.0.1:8000 \
+  --reference https://api.picoin.science \
+  --allowed-lag 5 \
+  --account PI_ADDRESS_TO_CHECK \
+  --tx-hash TX_HASH_TO_CHECK
+```
+
+The smoke test checks local health, protocol identity, replay divergence, height lag, tip block readability, and optional local-vs-reference account or transaction parity.
 
 ## Local API For Operators
 
