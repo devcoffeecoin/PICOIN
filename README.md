@@ -878,7 +878,7 @@ Phase 3 alpha evidence:
 
 Goal: every full node can independently validate transaction ordering and reconstruct the same candidate block state.
 
-Status: implemented in code-level regression tests on the unified `codex/decentralization-roadmap` branch. Isolated multi-node lab acceptance is in progress: mempool gossip and canonical transaction snapshot construction passed on candidates A, B, and C; candidate state-root replay and restart/catch-up evidence remain before full closure.
+Status: closed on the isolated multi-node Phase 4 lab for decentralized mempool and candidate block construction. Evidence is recorded on the unified `codex/decentralization-roadmap` branch; any mainnet rollout remains a separate controlled release gate.
 
 - [x] Define canonical transaction selection rules for competitive rounds
 - [x] Verify deterministic nonce ordering, fee ordering, and tx merkle root generation across nodes
@@ -926,6 +926,8 @@ Phase 4.6 operational evidence:
 - [x] Registered independent test miners on A, B, and C and verified every candidate selected the same canonical transaction order, `tx_merkle_root=85477e6cd0c95615776a2000b4c8221605976f7fb624923b2c29295cd6a15146`, `selected_tx_hashes_hash=86acba5df06c4a07f05b0b6554203acc9a1045c379b57b941fe65254578c624d`, `tx_count=7`, and `tx_fee_total_units=14000`
 - [x] Replayed the selected seven transaction hashes against temporary SQLite copies on A, B, and C; each node applied all seven transactions with `rejected=[]` and produced matching `state_root=63b35aa71fc38b9d7da52c506d565263b794affafebe707d0f6bde95b3315a98`
 - [x] Restarted `picoin-node` on A, B, and C and reconciled each node against both peers; all three stayed `replay=healthy`, `divergent=False`, `reason=None`, with `errors=0` for each peer reconcile and `mempool_count=7` after restart/catch-up
+- [x] Verified terminal and conflict transaction handling on temporary SQLite copies on A, B, and C: same-hash duplicate idempotency, same-nonce pending conflict rejection, already-confirmed idempotency, failed nonce replacement, and expired nonce replacement all returned the same expected results with `status=ok`
+- [x] Final Phase 4 lab record: candidates A/B/C ran at `height=0`, `hash=0000000000000000000000000000000000000000000000000000000000000000`, `mempool_count=7`, `tx_merkle_root=85477e6cd0c95615776a2000b4c8221605976f7fb624923b2c29295cd6a15146`, `selected_tx_hashes_hash=86acba5df06c4a07f05b0b6554203acc9a1045c379b57b941fe65254578c624d`, `state_root=63b35aa71fc38b9d7da52c506d565263b794affafebe707d0f6bde95b3315a98`, `replay=healthy`, and `divergent=False`
 
 Phase 4 operational acceptance gates:
 
@@ -933,9 +935,9 @@ Phase 4 operational acceptance gates:
 - [x] Submit the same signed transaction set through different candidates and verify mempool inventory gossip reaches the full candidate set
 - [x] Verify every candidate derives the same canonical transaction order and `tx_merkle_root` for the same competitive round
 - [x] Verify candidate block reconstruction produces matching state roots across candidates after catch-up/replay
-- [ ] Verify replaced, expired, failed, already-confirmed, and duplicate transactions remain deterministic across candidates
+- [x] Verify replaced, expired, failed, already-confirmed, and duplicate transactions remain deterministic across candidates
 - [x] Run a restart/catch-up cycle after transaction gossip and verify replay stays healthy with no divergence
-- [ ] Record candidate heights, hashes, mempool counts, tx commitments, state roots, and replay health before marking Phase 4 closed
+- [x] Record candidate heights, hashes, mempool counts, tx commitments, state roots, and replay health before marking Phase 4 closed
 
 ### Phase 5: Miner Task Independence
 
