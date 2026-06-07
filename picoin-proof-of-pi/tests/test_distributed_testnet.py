@@ -592,6 +592,76 @@ def test_reconcile_peer_uses_mempool_inventory_for_missing_transactions(tmp_path
     assert "http://peer-a:8000/mempool?limit=100" not in requested_urls
 
 
+def test_reconcile_peer_fallback_imports_pending_mempool_only(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "peer-reconcile-fallback-pending.sqlite3")
+    pending_hash = "b" * 64
+    confirmed_hash = "c" * 64
+    requested_urls: list[str] = []
+
+    class Response:
+        def __init__(self, payload, *, fail: bool = False):
+            self._payload = payload
+            self._fail = fail
+
+        def raise_for_status(self):
+            if self._fail:
+                raise RuntimeError("inventory unavailable")
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, timeout=0):
+        requested_urls.append(url)
+        if url == "http://peer-a:8000/node/identity":
+            return Response(
+                {
+                    "node_id": "peer-a",
+                    "peer_address": "http://peer-a:8000",
+                    "peer_type": "full",
+                    "protocol_version": PROTOCOL_VERSION,
+                    "network_id": NETWORK_ID,
+                    "chain_id": CHAIN_ID,
+                    "genesis_hash": GENESIS_HASH,
+                    "bootstrap_peers": [],
+                }
+            )
+        if url == "http://peer-a:8000/node/peers":
+            return Response([])
+        if url == "http://peer-a:8000/mempool/inventory?status=pending&limit=100":
+            return Response({}, fail=True)
+        if url == "http://peer-a:8000/mempool?status=pending&limit=100":
+            return Response(
+                [
+                    {"tx_hash": pending_hash, "status": "pending"},
+                    {"tx_hash": confirmed_hash, "status": "confirmed"},
+                ]
+            )
+        if url == "http://peer-a:8000/node/sync/blocks?from_height=0&limit=100":
+            return Response({"from_height": 0, "count": 0, "blocks": []})
+        if url == "http://peer-a:8000/consensus/proposals?limit=100":
+            return Response([])
+        raise AssertionError(url)
+
+    imported: list[dict] = []
+
+    def fake_submit_transaction(tx, propagated=False):
+        imported.append({"tx": tx, "propagated": propagated})
+        return tx
+
+    monkeypatch.setattr("app.services.network.requests.get", fake_get)
+    monkeypatch.setattr("app.services.network.submit_transaction", fake_submit_transaction)
+
+    result = reconcile_peer("http://peer-a:8000")
+
+    assert result["mempool_fallback_seen"] == 2
+    assert result["mempool_fallback_pending"] == 1
+    assert result["transactions_seen"] == 1
+    assert result["transactions_imported"] == 1
+    assert imported == [{"tx": {"tx_hash": pending_hash, "status": "pending"}, "propagated": True}]
+    assert "http://peer-a:8000/mempool?status=pending&limit=100" in requested_urls
+    assert "http://peer-a:8000/mempool?limit=100" not in requested_urls
+
+
 def test_discover_peers_skips_invalid_discovered_peer_address(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "peer-discovery-invalid.sqlite3")
     monkeypatch.setattr("app.services.network.BOOTSTRAP_PEERS", [], raising=False)

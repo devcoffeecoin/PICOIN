@@ -57,6 +57,13 @@ def number(value: Any) -> float | None:
         return None
 
 
+def integer(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def normalize_tx(tx: dict[str, Any] | None) -> dict[str, Any]:
     tx = tx or {}
     return {
@@ -70,9 +77,12 @@ def normalize_tx(tx: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
-def history_fingerprint(entries: list[dict[str, Any]] | None) -> list[tuple[Any, ...]]:
+def history_fingerprint(entries: list[dict[str, Any]] | None, *, after_height: int = 0) -> list[tuple[Any, ...]]:
     fingerprint: list[tuple[Any, ...]] = []
     for entry in entries or []:
+        block_height = integer(entry.get("block_height"))
+        if after_height > 0 and (block_height is None or block_height <= after_height):
+            continue
         fingerprint.append(
             (
                 entry.get("account_id"),
@@ -97,6 +107,7 @@ def add_account_check(
     timeout: float,
     *,
     compare_history: bool,
+    history_after_height: int = 0,
 ) -> None:
     if account in account_results:
         return
@@ -118,11 +129,18 @@ def add_account_check(
         reference_history = try_fetch(checks, reference, history_path, timeout, name=f"reference_history_{account}")
         account_results[account]["local_history_count"] = len(local_history or [])
         account_results[account]["reference_history_count"] = len(reference_history or [])
+        local_history_fingerprint = history_fingerprint(local_history, after_height=history_after_height)
+        reference_history_fingerprint = history_fingerprint(reference_history, after_height=history_after_height)
+        account_results[account]["local_compared_history_count"] = len(local_history_fingerprint)
+        account_results[account]["reference_compared_history_count"] = len(reference_history_fingerprint)
         check(
             checks,
             f"account_history_matches_{account}",
-            history_fingerprint(local_history) == history_fingerprint(reference_history),
-            f"local_count={len(local_history or [])} reference_count={len(reference_history or [])}",
+            local_history_fingerprint == reference_history_fingerprint,
+            (
+                f"after_height={history_after_height} "
+                f"local_count={len(local_history_fingerprint)} reference_count={len(reference_history_fingerprint)}"
+            ),
         )
 
 
@@ -152,6 +170,7 @@ def main() -> int:
     replay = (local_sync or {}).get("replay") or {}
     local_height = int((local_sync or {}).get("effective_latest_block_height") or 0)
     reference_height = int((reference_sync or {}).get("effective_latest_block_height") or 0)
+    snapshot_height = int((local_sync or {}).get("snapshot_height") or 0)
     lag = max(0, reference_height - local_height)
 
     check(
@@ -215,11 +234,19 @@ def main() -> int:
 
     sampled_hashes: list[str] = []
     sampled_accounts: list[str] = []
+    sampled_skipped_pre_snapshot: list[str] = []
     tx_results: dict[str, Any] = {}
     if int(args.sample_recent_txs) > 0:
-        sample_path = f"/transactions/recent?status=confirmed&limit={max(1, min(int(args.sample_recent_txs), 50))}"
+        sample_limit = max(1, min(max(int(args.sample_recent_txs) * 10, int(args.sample_recent_txs)), 500))
+        sample_path = f"/transactions/recent?status=confirmed&limit={sample_limit}"
         sampled = try_fetch(checks, reference, sample_path, args.timeout, name="reference_recent_confirmed_txs")
         for tx in sampled or []:
+            block_height = integer(tx.get("block_height"))
+            if snapshot_height > 0 and (block_height is None or block_height <= snapshot_height):
+                tx_hash = str(tx.get("tx_hash") or "").strip()
+                if tx_hash:
+                    sampled_skipped_pre_snapshot.append(tx_hash)
+                continue
             tx_hash = str(tx.get("tx_hash") or "").strip()
             if tx_hash and tx_hash not in sampled_hashes:
                 sampled_hashes.append(tx_hash)
@@ -227,6 +254,16 @@ def main() -> int:
                 account = str(tx.get(field) or "").strip()
                 if account.startswith("PI") and account not in sampled_accounts:
                     sampled_accounts.append(account)
+            if len(sampled_hashes) >= int(args.sample_recent_txs):
+                break
+        if not sampled_hashes:
+            check(
+                checks,
+                "sample_recent_confirmed_txs_after_snapshot",
+                True,
+                f"no confirmed reference transactions after snapshot_height={snapshot_height}",
+                severity="warning",
+            )
 
     account_results: dict[str, Any] = {}
     for account in [*args.account, *sampled_accounts]:
@@ -238,6 +275,7 @@ def main() -> int:
             account,
             args.timeout,
             compare_history=bool(args.compare_history),
+            history_after_height=snapshot_height,
         )
 
     for tx_hash in [*args.tx_hash, *sampled_hashes]:
@@ -261,10 +299,12 @@ def main() -> int:
         "lag": lag,
         "local_height": local_height,
         "reference_height": reference_height,
+        "snapshot_height": snapshot_height,
         "duration_seconds": round(time.time() - started, 3),
         "summary": {"checks": len(checks), "errors": error_count},
         "checks": checks,
         "sampled_tx_hashes": sampled_hashes,
+        "sampled_skipped_pre_snapshot": sampled_skipped_pre_snapshot,
         "sampled_accounts": sampled_accounts,
         "accounts": account_results,
         "transactions": tx_results,

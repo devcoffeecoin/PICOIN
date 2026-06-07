@@ -1168,7 +1168,20 @@ def _fetch_peer_mempool_transactions(
     except Exception as inventory_exc:
         result["mempool_inventory_error"] = str(inventory_exc)
         try:
-            return requests.get(f"{peer_address}/mempool?limit={int(limit)}", timeout=GOSSIP_TIMEOUT_SECONDS).json()
+            fallback_rows = requests.get(
+                f"{peer_address}/mempool?status=pending&limit={int(limit)}",
+                timeout=GOSSIP_TIMEOUT_SECONDS,
+            ).json()
+            if not isinstance(fallback_rows, list):
+                return []
+            result["mempool_fallback_seen"] = len(fallback_rows)
+            pending_rows = [
+                row
+                for row in fallback_rows
+                if isinstance(row, dict) and str(row.get("status") or "pending") == "pending"
+            ]
+            result["mempool_fallback_pending"] = len(pending_rows)
+            return pending_rows
         except Exception as fallback_exc:
             raise NetworkError(
                 502,

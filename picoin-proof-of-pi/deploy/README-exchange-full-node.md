@@ -209,7 +209,7 @@ python3 deploy/scripts/phase7-exchange-full-node-smoke.py \
   --compare-history
 ```
 
-The smoke test checks local health, protocol identity, replay divergence, height lag, tip block readability, optional local-vs-reference account parity, transaction parity, and account-history parity for sampled transactions.
+The smoke test checks local health, protocol identity, replay divergence, height lag, tip block readability, optional local-vs-reference account parity, transaction parity, and account-history parity. When the local node was restored from a snapshot, automatic transaction and history samples are limited to activity after the snapshot base because the snapshot proves balances at the restore height, not full pre-snapshot archival history.
 
 ## Local API For Operators
 
