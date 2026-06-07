@@ -70,6 +70,62 @@ def normalize_tx(tx: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def history_fingerprint(entries: list[dict[str, Any]] | None) -> list[tuple[Any, ...]]:
+    fingerprint: list[tuple[Any, ...]] = []
+    for entry in entries or []:
+        fingerprint.append(
+            (
+                entry.get("account_id"),
+                entry.get("entry_type"),
+                entry.get("amount"),
+                entry.get("amount_units"),
+                entry.get("balance_after"),
+                entry.get("balance_after_units"),
+                entry.get("block_height"),
+                entry.get("related_id"),
+            )
+        )
+    return fingerprint
+
+
+def add_account_check(
+    checks: list[dict[str, Any]],
+    account_results: dict[str, Any],
+    local: str,
+    reference: str,
+    account: str,
+    timeout: float,
+    *,
+    compare_history: bool,
+) -> None:
+    if account in account_results:
+        return
+    path = f"/accounts/{urllib.parse.quote(account)}"
+    local_account = try_fetch(checks, local, path, timeout, name=f"local_account_{account}")
+    reference_account = try_fetch(checks, reference, path, timeout, name=f"reference_account_{account}")
+    local_balance = number((local_account or {}).get("balance"))
+    reference_balance = number((reference_account or {}).get("balance"))
+    account_results[account] = {"local": local_account, "reference": reference_account}
+    check(
+        checks,
+        f"account_balance_matches_{account}",
+        local_balance == reference_balance and (local_account or {}).get("account_type") == (reference_account or {}).get("account_type"),
+        f"local_balance={local_balance} reference_balance={reference_balance}",
+    )
+    if compare_history:
+        history_path = f"/accounts/{urllib.parse.quote(account)}/history?limit=20"
+        local_history = try_fetch(checks, local, history_path, timeout, name=f"local_history_{account}")
+        reference_history = try_fetch(checks, reference, history_path, timeout, name=f"reference_history_{account}")
+        account_results[account]["local_history_count"] = len(local_history or [])
+        account_results[account]["reference_history_count"] = len(reference_history or [])
+        check(
+            checks,
+            f"account_history_matches_{account}",
+            history_fingerprint(local_history) == history_fingerprint(reference_history),
+            f"local_count={len(local_history or [])} reference_count={len(reference_history or [])}",
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Phase 7 exchange/full-node smoke test")
     parser.add_argument("--local", default="http://127.0.0.1:8000", help="Local full-node base URL")
@@ -77,6 +133,8 @@ def main() -> int:
     parser.add_argument("--allowed-lag", type=int, default=5, help="Maximum allowed local height lag")
     parser.add_argument("--account", action="append", default=[], help="Optional PI account to compare")
     parser.add_argument("--tx-hash", action="append", default=[], help="Optional transaction hash to compare")
+    parser.add_argument("--sample-recent-txs", type=int, default=0, help="Compare N recent confirmed reference transactions")
+    parser.add_argument("--compare-history", action="store_true", help="Compare /accounts/{address}/history for sampled or explicit accounts")
     parser.add_argument("--timeout", type=float, default=20.0, help="HTTP timeout seconds")
     args = parser.parse_args()
 
@@ -155,23 +213,34 @@ def main() -> int:
             f"block_height={(block or {}).get('height')} sync_height={local_height}",
         )
 
+    sampled_hashes: list[str] = []
+    sampled_accounts: list[str] = []
+    tx_results: dict[str, Any] = {}
+    if int(args.sample_recent_txs) > 0:
+        sample_path = f"/transactions/recent?status=confirmed&limit={max(1, min(int(args.sample_recent_txs), 50))}"
+        sampled = try_fetch(checks, reference, sample_path, args.timeout, name="reference_recent_confirmed_txs")
+        for tx in sampled or []:
+            tx_hash = str(tx.get("tx_hash") or "").strip()
+            if tx_hash and tx_hash not in sampled_hashes:
+                sampled_hashes.append(tx_hash)
+            for field in ("sender", "recipient"):
+                account = str(tx.get(field) or "").strip()
+                if account.startswith("PI") and account not in sampled_accounts:
+                    sampled_accounts.append(account)
+
     account_results: dict[str, Any] = {}
-    for account in args.account:
-        path = f"/accounts/{urllib.parse.quote(account)}"
-        local_account = try_fetch(checks, local, path, args.timeout, name=f"local_account_{account}")
-        reference_account = try_fetch(checks, reference, path, args.timeout, name=f"reference_account_{account}")
-        local_balance = number((local_account or {}).get("balance"))
-        reference_balance = number((reference_account or {}).get("balance"))
-        account_results[account] = {"local": local_account, "reference": reference_account}
-        check(
+    for account in [*args.account, *sampled_accounts]:
+        add_account_check(
             checks,
-            f"account_balance_matches_{account}",
-            local_balance == reference_balance and (local_account or {}).get("account_type") == (reference_account or {}).get("account_type"),
-            f"local_balance={local_balance} reference_balance={reference_balance}",
+            account_results,
+            local,
+            reference,
+            account,
+            args.timeout,
+            compare_history=bool(args.compare_history),
         )
 
-    tx_results: dict[str, Any] = {}
-    for tx_hash in args.tx_hash:
+    for tx_hash in [*args.tx_hash, *sampled_hashes]:
         path = f"/tx/{urllib.parse.quote(tx_hash)}"
         local_tx = normalize_tx(try_fetch(checks, local, path, args.timeout, name=f"local_tx_{tx_hash}"))
         reference_tx = normalize_tx(try_fetch(checks, reference, path, args.timeout, name=f"reference_tx_{tx_hash}"))
@@ -195,6 +264,8 @@ def main() -> int:
         "duration_seconds": round(time.time() - started, 3),
         "summary": {"checks": len(checks), "errors": error_count},
         "checks": checks,
+        "sampled_tx_hashes": sampled_hashes,
+        "sampled_accounts": sampled_accounts,
         "accounts": account_results,
         "transactions": tx_results,
     }

@@ -198,7 +198,18 @@ python3 deploy/scripts/phase7-exchange-full-node-smoke.py \
   --tx-hash TX_HASH_TO_CHECK
 ```
 
-The smoke test checks local health, protocol identity, replay divergence, height lag, tip block readability, and optional local-vs-reference account or transaction parity.
+Automatic exchange-readiness sample:
+
+```bash
+python3 deploy/scripts/phase7-exchange-full-node-smoke.py \
+  --local http://127.0.0.1:8000 \
+  --reference https://api.picoin.science \
+  --allowed-lag 5 \
+  --sample-recent-txs 5 \
+  --compare-history
+```
+
+The smoke test checks local health, protocol identity, replay divergence, height lag, tip block readability, optional local-vs-reference account parity, transaction parity, and account-history parity for sampled transactions.
 
 ## Local API For Operators
 
