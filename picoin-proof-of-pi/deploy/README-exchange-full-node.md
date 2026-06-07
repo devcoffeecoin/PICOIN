@@ -75,7 +75,7 @@ The reconciler runs continuously, but a manual catch-up is useful after first in
 
 ```bash
 curl -sS --max-time 120 -X POST \
-  "http://127.0.0.1:8000/node/reconcile?limit=64&peer_address=https://api.picoin.science" \
+  "http://127.0.0.1:8000/node/reconcile?limit=16&peer_address=https://api.picoin.science" \
   | python3 -m json.tool | head -160
 ```
 
@@ -242,4 +242,23 @@ systemctl is-active picoin-node picoin-reconciler
 curl -sS http://127.0.0.1:8000/node/sync-status | python3 -m json.tool
 journalctl -u picoin-node -n 100 --no-pager -l
 journalctl -u picoin-reconciler -n 100 --no-pager -l
+```
+
+## Troubleshooting Bootstrap Timeouts
+
+If first catch-up reports `Read timed out` against the bootstrap peer, increase peer timeout and use smaller reconcile batches:
+
+```bash
+sudo sed -i 's/^PICOIN_GOSSIP_TIMEOUT_SECONDS=.*/PICOIN_GOSSIP_TIMEOUT_SECONDS=10.0/' /etc/picoin/picoin.env
+sudo sed -i 's/^PICOIN_RECONCILER_LIMIT=.*/PICOIN_RECONCILER_LIMIT=16/' /etc/picoin/picoin.env
+sudo sed -i 's/^PICOIN_RECONCILER_SLEEP_SECONDS=.*/PICOIN_RECONCILER_SLEEP_SECONDS=30/' /etc/picoin/picoin.env
+sudo systemctl restart picoin-node picoin-reconciler
+```
+
+Then retry:
+
+```bash
+curl -sS --max-time 180 -X POST \
+  "http://127.0.0.1:8000/node/reconcile?limit=16&peer_address=https://api.picoin.science" \
+  | python3 -m json.tool | head -160
 ```
