@@ -981,7 +981,7 @@ Phase 5 evidence recorded on June 7, 2026:
 
 Goal: a block becomes canonical by validator quorum certificate, not by one API database decision.
 
-Status: implementation started on the unified `codex/decentralization-roadmap` branch as of June 7, 2026. The code now persists a deterministic `picoin-finality-v1` certificate when validator quorum accepts a block and exposes it through `/blocks/{height}/finality`. Isolated multi-node restart and conflicting-certificate drills remain open before Phase 6 can be closed.
+Status: completed in the isolated A/B/C lab on the unified `codex/decentralization-roadmap` branch as of June 7, 2026. The lab proved deterministic `picoin-finality-v1` certificate creation after validator quorum, certificate retrieval through `/blocks/{height}/finality`, certificate export/import through block sync, signature verification, and identical certificate convergence across three independent full-node candidates.
 
 - [x] Define signed finality certificate schema for each block
 - [x] Include quorum validator ids, signatures, reward addresses, public keys, and protocol params id in canonical payloads
@@ -989,16 +989,32 @@ Status: implementation started on the unified `codex/decentralization-roadmap` b
 - [x] Expose certificate retrieval through `GET /blocks/{height}/finality`
 - [x] Add an operational verifier script for A/B/C certificate checks: `picoin-proof-of-pi/deploy/scripts/phase6-finality-verify.py`
 - [x] Export finality certificates through `/node/sync/blocks` and persist valid certificates when replay imports finalized blocks
+- [x] Verify all full nodes can validate finality certificates after restart/catch-up from a peer
+- [x] Prevent partial block persistence when validator quorum finalization fails during transaction replay
+
+Post-Phase 6 hardening tracked for later phases:
+
 - [ ] Reject conflicting certificates for the same height unless deterministic rules select one valid canonical block
 - [ ] Add slashing evidence for validators that sign conflicting blocks at the same height
-- [ ] Verify all full nodes can validate finality certificates from disk after restart
 
 Phase 6 local evidence recorded on June 7, 2026:
 
 - `tests/test_validator_reputation.py::test_block_is_accepted_after_validator_quorum` verifies certificate creation after three validator approvals, stored certificate lookup by block height, certificate block/task/job links, and validator signature verification from the stored payloads.
 - `tests/test_validator_reputation.py::test_finality_certificate_exports_and_imports_with_block_sync` verifies `/node/sync/blocks` exports certificates and a clean replay/import database persists the certificate with a reconstructed approved validation job.
+- `tests/test_validator_reputation.py::test_quorum_finalization_failure_rejects_job_without_losing_vote` verifies that failed transaction finalization keeps quorum votes but rolls back partial blocks, rewards, ledger entries, and finality certificates.
 - `tests/test_api_endpoints.py::test_block_finality_endpoint_returns_certificate` verifies the `/blocks/{height}/finality` API route returns persisted certificates.
 - `tests/test_testnet_hardening.py::test_full_commit_reveal_flow_accepts_block_after_three_validator_votes` still passes with certificate creation attached to the quorum finalization path.
+
+Phase 6 A/B/C lab evidence recorded on June 7, 2026:
+
+- Candidates: A `178.62.30.17`, B `138.68.139.141`, C `159.89.115.183`
+- Finalized lab height: `1`
+- Final block hash: `864c1a25f8b2000b93325a55758efe5f424248dc6943d85cebbc15be71a04b2c`
+- Finality certificate hash: `b2ab8d94679860eaa4e15d65697a723d88cb30ab5a91bb0d92f7abb1bdc8689f`
+- Finality task/job: `task_8bd68429415f6279`, `job_504adfc9e81a424f`
+- Quorum: `approval_count=3`, `required_approvals=3`
+- Approving validators: `validator_5554017c6a4c4a56`, `validator_3b952537d04e4c0e`, `validator_5eda6cd4aec541aa`
+- Operational verifier result: `status=ok`, `nodes_checked=3`, `checks=36`, `errors=0`
 
 Phase 6 operational verifier:
 
