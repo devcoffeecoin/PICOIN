@@ -3,7 +3,7 @@ from datetime import datetime, timedelta
 
 import pytest
 
-from app.core.crypto import canonical_json, hash_result
+from app.core.crypto import canonical_json, hash_result, sha256_text
 from app.core.pi import calculate_pi_segment
 from app.core.settings import CHAIN_ID, GENESIS_HASH, MEMPOOL_TX_TTL_SECONDS, NETWORK_ID, PROTOCOL_VERSION
 from app.core.signatures import build_submission_signature_payload, generate_keypair, sign_payload
@@ -1904,6 +1904,61 @@ def test_snapshot_export_refreshes_checkpoint_after_validator_state_changes(tmp_
 
     _init_network_db(tmp_path, monkeypatch, "snapshot-validator-refresh-target.sqlite3")
     imported = import_canonical_snapshot(refreshed_snapshot, source="peer-validator-refresh")
+
+    assert imported["validation"]["valid"] is True
+
+
+def test_snapshot_import_accepts_raw_export_validator_hash(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "snapshot-raw-validator-hash-source.sqlite3")
+
+    miner_key = generate_keypair()
+    validator_key = generate_keypair()
+    miner = register_miner("snapshot-raw-validator-hash-miner", miner_key["public_key"])
+    register_validator("snapshot-raw-validator-hash", validator_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    snapshot = export_canonical_snapshot(height=1)
+    legacy_snapshot = json.loads(json.dumps(snapshot))
+    checkpoint = legacy_snapshot["checkpoint"]
+    height = int(checkpoint["height"])
+
+    for validator in legacy_snapshot["validators"]:
+        validator.pop("stake_locked_units", None)
+        validator.pop("wallet_stake_locked_units", None)
+        validator.pop("slashed_amount_units", None)
+    checkpoint["validators_hash"] = sha256_text(
+        canonical_json({"height": height, "validators": legacy_snapshot["validators"]})
+    )
+    payload = {
+        "chain_id": checkpoint["chain_id"],
+        "network_id": checkpoint["network_id"],
+        "genesis_hash": checkpoint["genesis_hash"],
+        "protocol_version": checkpoint["protocol_version"],
+        "height": height,
+        "block_hash": checkpoint["block_hash"],
+        "previous_hash": checkpoint["previous_hash"],
+        "state_root": checkpoint["state_root"],
+        "balances_hash": checkpoint["balances_hash"],
+        "balances_count": checkpoint["balances_count"],
+        "ledger_entries_count": checkpoint["ledger_entries_count"],
+        "total_balance": checkpoint["total_balance"],
+        "total_balance_units": checkpoint["total_balance_units"],
+    }
+    for key in ("nonces", "validators", "protocol_params", "retarget_events", "pending_rewards"):
+        hash_key = f"{key}_hash"
+        count_key = f"{key}_count"
+        if checkpoint.get(hash_key):
+            payload[hash_key] = checkpoint[hash_key]
+            payload[count_key] = checkpoint[count_key]
+    checkpoint["snapshot_hash"] = sha256_text(canonical_json(payload))
+
+    validation = validate_snapshot_document(legacy_snapshot)
+
+    assert validation["valid"] is True, validation["issues"]
+    assert validation["computed"]["raw_validators_hash"] == checkpoint["validators_hash"]
+    assert validation["computed"]["normalized_validators_hash"] != checkpoint["validators_hash"]
+
+    _init_network_db(tmp_path, monkeypatch, "snapshot-raw-validator-hash-target.sqlite3")
+    imported = import_canonical_snapshot(legacy_snapshot, source="raw-validator-hash")
 
     assert imported["validation"]["valid"] is True
 
