@@ -1015,6 +1015,518 @@ def receive_validator_heartbeat_gossip(payload: dict[str, Any], source_peer: str
     }
 
 
+def _json_payload_text(value: Any, default: Any) -> str:
+    if value is None:
+        return json.dumps(default, sort_keys=True)
+    if isinstance(value, str):
+        try:
+            json.loads(value)
+            return value
+        except (TypeError, ValueError):
+            return json.dumps(default, sort_keys=True)
+    return json.dumps(value, sort_keys=True)
+
+
+def _decode_validation_job_gossip_row(row: Any) -> dict[str, Any]:
+    job = row_to_dict(row)
+    job["samples"] = json.loads(job.get("samples") or "[]")
+    job["tx_hashes"] = json.loads(job.get("tx_hashes_json") or "[]")
+    job["transactions"] = json.loads(job.get("transactions_json") or "[]")
+    return job
+
+
+def list_validation_job_inventory(status: str | None = "pending", limit: int = 100) -> dict[str, Any]:
+    safe_limit = max(1, min(int(limit), 500))
+    allowed_statuses = {"pending", "approved", "rejected", "expired"}
+    filters: list[str] = []
+    params: list[Any] = []
+    if status:
+        if status not in allowed_statuses:
+            raise MiningError(422, "invalid validation job status")
+        filters.append("status = ?")
+        params.append(status)
+    query = "SELECT * FROM validation_jobs"
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY created_at DESC, job_id DESC LIMIT ?"
+    params.append(safe_limit)
+
+    with get_connection() as connection:
+        rows = connection.execute(query, tuple(params)).fetchall()
+        jobs: list[dict[str, Any]] = []
+        for row in rows:
+            job = _decode_validation_job_gossip_row(row)
+            task = row_to_dict(connection.execute("SELECT * FROM tasks WHERE task_id = ?", (job["task_id"],)).fetchone())
+            miner = row_to_dict(connection.execute("SELECT * FROM miners WHERE miner_id = ?", (job["miner_id"],)).fetchone())
+            if task is None:
+                continue
+            jobs.append(
+                {
+                    "gossip_version": "validation-job-v1",
+                    "job": job,
+                    "task": task,
+                    "miner": miner,
+                }
+            )
+    return {
+        "status": status,
+        "count": len(jobs),
+        "jobs": jobs,
+        "checked_at": utc_now(),
+    }
+
+
+def _insert_gossip_miner_if_missing(connection: Any, miner: dict[str, Any] | None, miner_id: str) -> None:
+    existing = connection.execute("SELECT 1 FROM miners WHERE miner_id = ?", (miner_id,)).fetchone()
+    if existing is not None:
+        return
+    payload = dict(miner or {})
+    timestamp = str(payload.get("registered_at") or utc_now())
+    connection.execute(
+        """
+        INSERT INTO miners (miner_id, name, public_key, reward_address, registered_at)
+        VALUES (?, ?, ?, ?, ?)
+        """,
+        (
+            miner_id,
+            str(payload.get("name") or miner_id),
+            payload.get("public_key"),
+            payload.get("reward_address"),
+            timestamp,
+        ),
+    )
+
+
+def receive_validation_job_gossip(payload: dict[str, Any], source_peer: str | None = None) -> dict[str, Any]:
+    envelope = dict(payload or {})
+    job = dict(envelope.get("job") or envelope)
+    task = dict(envelope.get("task") or {})
+    miner = envelope.get("miner") if isinstance(envelope.get("miner"), dict) else None
+    job_id = str(job.get("job_id") or "").strip()
+    task_id = str(job.get("task_id") or task.get("task_id") or "").strip()
+    miner_id = str(job.get("miner_id") or task.get("miner_id") or "").strip()
+    if not job_id or not task_id or not miner_id:
+        raise MiningError(422, "validation job gossip requires job_id, task_id, and miner_id")
+    if str(task.get("task_id") or task_id) != task_id:
+        raise MiningError(409, "validation job task_id mismatch")
+    status = str(job.get("status") or "pending")
+    if status not in {"pending", "approved", "rejected", "expired"}:
+        raise MiningError(422, "invalid validation job status")
+
+    with get_connection() as connection:
+        existing_job = row_to_dict(connection.execute("SELECT * FROM validation_jobs WHERE job_id = ?", (job_id,)).fetchone())
+        if existing_job is not None:
+            return {"status": "duplicate", "job_id": job_id, "task_id": task_id}
+
+        existing_task = row_to_dict(connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone())
+        if existing_task is not None:
+            for column in ("miner_id", "range_start", "range_end", "algorithm"):
+                if str(existing_task.get(column)) != str(task.get(column, existing_task.get(column))):
+                    raise MiningError(409, f"validation job task mismatch: {column}")
+        else:
+            _insert_gossip_miner_if_missing(connection, miner, miner_id)
+            protocol_params_id = task.get("protocol_params_id")
+            if protocol_params_id is not None:
+                exists = connection.execute("SELECT 1 FROM protocol_params WHERE id = ?", (protocol_params_id,)).fetchone()
+                if exists is None:
+                    protocol_params_id = None
+            if protocol_params_id is None:
+                active_params = connection.execute(
+                    "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+                ).fetchone()
+                protocol_params_id = active_params["id"] if active_params else None
+            created_at = str(task.get("created_at") or job.get("created_at") or utc_now())
+            connection.execute(
+                """
+                INSERT INTO tasks (
+                    task_id, miner_id, range_start, range_end, algorithm, status,
+                    assignment_seed, assignment_mode, competitive_round_height,
+                    competitive_round_previous_hash, assignment_ms, compute_ms,
+                    protocol_params_id, created_at, expires_at, submitted_at,
+                    stale_at, stale_reason, mempool_snapshot_id, selected_tx_hashes,
+                    tx_merkle_root, tx_count, tx_fee_total_units, selected_tx_hashes_hash
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    miner_id,
+                    int(task.get("range_start") or 0),
+                    int(task.get("range_end") or 0),
+                    str(task.get("algorithm") or "bbp_hex_v1"),
+                    str(task.get("status") or "revealed"),
+                    task.get("assignment_seed"),
+                    task.get("assignment_mode"),
+                    task.get("competitive_round_height"),
+                    task.get("competitive_round_previous_hash"),
+                    task.get("assignment_ms"),
+                    task.get("compute_ms"),
+                    protocol_params_id,
+                    created_at,
+                    task.get("expires_at"),
+                    task.get("submitted_at"),
+                    task.get("stale_at"),
+                    task.get("stale_reason"),
+                    task.get("mempool_snapshot_id") or job.get("mempool_snapshot_id"),
+                    _json_payload_text(task.get("selected_tx_hashes") or job.get("tx_hashes"), []),
+                    task.get("tx_merkle_root") or job.get("tx_merkle_root") or "",
+                    int(task.get("tx_count") or job.get("tx_count") or 0),
+                    int(task.get("tx_fee_total_units") or job.get("tx_fee_total_units") or 0),
+                    task.get("selected_tx_hashes_hash") or job.get("selected_tx_hashes_hash"),
+                ),
+            )
+
+        created_at = str(job.get("created_at") or utc_now())
+        job_created_at = str(job.get("job_created_at") or created_at)
+        connection.execute(
+            """
+            INSERT INTO validation_jobs (
+                job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                samples, tx_merkle_root, mempool_snapshot_id, selected_tx_hashes_hash,
+                tx_count, tx_fee_total_units, tx_hashes_json, transactions_json,
+                status, result_reason, validator_signature, validation_ms,
+                job_created_at, first_vote_at, second_vote_at, quorum_reached_at,
+                finalized_at, waiting_for_first_vote_ms, waiting_for_quorum_ms,
+                finalization_ms, created_at, completed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_id,
+                task_id,
+                miner_id,
+                str(job.get("result_hash") or ""),
+                str(job.get("merkle_root") or ""),
+                str(job.get("challenge_seed") or ""),
+                _json_payload_text(job.get("samples"), []),
+                str(job.get("tx_merkle_root") or ""),
+                job.get("mempool_snapshot_id"),
+                job.get("selected_tx_hashes_hash"),
+                int(job.get("tx_count") or 0),
+                int(job.get("tx_fee_total_units") or 0),
+                _json_payload_text(job.get("tx_hashes") or job.get("tx_hashes_json"), []),
+                _json_payload_text(job.get("transactions") or job.get("transactions_json"), []),
+                status,
+                job.get("result_reason"),
+                job.get("validator_signature"),
+                job.get("validation_ms"),
+                job_created_at,
+                job.get("first_vote_at"),
+                job.get("second_vote_at"),
+                job.get("quorum_reached_at"),
+                job.get("finalized_at"),
+                job.get("waiting_for_first_vote_ms"),
+                job.get("waiting_for_quorum_ms"),
+                job.get("finalization_ms"),
+                created_at,
+                job.get("completed_at"),
+            ),
+        )
+    return {"status": "accepted", "job_id": job_id, "task_id": task_id, "source_peer": source_peer}
+
+
+def list_validation_vote_inventory(limit: int = 100) -> dict[str, Any]:
+    safe_limit = max(1, min(int(limit), 500))
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT validation_votes.*
+            FROM validation_votes
+            JOIN validation_jobs ON validation_jobs.job_id = validation_votes.job_id
+            ORDER BY validation_votes.created_at DESC, validation_votes.id DESC
+            LIMIT ?
+            """,
+            (safe_limit,),
+        ).fetchall()
+    votes: list[dict[str, Any]] = []
+    for row in rows:
+        vote = row_to_dict(row)
+        vote["approved"] = bool(vote.get("approved"))
+        votes.append({"gossip_version": "validation-vote-v1", "vote": vote})
+    return {
+        "count": len(votes),
+        "votes": votes,
+        "checked_at": utc_now(),
+    }
+
+
+def _finalize_validation_quorum_from_gossip(
+    connection: Any,
+    *,
+    job: dict[str, Any],
+    task: dict[str, Any],
+    validator_id: str,
+    approved: bool,
+    reason: str,
+    signature: str,
+    validation_ms: int,
+    params: dict[str, Any],
+    counts: dict[str, int],
+    required: int,
+) -> dict[str, Any] | None:
+    job_id = job["job_id"]
+    if approved and counts["approvals"] >= required:
+        duplicate_block = connection.execute(
+            "SELECT height FROM blocks WHERE result_hash = ? OR task_id = ?",
+            (job["result_hash"], job["task_id"]),
+        ).fetchone()
+        if duplicate_block is not None:
+            finalized_at = utc_now()
+            reason_text = f"duplicate competitive result already accepted at block {duplicate_block['height']}"
+            connection.execute(
+                "UPDATE tasks SET status = 'rejected', submitted_at = ? WHERE task_id = ?",
+                (finalized_at, job["task_id"]),
+            )
+            release_selected_transactions(connection, job["task_id"], reason_text, finalized_at)
+            _mark_validation_job_finalized(connection, job_id=job_id, finalized_at=finalized_at)
+            connection.execute(
+                """
+                UPDATE validation_jobs
+                SET status = 'rejected', assigned_validator_id = ?, result_reason = ?,
+                    validator_signature = ?, validation_ms = ?, completed_at = ?
+                WHERE job_id = ?
+                """,
+                (validator_id, reason_text, signature, validation_ms, finalized_at, job_id),
+            )
+            return {
+                "accepted": False,
+                "status": "rejected",
+                "message": reason_text,
+                "block": None,
+                "approvals": counts["approvals"],
+                "rejections": counts["rejections"],
+                "required_approvals": required,
+                "required_rejections": required,
+            }
+
+        savepoint_name = "validation_gossip_block_finalization"
+        connection.execute(f"SAVEPOINT {savepoint_name}")
+        try:
+            block = _accept_block_in_connection(
+                connection=connection,
+                task=task,
+                miner_id=job["miner_id"],
+                result_hash=job["result_hash"],
+                merkle_root=job["merkle_root"],
+                samples=json.loads(job.get("samples") or "[]"),
+                signature=signature,
+                submission_reason=f"external validation approved by {validator_id}",
+                validation_ms=validation_ms,
+                params=params,
+                validation_job_id=job_id,
+            )
+        except TransactionExecutionError as exc:
+            connection.execute(f"ROLLBACK TO {savepoint_name}")
+            connection.execute(f"RELEASE {savepoint_name}")
+            finalized_at = utc_now()
+            raw_reason = str(exc)
+            is_competitive_stale = raw_reason.startswith("competitive round")
+            reason_text = raw_reason if is_competitive_stale else f"transaction finalization failed: {exc}"
+            if is_competitive_stale:
+                _mark_competitive_task_stale(connection, job["task_id"], reason_text, finalized_at)
+            else:
+                connection.execute(
+                    "UPDATE tasks SET status = 'rejected', submitted_at = ? WHERE task_id = ?",
+                    (finalized_at, job["task_id"]),
+                )
+                release_selected_transactions(connection, job["task_id"], reason_text, finalized_at)
+            _mark_validation_job_finalized(connection, job_id=job_id, finalized_at=finalized_at)
+            connection.execute(
+                """
+                UPDATE validation_jobs
+                SET status = 'rejected', assigned_validator_id = ?, result_reason = ?,
+                    validator_signature = ?, validation_ms = ?, completed_at = ?
+                WHERE job_id = ?
+                """,
+                (validator_id, reason_text, signature, validation_ms, finalized_at, job_id),
+            )
+            return {
+                "accepted": False,
+                "status": "stale" if is_competitive_stale else "rejected",
+                "message": reason_text,
+                "block": None,
+                "approvals": counts["approvals"],
+                "rejections": counts["rejections"],
+                "required_approvals": required,
+                "required_rejections": required,
+            }
+        connection.execute(f"RELEASE {savepoint_name}")
+        finalized_at = utc_now()
+        _mark_validation_job_finalized(connection, job_id=job_id, finalized_at=finalized_at)
+        connection.execute(
+            """
+            UPDATE validation_jobs
+            SET status = 'approved', assigned_validator_id = ?, result_reason = ?,
+                validator_signature = ?, validation_ms = ?, completed_at = ?
+            WHERE job_id = ?
+            """,
+            (validator_id, reason, signature, validation_ms, finalized_at, job_id),
+        )
+        finality_certificate = _create_finality_certificate(
+            connection,
+            block=block,
+            job_id=job_id,
+            required_approvals=required,
+            created_at=finalized_at,
+        )
+        return {
+            "accepted": True,
+            "status": "approved",
+            "message": "block accepted by validator quorum",
+            "block": block,
+            "finality_certificate": finality_certificate,
+            "approvals": counts["approvals"],
+            "rejections": counts["rejections"],
+            "required_approvals": required,
+            "required_rejections": required,
+        }
+
+    if not approved and counts["rejections"] >= required:
+        finalized_at = utc_now()
+        connection.execute(
+            "UPDATE tasks SET status = 'rejected', submitted_at = ? WHERE task_id = ?",
+            (finalized_at, job["task_id"]),
+        )
+        _mark_validation_job_finalized(connection, job_id=job_id, finalized_at=finalized_at)
+        connection.execute(
+            """
+            UPDATE validation_jobs
+            SET status = 'rejected', assigned_validator_id = ?, result_reason = ?,
+                validator_signature = ?, validation_ms = ?, completed_at = ?
+            WHERE job_id = ?
+            """,
+            (validator_id, reason, signature, validation_ms, finalized_at, job_id),
+        )
+        _apply_penalty(connection, job["miner_id"], job["task_id"], PENALTY_INVALID_RESULT, reason)
+        return {
+            "accepted": True,
+            "status": "rejected",
+            "message": "validation rejected task by validator quorum",
+            "block": None,
+            "approvals": counts["approvals"],
+            "rejections": counts["rejections"],
+            "required_approvals": required,
+            "required_rejections": required,
+        }
+    return None
+
+
+def receive_validation_vote_gossip(payload: dict[str, Any], source_peer: str | None = None) -> dict[str, Any]:
+    envelope = dict(payload or {})
+    vote = dict(envelope.get("vote") or envelope)
+    job_id = str(vote.get("job_id") or "").strip()
+    task_id = str(vote.get("task_id") or "").strip()
+    validator_id = str(vote.get("validator_id") or "").strip()
+    if not job_id or not task_id or not validator_id:
+        raise MiningError(422, "validation vote gossip requires job_id, task_id, and validator_id")
+    approved = bool(vote.get("approved"))
+    reason = str(vote.get("reason") or "")
+    signature = str(vote.get("signature") or "")
+    signed_at = str(vote.get("signed_at") or "")
+
+    with get_connection() as connection:
+        job = row_to_dict(connection.execute("SELECT * FROM validation_jobs WHERE job_id = ?", (job_id,)).fetchone())
+        if job is None:
+            raise MiningError(404, "validation job not found")
+        if str(job.get("task_id")) != task_id:
+            raise MiningError(409, "validation vote task mismatch")
+        validator = row_to_dict(connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone())
+        if validator is None:
+            raise MiningError(404, "validator not found")
+        existing_vote = connection.execute(
+            "SELECT 1 FROM validation_votes WHERE job_id = ? AND validator_id = ?",
+            (job_id, validator_id),
+        ).fetchone()
+        if existing_vote is not None:
+            counts = _validation_vote_counts(connection, job_id)
+            params = _protocol_params_for_task(connection, job)
+            required = _effective_required_validator_approvals(connection, params)
+            return {
+                "status": "duplicate",
+                "job_id": job_id,
+                "validator_id": validator_id,
+                "approvals": counts["approvals"],
+                "rejections": counts["rejections"],
+                "required_approvals": required,
+                "required_rejections": required,
+            }
+
+        signature_payload = build_validation_result_signature_payload(
+            job_id=job_id,
+            validator_id=validator_id,
+            task_id=task_id,
+            approved=approved,
+            reason=reason,
+            signed_at=signed_at,
+        )
+        try:
+            signature_valid = verify_payload_signature(validator["public_key"], signature_payload, signature)
+        except (RuntimeError, ValueError):
+            signature_valid = False
+        if not signature_valid:
+            raise MiningError(400, "invalid validator signature")
+
+        received_at = str(vote.get("created_at") or utc_now())
+        validation_ms = int(vote.get("validation_ms") or 0)
+        submit_result_latency_ms = vote.get("submit_result_latency_ms")
+        connection.execute(
+            """
+            INSERT INTO validation_votes (
+                job_id, task_id, validator_id, approved, reason, signature,
+                signed_at, validation_ms, submit_result_latency_ms, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                job_id,
+                task_id,
+                validator_id,
+                int(approved),
+                reason,
+                signature,
+                signed_at,
+                validation_ms,
+                submit_result_latency_ms,
+                received_at,
+            ),
+        )
+        _record_validator_completed_vote(connection, validator_id, approved, validation_ms)
+        counts = _validation_vote_counts(connection, job_id)
+        task = row_to_dict(connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone())
+        if task is None:
+            raise MiningError(404, "validation task not found")
+        params = _protocol_params_for_task(connection, task)
+        required = _effective_required_validator_approvals(connection, params)
+        _refresh_validation_job_timing(connection, job_id=job_id, counts=counts, required=required, received_at=received_at)
+        finalization = None
+        if job.get("status") == "pending":
+            finalization = _finalize_validation_quorum_from_gossip(
+                connection,
+                job=job,
+                task=task,
+                validator_id=validator_id,
+                approved=approved,
+                reason=reason,
+                signature=signature,
+                validation_ms=validation_ms,
+                params=params,
+                counts=counts,
+                required=required,
+            )
+    if finalization is not None:
+        return {"status": "accepted", "job_id": job_id, "validator_id": validator_id, "finalization": finalization, "source_peer": source_peer}
+    return {
+        "status": "accepted",
+        "job_id": job_id,
+        "validator_id": validator_id,
+        "approvals": counts["approvals"],
+        "rejections": counts["rejections"],
+        "required_approvals": required,
+        "required_rejections": required,
+        "source_peer": source_peer,
+    }
+
+
 def record_miner_heartbeat(payload: dict[str, Any], client_host: str | None = None) -> dict[str, Any]:
     signed_payload = _heartbeat_signature_payload(payload)
     public_key = str(payload.get("public_key") or "")

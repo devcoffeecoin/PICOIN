@@ -189,12 +189,16 @@ from app.services.mining import (
     get_validator,
     get_validators,
     get_validators_status,
+    list_validation_job_inventory,
+    list_validation_vote_inventory,
     list_validator_heartbeat_inventory,
     lookup_miner_activity,
     prune_stale_miners,
     prune_stale_validators,
     record_miner_heartbeat,
     record_validator_heartbeat,
+    receive_validation_job_gossip,
+    receive_validation_vote_gossip,
     receive_validator_heartbeat_gossip,
     register_miner,
     register_validator,
@@ -1245,6 +1249,44 @@ def validation_jobs_health(
     limit: int = Query(20, ge=1, le=200),
 ) -> dict:
     return get_validation_jobs_health(stale_after_seconds=stale_after_seconds, limit=limit)
+
+
+@router.get("/validation/jobs/inventory")
+def validation_jobs_inventory(
+    status: str | None = Query("pending", min_length=1),
+    limit: int = Query(100, ge=1, le=500),
+) -> dict:
+    try:
+        return list_validation_job_inventory(status=status, limit=limit)
+    except MiningError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post("/validation/jobs/receive")
+def validation_job_receive(payload: dict = Body(...)) -> dict:
+    try:
+        return receive_validation_job_gossip(payload)
+    except MiningError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.get("/validation/votes/inventory")
+def validation_votes_inventory(
+    limit: int = Query(100, ge=1, le=500),
+) -> dict:
+    return list_validation_vote_inventory(limit=limit)
+
+
+@router.post("/validation/votes/receive")
+def validation_vote_receive(payload: dict = Body(...)) -> dict:
+    try:
+        response = receive_validation_vote_gossip(payload)
+        finalization = response.get("finalization") if isinstance(response, dict) else None
+        if isinstance(finalization, dict):
+            _gossip_block_from_response(finalization)
+        return response
+    except MiningError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
 
 @router.post("/validation/results", response_model=ValidationResultResponse)

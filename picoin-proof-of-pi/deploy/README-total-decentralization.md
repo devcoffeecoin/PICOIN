@@ -1,7 +1,7 @@
 # Picoin Total Decentralization Roadmap
 
-This document starts the post-Phase-8 decentralization track on branch
-`codex/total-decentralization-roadmap`.
+This document tracks the post-Phase-8 decentralization work on branch
+`codex/total-decentralization`.
 
 The first eight phases reduced single-server risk for reads, snapshots,
 exchange full nodes, mempool propagation, deterministic block construction, and
@@ -156,10 +156,16 @@ Branch implementation status:
 - Covered invalid signatures, duplicate imports, stale imports, and reconcile
   imports with focused tests.
 
-Remaining before closing Phase 10:
+Phase 10 closure:
 
-- Run the three-node drill where validators heartbeat to different nodes and
-  converge through peer reconcile.
+- Three fresh candidate nodes restored from mainnet snapshots.
+- Validators A, B, and C heartbeated to different local nodes.
+- Heartbeat inventory converged across A/B/C through peer reconcile.
+- The same three validator ids became online, synced, and eligible on all
+  three candidates after local lab stake was applied.
+
+Remaining hardening after closure:
+
 - Add signed monotonic heartbeat sequence for stronger replay protection.
 - Add pruning/rate limits for high-volume heartbeat history.
 
@@ -205,13 +211,32 @@ close.
 
 Implementation work:
 
-- Make validation jobs signed, canonical, and gossipable.
+- Make validation jobs canonical and gossipable.
 - Add `/validation/jobs/inventory` and `/validation/jobs/receive`.
 - Add deterministic job id rules for the same task reveal.
 - Allow validators to poll their configured node and receive jobs created on
   peer nodes.
-- Gossip validator votes and make vote import idempotent.
+- Add `/validation/votes/inventory` and `/validation/votes/receive`.
+- Gossip validator votes and make vote import idempotent with signature
+  verification.
 - Preserve vote payloads needed for finality certificate construction.
+- Import the minimal miner/task rows required for a remote validation job to be
+  locally valid without manual DB intervention.
+
+Branch implementation status:
+
+- Added validation job inventory/receive API.
+- Added validation vote inventory/receive API.
+- Added peer reconcile import for validation jobs and votes.
+- Job gossip imports the associated task and miner stub when the receiving node
+  has not seen the miner's original `/tasks/next` request.
+- Vote gossip verifies the validator signature before inserting a vote.
+- Duplicate job/vote gossip returns `duplicate` instead of raising noisy
+  conflicts.
+- A node that receives enough gossiped votes can run the existing quorum
+  finalization path and create the finality certificate locally.
+- Added focused tests for job import, vote signature verification, and
+  idempotent duplicate vote handling.
 
 Acceptance gates:
 
@@ -220,6 +245,14 @@ Acceptance gates:
 - Votes submitted to B and C reach A.
 - All nodes converge on the same job status and vote set.
 - Duplicate job/vote gossip returns idempotent success without noisy errors.
+
+Remaining before closing Phase 11:
+
+- Run the three-node drill with an actual miner reveal on node A.
+- Run one validator against each node.
+- Reconcile A/B/C until the validation job, vote set, block status, and
+  finality certificate converge.
+- Record the command output in this README or the release notes for the phase.
 
 ## Phase 12: Decentralized Task Assignment
 

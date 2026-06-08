@@ -1029,6 +1029,12 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
         "mempool_inventory_missing": 0,
         "validator_heartbeat_inventory_seen": 0,
         "validator_heartbeats_imported": 0,
+        "validation_job_inventory_seen": 0,
+        "validation_job_inventory_missing": 0,
+        "validation_jobs_imported": 0,
+        "validation_vote_inventory_seen": 0,
+        "validation_vote_inventory_missing": 0,
+        "validation_votes_imported": 0,
         "transactions_seen": 0,
         "transactions_imported": 0,
         "proposals_seen": 0,
@@ -1119,6 +1125,38 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
                 result["errors"].append(f"validator heartbeat {heartbeat.get('validator_id')}: {exc}")
     except Exception as exc:
         result["errors"].append(f"validator heartbeats: {exc}")
+
+    try:
+        job_rows = _fetch_peer_validation_jobs(peer_address, result, limit=100)
+        from app.services.mining import receive_validation_job_gossip
+
+        for job in job_rows:
+            try:
+                imported = receive_validation_job_gossip(job, source_peer=peer_address)
+                if imported.get("status") == "accepted":
+                    result["validation_jobs_imported"] += 1
+            except Exception as exc:
+                job_payload = job.get("job") if isinstance(job.get("job"), dict) else job
+                result["errors"].append(f"validation job {job_payload.get('job_id')}: {exc}")
+    except Exception as exc:
+        result["errors"].append(f"validation jobs: {exc}")
+
+    try:
+        vote_rows = _fetch_peer_validation_votes(peer_address, result, limit=100)
+        from app.services.mining import receive_validation_vote_gossip
+
+        for vote in vote_rows:
+            try:
+                imported = receive_validation_vote_gossip(vote, source_peer=peer_address)
+                if imported.get("status") == "accepted":
+                    result["validation_votes_imported"] += 1
+            except Exception as exc:
+                vote_payload = vote.get("vote") if isinstance(vote.get("vote"), dict) else vote
+                result["errors"].append(
+                    f"validation vote {vote_payload.get('job_id')}:{vote_payload.get('validator_id')}: {exc}"
+                )
+    except Exception as exc:
+        result["errors"].append(f"validation votes: {exc}")
 
     try:
         block_sync = sync_blocks_until(peer_address, limit=100)
@@ -1249,6 +1287,112 @@ def _fetch_peer_validator_heartbeats(
     return [row for row in rows if isinstance(row, dict)]
 
 
+def _fetch_peer_validation_jobs(
+    peer_address: str,
+    result: dict[str, Any],
+    *,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    response = requests.get(
+        f"{peer_address}/validation/jobs/inventory?status=pending&limit={int(limit)}",
+        timeout=GOSSIP_TIMEOUT_SECONDS,
+    )
+    if hasattr(response, "raise_for_status"):
+        response.raise_for_status()
+    payload = response.json()
+    rows = payload.get("jobs", []) if isinstance(payload, dict) else []
+    if not isinstance(rows, list):
+        return []
+    result["validation_job_inventory_seen"] = len(rows)
+    job_ids = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        job = item.get("job") if isinstance(item.get("job"), dict) else item
+        job_id = str(job.get("job_id") or "")
+        if job_id:
+            job_ids.append(job_id)
+    missing_ids = set(_missing_validation_job_ids(job_ids))
+    result["validation_job_inventory_missing"] = len(missing_ids)
+    return [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and str(((row.get("job") if isinstance(row.get("job"), dict) else row) or {}).get("job_id") or "") in missing_ids
+    ]
+
+
+def _missing_validation_job_ids(job_ids: list[str]) -> list[str]:
+    unique_ids = list(dict.fromkeys(str(job_id) for job_id in job_ids if str(job_id)))
+    if not unique_ids:
+        return []
+    placeholders = ",".join("?" for _ in unique_ids)
+    with get_connection() as connection:
+        rows = connection.execute(
+            f"SELECT job_id FROM validation_jobs WHERE job_id IN ({placeholders})",
+            tuple(unique_ids),
+        ).fetchall()
+    existing = {str(row["job_id"]) for row in rows}
+    return [job_id for job_id in unique_ids if job_id not in existing]
+
+
+def _fetch_peer_validation_votes(
+    peer_address: str,
+    result: dict[str, Any],
+    *,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    response = requests.get(
+        f"{peer_address}/validation/votes/inventory?limit={int(limit)}",
+        timeout=GOSSIP_TIMEOUT_SECONDS,
+    )
+    if hasattr(response, "raise_for_status"):
+        response.raise_for_status()
+    payload = response.json()
+    rows = payload.get("votes", []) if isinstance(payload, dict) else []
+    if not isinstance(rows, list):
+        return []
+    result["validation_vote_inventory_seen"] = len(rows)
+    vote_keys: list[tuple[str, str]] = []
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        vote = item.get("vote") if isinstance(item.get("vote"), dict) else item
+        job_id = str(vote.get("job_id") or "")
+        validator_id = str(vote.get("validator_id") or "")
+        if job_id and validator_id:
+            vote_keys.append((job_id, validator_id))
+    missing_keys = set(_missing_validation_vote_keys(vote_keys))
+    result["validation_vote_inventory_missing"] = len(missing_keys)
+    return [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and (
+            str(((row.get("vote") if isinstance(row.get("vote"), dict) else row) or {}).get("job_id") or ""),
+            str(((row.get("vote") if isinstance(row.get("vote"), dict) else row) or {}).get("validator_id") or ""),
+        )
+        in missing_keys
+    ]
+
+
+def _missing_validation_vote_keys(vote_keys: list[tuple[str, str]]) -> list[tuple[str, str]]:
+    unique_keys = list(dict.fromkeys((str(job_id), str(validator_id)) for job_id, validator_id in vote_keys if job_id and validator_id))
+    if not unique_keys:
+        return []
+    conditions = " OR ".join("(job_id = ? AND validator_id = ?)" for _ in unique_keys)
+    params: list[str] = []
+    for job_id, validator_id in unique_keys:
+        params.extend([job_id, validator_id])
+    with get_connection() as connection:
+        rows = connection.execute(
+            f"SELECT job_id, validator_id FROM validation_votes WHERE {conditions}",
+            tuple(params),
+        ).fetchall()
+    existing = {(str(row["job_id"]), str(row["validator_id"])) for row in rows}
+    return [key for key in unique_keys if key not in existing]
+
+
 def sync_blocks_until(
     peer_address: str,
     *,
@@ -1366,6 +1510,8 @@ def reconcile_connected_peers(limit: int = 16) -> dict[str, Any]:
         ],
         "transactions_imported": sum(item["transactions_imported"] for item in results),
         "validator_heartbeats_imported": sum(item.get("validator_heartbeats_imported", 0) for item in results),
+        "validation_jobs_imported": sum(item.get("validation_jobs_imported", 0) for item in results),
+        "validation_votes_imported": sum(item.get("validation_votes_imported", 0) for item in results),
         "proposals_imported": sum(item["proposals_imported"] for item in results),
         "blocks_imported": sum(item["blocks_imported"] for item in results),
         "peers_seen": sum(item["peers_seen"] for item in results),

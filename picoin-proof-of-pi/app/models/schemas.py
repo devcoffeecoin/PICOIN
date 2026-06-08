@@ -709,6 +709,8 @@ class PeerReconcileResponse(BaseModel):
     selected_peers: list[dict[str, Any]] = []
     transactions_imported: int = 0
     validator_heartbeats_imported: int = 0
+    validation_jobs_imported: int = 0
+    validation_votes_imported: int = 0
     proposals_imported: int = 0
     blocks_imported: int = 0
     peers_seen: int = 0
