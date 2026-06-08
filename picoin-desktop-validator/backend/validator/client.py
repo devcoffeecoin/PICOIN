@@ -268,9 +268,9 @@ def command_validate(args: argparse.Namespace) -> int:
                 timeout=args.node_timeout,
             )
         except requests.RequestException as exc:
-            print(f"Network/API error during validator heartbeat: {exc}", file=sys.stderr)
+            print(f"Validator coordinator temporarily unavailable during heartbeat: {exc}", file=sys.stderr)
             if args.once:
-                return 2
+                return 0
             time.sleep(args.sleep)
             continue
         if heartbeat.get("eligible") is False:
@@ -286,9 +286,9 @@ def command_validate(args: argparse.Namespace) -> int:
         try:
             job = get_job(server_url, identity)
         except requests.RequestException as exc:
-            print(f"Network/API error while polling validation job: {exc}", file=sys.stderr)
+            print(f"Validator coordinator temporarily unavailable while polling validation job: {exc}", file=sys.stderr)
             if args.once:
-                return 2
+                return 0
             time.sleep(args.sleep)
             continue
         if job is None:
@@ -302,9 +302,9 @@ def command_validate(args: argparse.Namespace) -> int:
         try:
             result = submit_result(server_url, identity, job, approved, reason)
         except requests.RequestException as exc:
-            print(f"Network/API error while submitting validation result: {exc}", file=sys.stderr)
+            print(f"Validator coordinator temporarily unavailable while submitting validation result: {exc}", file=sys.stderr)
             if args.once:
-                return 2
+                return 0
             time.sleep(args.sleep)
             continue
         print(

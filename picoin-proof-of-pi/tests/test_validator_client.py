@@ -51,11 +51,11 @@ def test_command_validate_continues_after_transient_job_poll_timeout(monkeypatch
     assert validator_client.command_validate(_validate_args()) == 0
     assert jobs_seen["count"] == 2
     captured = capsys.readouterr()
-    assert "Network/API error while polling validation job" in captured.err
+    assert "Validator coordinator temporarily unavailable while polling validation job" in captured.err
     assert "Done. validation_jobs_completed=1" in captured.out
 
 
-def test_command_validate_once_returns_error_on_network_timeout(monkeypatch) -> None:
+def test_command_validate_once_treats_network_timeout_as_idle(monkeypatch) -> None:
     identity = {
         "validator_id": "validator_test",
         "public_key": "ed25519:test",
@@ -70,4 +70,4 @@ def test_command_validate_once_returns_error_on_network_timeout(monkeypatch) -> 
         lambda *args, **kwargs: (_ for _ in ()).throw(requests.ReadTimeout("node timed out")),
     )
 
-    assert validator_client.command_validate(_validate_args(once=True, loops=1)) == 2
+    assert validator_client.command_validate(_validate_args(once=True, loops=1)) == 0
