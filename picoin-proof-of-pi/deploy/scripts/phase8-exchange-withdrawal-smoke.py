@@ -333,6 +333,7 @@ def main() -> int:
     tx_hash = None
     signed_tx: dict[str, Any] | None = None
     submitted: dict[str, Any] | None = None
+    submit_error_detail: str | None = None
     local_tx: dict[str, Any] | None = None
     reference_tx: dict[str, Any] | None = None
     poll_trace: list[dict[str, Any]] = []
@@ -365,7 +366,6 @@ def main() -> int:
             tx_hash = signed_tx["tx_hash"]
             try:
                 submitted = post_json(local, "/transactions/submit", signed_tx, args.timeout)
-                check(checks, "local_transaction_submit", True, f"tx_hash={tx_hash}")
                 check(
                     checks,
                     "submitted_tx_hash_matches_signed",
@@ -373,7 +373,7 @@ def main() -> int:
                     f"signed={tx_hash} submitted={(submitted or {}).get('tx_hash')}",
                 )
             except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, json.JSONDecodeError) as exc:
-                check(checks, "local_transaction_submit", False, http_error_detail(exc))
+                submit_error_detail = http_error_detail(exc)
 
         if tx_hash:
             deadline = time.time() + max(0, int(args.wait_seconds))
@@ -398,6 +398,15 @@ def main() -> int:
                     break
                 time.sleep(max(0.1, float(args.poll_seconds)))
 
+            submit_visible = local_tx is not None
+            submit_response_ok = (submitted or {}).get("tx_hash") == tx_hash
+            if submit_error_detail and submit_visible:
+                submit_detail = f"submit response error={submit_error_detail}; tx became locally visible tx_hash={tx_hash}"
+            elif submit_error_detail:
+                submit_detail = submit_error_detail
+            else:
+                submit_detail = f"tx_hash={tx_hash}"
+            check(checks, "local_transaction_submit", submit_response_ok or submit_visible, submit_detail)
             check(checks, "local_transaction_visible", local_tx is not None, f"tx={normalize_tx(local_tx)}")
             reference_seen = reference_tx is not None
             check(
