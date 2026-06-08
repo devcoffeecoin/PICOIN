@@ -45,8 +45,8 @@ const config = {
   apiBaseUrl: "/api/bootstrap",
   nodes: [
     { label: "mainnet-primary", url: "/api/bootstrap" },
-    { label: "candidate-a", url: "/api/bootstrap-a" },
-    { label: "candidate-b", url: "/api/bootstrap-b" },
+    { label: "pool1-full-node", url: "/api/pool1-node" },
+    { label: "retired-candidate", url: "/api/bootstrap-a", enabled: false },
   ],
 };
 
@@ -62,14 +62,14 @@ const config = {
 
   const client = failover.createClient({ config, defaultBaseUrl: "/api/bootstrap", storageKey: "test" });
   const first = await client.fetchJson("/health");
-  assert.equal(first.baseUrl, "/api/bootstrap-a");
+  assert.equal(first.baseUrl, "/api/pool1-node");
   assert.equal(first.payload.status, "ok");
-  assert.deepEqual(calls, ["/api/bootstrap/health", "/api/bootstrap-a/health"]);
+  assert.deepEqual(calls, ["/api/bootstrap/health", "/api/pool1-node/health"]);
 
   calls.length = 0;
   const second = await client.fetchJson("/protocol");
-  assert.equal(second.baseUrl, "/api/bootstrap-a");
-  assert.deepEqual(calls, ["/api/bootstrap-a/protocol"]);
+  assert.equal(second.baseUrl, "/api/pool1-node");
+  assert.deepEqual(calls, ["/api/pool1-node/protocol"]);
 }
 
 {

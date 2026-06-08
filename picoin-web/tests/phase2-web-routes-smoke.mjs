@@ -3,9 +3,6 @@ import assert from "node:assert/strict";
 const DEFAULT_BASE_URL = "https://picoin.science";
 const DEFAULT_ROUTES = [
   "/api/bootstrap",
-  "/api/bootstrap-a",
-  "/api/bootstrap-b",
-  "/api/bootstrap-c",
 ];
 const READ_PATHS = [
   "health",

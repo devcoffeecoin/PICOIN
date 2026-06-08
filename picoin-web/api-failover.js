@@ -19,6 +19,7 @@
   function uniqueNodes(nodes) {
     const seen = new Set();
     return nodes
+      .filter((node) => node && node.enabled !== false)
       .map((node, index) => ({
         label: node.label || `Bootstrap ${index + 1}`,
         url: cleanUrl(node.url),
