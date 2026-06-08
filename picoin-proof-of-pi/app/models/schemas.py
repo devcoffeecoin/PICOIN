@@ -585,6 +585,7 @@ class NodeSyncStatusResponse(NodeIdentityResponse):
     headers_skipped_pre_snapshot: int = 0
     replay: dict[str, Any] = Field(default_factory=dict)
     consensus: dict[str, int] = {}
+    readiness: dict[str, Any] = Field(default_factory=dict)
     sync_mode: str
     checked_at: datetime
 
@@ -860,6 +861,13 @@ class HealthResponse(BaseModel):
     divergence_detected: bool = False
     divergence_reason: str | None = None
     auto_recovery_active: bool = False
+    node_role: str | None = None
+    readiness: dict[str, Any] = Field(default_factory=dict)
+    read_ready: bool = False
+    tx_submit_ready: bool = False
+    task_assign_ready: bool = False
+    validation_job_ready: bool = False
+    block_finalize_ready: bool = False
     can_assign_tasks: bool
     mining_ready: bool
     issues: list[str]
@@ -901,6 +909,8 @@ class ProtocolResponse(BaseModel):
     protocol_version: str
     network_id: str
     chain_id: str | int
+    node_role: str | None = None
+    node_capabilities: dict[str, bool] = Field(default_factory=dict)
     algorithm: str
     validation_mode: str
     mining_task_mode: str | None = None

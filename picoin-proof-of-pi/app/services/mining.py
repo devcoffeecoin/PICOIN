@@ -55,6 +55,7 @@ from app.core.settings import (
     NETWORK_ID,
     NETWORK_PROFILE,
     NODE_TYPE,
+    NODE_ROLE,
     PENALTY_DUPLICATE,
     PENALTY_INVALID_RESULT,
     PENALTY_INVALID_SIGNATURE,
@@ -111,6 +112,8 @@ from app.core.settings import (
     VALIDATION_MODE,
     get_dynamic_expiration,
 )
+from app.services.readiness import build_node_readiness, node_capabilities_for_role
+from app.db import database as database_module
 from app.db.database import get_connection, row_to_dict
 from app.services.consensus import record_local_block_proposal
 from app.services.rewards import (
@@ -885,7 +888,7 @@ def record_miner_heartbeat(payload: dict[str, Any], client_host: str | None = No
 
 
 def get_validators_status(limit: int = 500) -> dict[str, Any]:
-    cache_key = f"validators_status:{int(limit)}"
+    cache_key = f"validators_status:{database_module.DATABASE_PATH}:{int(limit)}"
 
     def build() -> dict[str, Any]:
         with get_connection() as connection:
@@ -934,7 +937,7 @@ def get_validators_status(limit: int = 500) -> dict[str, Any]:
 
 
 def get_validation_jobs_health(stale_after_seconds: int = VALIDATION_JOB_ASSIGNMENT_TIMEOUT_SECONDS * 2, limit: int = 20) -> dict[str, Any]:
-    cache_key = f"validation_jobs_health:{int(stale_after_seconds)}:{int(limit)}"
+    cache_key = f"validation_jobs_health:{database_module.DATABASE_PATH}:{int(stale_after_seconds)}:{int(limit)}"
 
     def build() -> dict[str, Any]:
         return _get_validation_jobs_health_uncached(stale_after_seconds, limit)
@@ -4789,7 +4792,11 @@ def get_performance_stats() -> dict[str, Any]:
 
 
 def get_health_status() -> dict[str, Any]:
-    return _cached_status_payload("health", HEALTH_ENDPOINT_CACHE_SECONDS, _get_health_status_uncached)
+    return _cached_status_payload(
+        f"health:{database_module.DATABASE_PATH}",
+        HEALTH_ENDPOINT_CACHE_SECONDS,
+        _get_health_status_uncached,
+    )
 
 
 def _get_health_status_uncached() -> dict[str, Any]:
@@ -4899,15 +4906,24 @@ def _get_health_status_uncached() -> dict[str, Any]:
         issues.append(f"replay {sync_status}")
     if replay_status.get("divergence_reason"):
         issues.append(str(replay_status["divergence_reason"])[:180])
-    local_quorum_roles = {"full", "bootstrap", "miner"}
-    if active_protocol and NODE_TYPE in local_quorum_roles and eligible_validators < required_approvals:
-        issues.append("not enough eligible validators for quorum")
+    readiness = build_node_readiness(
+        database_connected=bool(database["connected"]),
+        active_protocol=active_protocol,
+        chain_valid=bool(chain["valid"]),
+        sync_status=sync_status,
+        divergence_detected=bool(replay_status.get("divergence_detected")),
+        miners=miners,
+        online_miners=online_miners,
+        eligible_validators=eligible_validators,
+        required_validator_approvals=required_approvals,
+    )
+    if active_protocol and readiness["reasons"]["block_finalize_ready"]:
+        quorum_reason = f"eligible validators {eligible_validators} below required quorum {required_approvals}"
+        if quorum_reason in readiness["reasons"]["block_finalize_ready"]:
+            issues.append("not enough eligible validators for quorum")
 
-    can_assign_tasks = bool(database["connected"] and active_protocol)
-    mining_ready = bool(can_assign_tasks and online_miners > 0 and eligible_validators >= required_approvals)
-    if sync_status in {"stalled", "divergent"}:
-        can_assign_tasks = False
-        mining_ready = False
+    can_assign_tasks = bool(readiness["task_assign_ready"])
+    mining_ready = bool(readiness["mining_ready"])
     status = "ok" if not issues else "degraded"
 
     protocol_version = params["protocol_version"] if params is not None else PROTOCOL_VERSION
@@ -4938,6 +4954,13 @@ def _get_health_status_uncached() -> dict[str, Any]:
         "divergence_detected": bool(replay_status.get("divergence_detected")),
         "divergence_reason": replay_status.get("divergence_reason"),
         "auto_recovery_active": bool(replay_status.get("auto_recovery_active")),
+        "node_role": readiness["node_role"],
+        "readiness": readiness,
+        "read_ready": bool(readiness["read_ready"]),
+        "tx_submit_ready": bool(readiness["tx_submit_ready"]),
+        "task_assign_ready": bool(readiness["task_assign_ready"]),
+        "validation_job_ready": bool(readiness["validation_job_ready"]),
+        "block_finalize_ready": bool(readiness["block_finalize_ready"]),
         "can_assign_tasks": can_assign_tasks,
         "mining_ready": mining_ready,
         "issues": issues,
@@ -5188,6 +5211,8 @@ def _protocol_payload(params: dict[str, Any]) -> dict[str, Any]:
         "protocol_version": params["protocol_version"],
         "network_id": NETWORK_ID,
         "chain_id": CHAIN_ID,
+        "node_role": NODE_ROLE,
+        "node_capabilities": node_capabilities_for_role(),
         "algorithm": params["algorithm"],
         "validation_mode": params["validation_mode"],
         "mining_task_mode": MINING_TASK_MODE,
