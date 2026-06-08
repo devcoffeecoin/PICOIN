@@ -1587,6 +1587,26 @@ def _task_with_network_context(task: dict[str, Any] | None) -> dict[str, Any] | 
     return task
 
 
+def _task_for_next_response(connection: Any, task: dict[str, Any] | None) -> dict[str, Any] | None:
+    if task is None:
+        return None
+    response = dict(task)
+    if isinstance(response.get("selected_tx_hashes"), str):
+        try:
+            response["selected_tx_hashes"] = json.loads(response["selected_tx_hashes"])
+        except (TypeError, ValueError):
+            response["selected_tx_hashes"] = []
+    if response.get("status") == "committed":
+        commitment = connection.execute(
+            "SELECT 1 FROM commitments WHERE task_id = ? AND miner_id = ?",
+            (response["task_id"], response["miner_id"]),
+        ).fetchone()
+        if commitment is not None:
+            response["resume_status"] = "committed"
+            response["status"] = "assigned"
+    return _task_with_network_context(response)
+
+
 def _competitive_task_id(miner_id: str, assignment: dict[str, Any], params: dict[str, Any]) -> str:
     digest = sha256_text(
         canonical_json(
@@ -1669,7 +1689,7 @@ def create_next_task(
                         409,
                         f"active task exceeds RETARGET_MAX_PI_POSITION={RETARGET_MAX_PI_POSITION_value}",
                     )
-                return _task_with_network_context(task)
+                return _task_for_next_response(connection, task)
 
         recent_assignments = connection.execute(
             """
@@ -1693,7 +1713,7 @@ def create_next_task(
         if MINING_TASK_MODE != COMPETITIVE_ROUND_ASSIGNMENT_MODE:
             pooled_task = _claim_global_task_for_miner(connection, miner_id, params)
             if pooled_task is not None:
-                return _task_with_network_context(pooled_task)
+                return _task_for_next_response(connection, pooled_task)
 
         if MINING_TASK_MODE == COMPETITIVE_ROUND_ASSIGNMENT_MODE:
             assignment = _competitive_round_assignment(connection, params)
@@ -1705,12 +1725,7 @@ def create_next_task(
                 connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
             )
             if existing_round_task is not None:
-                if isinstance(existing_round_task.get("selected_tx_hashes"), str):
-                    try:
-                        existing_round_task["selected_tx_hashes"] = json.loads(existing_round_task["selected_tx_hashes"])
-                    except (TypeError, ValueError):
-                        existing_round_task["selected_tx_hashes"] = []
-                return _task_with_network_context(existing_round_task)
+                return _task_for_next_response(connection, existing_round_task)
         else:
             task_id = f"task_{uuid.uuid4().hex[:16]}"
             assignment = _assign_pseudo_random_range(connection, miner_id, task_id, params)
@@ -1779,12 +1794,7 @@ def create_next_task(
             )
         row = connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
         task = row_to_dict(row)
-        if isinstance(task.get("selected_tx_hashes"), str):
-            try:
-                task["selected_tx_hashes"] = json.loads(task["selected_tx_hashes"])
-            except (TypeError, ValueError):
-                task["selected_tx_hashes"] = []
-    return _task_with_network_context(task)
+    return _task_for_next_response(connection, task)
 
 
 def _restore_miner_identity(
@@ -2648,15 +2658,74 @@ def commit_task(
         if miner is None:
             return _commit_rejected("miner not found")
         if task["status"] == "committed":
-            existing = row_to_dict(connection.execute("SELECT * FROM commitments WHERE task_id = ?", (task_id,)).fetchone())
+            existing = row_to_dict(
+                connection.execute(
+                    "SELECT * FROM commitments WHERE task_id = ? AND miner_id = ?",
+                    (task_id, miner_id),
+                ).fetchone()
+            )
             if existing is not None:
+                if result_hash != existing["result_hash"] or merkle_root != existing["merkle_root"]:
+                    return _commit_rejected("commitment mismatch")
+                expected_root = str(existing.get("tx_merkle_root") or "")
+                expected_snapshot_id = str(existing.get("mempool_snapshot_id") or "")
+                expected_hash = str(existing.get("selected_tx_hashes_hash") or "")
+                expected_count = int(existing.get("tx_count") or 0)
+                expected_fee_units = int(existing.get("tx_fee_total_units") or 0)
+                if (
+                    (tx_merkle_root or "") != expected_root
+                    or (mempool_snapshot_id or "") != expected_snapshot_id
+                    or (selected_tx_hashes_hash or "") != expected_hash
+                    or int(tx_count or 0) != expected_count
+                    or int(tx_fee_total_units or 0) != expected_fee_units
+                ):
+                    return _commit_rejected("invalid_tx_commitment")
+                payload = build_commit_signature_payload(
+                    task_id=task_id,
+                    miner_id=miner_id,
+                    range_start=task["range_start"],
+                    range_end=task["range_end"],
+                    algorithm=task["algorithm"],
+                    result_hash=result_hash,
+                    merkle_root=merkle_root,
+                    signed_at=signed_at,
+                    tx_merkle_root=expected_root,
+                    mempool_snapshot_id=expected_snapshot_id,
+                    selected_tx_hashes_hash=expected_hash,
+                    tx_count=expected_count,
+                    tx_fee_total_units=expected_fee_units,
+                    chain_id=CHAIN_ID,
+                    network_id=NETWORK_ID,
+                )
+                try:
+                    signature_valid = verify_payload_signature(miner["public_key"], payload, signature)
+                except (RuntimeError, ValueError):
+                    signature_valid = False
+                if not signature_valid and expected_count == 0:
+                    legacy_payload = build_commit_signature_payload(
+                        task_id=task_id,
+                        miner_id=miner_id,
+                        range_start=task["range_start"],
+                        range_end=task["range_end"],
+                        algorithm=task["algorithm"],
+                        result_hash=result_hash,
+                        merkle_root=merkle_root,
+                        signed_at=signed_at,
+                    )
+                    try:
+                        signature_valid = verify_payload_signature(miner["public_key"], legacy_payload, signature)
+                    except (RuntimeError, ValueError):
+                        signature_valid = False
+                if not signature_valid:
+                    return _commit_rejected("invalid miner signature")
                 return {
                     "accepted": True,
                     "status": "committed",
-                    "message": "task already committed",
+                    "message": "task already committed; reveal requested samples",
                     "challenge_seed": existing["challenge_seed"],
                     "samples": json.loads(existing["samples"]),
                 }
+            return _commit_rejected("commitment not found")
         if task["status"] == "stale":
             _record_submission(
                 connection,

@@ -133,6 +133,7 @@ class TaskResponse(BaseModel):
     range_end: int
     algorithm: str
     status: str
+    resume_status: str | None = None
     assignment_seed: str | None = None
     assignment_mode: str | None = None
     assignment_ms: int | None = None

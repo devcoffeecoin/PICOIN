@@ -267,6 +267,156 @@ def test_task_response_network_context_signs_commit_without_local_defaults(tmp_p
     assert response["status"] == "committed"
 
 
+def test_committed_task_can_resume_through_next_task_response(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-committed-resume.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr(mining_service, "MINING_TASK_MODE", "competitive_round")
+    init_db(db_path)
+
+    keypair = generate_keypair()
+    miner = register_miner("resume-committed-miner", keypair["public_key"])
+    task = create_next_task(miner["miner_id"])
+
+    segment = calculate_pi_segment(task["range_start"], task["range_end"], task["algorithm"])
+    result_hash = hash_result(segment, task["range_start"], task["range_end"], task["algorithm"])
+    root = merkle_root(segment, task["range_start"])
+
+    def signed_commit(signed_at: str, *, result: str = result_hash, merkle: str = root) -> str:
+        return sign_payload(
+            keypair["private_key"],
+            build_commit_signature_payload(
+                task_id=task["task_id"],
+                miner_id=miner["miner_id"],
+                range_start=task["range_start"],
+                range_end=task["range_end"],
+                algorithm=task["algorithm"],
+                result_hash=result,
+                merkle_root=merkle,
+                signed_at=signed_at,
+                tx_merkle_root=task.get("tx_merkle_root", ""),
+                mempool_snapshot_id=task.get("mempool_snapshot_id"),
+                selected_tx_hashes_hash=task.get("selected_tx_hashes_hash"),
+                tx_count=int(task.get("tx_count") or 0),
+                tx_fee_total_units=int(task.get("tx_fee_total_units") or 0),
+                chain_id=task.get("chain_id") or mining_service.CHAIN_ID,
+                network_id=task.get("network_id") or mining_service.NETWORK_ID,
+            ),
+        )
+
+    first = commit_task(
+        task_id=task["task_id"],
+        miner_id=miner["miner_id"],
+        result_hash=result_hash,
+        merkle_root=root,
+        tx_merkle_root=task.get("tx_merkle_root", ""),
+        mempool_snapshot_id=task.get("mempool_snapshot_id"),
+        selected_tx_hashes_hash=task.get("selected_tx_hashes_hash"),
+        tx_count=int(task.get("tx_count") or 0),
+        tx_fee_total_units=int(task.get("tx_fee_total_units") or 0),
+        compute_ms=1,
+        signature=signed_commit("2026-06-08T19:30:00+00:00"),
+        signed_at="2026-06-08T19:30:00+00:00",
+    )
+    assert first["accepted"] is True
+
+    resumed = create_next_task(miner["miner_id"])
+
+    assert resumed["task_id"] == task["task_id"]
+    assert resumed["status"] == "assigned"
+    assert resumed["resume_status"] == "committed"
+
+    second = commit_task(
+        task_id=task["task_id"],
+        miner_id=miner["miner_id"],
+        result_hash=result_hash,
+        merkle_root=root,
+        tx_merkle_root=resumed.get("tx_merkle_root", ""),
+        mempool_snapshot_id=resumed.get("mempool_snapshot_id"),
+        selected_tx_hashes_hash=resumed.get("selected_tx_hashes_hash"),
+        tx_count=int(resumed.get("tx_count") or 0),
+        tx_fee_total_units=int(resumed.get("tx_fee_total_units") or 0),
+        compute_ms=1,
+        signature=signed_commit("2026-06-08T19:31:00+00:00"),
+        signed_at="2026-06-08T19:31:00+00:00",
+    )
+
+    assert second["accepted"] is True
+    assert second["status"] == "committed"
+    assert second["challenge_seed"] == first["challenge_seed"]
+    assert second["samples"] == first["samples"]
+
+
+def test_committed_task_retry_rejects_mismatched_commitment(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-committed-mismatch.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr(mining_service, "MINING_TASK_MODE", "competitive_round")
+    init_db(db_path)
+
+    keypair = generate_keypair()
+    miner = register_miner("resume-mismatch-miner", keypair["public_key"])
+    task = create_next_task(miner["miner_id"])
+    segment = calculate_pi_segment(task["range_start"], task["range_end"], task["algorithm"])
+    result_hash = hash_result(segment, task["range_start"], task["range_end"], task["algorithm"])
+    root = merkle_root(segment, task["range_start"])
+
+    signed_at = "2026-06-08T19:32:00+00:00"
+    signature = sign_payload(
+        keypair["private_key"],
+        build_commit_signature_payload(
+            task_id=task["task_id"],
+            miner_id=miner["miner_id"],
+            range_start=task["range_start"],
+            range_end=task["range_end"],
+            algorithm=task["algorithm"],
+            result_hash=result_hash,
+            merkle_root=root,
+            signed_at=signed_at,
+            tx_merkle_root=task.get("tx_merkle_root", ""),
+            mempool_snapshot_id=task.get("mempool_snapshot_id"),
+            selected_tx_hashes_hash=task.get("selected_tx_hashes_hash"),
+            tx_count=int(task.get("tx_count") or 0),
+            tx_fee_total_units=int(task.get("tx_fee_total_units") or 0),
+            chain_id=task.get("chain_id") or mining_service.CHAIN_ID,
+            network_id=task.get("network_id") or mining_service.NETWORK_ID,
+        ),
+    )
+    first = commit_task(
+        task_id=task["task_id"],
+        miner_id=miner["miner_id"],
+        result_hash=result_hash,
+        merkle_root=root,
+        tx_merkle_root=task.get("tx_merkle_root", ""),
+        mempool_snapshot_id=task.get("mempool_snapshot_id"),
+        selected_tx_hashes_hash=task.get("selected_tx_hashes_hash"),
+        tx_count=int(task.get("tx_count") or 0),
+        tx_fee_total_units=int(task.get("tx_fee_total_units") or 0),
+        compute_ms=1,
+        signature=signature,
+        signed_at=signed_at,
+    )
+    assert first["accepted"] is True
+
+    retry = commit_task(
+        task_id=task["task_id"],
+        miner_id=miner["miner_id"],
+        result_hash="f" * 64,
+        merkle_root=root,
+        tx_merkle_root=task.get("tx_merkle_root", ""),
+        mempool_snapshot_id=task.get("mempool_snapshot_id"),
+        selected_tx_hashes_hash=task.get("selected_tx_hashes_hash"),
+        tx_count=int(task.get("tx_count") or 0),
+        tx_fee_total_units=int(task.get("tx_fee_total_units") or 0),
+        compute_ms=1,
+        signature=signature,
+        signed_at=signed_at,
+    )
+
+    assert retry["accepted"] is False
+    assert retry["message"] == "commitment mismatch"
+
+
 def test_competitive_task_id_is_portable_across_nodes(tmp_path, monkeypatch) -> None:
     keypair = generate_keypair()
     tasks = []
