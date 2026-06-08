@@ -686,6 +686,12 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
     balances_hash = sha256_text(canonical_json({"height": height, "balances": normalized_balances}))
     nonces_hash = sha256_text(canonical_json({"height": height, "nonces": normalized_nonces}))
     validators_hash = sha256_text(canonical_json({"height": height, "validators": normalized_validators}))
+    raw_validators_hash = _raw_snapshot_validators_hash(height, validators) if validators else None
+    checkpoint_validators_hash = checkpoint.get("validators_hash")
+    if checkpoint_validators_hash and checkpoint_validators_hash in {validators_hash, raw_validators_hash}:
+        payload_validators_hash = checkpoint_validators_hash
+    else:
+        payload_validators_hash = validators_hash
     protocol_params_hash = sha256_text(canonical_json({"height": height, "protocol_params": normalized_protocol_params}))
     retarget_events_hash = sha256_text(canonical_json({"height": height, "retarget_events": normalized_retarget_events}))
     pending_rewards_hash = sha256_text(canonical_json({"height": height, "pending_rewards": normalized_pending_rewards}))
@@ -709,8 +715,8 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
     if checkpoint.get("nonces_hash") or normalized_nonces:
         payload["nonces_hash"] = nonces_hash
         payload["nonces_count"] = len(normalized_nonces)
-    if checkpoint.get("validators_hash") or normalized_validators:
-        payload["validators_hash"] = validators_hash
+    if checkpoint_validators_hash or normalized_validators:
+        payload["validators_hash"] = payload_validators_hash
         payload["validators_count"] = len(normalized_validators)
     if checkpoint.get("protocol_params_hash") or normalized_protocol_params:
         payload["protocol_params_hash"] = protocol_params_hash
@@ -734,9 +740,9 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
         stored_nonces_count = checkpoint.get("nonces_count")
         if stored_nonces_count is None or int(stored_nonces_count) != len(normalized_nonces):
             issues.append("nonces_count mismatch")
-    if checkpoint.get("validators_hash") and checkpoint.get("validators_hash") != validators_hash:
+    if checkpoint_validators_hash and checkpoint_validators_hash not in {validators_hash, raw_validators_hash}:
         issues.append("validators_hash mismatch")
-    if checkpoint.get("validators_hash"):
+    if checkpoint_validators_hash:
         stored_validators_count = checkpoint.get("validators_count")
         if stored_validators_count is None or int(stored_validators_count) != len(normalized_validators):
             issues.append("validators_count mismatch")
@@ -775,7 +781,7 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
             "nonces_count": int(
                 checkpoint["nonces_count"] if checkpoint.get("nonces_count") is not None else len(normalized_nonces)
             ),
-            "validators_hash": checkpoint.get("validators_hash") or (validators_hash if normalized_validators else None),
+            "validators_hash": checkpoint_validators_hash or (validators_hash if normalized_validators else None),
             "validators_count": int(
                 checkpoint["validators_count"] if checkpoint.get("validators_count") is not None else len(normalized_validators)
             ),
@@ -807,7 +813,9 @@ def validate_snapshot_document(document: dict[str, Any]) -> dict[str, Any]:
             "total_balance_units": total_balance_units,
             "nonces_hash": nonces_hash if normalized_nonces else None,
             "nonces_count": len(normalized_nonces),
-            "validators_hash": validators_hash if normalized_validators else None,
+            "validators_hash": payload_validators_hash if normalized_validators else None,
+            "normalized_validators_hash": validators_hash if normalized_validators else None,
+            "raw_validators_hash": raw_validators_hash,
             "validators_count": len(normalized_validators),
             "protocol_params_hash": protocol_params_hash if normalized_protocol_params else None,
             "protocol_params_count": len(normalized_protocol_params),
@@ -1118,6 +1126,20 @@ def _normalize_snapshot_validators(validators: list[dict[str, Any]]) -> list[dic
         if validator["validator_id"]:
             normalized[validator["validator_id"]] = validator
     return [normalized[key] for key in sorted(normalized)]
+
+
+def _raw_snapshot_validators_hash(height: int, validators: list[dict[str, Any]]) -> str | None:
+    raw: dict[str, dict[str, Any]] = {}
+    for item in validators:
+        if not isinstance(item, dict):
+            continue
+        validator_id = str(item.get("validator_id") or "").strip()
+        if validator_id:
+            raw[validator_id] = dict(item)
+    if not raw:
+        return None
+    raw_validators = [raw[key] for key in sorted(raw)]
+    return sha256_text(canonical_json({"height": height, "validators": raw_validators}))
 
 
 def _normalize_snapshot_protocol_params(protocol_params: list[dict[str, Any]]) -> list[dict[str, Any]]:

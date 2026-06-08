@@ -61,6 +61,7 @@ There are six tracked env examples. Treat them as the source of truth.
 | File | Use it for | Notes |
 | --- | --- | --- |
 | `picoin-proof-of-pi/deploy/mainnet.env.example` | Mainnet nodes, miners, validators | Production template. Every `CHANGE_ME` value must be replaced before services start. |
+| `picoin-proof-of-pi/deploy/mainnet-exchange-full-node.env.example` | Exchange/infrastructure full node | Read-only local API profile for exchanges, custodians, explorers and payment processors. Runs node + reconciler only. |
 | `picoin-proof-of-pi/deploy/mainnet-shadow-full-node.env.example` | Disposable mainnet shadow full node | Read-only template for Phase 1B reproduction tests. Do not use on the mainnet bootstrap. |
 | `picoin-proof-of-pi/deploy/mainnet-public-bootstrap-candidate.env.example` | Phase 2 public bootstrap candidate | Read-only public candidate template. Keep miner, validator, and auditor disabled; run reconciler so the candidate keeps up with mainnet. |
 | `picoin-proof-of-pi/deploy/phase1-full-node.env.example` | Isolated Phase 1 full-node lab | Test-only template with a non-mainnet network id, chain id, and genesis hash. |
@@ -90,6 +91,8 @@ Use `https://api.picoin.science` for miners and validators. `http://api.picoin.s
 ## Quick Start
 
 Use this path for a clean mainnet server. The detailed sections below explain every variable and role.
+
+For a read-only exchange or infrastructure full node, use `picoin-proof-of-pi/deploy/README-exchange-full-node.md`. That Phase 7 profile was tested on a clean droplet by restoring a canonical mainnet snapshot at height `10508`, catching up to height `10510` while the reference bootstrap was at height `10511`, and verifying `status=ok`, replay health, no divergence, and miner, validator and auditor services disabled.
 
 ### 1. Clone The Repository
 
@@ -727,6 +730,12 @@ Status rules:
 - `[ ]` Pending or untested
 - `[x]` Tested on isolated droplets and accepted for the next stage
 
+Branch policy:
+
+- Active decentralization work continues on `codex/decentralization-roadmap`.
+- Older phase branches are treated as historical evidence only after their changes are contained in the unified branch.
+- Each new phase must keep the previous phase tests passing on the same branch before it can be checked off.
+
 ### Phase 0: Stable Mainnet Baseline
 
 Mainnet stays on the current stable path while decentralization work happens separately.
@@ -838,52 +847,247 @@ Phase 2 preparation evidence:
 
 Goal: nodes exchange chain data and consensus messages directly instead of relying on one coordinator API.
 
-- [ ] Gossip block headers and finalized block payloads between peers
-- [ ] Gossip signed transactions and mempool inventory between peers
-- [ ] Gossip validator heartbeats and validator votes between peers
-- [ ] Add deterministic duplicate suppression for peer messages
-- [ ] Add peer scoring, stale peer detection, and peer ban/cooldown rules
-- [ ] Verify nodes can catch up from multiple peers instead of one bootstrap
+Status: closed in mainnet-shadow on 2026-06-06. Phase 3 is verified on isolated bootstrap candidates and remains pending controlled merge/release before any mainnet bootstrap replacement.
+
+- [x] Add read-only multi-peer reconcile selection for catch-up from more than one compatible peer
+- [x] Add deterministic peer selection filters for local self, stale peers, duplicate addresses, wrong network id, wrong chain id, wrong genesis hash, and wrong protocol version
+- [x] Add block payload relay for `/node/blocks/receive` with source-peer exclusion and queued-header duplicate suppression
+- [x] Gossip signed transactions and mempool inventory between peers
+- [x] Gossip block headers and finalized block payloads between compatible bootstrap candidates through block receive and reconcile paths
+- [x] Gossip validator consensus proposals and votes through existing consensus propagation endpoints
+- [x] Add deterministic duplicate suppression for block relay, queued headers, peer selection, and mempool inventory
+- [x] Add peer filtering, stale peer detection, and compatible-peer selection rules for Phase 3 reconcile
+- [x] Verify nodes can catch up from multiple peers instead of one bootstrap
+
+Phase 3 alpha evidence:
+
+- [x] `select_reconcile_peers()` now returns unique, connected, locally compatible peers for read-only reconcile/catch-up
+- [x] `/node/reconcile` multi-peer mode now reports `selected_peers` so operators can see which peers were attempted
+- [x] Added tests for filtering local/stale/wrong-identity peers and attempting multiple selected peers in one reconcile pass
+- [x] `POST /node/blocks/receive` now relays new pending block payloads to peers with `gossip=false`, excludes the source peer, and does not re-gossip duplicate queued headers
+- [x] Added `/mempool/inventory` and inventory-first reconcile so peers compare pending transaction hashes before fetching full signed transactions, with fallback to legacy `/mempool` for older peers
+- [x] Deployed Phase 3 mempool inventory build `ee0bac9` to bootstrap candidates A (`178.62.30.17`), B (`138.68.139.141`), and C (`159.89.115.183`); each candidate returned `/mempool/inventory` with `HTTP 200`, `picoin-node` and `picoin-reconciler` active, miner/validator/auditor disabled, healthy replay, and no divergence
+- [x] Production web smoke for `/api/bootstrap-a`, `/api/bootstrap-b`, and `/api/bootstrap-c` passed with `required=3`, `allowed_lag=5`, `status=ok`, `healthy_routes=3`, and `errors=0` at heights `4994`, `4993`, and `4995`
+- [x] Direct bootstrap candidate verifier passed with `required=3`, `allowed_lag=5`, `errors=0`, and read-only degraded health accepted for no local validator quorum; one warning remains under observation for candidate B checkpoint `snapshot_hash` mismatch while checkpoint block hash, state root, balances hash, validators hash, pending rewards hash, protocol params hash, and retarget events hash matched the reference
+- [x] Deployed Phase 3 selector fix `2e91e04` to bootstrap candidates A, B, and C; clean `POST /node/reconcile?limit=2` selected only the other bootstrap candidates on each node, with low error counts (A=`1`, B=`2`, C=`2`) and no fallback to noisy validator, loopback, or placeholder peers
+- [x] Post-selector-fix bootstrap candidate verifier passed with `required=3`, `allowed_lag=5`, `errors=0`, and `warnings=1`; production web smoke for `/api/bootstrap-a`, `/api/bootstrap-b`, and `/api/bootstrap-c` passed with `status=ok`, `healthy_routes=3`, `errors=0`, and route lags A=`0`, B=`1`, C=`4`
+- [x] Deployed Phase 3 v2 fast-fail fixes `0c63f0c` and `7ca7290` so divergent nodes stop reconcile before expensive peer fetches and report restore-required instead of hanging
+- [x] Fixed `/node/sync/blocks` consensus vote ordering in `f5e0c58`; candidate A no longer returns `500 Internal Server Error` for block sync requests from candidate C
+- [x] Restored candidates A, B, and C from canonical mainnet snapshots, kept `picoin-reconciler` active, and verified replay stayed healthy with no divergence while following mainnet
+- [x] Candidate-to-candidate reconcile triangle passed: A->B, A->C, B->A, B->C, C->A, and C->B all returned `errors=0`, healthy replay, and no divergence; C->A also saw `mempool_inventory_seen=46`
+- [x] Phase 3 closure recorded: peer gossip/reconcile is validated in mainnet-shadow, with merge/release to `main` left as a separate controlled mainnet gate
 
 ### Phase 4: Decentralized Mempool And Block Candidate Construction
 
 Goal: every full node can independently validate transaction ordering and reconstruct the same candidate block state.
 
-- [ ] Define canonical transaction selection rules for competitive rounds
-- [ ] Verify deterministic nonce ordering, fee ordering, and tx merkle root generation across nodes
-- [ ] Propagate signed transactions without exposing private keys
-- [ ] Add conflict handling for replaced, expired, failed, or already-confirmed transactions
-- [ ] Verify candidate block replay produces identical state roots across nodes
+Status: closed on the isolated multi-node Phase 4 lab for decentralized mempool and candidate block construction. Evidence is recorded on the unified `codex/decentralization-roadmap` branch; any mainnet rollout remains a separate controlled release gate.
+
+- [x] Define canonical transaction selection rules for competitive rounds
+- [x] Verify deterministic nonce ordering, fee ordering, and tx merkle root generation across nodes
+- [x] Propagate signed transactions without exposing private keys
+- [x] Add conflict handling for replaced, expired, failed, or already-confirmed transactions
+- [x] Verify candidate block replay produces identical state roots across nodes
+
+Phase 4.1 evidence:
+
+- [x] Mempool selection no longer depends on local receive time; canonical order is `fee_units DESC, tx_hash ASC`
+- [x] Added tests proving equal-fee transactions select by deterministic `tx_hash` even when local `created_at` differs between nodes
+- [x] Added tests proving task snapshots use the same canonical mempool order and produce the expected `tx_merkle_root`
+- [x] Regression tests passed for wallet transaction flow, mempool inventory reconcile, fee-priority nonce ordering, mined block transaction merkle roots, and Phase 3 peer gossip/reconcile paths
+
+Phase 4.2 evidence:
+
+- [x] Transaction mempool expiration now derives from the signed transaction timestamp plus `MEMPOOL_TX_TTL_SECONDS`, not from the local node receive clock
+- [x] `created_at` remains local operational metadata, while `expires_at` is deterministic for the same signed transaction on every node
+- [x] Added a regression test proving delayed local receipt changes `created_at` but not canonical `expires_at`
+- [x] Full distributed testnet regression passed after the change: `68 passed`
+
+Phase 4.3 evidence:
+
+- [x] Transaction gossip now sanitizes outbound payloads to signed public transaction fields only
+- [x] Added a regression test proving `private_key` and local-only extra fields are stripped before `/tx/receive` gossip
+- [x] Full distributed testnet regression passed after the change: `69 passed`
+
+Phase 4.4 evidence:
+
+- [x] Re-submitting a transaction already known in a terminal status is idempotent and returns the local transaction state instead of creating reconcile/gossip noise
+- [x] Added a regression test proving an already-confirmed transaction can be received again without error
+- [x] Added a regression test proving a failed same-nonce transaction can be replaced by a new transaction
+- [x] Full distributed testnet regression passed after the change: `71 passed`
+
+Phase 4.5 evidence:
+
+- [x] Added a two-node SQLite replay regression with identical signed transactions but opposite local mempool `created_at` ordering
+- [x] Both simulated nodes selected the same tx hashes, produced the same tx commitment, applied the same transactions, and calculated the same candidate `state_root`
+- [x] Full distributed testnet regression passed after the change: `72 passed`
+
+Phase 4.6 operational evidence:
+
+- [x] Deployed the unified `codex/decentralization-roadmap` branch to isolated Phase 4 lab candidates A (`178.62.30.17`), B (`138.68.139.141`), and C (`159.89.115.183`) with miner, validator, and auditor disabled
+- [x] Submitted a controlled signed transaction set through different candidates and reconciled candidate-to-candidate until all three `/mempool/inventory` responses contained the same seven transaction hashes
+- [x] Registered independent test miners on A, B, and C and verified every candidate selected the same canonical transaction order, `tx_merkle_root=85477e6cd0c95615776a2000b4c8221605976f7fb624923b2c29295cd6a15146`, `selected_tx_hashes_hash=86acba5df06c4a07f05b0b6554203acc9a1045c379b57b941fe65254578c624d`, `tx_count=7`, and `tx_fee_total_units=14000`
+- [x] Replayed the selected seven transaction hashes against temporary SQLite copies on A, B, and C; each node applied all seven transactions with `rejected=[]` and produced matching `state_root=63b35aa71fc38b9d7da52c506d565263b794affafebe707d0f6bde95b3315a98`
+- [x] Restarted `picoin-node` on A, B, and C and reconciled each node against both peers; all three stayed `replay=healthy`, `divergent=False`, `reason=None`, with `errors=0` for each peer reconcile and `mempool_count=7` after restart/catch-up
+- [x] Verified terminal and conflict transaction handling on temporary SQLite copies on A, B, and C: same-hash duplicate idempotency, same-nonce pending conflict rejection, already-confirmed idempotency, failed nonce replacement, and expired nonce replacement all returned the same expected results with `status=ok`
+- [x] Final Phase 4 lab record: candidates A/B/C ran at `height=0`, `hash=0000000000000000000000000000000000000000000000000000000000000000`, `mempool_count=7`, `tx_merkle_root=85477e6cd0c95615776a2000b4c8221605976f7fb624923b2c29295cd6a15146`, `selected_tx_hashes_hash=86acba5df06c4a07f05b0b6554203acc9a1045c379b57b941fe65254578c624d`, `state_root=63b35aa71fc38b9d7da52c506d565263b794affafebe707d0f6bde95b3315a98`, `replay=healthy`, and `divergent=False`
+
+Phase 4 operational acceptance gates:
+
+- [x] Deploy the unified `codex/decentralization-roadmap` branch to independent bootstrap candidates with miner, validator, and auditor disabled
+- [x] Submit the same signed transaction set through different candidates and verify mempool inventory gossip reaches the full candidate set
+- [x] Verify every candidate derives the same canonical transaction order and `tx_merkle_root` for the same competitive round
+- [x] Verify candidate block reconstruction produces matching state roots across candidates after catch-up/replay
+- [x] Verify replaced, expired, failed, already-confirmed, and duplicate transactions remain deterministic across candidates
+- [x] Run a restart/catch-up cycle after transaction gossip and verify replay stays healthy with no divergence
+- [x] Record candidate heights, hashes, mempool counts, tx commitments, state roots, and replay health before marking Phase 4 closed
 
 ### Phase 5: Miner Task Independence
 
 Goal: miners can request the same canonical competitive round work from any healthy node.
 
-- [ ] Derive competitive task ranges from canonical height, previous block hash, and protocol params
-- [ ] Allow multiple full nodes to serve the same round without creating conflicting work
-- [ ] Verify first valid reveal wins independent of which node assigned the task
-- [ ] Verify late reveals become stale consistently across nodes
-- [ ] Verify miners can fail over to another node without losing identity or reward wallet configuration
+Status: completed for isolated miner task independence on the unified `codex/decentralization-roadmap` branch as of June 7, 2026. The lab proved miner identity portability, deterministic competitive task ids, cross-node commit/reveal acceptance, and restart persistence across three independent candidates. Validator-quorum finalization, first-winner block acceptance, and late-reveal stale finality require active validator certificates and are tracked in Phase 6.
+
+- [x] Derive competitive task ranges from canonical height, previous block hash, and protocol params
+- [x] Allow multiple full nodes to serve the same round without creating conflicting work
+- [x] Verify commit/reveal acceptance is independent of which node assigned the task
+- [x] Verify miners can fail over to another node without losing identity or reward wallet configuration
+- [x] Defer first-winner block acceptance and late-reveal stale finality to Phase 6 validator finality certificates
+
+Phase 5 operational acceptance gates:
+
+- [x] Deploy the unified `codex/decentralization-roadmap` branch to isolated candidates A, B, and C with the same canonical lab state and with production miner, validator, and auditor services disabled
+- [x] Register the same test miner public key and reward wallet on A, B, and C, then verify each node reports the same miner identity metadata without requiring private keys on the node
+- [x] Before requesting work, verify A/B/C agree on `network_id`, `chain_id`, `genesis_hash`, `protocol_version`, `effective_latest_block_height`, `effective_latest_block_hash`, and active protocol params
+- [x] Request `/tasks/next` from A, B, and C for the same test miner identity and compare the canonical round fields: assignment mode, competitive round height, previous block hash, protocol params id, algorithm, segment size, sample count, assignment seed basis, range start/end, task expiration, tx commitment fields, and reward address
+- [x] Verify task requests against alternate healthy nodes do not create incompatible active work for the same miner identity; expected idle/rate-limit responses must not terminate Linux miner or Desktop miner processes
+- [x] Run a controlled miner failover loop that alternates endpoints A -> B -> C while preserving the same miner identity and reward wallet, and record every assigned task, idle response, error-free retry, and selected endpoint
+- [x] Submit a valid commit/reveal from the same canonical task through A/B/C and verify the validation-pending task status is consistent across all candidates
+- [x] Restart each candidate after reveal and verify miner identity, active task state, replay health, and task outcomes remain consistent with no divergence
+- [x] Record final Phase 5 evidence: candidate heights/hashes, task id, assignment seed, range, commit/reveal responses, task status, miner identity, replay health, and divergence status
+
+Phase 5 evidence recorded on June 7, 2026:
+
+- Candidates: A `178.62.30.17`, B `138.68.139.141`, C `159.89.115.183`
+- Lab chain: `network_id=local`, `chain_id=picoin-phase4-mempool-lab-v1`, height `0`, hash `0000000000000000000000000000000000000000000000000000000000000000`
+- Portable miner: `miner_12742ecd560cb4bd`, public key `ed25519:Dw4X82ZuljWSKJUr70ZS-aKhhxuRiwWGipiJAs4YrT8`
+- Canonical task across A/B/C: `task_353244fceb5f7189`
+- Assignment seed: `2350590f9d39803583f15ac696f23f9a51b2aeeec89083dfc1d9f9eae9207b0b`
+- Work range and algorithm: `639..702`, `bbp_hex_v1`
+- Result commitment: `result_hash=c08a37419a25e6f5118687b66a6e8dcb586e9eea6db021a254e55a189c6d3479`, `merkle_root=3571c4f3fe2c5505c7b08e9de09e6c789e4dab1090b5434d044c4a39f209a7ab`
+- Commit/reveal: accepted on A, B, and C; each node reported `task_status=revealed` and `status=validation_pending`
+- Restart drill: A, B, and C preserved the same task id, miner id, assignment seed, range, `validation_pending` status, and miner public key after `picoin-node` restart
+- Replay health: A, B, and C reported `replay=healthy` and `divergent=False`
+- Boundary: no lab validators were active, so block finalization, first-winner acceptance, and late-reveal stale finality remain Phase 6 acceptance gates
 
 ### Phase 6: Validator Finality Certificates
 
 Goal: a block becomes canonical by validator quorum certificate, not by one API database decision.
 
-- [ ] Define signed finality certificate schema for each block
-- [ ] Include quorum validator ids, signatures, reward addresses, and protocol params id in canonical payloads
+Status: completed in the isolated A/B/C lab on the unified `codex/decentralization-roadmap` branch as of June 7, 2026. The lab proved deterministic `picoin-finality-v1` certificate creation after validator quorum, certificate retrieval through `/blocks/{height}/finality`, certificate export/import through block sync, signature verification, and identical certificate convergence across three independent full-node candidates.
+
+- [x] Define signed finality certificate schema for each block
+- [x] Include quorum validator ids, signatures, reward addresses, public keys, and protocol params id in canonical payloads
+- [x] Persist certificate hash, canonical block payload, and approving validator vote payloads with the accepted block
+- [x] Expose certificate retrieval through `GET /blocks/{height}/finality`
+- [x] Add an operational verifier script for A/B/C certificate checks: `picoin-proof-of-pi/deploy/scripts/phase6-finality-verify.py`
+- [x] Export finality certificates through `/node/sync/blocks` and persist valid certificates when replay imports finalized blocks
+- [x] Verify all full nodes can validate finality certificates after restart/catch-up from a peer
+- [x] Prevent partial block persistence when validator quorum finalization fails during transaction replay
+
+Post-Phase 6 hardening tracked for later phases:
+
 - [ ] Reject conflicting certificates for the same height unless deterministic rules select one valid canonical block
 - [ ] Add slashing evidence for validators that sign conflicting blocks at the same height
-- [ ] Verify all full nodes can validate finality certificates from disk after restart
+
+Phase 6 local evidence recorded on June 7, 2026:
+
+- `tests/test_validator_reputation.py::test_block_is_accepted_after_validator_quorum` verifies certificate creation after three validator approvals, stored certificate lookup by block height, certificate block/task/job links, and validator signature verification from the stored payloads.
+- `tests/test_validator_reputation.py::test_finality_certificate_exports_and_imports_with_block_sync` verifies `/node/sync/blocks` exports certificates and a clean replay/import database persists the certificate with a reconstructed approved validation job.
+- `tests/test_validator_reputation.py::test_quorum_finalization_failure_rejects_job_without_losing_vote` verifies that failed transaction finalization keeps quorum votes but rolls back partial blocks, rewards, ledger entries, and finality certificates.
+- `tests/test_api_endpoints.py::test_block_finality_endpoint_returns_certificate` verifies the `/blocks/{height}/finality` API route returns persisted certificates.
+- `tests/test_testnet_hardening.py::test_full_commit_reveal_flow_accepts_block_after_three_validator_votes` still passes with certificate creation attached to the quorum finalization path.
+
+Phase 6 A/B/C lab evidence recorded on June 7, 2026:
+
+- Candidates: A `178.62.30.17`, B `138.68.139.141`, C `159.89.115.183`
+- Finalized lab height: `1`
+- Final block hash: `864c1a25f8b2000b93325a55758efe5f424248dc6943d85cebbc15be71a04b2c`
+- Finality certificate hash: `b2ab8d94679860eaa4e15d65697a723d88cb30ab5a91bb0d92f7abb1bdc8689f`
+- Finality task/job: `task_8bd68429415f6279`, `job_504adfc9e81a424f`
+- Quorum: `approval_count=3`, `required_approvals=3`
+- Approving validators: `validator_5554017c6a4c4a56`, `validator_3b952537d04e4c0e`, `validator_5eda6cd4aec541aa`
+- Operational verifier result: `status=ok`, `nodes_checked=3`, `checks=36`, `errors=0`
+
+Phase 6 operational verifier:
+
+```bash
+python3 deploy/scripts/phase6-finality-verify.py \
+  --required 3 \
+  http://178.62.30.17:8000 \
+  http://138.68.139.141:8000 \
+  http://159.89.115.183:8000
+```
+
+Use `--height HEIGHT` to verify a specific finalized lab block after a restart or catch-up drill.
 
 ### Phase 7: Exchange And Infrastructure Full-Node Package
 
 Goal: exchanges and infrastructure operators can run PICOIN without depending on the public API server.
 
-- [ ] Provide Linux full-node install package or script
-- [ ] Provide wallet manager commands for address creation, balance checks, nonce checks, and signed withdrawals
-- [ ] Provide local API/RPC endpoints for deposits, withdrawals, confirmations, blocks, transactions, and health
-- [ ] Document confirmation policy and block maturity behavior
-- [ ] Provide backup, restore, audit, and monitoring runbooks
+Status: closed for exchange/infrastructure read-only full-node operation on the unified `codex/decentralization-roadmap` branch as of June 7, 2026. A clean mainnet full-node droplet restored a canonical bootstrap snapshot at height `10508`, caught up to height `10510` while the reference bootstrap was at height `10511`, kept replay healthy with no divergence, and passed the Phase 7 exchange/full-node smoke test with `status=ok` and `errors=0`.
+
+- [x] Provide Linux full-node install package or script
+- [x] Provide wallet manager commands for address creation, balance checks, nonce checks, and signed withdrawals
+- [x] Provide local API/RPC endpoint inventory for deposits, withdrawals, confirmations, blocks, transactions, and health
+- [x] Document confirmation policy and block maturity behavior
+- [x] Provide backup, restore, audit, and monitoring runbooks
+- [x] Run the installer on a clean mainnet full-node droplet and verify node/reconciler startup
+- [x] Verify the full node catches up from `https://api.picoin.science` and remains replay healthy after restart
+- [x] Run local exchange API smoke for health, protocol, sync, blocks, tx lookup, account balance/history, wallet nonce, and mempool inventory
+
+Phase 7 acceptance evidence:
+
+- [x] `exchange-full-node-test-1` (`165.22.238.210`) ran `picoin-node` and `picoin-reconciler`; `picoin-miner`, `picoin-validator`, and `picoin-auditor` remained inactive
+- [x] Snapshot restore accepted a canonical mainnet bootstrap snapshot at height `10508`
+- [x] Catch-up reached local height `10510` with reference height `10511`, lag `1`, replay `healthy`, and `divergence_detected=false`
+- [x] The exchange smoke returned `status=ok`, `errors=0`, protocol identity match, local tip block readability, and no replay failure
+- [x] The smoke test treats pre-snapshot transaction/history samples as skipped because a restored snapshot proves state at the snapshot height, not full archival pre-snapshot history
+
+Phase 7 artifacts:
+
+- `picoin-proof-of-pi/deploy/scripts/install-mainnet-full-node.sh`
+- `picoin-proof-of-pi/deploy/scripts/phase7-exchange-full-node-smoke.py`
+- `picoin-proof-of-pi/deploy/mainnet-exchange-full-node.env.example`
+- `picoin-proof-of-pi/deploy/README-exchange-full-node.md`
+
+### Phase 8: Exchange Wallet Write Path And Public Operator Hardening
+
+Goal: exchanges and infrastructure operators can use their local full node for safe wallet write operations and operate it without manual recovery steps.
+
+Status: closed for exchange/full-node wallet write-path validation on the unified `codex/decentralization-roadmap` branch as of June 8, 2026 UTC. A funded hot wallet submitted a signed withdrawal through a local full node, the reference bootstrap observed the same transaction, the transaction confirmed at block `10563`, and local/reference nonce state matched after confirmation.
+
+- [x] Run a signed withdrawal smoke using a dedicated hot wallet on the local full node
+- [x] Verify local `/wallet/{address}/nonce` and `tx send` behavior across node restart and catch-up
+- [x] Verify submitted withdrawal propagation from the exchange full node to the mainnet bootstrap without duplicate nonce or pending/confirmed status drift
+- [x] Verify the local full node shows the withdrawal as pending, then confirmed, matching the reference bootstrap after block inclusion
+- [x] Add an operational smoke command for exchange hot-wallet withdrawal readiness
+- [x] Document a safe update path that uses installer or `refresh-code.sh` and preserves `data/`, `backups/`, `test-output/`, and `.venv/`
+- [x] Add a service preflight that fails fast if any systemd `ReadWritePaths` directory is missing
+- [x] Decide whether exchange/full-node public release stays read-only first or includes the signed withdrawal workflow
+
+Phase 8 acceptance evidence:
+
+- [x] Hot wallet `PIFDE77B556D494F5DE4B1523D8CDDDCA961A76151E8C761` was funded with `0.01` PI and used only public wallet metadata in reports
+- [x] Withdrawal `3f12faa6f9bd9a6455d7749f0437270cb1d5bf361696b8715b4fe4fdc13f45e3` transferred `0.001` PI to `PI3BEE15E913DD2BF4D1194E47B5127339D1AAF79C976CE2` with transaction fee `0.001` PI
+- [x] Local full node and reference bootstrap both reported `status=confirmed`, `block_height=10563`, and `confirmed_at=2026-06-08T00:01:30.291963Z`
+- [x] Local and reference nonce checks both reported `confirmed_nonce=1`, `pending_nonce=0`, and `next_nonce=2`
+- [x] Public exchange/full-node install remains read-only by default; signed withdrawals are an explicit operator workflow guarded by the Phase 8 smoke test
+
+Phase 8 artifacts:
+
+- `picoin-proof-of-pi/deploy/scripts/phase8-exchange-withdrawal-smoke.py`
+- `picoin-proof-of-pi/deploy/scripts/picoin-service-preflight.sh`
 
 ## Security Rules
 
@@ -905,6 +1109,7 @@ Use separate wallets for treasury, governance, miner rewards, validator rewards,
 | Document | Purpose |
 | --- | --- |
 | `picoin-proof-of-pi/deploy/README-mainnet.md` | Mainnet deployment runbook |
+| `picoin-proof-of-pi/deploy/README-exchange-full-node.md` | Phase 7 exchange/infrastructure full-node install and operations |
 | `picoin-proof-of-pi/deploy/README-full-node-phase1.md` | Decentralization Phase 1 full-node verification lab |
 | `picoin-proof-of-pi/deploy/README-mainnet-shadow-full-node.md` | Phase 1B read-only mainnet shadow full-node verification |
 | `picoin-proof-of-pi/deploy/README-bootstrap-phase2.md` | Phase 2 public bootstrap candidate and failover verification |

@@ -127,6 +127,8 @@ class ValidatorResponse(BaseModel):
 class TaskResponse(BaseModel):
     task_id: str
     miner_id: str
+    network_id: str
+    chain_id: str | int
     range_start: int
     range_end: int
     algorithm: str
@@ -239,6 +241,24 @@ class BlockResponse(BaseModel):
     fraudulent: bool = False
     fraud_reason: str | None = None
     fraud_detected_at: datetime | None = None
+
+
+class FinalityCertificateResponse(BaseModel):
+    block_height: int
+    block_hash: str
+    task_id: str
+    job_id: str
+    miner_id: str
+    network_id: str
+    chain_id: Any
+    protocol_version: str
+    protocol_params_id: int | None = None
+    required_approvals: int
+    approval_count: int
+    certificate_hash: str
+    payload: dict[str, Any]
+    votes: list[dict[str, Any]]
+    created_at: datetime
 
 
 class StatsResponse(BaseModel):
@@ -635,6 +655,7 @@ class BlockReceiveResponse(BaseModel):
     status: str
     reason: str
     block_hash: str
+    gossip: dict[str, Any] | None = None
 
 
 class BlockSyncResponse(BaseModel):
@@ -682,6 +703,7 @@ class SnapshotImportResponse(BaseModel):
 
 class PeerReconcileResponse(BaseModel):
     attempted: int = 0
+    selected_peers: list[dict[str, Any]] = []
     transactions_imported: int = 0
     proposals_imported: int = 0
     blocks_imported: int = 0
@@ -1090,6 +1112,7 @@ class ValidationResultResponse(BaseModel):
     status: str
     message: str
     block: "BlockResponse | None" = None
+    finality_certificate: FinalityCertificateResponse | None = None
     approvals: int = 0
     rejections: int = 0
     required_approvals: int = 1

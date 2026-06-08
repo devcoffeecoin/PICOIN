@@ -22,6 +22,7 @@ from app.models.schemas import (
     ConsensusVoteRequest,
     FaucetRequest,
     FaucetResponse,
+    FinalityCertificateResponse,
     HealthResponse,
     LedgerEntryResponse,
     MaintenanceCleanupResponse,
@@ -100,6 +101,7 @@ from app.services.network import (
     heartbeat_peer,
     discover_peers,
     list_mempool,
+    list_mempool_inventory,
     list_peers,
     list_recent_transactions,
     node_identity,
@@ -164,6 +166,7 @@ from app.services.mining import (
     get_balance,
     get_balances,
     get_block,
+    get_block_finality_certificate,
     get_blocks,
     get_ledger_entries,
     get_miners_status,
@@ -396,9 +399,17 @@ def node_restore_snapshot(snapshot_hash: str) -> dict:
 
 
 @router.post("/node/blocks/receive", response_model=BlockReceiveResponse)
-def node_receive_block(payload: BlockReceiveRequest) -> dict:
+def node_receive_block(payload: BlockReceiveRequest, gossip: bool = Query(True)) -> dict:
     try:
-        return receive_block_header(payload.block, payload.source_peer_id)
+        result = receive_block_header(payload.block, payload.source_peer_id)
+        if gossip and result.get("status") in {"pending_replay", "pending_missing_ancestors"}:
+            result["gossip"] = gossip_json(
+                "/node/blocks/receive?gossip=false",
+                {"block": payload.block, "source_peer_id": node_identity()["peer_id"]},
+                "block_payload_gossip",
+                exclude_peer_id=payload.source_peer_id,
+            )
+        return result
     except NetworkError as exc:
         raise _network_error(exc) from exc
 
@@ -561,6 +572,17 @@ def mempool(status: str | None = Query(None), limit: int = Query(100, ge=1, le=5
     if response is not None:
         response.headers["Cache-Control"] = "no-store"
     return list_mempool(status, limit)
+
+
+@router.get("/mempool/inventory")
+def mempool_inventory(
+    status: str | None = Query("pending"),
+    limit: int = Query(100, ge=1, le=500),
+    response: Response = None,
+) -> dict:
+    if response is not None:
+        response.headers["Cache-Control"] = "no-store"
+    return list_mempool_inventory(status, limit)
 
 
 @router.get("/transactions/recent", response_model=list[MempoolTransactionResponse])
@@ -1218,6 +1240,14 @@ def blocks(limit: int | None = Query(None, ge=1, le=500)) -> list[dict]:
 @router.get("/blocks/verify", response_model=ChainVerificationResponse)
 def verify_blocks() -> dict:
     return verify_chain()
+
+
+@router.get("/blocks/{height}/finality", response_model=FinalityCertificateResponse)
+def block_finality_by_height(height: int) -> dict:
+    certificate = get_block_finality_certificate(height)
+    if certificate is None:
+        raise HTTPException(status_code=404, detail="finality certificate not found")
+    return certificate
 
 
 @router.get("/blocks/{height}", response_model=BlockResponse)

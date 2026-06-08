@@ -70,10 +70,12 @@ fi
 rm -rf "$TARGET_DIR/data"
 ln -s "$STATE_DIR" "$TARGET_DIR/data"
 install -d -o picoin -g picoin -m 0755 "$TARGET_DIR/test-output"
+install -d -o picoin -g picoin -m 0755 "$TARGET_DIR/backups"
 install -d -o picoin -g picoin -m 0755 /var/backups/picoin
 chown -R picoin:picoin "$TARGET_DIR" "$STATE_DIR" "$BACKUP_ROOT" /var/backups/picoin
 
 "$TARGET_DIR/deploy/scripts/install-systemd-service.sh"
+"$TARGET_DIR/deploy/scripts/picoin-service-preflight.sh" --fix --repo-dir "$TARGET_DIR"
 
 echo "Refresh complete."
 echo "Persistent data: $STATE_DIR"

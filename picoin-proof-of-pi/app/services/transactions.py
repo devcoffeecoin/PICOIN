@@ -14,6 +14,7 @@ from app.core.settings import (
     FAUCET_RATE_LIMIT_WINDOW_SECONDS,
     GENESIS_ACCOUNT_ID,
     MAX_TRANSACTIONS_PER_BLOCK,
+    MEMPOOL_TX_TTL_SECONDS,
     MIN_VALIDATOR_STAKE,
     MIN_TX_FEE_UNITS,
     NETWORK_ID,
@@ -90,13 +91,31 @@ def canonical_selected_tx_hashes_hash(tx_hashes: list[str] | tuple[str, ...] | N
     return selected_tx_hashes_hash(tx_hashes)
 
 
+def canonical_mempool_selection_order_sql() -> str:
+    return "fee_units DESC, tx_hash ASC"
+
+
+def canonical_transaction_timestamp(value: Any) -> datetime:
+    timestamp = str(value)
+    if timestamp.endswith("Z"):
+        timestamp = f"{timestamp[:-1]}+00:00"
+    parsed = datetime.fromisoformat(timestamp)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def canonical_transaction_expires_at(tx: dict[str, Any], ttl_seconds: int = MEMPOOL_TX_TTL_SECONDS) -> str:
+    return (canonical_transaction_timestamp(tx["timestamp"]) + timedelta(seconds=int(ttl_seconds))).isoformat()
+
+
 def select_transactions_for_task(connection: Any, max_count: int, chain_height: int) -> list[dict[str, Any]]:
     rows = connection.execute(
-        """
+        f"""
         SELECT *
         FROM mempool_transactions
         WHERE status = 'pending'
-        ORDER BY fee_units DESC, created_at ASC, tx_hash ASC
+        ORDER BY {canonical_mempool_selection_order_sql()}
         """,
     ).fetchall()
     max_count = max(0, int(max_count))
@@ -845,10 +864,7 @@ def _faucet_rejection_reason(
 
 
 def _tx_timestamp(tx: dict[str, Any]) -> datetime:
-    timestamp = str(tx["timestamp"])
-    if timestamp.endswith("Z"):
-        timestamp = f"{timestamp[:-1]}+00:00"
-    return datetime.fromisoformat(timestamp)
+    return canonical_transaction_timestamp(tx["timestamp"])
 
 
 def _transaction_priority(tx: dict[str, Any]) -> tuple[float, str, str]:

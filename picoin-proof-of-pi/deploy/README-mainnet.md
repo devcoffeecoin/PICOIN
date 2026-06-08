@@ -167,3 +167,150 @@ For multi-node rehearsal, compare with a peer:
 
 Treasury claims and Science Reserve activation must use signed transactions on
 mainnet. Direct mutation endpoints are disabled by code.
+
+## 6. Safe Mainnet Update Drill
+
+No software update can guarantee zero risk before it runs on production state.
+Mainnet safety comes from update gates: prove the code on a canary node, back up
+state, update one service layer at a time, and stop immediately if replay,
+validator liveness, miner task flow, or wallet accounting changes unexpectedly.
+
+### 6.1 Canary First
+
+Run the new code first on a non-authoritative full node or exchange node, not on
+the bootstrap. Keep miner, validator, pool, and auditor disabled there.
+
+```bash
+cd /opt/picoin/src/PICOIN
+git fetch origin
+git checkout main
+git pull origin main
+
+SOURCE_DIR=/opt/picoin/src/PICOIN/picoin-proof-of-pi
+PICOIN_SOURCE_DIR="$SOURCE_DIR" \
+PICOIN_REPO_DIR=/opt/picoin/picoin-proof-of-pi \
+bash "$SOURCE_DIR/deploy/scripts/refresh-code.sh"
+
+cd /opt/picoin/picoin-proof-of-pi
+sudo deploy/scripts/picoin-service-preflight.sh --fix --repo-dir /opt/picoin/picoin-proof-of-pi
+sudo systemctl daemon-reload
+sudo systemctl restart picoin-node
+sleep 20
+sudo systemctl restart picoin-reconciler
+```
+
+Canary gates:
+
+```bash
+curl -sS http://127.0.0.1:8000/health | python3 -m json.tool
+curl -sS http://127.0.0.1:8000/protocol | python3 -m json.tool
+curl -sS http://127.0.0.1:8000/node/sync-status | python3 -m json.tool
+curl -sS http://127.0.0.1:8000/audit/full | python3 -m json.tool
+
+python3 deploy/scripts/phase7-exchange-full-node-smoke.py \
+  --local http://127.0.0.1:8000 \
+  --reference https://api.picoin.science \
+  --allowed-lag 5
+```
+
+The canary must show healthy replay, no divergence, height lag within limit, and
+matching tip hash when fully caught up. A read-only canary may be `degraded`
+only for `not enough eligible validators for quorum`.
+
+### 6.2 Backup Before Bootstrap Update
+
+Before touching the main bootstrap, record the current commit and back up env and
+database state.
+
+```bash
+cd /opt/picoin/src/PICOIN
+git rev-parse HEAD | sudo tee /var/lib/picoin/pre-update-commit.txt
+
+STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+sudo install -d -m 0750 /var/backups/picoin-mainnet-update/$STAMP
+sudo cp -a /etc/picoin/picoin.env /var/backups/picoin-mainnet-update/$STAMP/
+sudo cp -a /var/lib/picoin/data /var/backups/picoin-mainnet-update/$STAMP/
+```
+
+If the deployment uses a different `PICOIN_DB_PATH`, back up that directory
+instead of `/var/lib/picoin/data`.
+
+### 6.3 Bootstrap Update Order
+
+Update the bootstrap node and reconciler first. Do not update or restart miners,
+validators, or pool in the same step.
+
+```bash
+cd /opt/picoin/src/PICOIN
+git fetch origin
+git checkout main
+git pull origin main
+
+SOURCE_DIR=/opt/picoin/src/PICOIN/picoin-proof-of-pi
+PICOIN_SOURCE_DIR="$SOURCE_DIR" \
+PICOIN_REPO_DIR=/opt/picoin/picoin-proof-of-pi \
+bash "$SOURCE_DIR/deploy/scripts/refresh-code.sh"
+
+cd /opt/picoin/picoin-proof-of-pi
+sudo deploy/scripts/picoin-service-preflight.sh --fix --repo-dir /opt/picoin/picoin-proof-of-pi
+sudo systemctl daemon-reload
+sudo systemctl restart picoin-node
+sleep 20
+sudo systemctl restart picoin-reconciler
+```
+
+Bootstrap gates:
+
+```bash
+curl -sS http://127.0.0.1:8000/health | python3 -m json.tool
+curl -sS http://127.0.0.1:8000/node/sync-status | python3 -m json.tool
+curl -sS http://127.0.0.1:8000/audit/full | python3 -m json.tool
+.venv/bin/python -m picoin node mainnet-preflight --server http://127.0.0.1:8000 --verbose
+```
+
+Stop the rollout if any gate shows `divergence_detected=true`, replay not
+`healthy`, a chain audit issue, protocol identity drift, or a node process that
+does not stay active.
+
+### 6.4 Validator And Miner Gates
+
+After the bootstrap is stable, update validators one by one. Wait between
+validators and check quorum before moving on.
+
+```bash
+curl -sS http://127.0.0.1:8000/validators/status | python3 -m json.tool
+systemctl is-active picoin-node picoin-reconciler picoin-validator picoin-miner picoin-pool 2>/dev/null || true
+```
+
+Validator gate: eligible validators remain online/synced, quorum is available,
+and validation jobs do not get stuck in pending after a normal mining round.
+
+Miner gate: miners keep requesting work, idle responses do not crash the miner,
+commits/reveals are accepted, and confirmed blocks keep advancing.
+
+Pool gate, if the pool is updated separately: `/stats` must show `status=ok`,
+healthy active workers, no stuck active task after reveal, and payout accounting
+must retain pending balances.
+
+### 6.5 Rollback Rule
+
+If the update changed only code and not database schema, roll back to the saved
+commit and restart services:
+
+```bash
+cd /opt/picoin/src/PICOIN
+PREV=$(sudo cat /var/lib/picoin/pre-update-commit.txt)
+git checkout "$PREV"
+
+SOURCE_DIR=/opt/picoin/src/PICOIN/picoin-proof-of-pi
+PICOIN_SOURCE_DIR="$SOURCE_DIR" \
+PICOIN_REPO_DIR=/opt/picoin/picoin-proof-of-pi \
+bash "$SOURCE_DIR/deploy/scripts/refresh-code.sh"
+
+sudo systemctl daemon-reload
+sudo systemctl restart picoin-node picoin-reconciler
+```
+
+If a schema or replay-state migration ran, restore the database backup instead
+of only checking out old code. Never keep mining or validating on a node that is
+divergent.

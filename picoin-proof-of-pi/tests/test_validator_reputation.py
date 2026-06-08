@@ -1,12 +1,19 @@
 import pytest
 
-from app.core.signatures import build_validation_result_signature_payload, generate_keypair, sign_payload
+from app.core.signatures import (
+    build_validation_result_signature_payload,
+    generate_keypair,
+    sign_payload,
+    verify_payload_signature,
+)
 from app.db.database import get_connection, init_db
+from app.services.consensus import _import_finalized_block
 from app.services.mining import (
     MiningError,
     _accept_block_in_connection,
     get_audit_summary,
     get_balance,
+    get_block_finality_certificate,
     get_ledger_entries,
     get_validator,
     get_validators,
@@ -15,6 +22,7 @@ from app.services.mining import (
     register_validator,
     submit_validation_result,
 )
+from app.services.network import get_blocks_since
 from app.services.transactions import canonical_empty_tx_merkle_root, canonical_selected_tx_hashes_hash
 
 
@@ -139,6 +147,32 @@ def test_block_is_accepted_after_validator_quorum(tmp_path, monkeypatch) -> None
     assert third_response["approvals"] == 3
     assert third_response["required_approvals"] == 3
     assert third_response["block"] is not None
+    finality_certificate = get_block_finality_certificate(third_response["block"]["height"])
+    assert third_response["finality_certificate"] == finality_certificate
+    assert finality_certificate is not None
+    assert finality_certificate["block_height"] == third_response["block"]["height"]
+    assert finality_certificate["block_hash"] == third_response["block"]["block_hash"]
+    assert finality_certificate["task_id"] == task_id
+    assert finality_certificate["job_id"] == job_id
+    assert finality_certificate["required_approvals"] == 3
+    assert finality_certificate["approval_count"] == 3
+    assert finality_certificate["payload"]["version"] == "picoin-finality-v1"
+    assert finality_certificate["payload"]["validation"]["status"] == "approved"
+    assert finality_certificate["payload"]["block"]["state_root"] == third_response["block"]["state_root"]
+    assert finality_certificate["payload"]["block"]["tx_count"] == 0
+    assert len(finality_certificate["certificate_hash"]) == 64
+    assert [vote["validator_id"] for vote in finality_certificate["votes"]] == [
+        first_validator["validator_id"],
+        second_validator["validator_id"],
+        third_validator["validator_id"],
+    ]
+    for vote in finality_certificate["votes"]:
+        assert "validator_reward_address" in vote
+        assert verify_payload_signature(
+            vote["validator_public_key"],
+            vote["signature_payload"],
+            vote["signature"],
+        )
     miner_balance = get_balance(miner_id)
     first_validator_balance = get_balance(first_validator["validator_id"])
     second_validator_balance = get_balance(second_validator["validator_id"])
@@ -155,6 +189,66 @@ def test_block_is_accepted_after_validator_quorum(tmp_path, monkeypatch) -> None
     assert get_validator(second_validator["validator_id"])["total_rewards"] == 0.10472
     assert get_validator(third_validator["validator_id"])["accepted_jobs"] == 1
     assert get_validator(third_validator["validator_id"])["total_rewards"] == 0.10472
+
+
+def test_finality_certificate_exports_and_imports_with_block_sync(tmp_path, monkeypatch) -> None:
+    source_db_path = tmp_path / "validator-finality-source.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", source_db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", source_db_path)
+    init_db(source_db_path)
+
+    miner_id = _register_miner("miner-finality-sync")
+    first_keys = generate_keypair()
+    second_keys = generate_keypair()
+    third_keys = generate_keypair()
+    validators = [
+        (first_keys, register_validator("sync-validator-one", first_keys["public_key"])),
+        (second_keys, register_validator("sync-validator-two", second_keys["public_key"])),
+        (third_keys, register_validator("sync-validator-three", third_keys["public_key"])),
+    ]
+    job_id, task_id = _insert_validation_job(miner_id, validators[0][1]["validator_id"], suffix="finality")
+    signed_at = "2026-05-10T00:00:00+00:00"
+    final_response = None
+    for index, (keys, validator) in enumerate(validators, start=1):
+        reason = f"accepted by sync validator {index}"
+        final_response = submit_validation_result(
+            job_id=job_id,
+            validator_id=validator["validator_id"],
+            approved=True,
+            reason=reason,
+            signature=_sign_validation_result(
+                keys["private_key"],
+                job_id,
+                validator["validator_id"],
+                task_id,
+                True,
+                reason,
+                signed_at,
+            ),
+            signed_at=signed_at,
+        )
+
+    assert final_response is not None
+    assert final_response["status"] == "approved"
+    exported_block = get_blocks_since(0)["blocks"][0]
+    assert exported_block["finality_certificate"]["certificate_hash"] == final_response["finality_certificate"]["certificate_hash"]
+
+    target_db_path = tmp_path / "validator-finality-target.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", target_db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", target_db_path)
+    init_db(target_db_path)
+    with get_connection() as connection:
+        imported = _import_finalized_block(connection, exported_block, "proposal_finality_sync")
+        stored = connection.execute(
+            "SELECT certificate_hash, block_hash, task_id, job_id FROM finality_certificates WHERE block_height = 1"
+        ).fetchone()
+
+    assert imported is True
+    assert stored is not None
+    assert stored["certificate_hash"] == exported_block["finality_certificate"]["certificate_hash"]
+    assert stored["block_hash"] == exported_block["block_hash"]
+    assert stored["task_id"] == task_id
+    assert stored["job_id"] == job_id
 
 
 def test_duplicate_validation_job_for_accepted_task_is_idempotent(tmp_path, monkeypatch) -> None:
@@ -276,10 +370,24 @@ def test_quorum_finalization_failure_rejects_job_without_losing_vote(tmp_path, m
         job = connection.execute("SELECT status, result_reason FROM validation_jobs WHERE job_id = ?", (job_id,)).fetchone()
         task = connection.execute("SELECT status FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
         votes = connection.execute("SELECT COUNT(*) AS count FROM validation_votes WHERE job_id = ?", (job_id,)).fetchone()
+        blocks = connection.execute("SELECT COUNT(*) AS count FROM blocks WHERE task_id = ?", (task_id,)).fetchone()
+        rewards = connection.execute("SELECT COUNT(*) AS count FROM rewards WHERE related_id = ?", (task_id,)).fetchone()
+        ledger_entries = connection.execute(
+            "SELECT COUNT(*) AS count FROM ledger_entries WHERE related_id = ?",
+            (task_id,),
+        ).fetchone()
+        certificates = connection.execute(
+            "SELECT COUNT(*) AS count FROM finality_certificates WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
     assert job["status"] == "rejected"
     assert "transaction finalization failed" in job["result_reason"]
     assert task["status"] == "rejected"
     assert votes["count"] == 3
+    assert blocks["count"] == 0
+    assert rewards["count"] == 0
+    assert ledger_entries["count"] == 0
+    assert certificates["count"] == 0
 
 
 def test_genesis_balance_and_validator_stake_are_persisted(tmp_path, monkeypatch) -> None:

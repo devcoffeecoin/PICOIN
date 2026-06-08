@@ -1,8 +1,12 @@
+import json
+
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from app.api.routes import router
+from app.core.settings import GENESIS_HASH
 from app.core.signatures import generate_keypair
 from app.db.database import DATABASE_PATH, get_connection, init_db
+from app.services.network import node_identity
 from app.services.mining import register_miner
 from app.services.wallet import create_wallet
 
@@ -33,6 +37,175 @@ def test_node_sync_status_endpoint_returns_200(tmp_path, monkeypatch) -> None:
     response = client.get("/node/sync-status")
 
     assert response.status_code == 200
+
+
+def test_mempool_inventory_returns_pending_hashes_without_full_payload(tmp_path, monkeypatch) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO mempool_transactions (
+                tx_hash, tx_type, sender, recipient, amount, amount_units, nonce, fee, fee_units,
+                payload, public_key, signature, status, propagated,
+                expires_at, created_at, updated_at
+            )
+            VALUES (?, 'transfer', 'sender-a', 'recipient-a', 0, 0, 1, 0, 10,
+                '{}', 'ed25519:public', 'ed25519:signature', 'pending', 0,
+                '2099-01-01T00:00:00+00:00', '2026-06-04T00:00:00+00:00', '2026-06-04T00:00:00+00:00')
+            """,
+            ("e" * 64,),
+        )
+
+    response = client.get("/mempool/inventory")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "pending"
+    assert payload["count"] == 1
+    assert payload["transactions"][0]["tx_hash"] == "e" * 64
+    assert "payload" not in payload["transactions"][0]
+    assert "signature" not in payload["transactions"][0]
+
+
+def test_node_blocks_receive_gossips_new_pending_block(tmp_path, monkeypatch) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+    calls: list[dict] = []
+
+    def fake_gossip_json(path, payload, event_type, exclude_peer_id=None):
+        calls.append(
+            {
+                "path": path,
+                "payload": payload,
+                "event_type": event_type,
+                "exclude_peer_id": exclude_peer_id,
+            }
+        )
+        return {"enabled": True, "attempted": 1, "succeeded": 1, "failed": 0, "peers": []}
+
+    monkeypatch.setattr("app.api.routes.gossip_json", fake_gossip_json)
+    block = {
+        "height": 1,
+        "previous_hash": GENESIS_HASH,
+        "block_hash": "c" * 64,
+        "timestamp": "2026-06-04T00:00:00+00:00",
+    }
+
+    response = client.post(
+        "/node/blocks/receive",
+        json={"block": block, "source_peer_id": "peer-a"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "pending_replay"
+    assert payload["gossip"]["succeeded"] == 1
+    assert calls == [
+        {
+            "path": "/node/blocks/receive?gossip=false",
+            "payload": {"block": block, "source_peer_id": node_identity()["peer_id"]},
+            "event_type": "block_payload_gossip",
+            "exclude_peer_id": "peer-a",
+        }
+    ]
+
+
+def test_node_blocks_receive_does_not_regossip_duplicate_header(tmp_path, monkeypatch) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+    calls: list[dict] = []
+    block = {
+        "height": 1,
+        "previous_hash": GENESIS_HASH,
+        "block_hash": "d" * 64,
+        "timestamp": "2026-06-04T00:00:00+00:00",
+    }
+
+    first = client.post(
+        "/node/blocks/receive?gossip=false",
+        json={"block": block, "source_peer_id": "peer-a"},
+    )
+    assert first.status_code == 200
+    assert first.json()["status"] == "pending_replay"
+
+    monkeypatch.setattr(
+        "app.api.routes.gossip_json",
+        lambda *args, **kwargs: calls.append({"args": args, "kwargs": kwargs}) or {},
+    )
+    duplicate = client.post(
+        "/node/blocks/receive",
+        json={"block": block, "source_peer_id": "peer-b"},
+    )
+
+    assert duplicate.status_code == 200
+    assert duplicate.json()["status"] == "known"
+    assert duplicate.json()["reason"] == "block header already queued"
+    assert calls == []
+
+
+def test_block_finality_endpoint_returns_certificate(tmp_path, monkeypatch) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+    miner = register_miner("finality-route-miner", generate_keypair()["public_key"])
+    with get_connection() as connection:
+        protocol_params_id = connection.execute("SELECT id FROM protocol_params WHERE active = 1").fetchone()["id"]
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at
+            )
+            VALUES ('task_finality_route', ?, 1, 64, 'bbp_hex_v1', 'accepted', ?, '2026-06-07T00:00:00+00:00')
+            """,
+            (miner["miner_id"], protocol_params_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO validation_jobs (
+                job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                samples, status, created_at
+            )
+            VALUES ('job_finality_route', 'task_finality_route', ?, ?, ?, ?, '[]', 'approved', '2026-06-07T00:00:01+00:00')
+            """,
+            (miner["miner_id"], "a" * 64, "b" * 64, "c" * 64),
+        )
+        connection.execute(
+            """
+            INSERT INTO blocks (
+                height, previous_hash, miner_id, range_start, range_end, algorithm,
+                result_hash, samples, timestamp, block_hash, reward, reward_units,
+                difficulty, task_id, protocol_params_id, protocol_version, validation_mode
+            )
+            VALUES (1, ?, ?, 1, 64, 'bbp_hex_v1', ?, '[]', '2026-06-07T00:00:02+00:00', ?, 2.51328, 251328000, 4.0,
+                    'task_finality_route', ?, '1.0', 'external_commit_reveal')
+            """,
+            ("0" * 64, miner["miner_id"], "a" * 64, "d" * 64, protocol_params_id),
+        )
+        payload = {
+            "version": "picoin-finality-v1",
+            "network_id": "local",
+            "chain_id": "test-chain",
+            "block": {"height": 1, "block_hash": "d" * 64, "task_id": "task_finality_route"},
+            "validation": {"job_id": "job_finality_route", "required_approvals": 1, "approval_count": 1},
+        }
+        connection.execute(
+            """
+            INSERT INTO finality_certificates (
+                block_height, block_hash, task_id, job_id, miner_id, network_id, chain_id,
+                protocol_version, protocol_params_id, required_approvals, approval_count,
+                certificate_hash, payload_json, votes_json, created_at
+            )
+            VALUES (1, ?, 'task_finality_route', 'job_finality_route', ?, 'local', 'test-chain',
+                    '1.0', ?, 1, 1, ?, ?, ?, '2026-06-07T00:00:03+00:00')
+            """,
+            ("d" * 64, miner["miner_id"], protocol_params_id, "f" * 64, json.dumps(payload), json.dumps([])),
+        )
+
+    response = client.get("/blocks/1/finality")
+
+    assert response.status_code == 200
+    certificate = response.json()
+    assert certificate["block_height"] == 1
+    assert certificate["block_hash"] == "d" * 64
+    assert certificate["task_id"] == "task_finality_route"
+    assert certificate["payload"]["version"] == "picoin-finality-v1"
 
 
 def test_tasks_next_endpoint_does_not_502_when_protocol_params_has_retarget_fields(tmp_path, monkeypatch) -> None:

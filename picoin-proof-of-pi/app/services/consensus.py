@@ -1689,6 +1689,7 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
     _ensure_miner(connection, block["miner_id"])
     local_protocol_params_id = _resolve_local_protocol_params_id(connection, block.get("protocol_params_id"))
     task_id = _ensure_task(connection, block, local_protocol_params_id)
+    _validate_finality_certificate_for_block(block, task_id)
     timestamp = block["timestamp"]
     samples_json = json.dumps(block["samples"], sort_keys=True)
     transactions = block.get("transactions") or []
@@ -1788,7 +1789,150 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
         )
         raise ConsensusError(422, "state_root mismatch after canonical replay")
     maybe_create_checkpoint_in_connection(connection, block["height"])
+    _store_finality_certificate_for_block(connection, block, task_id)
     return True
+
+
+def _finality_certificate_hash(certificate: dict[str, Any]) -> str:
+    return sha256_text(
+        canonical_json(
+            {
+                "payload": certificate.get("payload") or {},
+                "votes": certificate.get("votes") or [],
+            }
+        )
+    )
+
+
+def _validate_finality_certificate_for_block(block: dict[str, Any], task_id: str) -> None:
+    certificate = block.get("finality_certificate")
+    if certificate is None:
+        return
+    if not isinstance(certificate, dict):
+        raise ConsensusError(422, "invalid finality_certificate")
+    payload = certificate.get("payload") or {}
+    votes = certificate.get("votes") or []
+    if not isinstance(payload, dict) or not isinstance(votes, list):
+        raise ConsensusError(422, "invalid finality certificate payload")
+    block_payload = payload.get("block") or {}
+    validation_payload = payload.get("validation") or {}
+    if int(certificate.get("block_height") or 0) != int(block["height"]):
+        raise ConsensusError(422, "finality certificate height mismatch")
+    if certificate.get("block_hash") != block["block_hash"] or block_payload.get("block_hash") != block["block_hash"]:
+        raise ConsensusError(422, "finality certificate block hash mismatch")
+    if certificate.get("task_id") != task_id or block_payload.get("task_id") != task_id:
+        raise ConsensusError(422, "finality certificate task mismatch")
+    if certificate.get("job_id") != validation_payload.get("job_id"):
+        raise ConsensusError(422, "finality certificate job mismatch")
+    if certificate.get("miner_id") != block["miner_id"]:
+        raise ConsensusError(422, "finality certificate miner mismatch")
+    computed_hash = _finality_certificate_hash(certificate)
+    if computed_hash != certificate.get("certificate_hash"):
+        raise ConsensusError(422, "finality certificate hash mismatch")
+    required = int(certificate.get("required_approvals") or 0)
+    approval_count = int(certificate.get("approval_count") or 0)
+    if required <= 0 or approval_count < required or len(votes) < required:
+        raise ConsensusError(422, "finality certificate does not contain quorum approvals")
+    if int(validation_payload.get("required_approvals") or 0) != required:
+        raise ConsensusError(422, "finality certificate required approval mismatch")
+    if int(validation_payload.get("approval_count") or 0) != approval_count:
+        raise ConsensusError(422, "finality certificate approval count mismatch")
+    for vote in votes:
+        if not isinstance(vote, dict):
+            raise ConsensusError(422, "invalid finality certificate vote")
+        signature_payload = vote.get("signature_payload") or {}
+        if (
+            not vote.get("approved")
+            or signature_payload.get("job_id") != certificate.get("job_id")
+            or signature_payload.get("task_id") != task_id
+            or signature_payload.get("validator_id") != vote.get("validator_id")
+        ):
+            raise ConsensusError(422, "finality certificate vote payload mismatch")
+        public_key = vote.get("validator_public_key")
+        signature = vote.get("signature")
+        if not public_key or not signature or not verify_payload_signature(public_key, signature_payload, signature):
+            raise ConsensusError(422, "finality certificate vote signature invalid")
+
+
+def _store_finality_certificate_for_block(connection: Any, block: dict[str, Any], task_id: str) -> None:
+    certificate = block.get("finality_certificate")
+    if certificate is None:
+        return
+    _validate_finality_certificate_for_block(block, task_id)
+    payload = certificate.get("payload") or {}
+    votes = certificate.get("votes") or []
+    validation_payload = payload.get("validation") or {}
+    block_payload = payload.get("block") or {}
+    job_id = str(certificate["job_id"])
+    existing_job = connection.execute("SELECT 1 FROM validation_jobs WHERE job_id = ?", (job_id,)).fetchone()
+    if existing_job is None:
+        connection.execute(
+            """
+            INSERT INTO validation_jobs (
+                job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                samples, tx_merkle_root, selected_tx_hashes_hash, tx_count,
+                tx_fee_total_units, status, created_at, completed_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'approved', ?, ?)
+            """,
+            (
+                job_id,
+                task_id,
+                certificate["miner_id"],
+                block["result_hash"],
+                block.get("merkle_root") or "",
+                validation_payload.get("challenge_seed") or "",
+                json.dumps(block.get("samples") or [], sort_keys=True),
+                block.get("tx_merkle_root") or "",
+                block_payload.get("selected_tx_hashes_hash"),
+                int(block.get("tx_count") or 0),
+                int(block_payload.get("tx_fee_total_units") or 0),
+                certificate["created_at"],
+                certificate["created_at"],
+            ),
+        )
+    connection.execute(
+        """
+        INSERT INTO finality_certificates (
+            block_height, block_hash, task_id, job_id, miner_id, network_id, chain_id,
+            protocol_version, protocol_params_id, required_approvals, approval_count,
+            certificate_hash, payload_json, votes_json, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(block_height) DO UPDATE SET
+            block_hash = excluded.block_hash,
+            task_id = excluded.task_id,
+            job_id = excluded.job_id,
+            miner_id = excluded.miner_id,
+            network_id = excluded.network_id,
+            chain_id = excluded.chain_id,
+            protocol_version = excluded.protocol_version,
+            protocol_params_id = excluded.protocol_params_id,
+            required_approvals = excluded.required_approvals,
+            approval_count = excluded.approval_count,
+            certificate_hash = excluded.certificate_hash,
+            payload_json = excluded.payload_json,
+            votes_json = excluded.votes_json,
+            created_at = excluded.created_at
+        """,
+        (
+            int(certificate["block_height"]),
+            certificate["block_hash"],
+            task_id,
+            certificate["job_id"],
+            certificate["miner_id"],
+            certificate["network_id"],
+            str(certificate.get("chain_id")),
+            certificate["protocol_version"],
+            certificate.get("protocol_params_id"),
+            int(certificate["required_approvals"]),
+            int(certificate["approval_count"]),
+            certificate["certificate_hash"],
+            canonical_json(payload),
+            canonical_json(votes),
+            certificate["created_at"],
+        ),
+    )
 
 
 def _apply_distributed_validator_rewards(

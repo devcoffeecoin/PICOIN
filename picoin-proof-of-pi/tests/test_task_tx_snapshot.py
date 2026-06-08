@@ -6,6 +6,7 @@ from app.services import mining as mining_service
 from app.services.mining import commit_task, create_next_task, get_balance, register_miner, request_faucet, reveal_task
 from app.services.transactions import (
     canonical_empty_tx_merkle_root,
+    canonical_mempool_selection_order_sql,
     canonical_selected_tx_hashes_hash,
     canonical_tx_commitment,
     freeze_transactions_for_task,
@@ -112,6 +113,55 @@ def test_create_next_task_returns_decoded_selected_tx_hashes(tmp_path, monkeypat
 
     assert isinstance(task["selected_tx_hashes"], list)
     assert task["selected_tx_hashes"] == [first["tx_hash"]]
+
+
+def test_canonical_mempool_selection_ignores_local_receive_time(tmp_path, monkeypatch) -> None:
+    _setup_db(tmp_path, monkeypatch, "task-snapshot-canonical-order")
+    first_source = _funded_wallet(1.0)
+    second_source = _funded_wallet(1.0)
+    recipient = create_wallet("recipient")
+    first = _submit_transfer(first_source, recipient["address"], 0.25, 1)
+    second = _submit_transfer(second_source, recipient["address"], 0.25, 1)
+    by_hash = sorted([first, second], key=lambda tx: tx["tx_hash"])
+
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE mempool_transactions SET created_at = ? WHERE tx_hash = ?",
+            ("2026-05-20T00:00:10+00:00", by_hash[0]["tx_hash"]),
+        )
+        connection.execute(
+            "UPDATE mempool_transactions SET created_at = ? WHERE tx_hash = ?",
+            ("2026-05-20T00:00:00+00:00", by_hash[1]["tx_hash"]),
+        )
+        selected = select_transactions_for_task(connection, 10, 0)
+
+    assert canonical_mempool_selection_order_sql() == "fee_units DESC, tx_hash ASC"
+    assert [tx["tx_hash"] for tx in selected] == [tx["tx_hash"] for tx in by_hash]
+
+
+def test_task_snapshot_uses_canonical_mempool_selection_order(tmp_path, monkeypatch) -> None:
+    _setup_db(tmp_path, monkeypatch, "task-snapshot-canonical-freeze")
+    first_source = _funded_wallet(1.0)
+    second_source = _funded_wallet(1.0)
+    recipient = create_wallet("recipient")
+    first = _submit_transfer(first_source, recipient["address"], 0.25, 1)
+    second = _submit_transfer(second_source, recipient["address"], 0.25, 1)
+    by_hash = sorted([first, second], key=lambda tx: tx["tx_hash"])
+    _insert_dummy_task("task_canonical_freeze")
+
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE mempool_transactions SET created_at = ? WHERE tx_hash = ?",
+            ("2026-05-20T00:00:10+00:00", by_hash[0]["tx_hash"]),
+        )
+        connection.execute(
+            "UPDATE mempool_transactions SET created_at = ? WHERE tx_hash = ?",
+            ("2026-05-20T00:00:00+00:00", by_hash[1]["tx_hash"]),
+        )
+        snapshot = freeze_transactions_for_task(connection, task_id="task_canonical_freeze", block_height=1)
+
+    assert snapshot["tx_hashes"] == [tx["tx_hash"] for tx in by_hash]
+    assert snapshot["tx_merkle_root"] == merkle_root(snapshot["tx_hashes"])
 
 
 def test_competitive_round_reuses_transaction_snapshot(tmp_path, monkeypatch) -> None:

@@ -1,10 +1,11 @@
 import json
+from datetime import datetime, timedelta
 
 import pytest
 
-from app.core.crypto import canonical_json, hash_result
+from app.core.crypto import canonical_json, hash_result, sha256_text
 from app.core.pi import calculate_pi_segment
-from app.core.settings import CHAIN_ID, GENESIS_HASH, NETWORK_ID, PROTOCOL_VERSION
+from app.core.settings import CHAIN_ID, GENESIS_HASH, MEMPOOL_TX_TTL_SECONDS, NETWORK_ID, PROTOCOL_VERSION
 from app.core.signatures import build_submission_signature_payload, generate_keypair, sign_payload
 from app.db.database import get_connection, init_db
 from app.models.schemas import SignedTransactionRequest
@@ -38,8 +39,10 @@ from app.services.network import (
     list_peers,
     discover_peers,
     receive_block_header,
+    reconcile_connected_peers,
     reconcile_peer,
     register_peer,
+    select_reconcile_peers,
     submit_transaction,
     sync_blocks_until,
 )
@@ -63,7 +66,12 @@ from app.services.treasury import (
     SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID,
     get_scientific_development_treasury,
 )
-from app.services.transactions import get_wallet_nonce_status, select_block_transactions
+from app.services.transactions import (
+    apply_block_transactions,
+    get_wallet_nonce_status,
+    select_block_transactions,
+    transaction_commitment,
+)
 from app.services.wallet import (
     address_from_public_key,
     address_matches_public_key,
@@ -193,6 +201,47 @@ def test_block_hash_debug_accepts_historical_fraud_field_schema(tmp_path, monkey
     assert debug["matched_variant"] is not None
 
 
+def test_get_blocks_since_uses_consensus_vote_id_order_for_validator_rewards(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "block-sync-consensus-votes.sqlite3")
+
+    miner_key = generate_keypair()
+    miner = register_miner("block-sync-consensus-votes-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    timestamp = "2026-05-12T00:00:00+00:00"
+
+    with get_connection() as connection:
+        block_hash = get_block(1)["block_hash"]
+        proposal_row = connection.execute(
+            "SELECT proposal_id FROM consensus_block_proposals WHERE block_hash = ?",
+            (block_hash,),
+        ).fetchone()
+        proposal_id = proposal_row["proposal_id"]
+        connection.execute(
+            """
+            INSERT INTO consensus_votes (
+                vote_id, proposal_id, block_hash, validator_id, approved, reason,
+                signature, signed_at, created_at
+            )
+            VALUES (?, ?, ?, ?, 1, 'approved', 'signature-a', ?, ?)
+            """,
+            ("vote_a", proposal_id, block_hash, "validator_a", timestamp, timestamp),
+        )
+        connection.execute(
+            """
+            INSERT INTO ledger_entries (
+                account_id, account_type, amount, amount_units, balance_after,
+                balance_after_units, entry_type, block_height, related_id, description, created_at
+            )
+            VALUES (?, 'validator', 0.1, 10000000, 0.1, 10000000, 'validator_reward', 1, ?, 'test reward', ?)
+            """,
+            ("validator_a", proposal_id, timestamp),
+        )
+
+    block = get_blocks_since(0)["blocks"][0]
+
+    assert block["validator_reward"]["validator_ids"] == ["validator_a"]
+
+
 def test_peer_registry_and_heartbeat(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "peers.sqlite3")
 
@@ -285,6 +334,332 @@ def test_register_peer_normalizes_duplicate_scheme(tmp_path, monkeypatch) -> Non
 
     assert peer["peer_address"] == "http://validator-1:8000"
     assert peer["status"] == "connected"
+
+
+def test_select_reconcile_peers_filters_local_stale_and_wrong_identity(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "peer-select.sqlite3")
+
+    register_peer(
+        node_id="local-node-copy",
+        peer_address="http://127.0.0.1:8000",
+        peer_type="full",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    healthy_a = register_peer(
+        node_id="peer-a",
+        peer_address="http://peer-a:8000",
+        peer_type="full",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    healthy_b = register_peer(
+        node_id="peer-b",
+        peer_address="http://peer-b:8000",
+        peer_type="bootstrap",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    stale = register_peer(
+        node_id="peer-stale",
+        peer_address="http://peer-stale:8000",
+        peer_type="full",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    wrong_identity = register_peer(
+        node_id="peer-wrong",
+        peer_address="http://peer-wrong:8000",
+        peer_type="full",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    with get_connection() as connection:
+        connection.execute("UPDATE network_peers SET status = 'stale' WHERE peer_id = ?", (stale["peer_id"],))
+        connection.execute("UPDATE network_peers SET network_id = ? WHERE peer_id = ?", ("wrong-network", wrong_identity["peer_id"]))
+
+    selected = select_reconcile_peers(limit=10)
+
+    assert {peer["peer_id"] for peer in selected} == {healthy_a["peer_id"], healthy_b["peer_id"]}
+    assert {peer["peer_address"] for peer in selected} == {"http://peer-a:8000", "http://peer-b:8000"}
+
+
+def test_select_reconcile_peers_prefers_public_bootstraps_over_noisy_validators(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "peer-select-public-bootstrap.sqlite3")
+    monkeypatch.setattr("app.services.network.BOOTSTRAP_PEERS", ["http://api.picoin.science"], raising=False)
+
+    candidate_a = register_peer(
+        node_id="mainnet-bootstrap-candidate-a",
+        peer_address="http://178.62.30.17:8000",
+        peer_type="bootstrap",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    candidate_b = register_peer(
+        node_id="mainnet-bootstrap-candidate-b",
+        peer_address="http://138.68.139.141:8000",
+        peer_type="bootstrap",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    seed_bootstrap = register_peer(
+        node_id="bootstrap",
+        peer_address="http://api.picoin.science",
+        peer_type="bootstrap",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    public_full = register_peer(
+        node_id="public-full-node",
+        peer_address="http://203.0.113.10:8000",
+        peer_type="full",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    register_peer(
+        node_id="validator-loopback",
+        peer_address="http://127.0.0.1:8131",
+        peer_type="validator",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    register_peer(
+        node_id="validator-placeholder",
+        peer_address="http://ваш-ip:8000",
+        peer_type="validator",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    noisy_validator = register_peer(
+        node_id="validator-noisy",
+        peer_address="http://165.227.181.138:8000",
+        peer_type="validator",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+
+    selected = select_reconcile_peers(limit=5)
+    selected_addresses = [peer["peer_address"] for peer in selected]
+
+    assert set(selected_addresses[:2]) == {candidate_a["peer_address"], candidate_b["peer_address"]}
+    assert seed_bootstrap["peer_address"] in selected_addresses[:3]
+    assert selected_addresses.index(public_full["peer_address"]) < selected_addresses.index(noisy_validator["peer_address"])
+    assert "http://127.0.0.1:8131" not in selected_addresses
+    assert "http://ваш-ip:8000" not in selected_addresses
+
+
+def test_reconcile_connected_peers_attempts_multiple_selected_peers(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "peer-reconcile-multiple.sqlite3")
+
+    register_peer(
+        node_id="peer-a",
+        peer_address="http://peer-a:8000",
+        peer_type="full",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+    register_peer(
+        node_id="peer-b",
+        peer_address="http://peer-b:8000",
+        peer_type="bootstrap",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+
+    attempted: list[str] = []
+
+    def fake_reconcile_peer(peer_address: str) -> dict:
+        attempted.append(peer_address)
+        return {
+            "peer_address": peer_address,
+            "peers_seen": 0,
+            "transactions_imported": 0,
+            "proposals_imported": 0,
+            "blocks_imported": 0,
+            "errors": [],
+        }
+
+    monkeypatch.setattr("app.services.network.reconcile_peer", fake_reconcile_peer)
+
+    result = reconcile_connected_peers(limit=10)
+
+    assert set(attempted) == {"http://peer-a:8000", "http://peer-b:8000"}
+    assert result["attempted"] == 2
+    assert {peer["peer_address"] for peer in result["selected_peers"]} == set(attempted)
+    assert result["errors"] == 0
+
+
+def test_reconcile_peer_uses_mempool_inventory_for_missing_transactions(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "peer-reconcile-inventory.sqlite3")
+    tx_hash = "a" * 64
+    requested_urls: list[str] = []
+
+    class Response:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, timeout=0):
+        requested_urls.append(url)
+        if url == "http://peer-a:8000/node/identity":
+            return Response(
+                {
+                    "node_id": "peer-a",
+                    "peer_address": "http://peer-a:8000",
+                    "peer_type": "full",
+                    "protocol_version": PROTOCOL_VERSION,
+                    "network_id": NETWORK_ID,
+                    "chain_id": CHAIN_ID,
+                    "genesis_hash": GENESIS_HASH,
+                    "bootstrap_peers": [],
+                }
+            )
+        if url == "http://peer-a:8000/node/peers":
+            return Response([])
+        if url == "http://peer-a:8000/mempool/inventory?status=pending&limit=100":
+            return Response(
+                {
+                    "status": "pending",
+                    "count": 1,
+                    "transactions": [
+                        {
+                            "tx_hash": tx_hash,
+                            "status": "pending",
+                            "sender": "sender-a",
+                            "nonce": 1,
+                            "fee_units": 10,
+                        }
+                    ],
+                }
+            )
+        if url == f"http://peer-a:8000/tx/{tx_hash}":
+            return Response({"tx_hash": tx_hash, "status": "pending"})
+        if url == "http://peer-a:8000/node/sync/blocks?from_height=0&limit=100":
+            return Response({"from_height": 0, "count": 0, "blocks": []})
+        if url == "http://peer-a:8000/consensus/proposals?limit=100":
+            return Response([])
+        raise AssertionError(url)
+
+    imported: list[dict] = []
+
+    def fake_submit_transaction(tx, propagated=False):
+        imported.append({"tx": tx, "propagated": propagated})
+        return tx
+
+    monkeypatch.setattr("app.services.network.requests.get", fake_get)
+    monkeypatch.setattr("app.services.network.submit_transaction", fake_submit_transaction)
+
+    result = reconcile_peer("http://peer-a:8000")
+
+    assert result["mempool_inventory_seen"] == 1
+    assert result["mempool_inventory_missing"] == 1
+    assert result["transactions_seen"] == 1
+    assert result["transactions_imported"] == 1
+    assert imported == [{"tx": {"tx_hash": tx_hash, "status": "pending"}, "propagated": True}]
+    assert "http://peer-a:8000/mempool?limit=100" not in requested_urls
+
+
+def test_reconcile_peer_fallback_imports_pending_mempool_only(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "peer-reconcile-fallback-pending.sqlite3")
+    pending_hash = "b" * 64
+    confirmed_hash = "c" * 64
+    requested_urls: list[str] = []
+
+    class Response:
+        def __init__(self, payload, *, fail: bool = False):
+            self._payload = payload
+            self._fail = fail
+
+        def raise_for_status(self):
+            if self._fail:
+                raise RuntimeError("inventory unavailable")
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, timeout=0):
+        requested_urls.append(url)
+        if url == "http://peer-a:8000/node/identity":
+            return Response(
+                {
+                    "node_id": "peer-a",
+                    "peer_address": "http://peer-a:8000",
+                    "peer_type": "full",
+                    "protocol_version": PROTOCOL_VERSION,
+                    "network_id": NETWORK_ID,
+                    "chain_id": CHAIN_ID,
+                    "genesis_hash": GENESIS_HASH,
+                    "bootstrap_peers": [],
+                }
+            )
+        if url == "http://peer-a:8000/node/peers":
+            return Response([])
+        if url == "http://peer-a:8000/mempool/inventory?status=pending&limit=100":
+            return Response({}, fail=True)
+        if url == "http://peer-a:8000/mempool?status=pending&limit=100":
+            return Response(
+                [
+                    {"tx_hash": pending_hash, "status": "pending"},
+                    {"tx_hash": confirmed_hash, "status": "confirmed"},
+                ]
+            )
+        if url == "http://peer-a:8000/node/sync/blocks?from_height=0&limit=100":
+            return Response({"from_height": 0, "count": 0, "blocks": []})
+        if url == "http://peer-a:8000/consensus/proposals?limit=100":
+            return Response([])
+        raise AssertionError(url)
+
+    imported: list[dict] = []
+
+    def fake_submit_transaction(tx, propagated=False):
+        imported.append({"tx": tx, "propagated": propagated})
+        return tx
+
+    monkeypatch.setattr("app.services.network.requests.get", fake_get)
+    monkeypatch.setattr("app.services.network.submit_transaction", fake_submit_transaction)
+
+    result = reconcile_peer("http://peer-a:8000")
+
+    assert result["mempool_fallback_seen"] == 2
+    assert result["mempool_fallback_pending"] == 1
+    assert result["transactions_seen"] == 1
+    assert result["transactions_imported"] == 1
+    assert imported == [{"tx": {"tx_hash": pending_hash, "status": "pending"}, "propagated": True}]
+    assert "http://peer-a:8000/mempool?status=pending&limit=100" in requested_urls
+    assert "http://peer-a:8000/mempool?limit=100" not in requested_urls
 
 
 def test_discover_peers_skips_invalid_discovered_peer_address(tmp_path, monkeypatch) -> None:
@@ -424,6 +799,56 @@ def test_submit_transaction_marks_propagated_after_gossip_success(tmp_path, monk
     assert stored["propagated"] is True
 
 
+def test_transaction_gossip_strips_private_and_extra_fields(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "submit-gossip-public-only.sqlite3")
+
+    register_peer(
+        node_id="validator-1",
+        peer_address="http://validator-1:8000",
+        peer_type="validator",
+        protocol_version=PROTOCOL_VERSION,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+        genesis_hash=GENESIS_HASH,
+    )
+
+    posted_payloads: list[dict] = []
+
+    class Response:
+        status_code = 201
+
+    def fake_post(url, json=None, timeout=0):
+        posted_payloads.append(dict(json or {}))
+        return Response()
+
+    monkeypatch.setattr("app.services.network.requests.post", fake_post)
+
+    wallet = create_wallet("alice")
+    recipient = create_wallet("bob")
+    tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="transfer",
+        sender=wallet["address"],
+        recipient=recipient["address"],
+        amount=1,
+        nonce=1,
+    )
+    tx["private_key"] = wallet["private_key"]
+    tx["local_only_note"] = "must not leave this node"
+
+    submit_transaction(tx)
+
+    assert len(posted_payloads) == 1
+    outbound = posted_payloads[0]
+    assert "private_key" not in outbound
+    assert "local_only_note" not in outbound
+    assert outbound["tx_hash"] == tx["tx_hash"]
+    assert outbound["public_key"] == tx["public_key"]
+    assert outbound["signature"] == tx["signature"]
+    assert outbound["payload"] == tx["payload"]
+
+
 def test_receive_block_header_queues_tip_mismatch_for_ancestor_sync(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "header-tip-mismatch.sqlite3")
     block = {
@@ -505,6 +930,60 @@ def test_sync_blocks_drains_replay_backlog_with_bounded_batch(tmp_path, monkeypa
     assert result["replay"]["queue_size"] == 1
     assert result["replay"]["sync_status"] == "divergent"
     assert result["replay"]["replay_stalled"] is True
+
+
+def test_sync_blocks_skips_peer_fetch_when_replay_already_divergent(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "sync-replay-already-divergent.sqlite3")
+    block = {
+        "height": 1,
+        "previous_hash": "f" * 64,
+        "block_hash": "a" * 64,
+        "timestamp": "2026-05-12T00:00:00+00:00",
+    }
+    receive_block_header(block, source_peer_id="peer-a")
+    replay_finalized_blocks()
+
+    def fail_get(*args, **kwargs):
+        raise AssertionError("divergent replay should not fetch peer blocks")
+
+    monkeypatch.setattr("app.services.network.requests.get", fail_get)
+
+    result = sync_blocks_until("http://peer-a:8000", limit=10)
+
+    assert result["blocks_seen"] == 0
+    assert result["blocks_imported"] == 0
+    assert result["replay"]["status"] == "skipped"
+    assert result["replay"]["reason"] == "replay divergent; restore required"
+    assert result["replay"]["sync_status"] == "divergent"
+    assert result["replay"]["divergence_detected"] is True
+
+
+def test_reconcile_peer_skips_network_when_replay_already_divergent(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "reconcile-replay-already-divergent.sqlite3")
+    block = {
+        "height": 1,
+        "previous_hash": "f" * 64,
+        "block_hash": "a" * 64,
+        "timestamp": "2026-05-12T00:00:00+00:00",
+    }
+    receive_block_header(block, source_peer_id="peer-a")
+    replay_finalized_blocks()
+
+    def fail_get(*args, **kwargs):
+        raise AssertionError("divergent replay should not contact reconcile peer")
+
+    monkeypatch.setattr("app.services.network.requests.get", fail_get)
+
+    result = reconcile_peer("http://peer-a:8000")
+
+    assert result["identity_registered"] is False
+    assert result["peers_seen"] == 0
+    assert result["mempool_inventory_seen"] == 0
+    assert result["blocks_seen"] == 0
+    assert result["proposals_seen"] == 0
+    assert result["replay"]["status"] == "skipped"
+    assert result["replay"]["reason"] == "replay divergent; restore required"
+    assert result["errors"] == ["replay divergent; restore required"]
 
 
 def test_sync_blocks_can_trigger_opt_in_auto_recovery_after_divergence(tmp_path, monkeypatch) -> None:
@@ -626,6 +1105,77 @@ def test_duplicate_nonce_is_rejected(tmp_path, monkeypatch) -> None:
         submit_transaction(second)
 
 
+def test_terminal_duplicate_transaction_is_idempotent(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "terminal-duplicate.sqlite3")
+
+    wallet = create_wallet("alice")
+    recipient = create_wallet("bob")
+    tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="transfer",
+        sender=wallet["address"],
+        recipient=recipient["address"],
+        amount=1,
+        nonce=1,
+    )
+    submit_transaction(tx)
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE mempool_transactions SET status = 'confirmed', block_height = 1 WHERE tx_hash = ?",
+            (tx["tx_hash"],),
+        )
+
+    duplicate = submit_transaction(tx, propagated=True)
+
+    assert duplicate["tx_hash"] == tx["tx_hash"]
+    assert duplicate["status"] == "confirmed"
+    assert duplicate["block_height"] == 1
+
+
+def test_failed_nonce_can_be_replaced_by_new_transaction(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "failed-nonce-replacement.sqlite3")
+
+    wallet = create_wallet("alice")
+    first_recipient = create_wallet("bob")
+    second_recipient = create_wallet("carol")
+    first = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="transfer",
+        sender=wallet["address"],
+        recipient=first_recipient["address"],
+        amount=1,
+        nonce=1,
+    )
+    second = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="transfer",
+        sender=wallet["address"],
+        recipient=second_recipient["address"],
+        amount=1,
+        nonce=1,
+    )
+    submit_transaction(first)
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE mempool_transactions SET status = 'failed', failure_reason = 'test failure' WHERE tx_hash = ?",
+            (first["tx_hash"],),
+        )
+
+    replacement = submit_transaction(second)
+
+    with get_connection() as connection:
+        first_row = connection.execute(
+            "SELECT status FROM mempool_transactions WHERE tx_hash = ?",
+            (first["tx_hash"],),
+        ).fetchone()
+    assert first_row is None
+    assert replacement["tx_hash"] == second["tx_hash"]
+    assert replacement["status"] == "pending"
+
+
 def test_invalid_signature_is_rejected(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "invalid-signature.sqlite3")
 
@@ -666,6 +1216,39 @@ def test_signed_transaction_request_preserves_signed_timestamp(tmp_path, monkeyp
 
     assert payload["timestamp"] == tx["timestamp"]
     submit_transaction(payload)
+
+
+def test_transaction_expiration_uses_signed_timestamp_not_receive_time(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "signed-expiration.sqlite3")
+    monkeypatch.setattr("app.services.network._now", lambda: "2026-05-14T12:30:00+00:00")
+
+    wallet = create_wallet("alice")
+    recipient = create_wallet("bob")
+    tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="transfer",
+        sender=wallet["address"],
+        recipient=recipient["address"],
+        amount=1,
+        nonce=1,
+        timestamp="2026-05-14T12:00:00Z",
+    )
+
+    submit_transaction(tx)
+
+    expected_expires_at = (
+        datetime.fromisoformat("2026-05-14T12:00:00+00:00") + timedelta(seconds=MEMPOOL_TX_TTL_SECONDS)
+    ).isoformat()
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT created_at, expires_at FROM mempool_transactions WHERE tx_hash = ?",
+            (tx["tx_hash"],),
+        ).fetchone()
+
+    assert row is not None
+    assert row["created_at"] == "2026-05-14T12:30:00+00:00"
+    assert row["expires_at"] == expected_expires_at
 
 
 def test_nonce_zero_is_rejected_at_submission(tmp_path, monkeypatch) -> None:
@@ -771,6 +1354,88 @@ def test_mined_block_confirms_signed_transfer_with_transaction_merkle_root(tmp_p
     assert get_balance_amount(recipient["address"]) == pytest.approx(1.0)
     assert get_balance_amount(miner["miner_id"]) == pytest.approx(2.51328 + 0.01)
     assert chain["valid"] is True
+
+
+def test_candidate_block_replay_matches_across_nodes_with_local_mempool_drift(tmp_path, monkeypatch) -> None:
+    first_sender = create_wallet("alice-candidate")
+    second_sender = create_wallet("bob-candidate")
+    first_recipient = create_wallet("carol-candidate")
+    second_recipient = create_wallet("dave-candidate")
+    miner_id = "miner_candidate_replay"
+    first_tx = sign_transaction(
+        private_key=first_sender["private_key"],
+        public_key=first_sender["public_key"],
+        tx_type="transfer",
+        sender=first_sender["address"],
+        recipient=first_recipient["address"],
+        amount=1.0,
+        nonce=1,
+        fee=0.01,
+        timestamp="2026-05-14T12:00:00+00:00",
+    )
+    second_tx = sign_transaction(
+        private_key=second_sender["private_key"],
+        public_key=second_sender["public_key"],
+        tx_type="transfer",
+        sender=second_sender["address"],
+        recipient=second_recipient["address"],
+        amount=1.0,
+        nonce=1,
+        fee=0.01,
+        timestamp="2026-05-14T12:00:01+00:00",
+    )
+    block_timestamp = "2026-05-14T12:01:00+00:00"
+
+    def replay_candidate(db_name: str, created_at_by_hash: dict[str, str]) -> dict:
+        _init_network_db(tmp_path, monkeypatch, db_name)
+        _fund_wallet_from_genesis(first_sender["address"], 2.0)
+        _fund_wallet_from_genesis(second_sender["address"], 2.0)
+        submit_transaction(first_tx)
+        submit_transaction(second_tx)
+        with get_connection() as connection:
+            for tx_hash, created_at in created_at_by_hash.items():
+                connection.execute(
+                    "UPDATE mempool_transactions SET created_at = ? WHERE tx_hash = ?",
+                    (created_at, tx_hash),
+                )
+            selected = select_block_transactions(connection, limit=10)
+            commitment = transaction_commitment(selected)
+            applied = apply_block_transactions(
+                connection,
+                miner_id=miner_id,
+                block_height=1,
+                transactions=selected,
+                timestamp=block_timestamp,
+            )
+            state_root = calculate_state_root(connection, 1, block_timestamp)
+        return {
+            "miner_id": miner_id,
+            "tx_hashes": [tx["tx_hash"] for tx in selected],
+            "commitment": commitment,
+            "applied": applied,
+            "state_root": state_root,
+        }
+
+    node_a = replay_candidate(
+        "candidate-replay-a.sqlite3",
+        {
+            first_tx["tx_hash"]: "2026-05-14T12:00:30+00:00",
+            second_tx["tx_hash"]: "2026-05-14T12:00:00+00:00",
+        },
+    )
+    node_b = replay_candidate(
+        "candidate-replay-b.sqlite3",
+        {
+            first_tx["tx_hash"]: "2026-05-14T12:00:00+00:00",
+            second_tx["tx_hash"]: "2026-05-14T12:00:30+00:00",
+        },
+    )
+
+    assert node_a["miner_id"] == node_b["miner_id"]
+    assert node_a["tx_hashes"] == node_b["tx_hashes"] == sorted([first_tx["tx_hash"], second_tx["tx_hash"]])
+    assert node_a["commitment"] == node_b["commitment"]
+    assert node_a["applied"] == node_b["applied"]
+    assert node_a["state_root"] == node_b["state_root"]
 
 
 def test_wallet_nonce_status_tracks_pending_and_confirmed_transactions(tmp_path, monkeypatch) -> None:
@@ -1309,6 +1974,61 @@ def test_snapshot_export_refreshes_checkpoint_after_validator_state_changes(tmp_
 
     _init_network_db(tmp_path, monkeypatch, "snapshot-validator-refresh-target.sqlite3")
     imported = import_canonical_snapshot(refreshed_snapshot, source="peer-validator-refresh")
+
+    assert imported["validation"]["valid"] is True
+
+
+def test_snapshot_import_accepts_raw_export_validator_hash(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "snapshot-raw-validator-hash-source.sqlite3")
+
+    miner_key = generate_keypair()
+    validator_key = generate_keypair()
+    miner = register_miner("snapshot-raw-validator-hash-miner", miner_key["public_key"])
+    register_validator("snapshot-raw-validator-hash", validator_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    snapshot = export_canonical_snapshot(height=1)
+    legacy_snapshot = json.loads(json.dumps(snapshot))
+    checkpoint = legacy_snapshot["checkpoint"]
+    height = int(checkpoint["height"])
+
+    for validator in legacy_snapshot["validators"]:
+        validator.pop("stake_locked_units", None)
+        validator.pop("wallet_stake_locked_units", None)
+        validator.pop("slashed_amount_units", None)
+    checkpoint["validators_hash"] = sha256_text(
+        canonical_json({"height": height, "validators": legacy_snapshot["validators"]})
+    )
+    payload = {
+        "chain_id": checkpoint["chain_id"],
+        "network_id": checkpoint["network_id"],
+        "genesis_hash": checkpoint["genesis_hash"],
+        "protocol_version": checkpoint["protocol_version"],
+        "height": height,
+        "block_hash": checkpoint["block_hash"],
+        "previous_hash": checkpoint["previous_hash"],
+        "state_root": checkpoint["state_root"],
+        "balances_hash": checkpoint["balances_hash"],
+        "balances_count": checkpoint["balances_count"],
+        "ledger_entries_count": checkpoint["ledger_entries_count"],
+        "total_balance": checkpoint["total_balance"],
+        "total_balance_units": checkpoint["total_balance_units"],
+    }
+    for key in ("nonces", "validators", "protocol_params", "retarget_events", "pending_rewards"):
+        hash_key = f"{key}_hash"
+        count_key = f"{key}_count"
+        if checkpoint.get(hash_key):
+            payload[hash_key] = checkpoint[hash_key]
+            payload[count_key] = checkpoint[count_key]
+    checkpoint["snapshot_hash"] = sha256_text(canonical_json(payload))
+
+    validation = validate_snapshot_document(legacy_snapshot)
+
+    assert validation["valid"] is True, validation["issues"]
+    assert validation["computed"]["raw_validators_hash"] == checkpoint["validators_hash"]
+    assert validation["computed"]["normalized_validators_hash"] != checkpoint["validators_hash"]
+
+    _init_network_db(tmp_path, monkeypatch, "snapshot-raw-validator-hash-target.sqlite3")
+    imported = import_canonical_snapshot(legacy_snapshot, source="raw-validator-hash")
 
     assert imported["validation"]["valid"] is True
 
