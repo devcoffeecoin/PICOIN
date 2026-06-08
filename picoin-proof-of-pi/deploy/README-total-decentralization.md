@@ -143,6 +143,26 @@ Acceptance gates:
 - A fake heartbeat with the wrong signature is rejected and not gossiped.
 - A stale heartbeat cannot make a validator eligible.
 
+Branch implementation status:
+
+- Added persistent `validator_heartbeats` storage with deterministic
+  `heartbeat_id` deduplication.
+- Added optional signed `heartbeat_at` support in validator heartbeats while
+  keeping older heartbeat payloads accepted.
+- Added `/validators/heartbeat/inventory` and
+  `/validators/heartbeat/receive`.
+- Added peer reconcile import of validator heartbeat inventory, preserving the
+  original observation timestamp so stale heartbeats do not refresh eligibility.
+- Covered invalid signatures, duplicate imports, stale imports, and reconcile
+  imports with focused tests.
+
+Remaining before closing Phase 10:
+
+- Run the three-node drill where validators heartbeat to different nodes and
+  converge through peer reconcile.
+- Add signed monotonic heartbeat sequence for stronger replay protection.
+- Add pruning/rate limits for high-volume heartbeat history.
+
 ## Phase 11: Distributed Validation Job Discovery
 
 Goal: validators can discover and vote on jobs created by any full node.

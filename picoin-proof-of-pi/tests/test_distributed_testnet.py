@@ -1,5 +1,5 @@
 import json
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -567,6 +567,8 @@ def test_reconcile_peer_uses_mempool_inventory_for_missing_transactions(tmp_path
             )
         if url == f"http://peer-a:8000/tx/{tx_hash}":
             return Response({"tx_hash": tx_hash, "status": "pending"})
+        if url == "http://peer-a:8000/validators/heartbeat/inventory?limit=100":
+            return Response({"heartbeats": []})
         if url == "http://peer-a:8000/node/sync/blocks?from_height=0&limit=100":
             return Response({"from_height": 0, "count": 0, "blocks": []})
         if url == "http://peer-a:8000/consensus/proposals?limit=100":
@@ -590,6 +592,76 @@ def test_reconcile_peer_uses_mempool_inventory_for_missing_transactions(tmp_path
     assert result["transactions_imported"] == 1
     assert imported == [{"tx": {"tx_hash": tx_hash, "status": "pending"}, "propagated": True}]
     assert "http://peer-a:8000/mempool?limit=100" not in requested_urls
+
+
+def test_reconcile_peer_imports_validator_heartbeat_inventory(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "peer-reconcile-validator-heartbeats.sqlite3")
+    keys = generate_keypair()
+    heartbeat = {
+        "validator_id": "validator_peer_gossip",
+        "node_id": "validator-peer-node",
+        "public_key": keys["public_key"],
+        "address": "http://validator-peer:8000",
+        "local_height": 100,
+        "effective_height": 100,
+        "latest_block_hash": "a" * 64,
+        "pending_replay_blocks": 0,
+        "sync_lag": 0,
+        "version": PROTOCOL_VERSION,
+        "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+    }
+    heartbeat["signature"] = sign_payload(keys["private_key"], heartbeat)
+
+    class Response:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, timeout=0):
+        if url == "http://peer-a:8000/node/identity":
+            return Response(
+                {
+                    "node_id": "peer-a",
+                    "peer_address": "http://peer-a:8000",
+                    "peer_type": "full",
+                    "protocol_version": PROTOCOL_VERSION,
+                    "network_id": NETWORK_ID,
+                    "chain_id": CHAIN_ID,
+                    "genesis_hash": GENESIS_HASH,
+                    "bootstrap_peers": [],
+                }
+            )
+        if url == "http://peer-a:8000/node/peers":
+            return Response([])
+        if url == "http://peer-a:8000/mempool/inventory?status=pending&limit=100":
+            return Response({"transactions": []})
+        if url == "http://peer-a:8000/validators/heartbeat/inventory?limit=100":
+            return Response({"heartbeats": [{"heartbeat": heartbeat, "observed_at": heartbeat["heartbeat_at"]}]})
+        if url == "http://peer-a:8000/node/sync/blocks?from_height=0&limit=100":
+            return Response({"from_height": 0, "count": 0, "blocks": []})
+        if url == "http://peer-a:8000/consensus/proposals?limit=100":
+            return Response([])
+        raise AssertionError(url)
+
+    monkeypatch.setattr("app.services.network.requests.get", fake_get)
+
+    result = reconcile_peer("http://peer-a:8000")
+
+    assert result["validator_heartbeat_inventory_seen"] == 1
+    assert result["validator_heartbeats_imported"] == 1
+    with get_connection() as connection:
+        validator = connection.execute(
+            "SELECT online_status, node_id, advertised_address FROM validators WHERE validator_id = ?",
+            ("validator_peer_gossip",),
+        ).fetchone()
+    assert validator["online_status"] == "online"
+    assert validator["node_id"] == "validator-peer-node"
+    assert validator["advertised_address"] == "http://validator-peer:8000"
 
 
 def test_reconcile_peer_fallback_imports_pending_mempool_only(tmp_path, monkeypatch) -> None:
@@ -636,6 +708,8 @@ def test_reconcile_peer_fallback_imports_pending_mempool_only(tmp_path, monkeypa
                     {"tx_hash": confirmed_hash, "status": "confirmed"},
                 ]
             )
+        if url == "http://peer-a:8000/validators/heartbeat/inventory?limit=100":
+            return Response({"heartbeats": []})
         if url == "http://peer-a:8000/node/sync/blocks?from_height=0&limit=100":
             return Response({"from_height": 0, "count": 0, "blocks": []})
         if url == "http://peer-a:8000/consensus/proposals?limit=100":
@@ -2221,6 +2295,8 @@ def test_reconcile_peer_fetches_blocks_after_active_snapshot_base(tmp_path, monk
             return FakeResponse([])
         if url.endswith("/mempool?limit=100"):
             return FakeResponse([])
+        if url.endswith("/validators/heartbeat/inventory?limit=100"):
+            return FakeResponse({"heartbeats": []})
         if url.endswith("/consensus/proposals?limit=100"):
             return FakeResponse(
                 [
@@ -2323,8 +2399,12 @@ def test_reconcile_after_restore_starts_after_snapshot_and_skips_stale_headers(t
             )
         if url.endswith("/node/peers"):
             return FakeResponse([])
+        if url.endswith("/mempool/inventory?status=pending&limit=100"):
+            return FakeResponse({"transactions": []})
         if url.endswith("/mempool?limit=100"):
             return FakeResponse([])
+        if url.endswith("/validators/heartbeat/inventory?limit=100"):
+            return FakeResponse({"heartbeats": []})
         if url.endswith("/consensus/proposals?limit=100"):
             return FakeResponse([])
         if "/node/sync/blocks?from_height=3" in url:

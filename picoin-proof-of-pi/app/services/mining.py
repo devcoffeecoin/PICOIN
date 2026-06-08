@@ -534,6 +534,96 @@ def _heartbeat_signature_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if key != "signature"}
 
 
+VALIDATOR_HEARTBEAT_FUTURE_SKEW_SECONDS = 60
+
+
+def _public_validator_heartbeat_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    allowed = {
+        "validator_id",
+        "node_id",
+        "public_key",
+        "address",
+        "local_height",
+        "effective_height",
+        "latest_block_hash",
+        "pending_replay_blocks",
+        "sync_lag",
+        "version",
+        "heartbeat_at",
+        "signature",
+    }
+    return {key: payload[key] for key in allowed if key in payload and payload.get(key) is not None}
+
+
+def _parse_heartbeat_time(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        return parse_iso(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _validator_heartbeat_time(payload: dict[str, Any], observed_at: str | None, now_iso: str) -> str:
+    now_dt = parse_iso(now_iso) or utc_now_dt()
+    heartbeat_dt = _parse_heartbeat_time(str(payload.get("heartbeat_at") or "") or None)
+    if heartbeat_dt is None:
+        heartbeat_dt = _parse_heartbeat_time(observed_at)
+    if heartbeat_dt is None:
+        heartbeat_dt = now_dt
+    if heartbeat_dt > now_dt + timedelta(seconds=VALIDATOR_HEARTBEAT_FUTURE_SKEW_SECONDS):
+        raise MiningError(400, "validator heartbeat timestamp is too far in the future")
+    return heartbeat_dt.isoformat()
+
+
+def _validator_heartbeat_id(payload: dict[str, Any]) -> str:
+    public_payload = _public_validator_heartbeat_payload(payload)
+    return sha256_text(canonical_json({"validator_heartbeat": public_payload}))
+
+
+def _store_validator_heartbeat_observation(
+    connection: Any,
+    *,
+    payload: dict[str, Any],
+    heartbeat_at: str,
+    observed_at: str,
+    source_peer: str | None,
+) -> tuple[str, bool]:
+    public_payload = _public_validator_heartbeat_payload(payload)
+    heartbeat_id = _validator_heartbeat_id(public_payload)
+    result = connection.execute(
+        """
+        INSERT OR IGNORE INTO validator_heartbeats (
+            heartbeat_id, validator_id, public_key, node_id, advertised_address,
+            local_height, effective_height, latest_block_hash, pending_replay_blocks,
+            sync_lag, protocol_version, heartbeat_at, observed_at, source_peer,
+            signature, payload, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            heartbeat_id,
+            str(public_payload.get("validator_id") or "").strip(),
+            str(public_payload.get("public_key") or ""),
+            str(public_payload.get("node_id") or "").strip(),
+            str(public_payload.get("address") or "").strip().rstrip("/"),
+            max(0, int(public_payload.get("local_height") or 0)),
+            max(0, int(public_payload.get("effective_height") or 0)),
+            public_payload.get("latest_block_hash"),
+            max(0, int(public_payload.get("pending_replay_blocks") or 0)),
+            max(0, int(public_payload.get("sync_lag") or 0)),
+            str(public_payload.get("version") or PROTOCOL_VERSION),
+            heartbeat_at,
+            observed_at,
+            source_peer,
+            str(public_payload.get("signature") or ""),
+            canonical_json(public_payload),
+            utc_now(),
+        ),
+    )
+    return heartbeat_id, result.rowcount > 0
+
+
 def _status_from_heartbeat(last_heartbeat_at: str | None, now: datetime | None = None) -> str:
     if not last_heartbeat_at:
         return "offline"
@@ -681,7 +771,13 @@ def refresh_participant_liveness(now: datetime | None = None, *, force: bool = F
         _PARTICIPANT_LIVENESS_LOCK.release()
 
 
-def record_validator_heartbeat(payload: dict[str, Any], client_host: str | None = None) -> dict[str, Any]:
+def record_validator_heartbeat(
+    payload: dict[str, Any],
+    client_host: str | None = None,
+    *,
+    source_peer: str | None = None,
+    observed_at: str | None = None,
+) -> dict[str, Any]:
     signed_payload = _heartbeat_signature_payload(payload)
     public_key = str(payload.get("public_key") or "")
     try:
@@ -700,10 +796,21 @@ def record_validator_heartbeat(payload: dict[str, Any], client_host: str | None 
     if not node_id or not advertised_address:
         raise MiningError(400, "validator heartbeat requires active node_id and address")
     timestamp = utc_now()
+    heartbeat_at = _validator_heartbeat_time(payload, observed_at, timestamp)
+    heartbeat_online_status = _status_from_heartbeat(heartbeat_at)
     sync_lag = max(0, int(payload.get("sync_lag") or 0))
     pending_replay = max(0, int(payload.get("pending_replay_blocks") or 0))
+    heartbeat_id = ""
+    heartbeat_inserted = False
 
     with get_connection() as connection:
+        heartbeat_id, heartbeat_inserted = _store_validator_heartbeat_observation(
+            connection,
+            payload=payload,
+            heartbeat_at=heartbeat_at,
+            observed_at=observed_at or heartbeat_at,
+            source_peer=source_peer,
+        )
         duplicate = row_to_dict(
             connection.execute(
                 "SELECT validator_id FROM validators WHERE public_key = ? AND validator_id != ? LIMIT 1",
@@ -742,7 +849,7 @@ def record_validator_heartbeat(payload: dict[str, Any], client_host: str | None 
                     public_key,
                     timestamp,
                     timestamp,
-                    timestamp,
+                    heartbeat_at,
                     "duplicate public key identity detected",
                     node_id,
                     advertised_address,
@@ -769,13 +876,13 @@ def record_validator_heartbeat(payload: dict[str, Any], client_host: str | None 
                     node_id, advertised_address, last_ip, effective_height, sync_lag,
                     pending_replay_blocks, protocol_version, enabled, stake_locked
                 )
-                VALUES (?, ?, ?, ?, ?, ?, 'online', ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
                 ON CONFLICT(validator_id) DO UPDATE SET
                     name = COALESCE(NULLIF(excluded.name, ''), validators.name),
                     public_key = excluded.public_key,
                     last_seen_at = excluded.last_seen_at,
                     last_heartbeat_at = excluded.last_heartbeat_at,
-                    online_status = 'online',
+                    online_status = excluded.online_status,
                     sync_status = excluded.sync_status,
                     out_of_sync_since = excluded.out_of_sync_since,
                     node_id = excluded.node_id,
@@ -792,7 +899,8 @@ def record_validator_heartbeat(payload: dict[str, Any], client_host: str | None 
                     public_key,
                     timestamp,
                     timestamp,
-                    timestamp,
+                    heartbeat_at,
+                    heartbeat_online_status,
                     sync_status,
                     out_of_sync_since,
                     node_id,
@@ -824,7 +932,87 @@ def record_validator_heartbeat(payload: dict[str, Any], client_host: str | None 
     except Exception as exc:
         logger.warning("validator heartbeat peer registration failed validator_id=%s error=%s", validator_id, exc)
     refresh_participant_liveness()
-    return enrich_validator(row_to_dict(row))
+    validator = enrich_validator(row_to_dict(row))
+    validator["heartbeat_id"] = heartbeat_id
+    validator["heartbeat_inserted"] = heartbeat_inserted
+    return validator
+
+
+def _decode_validator_heartbeat_row(row: Any) -> dict[str, Any]:
+    item = row_to_dict(row)
+    payload = item.get("payload")
+    try:
+        decoded_payload = json.loads(payload) if isinstance(payload, str) else dict(payload or {})
+    except (TypeError, ValueError):
+        decoded_payload = {}
+    return {
+        "heartbeat_id": item.get("heartbeat_id"),
+        "validator_id": item.get("validator_id"),
+        "public_key": item.get("public_key"),
+        "node_id": item.get("node_id"),
+        "address": item.get("advertised_address"),
+        "local_height": int(item.get("local_height") or 0),
+        "effective_height": int(item.get("effective_height") or 0),
+        "latest_block_hash": item.get("latest_block_hash"),
+        "pending_replay_blocks": int(item.get("pending_replay_blocks") or 0),
+        "sync_lag": int(item.get("sync_lag") or 0),
+        "version": item.get("protocol_version"),
+        "heartbeat_at": item.get("heartbeat_at"),
+        "observed_at": item.get("observed_at"),
+        "source_peer": item.get("source_peer"),
+        "signature": item.get("signature"),
+        "heartbeat": decoded_payload,
+    }
+
+
+def list_validator_heartbeat_inventory(limit: int = 100, include_stale: bool = False) -> dict[str, Any]:
+    query = "SELECT * FROM validator_heartbeats"
+    params: list[Any] = []
+    if not include_stale:
+        cutoff = (utc_now_dt() - timedelta(seconds=PARTICIPANT_OFFLINE_SECONDS)).isoformat()
+        query += " WHERE heartbeat_at >= ?"
+        params.append(cutoff)
+    query += " ORDER BY heartbeat_at DESC, observed_at DESC LIMIT ?"
+    params.append(max(1, min(int(limit), 500)) * 3)
+
+    with get_connection() as connection:
+        rows = connection.execute(query, tuple(params)).fetchall()
+
+    seen_validators: set[str] = set()
+    heartbeats: list[dict[str, Any]] = []
+    for row in rows:
+        item = _decode_validator_heartbeat_row(row)
+        validator_id = str(item.get("validator_id") or "")
+        if validator_id in seen_validators:
+            continue
+        seen_validators.add(validator_id)
+        heartbeats.append(item)
+        if len(heartbeats) >= int(limit):
+            break
+    return {
+        "heartbeats": heartbeats,
+        "count": len(heartbeats),
+        "include_stale": include_stale,
+        "checked_at": utc_now(),
+    }
+
+
+def receive_validator_heartbeat_gossip(payload: dict[str, Any], source_peer: str | None = None) -> dict[str, Any]:
+    envelope = dict(payload or {})
+    heartbeat = envelope.get("heartbeat") if isinstance(envelope.get("heartbeat"), dict) else envelope
+    observed_at = str(envelope.get("observed_at") or "") or None
+    source = source_peer or str(envelope.get("source_peer") or "") or None
+    validator = record_validator_heartbeat(
+        dict(heartbeat),
+        client_host=None,
+        source_peer=source,
+        observed_at=observed_at,
+    )
+    return {
+        "status": "accepted" if validator.get("heartbeat_inserted") else "duplicate",
+        "heartbeat_id": validator.get("heartbeat_id"),
+        "validator": validator,
+    }
 
 
 def record_miner_heartbeat(payload: dict[str, Any], client_host: str | None = None) -> dict[str, Any]:

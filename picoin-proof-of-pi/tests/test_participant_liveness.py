@@ -11,7 +11,9 @@ from app.services.mining import (
     get_validation_job,
     get_validation_jobs_health,
     get_validators,
+    list_validator_heartbeat_inventory,
     record_validator_heartbeat,
+    receive_validator_heartbeat_gossip,
     refresh_participant_liveness,
     register_miner,
     register_validator,
@@ -113,6 +115,72 @@ def test_invalid_heartbeat_signature_does_not_write_validator(tmp_path, monkeypa
             "SELECT 1 FROM validators WHERE validator_id = 'validator_bad_signature'"
         ).fetchone()
     assert row is None
+
+
+def test_validator_heartbeat_inventory_can_seed_another_node(tmp_path, monkeypatch) -> None:
+    db_a = _use_db(tmp_path, monkeypatch, "heartbeat-node-a.sqlite3")
+    keys = generate_keypair()
+    payload = _signed_validator_heartbeat(keys, "validator_gossip_a", heartbeat_at=datetime.now(timezone.utc).isoformat())
+
+    local = record_validator_heartbeat(payload)
+    inventory = list_validator_heartbeat_inventory()
+
+    assert local["heartbeat_inserted"] is True
+    assert inventory["count"] == 1
+    assert inventory["heartbeats"][0]["heartbeat_id"] == local["heartbeat_id"]
+
+    db_b = tmp_path / "heartbeat-node-b.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_b)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_b)
+    init_db(db_b)
+
+    received = receive_validator_heartbeat_gossip(inventory["heartbeats"][0], source_peer="http://node-a:8000")
+    duplicate = receive_validator_heartbeat_gossip(inventory["heartbeats"][0], source_peer="http://node-a:8000")
+
+    assert db_a.exists()
+    assert received["status"] == "accepted"
+    assert duplicate["status"] == "duplicate"
+    assert received["validator"]["validator_id"] == "validator_gossip_a"
+    assert received["validator"]["online_status"] == "online"
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT source_peer FROM validator_heartbeats WHERE heartbeat_id = ?",
+            (received["heartbeat_id"],),
+        ).fetchone()
+    assert row["source_peer"] == "http://node-a:8000"
+
+
+def test_invalid_gossiped_validator_heartbeat_is_rejected(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "bad-gossip-heartbeat.sqlite3")
+    keys = generate_keypair()
+    payload = _signed_validator_heartbeat(keys, "validator_bad_gossip")
+    payload["signature"] = "invalid"
+
+    with pytest.raises(MiningError) as exc:
+        receive_validator_heartbeat_gossip({"heartbeat": payload, "observed_at": datetime.now(timezone.utc).isoformat()})
+
+    assert exc.value.status_code == 401
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT 1 FROM validator_heartbeats WHERE validator_id = 'validator_bad_gossip'"
+        ).fetchone()
+    assert row is None
+
+
+def test_stale_gossiped_validator_heartbeat_is_not_eligible(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "stale-gossip-heartbeat.sqlite3")
+    keys = generate_keypair()
+    old_time = (datetime.now(timezone.utc) - timedelta(seconds=600)).isoformat()
+    payload = _signed_validator_heartbeat(keys, "validator_stale_gossip", heartbeat_at=old_time)
+
+    received = receive_validator_heartbeat_gossip(
+        {"heartbeat": payload, "observed_at": old_time},
+        source_peer="http://node-a:8000",
+    )
+
+    assert received["status"] == "accepted"
+    assert received["validator"]["online_status"] == "offline"
+    assert "validator_stale_gossip" not in {item["validator_id"] for item in get_validators(eligible_only=True)}
 
 
 def test_duplicate_validator_public_key_is_disabled(tmp_path, monkeypatch) -> None:
