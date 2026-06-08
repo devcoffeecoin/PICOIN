@@ -5105,7 +5105,8 @@ def _get_health_status_uncached() -> dict[str, Any]:
         eligible_validators=eligible_validators,
         required_validator_approvals=required_approvals,
     )
-    if active_protocol and readiness["reasons"]["block_finalize_ready"]:
+    local_quorum_types = {"full", "bootstrap", "miner"}
+    if active_protocol and NODE_TYPE in local_quorum_types and readiness["reasons"]["block_finalize_ready"]:
         quorum_reason = f"eligible validators {eligible_validators} below required quorum {required_approvals}"
         if quorum_reason in readiness["reasons"]["block_finalize_ready"]:
             issues.append("not enough eligible validators for quorum")
