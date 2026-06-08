@@ -433,3 +433,47 @@ def test_revealed_task_does_not_expire_while_quorum_can_still_advance(tmp_path, 
         job = connection.execute("SELECT status FROM validation_jobs WHERE job_id = 'job_quorum_path'").fetchone()
     assert task["status"] == "revealed"
     assert job["status"] == "pending"
+
+
+def test_revealed_task_with_no_votes_expires_after_validation_window(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "revealed-no-votes-expires.sqlite3")
+    miner = register_miner("no-votes-miner", generate_keypair()["public_key"])
+    keys = generate_keypair()
+    validator = register_validator("no-votes-validator", keys["public_key"])
+    record_validator_heartbeat(_signed_validator_heartbeat(keys, validator["validator_id"], node_id="node-one"))
+
+    old_time = (datetime.now(timezone.utc) - timedelta(seconds=1200)).isoformat()
+    with get_connection() as connection:
+        protocol_params_id = connection.execute(
+            "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at, expires_at
+            )
+            VALUES ('task_no_votes_expired', ?, 1000, 1063, 'bbp_hex_v1', 'revealed', ?, ?, ?)
+            """,
+            (miner["miner_id"], protocol_params_id, old_time, old_time),
+        )
+        connection.execute(
+            """
+            INSERT INTO validation_jobs (
+                job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                samples, status, created_at
+            )
+            VALUES ('job_no_votes_expired', 'task_no_votes_expired', ?, ?, ?, ?, '[]', 'pending', ?)
+            """,
+            (miner["miner_id"], "a" * 64, "b" * 64, "c" * 64, old_time),
+        )
+
+    result = cleanup_expired_tasks()
+
+    assert result["expired_tasks"] == 1
+    assert result["expired_validation_jobs"] == 1
+    with get_connection() as connection:
+        task = connection.execute("SELECT status FROM tasks WHERE task_id = 'task_no_votes_expired'").fetchone()
+        job = connection.execute("SELECT status FROM validation_jobs WHERE job_id = 'job_no_votes_expired'").fetchone()
+    assert task["status"] == "expired"
+    assert job["status"] == "expired"

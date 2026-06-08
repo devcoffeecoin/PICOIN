@@ -5456,6 +5456,8 @@ def _revealed_task_has_quorum_path(connection: Any, task_id: str) -> bool:
     counts = _validation_vote_counts(connection, job["job_id"])
     if counts["approvals"] >= required or counts["rejections"] >= required:
         return True
+    if counts["approvals"] == 0 and counts["rejections"] == 0 and not job.get("assigned_validator_id"):
+        return False
     voted_rows = connection.execute(
         "SELECT validator_id FROM validation_votes WHERE job_id = ?",
         (job["job_id"],),
