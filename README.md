@@ -1065,16 +1065,24 @@ Phase 7 artifacts:
 
 Goal: exchanges and infrastructure operators can use their local full node for safe wallet write operations and operate it without manual recovery steps.
 
-Status: implementation ready for live validation on the unified `codex/decentralization-roadmap` branch. This phase closes the current decentralization/operator-readiness route once a funded hot-wallet withdrawal smoke passes through a local full node and is observed by the reference bootstrap without nonce or confirmation drift.
+Status: closed for exchange/full-node wallet write-path validation on the unified `codex/decentralization-roadmap` branch as of June 8, 2026 UTC. A funded hot wallet submitted a signed withdrawal through a local full node, the reference bootstrap observed the same transaction, the transaction confirmed at block `10563`, and local/reference nonce state matched after confirmation.
 
-- [ ] Run a signed withdrawal smoke using a dedicated hot wallet on the local full node
-- [ ] Verify local `/wallet/{address}/nonce` and `tx send` behavior across node restart and catch-up
-- [ ] Verify submitted withdrawal propagation from the exchange full node to the mainnet bootstrap without duplicate nonce or pending/confirmed status drift
-- [ ] Verify the local full node shows the withdrawal as pending, then confirmed, matching the reference bootstrap after block inclusion
+- [x] Run a signed withdrawal smoke using a dedicated hot wallet on the local full node
+- [x] Verify local `/wallet/{address}/nonce` and `tx send` behavior across node restart and catch-up
+- [x] Verify submitted withdrawal propagation from the exchange full node to the mainnet bootstrap without duplicate nonce or pending/confirmed status drift
+- [x] Verify the local full node shows the withdrawal as pending, then confirmed, matching the reference bootstrap after block inclusion
 - [x] Add an operational smoke command for exchange hot-wallet withdrawal readiness
 - [x] Document a safe update path that uses installer or `refresh-code.sh` and preserves `data/`, `backups/`, `test-output/`, and `.venv/`
 - [x] Add a service preflight that fails fast if any systemd `ReadWritePaths` directory is missing
-- [ ] Decide whether exchange/full-node public release stays read-only first or includes the signed withdrawal workflow
+- [x] Decide whether exchange/full-node public release stays read-only first or includes the signed withdrawal workflow
+
+Phase 8 acceptance evidence:
+
+- [x] Hot wallet `PIFDE77B556D494F5DE4B1523D8CDDDCA961A76151E8C761` was funded with `0.01` PI and used only public wallet metadata in reports
+- [x] Withdrawal `3f12faa6f9bd9a6455d7749f0437270cb1d5bf361696b8715b4fe4fdc13f45e3` transferred `0.001` PI to `PI3BEE15E913DD2BF4D1194E47B5127339D1AAF79C976CE2` with transaction fee `0.001` PI
+- [x] Local full node and reference bootstrap both reported `status=confirmed`, `block_height=10563`, and `confirmed_at=2026-06-08T00:01:30.291963Z`
+- [x] Local and reference nonce checks both reported `confirmed_nonce=1`, `pending_nonce=0`, and `next_nonce=2`
+- [x] Public exchange/full-node install remains read-only by default; signed withdrawals are an explicit operator workflow guarded by the Phase 8 smoke test
 
 Phase 8 artifacts:
 

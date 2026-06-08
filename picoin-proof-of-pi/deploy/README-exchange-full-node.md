@@ -362,6 +362,21 @@ sudo -u picoin -E python3 deploy/scripts/phase8-exchange-withdrawal-smoke.py \
 
 The report intentionally prints only public wallet metadata, balances, nonces, transaction hash, and transaction status. It never prints the wallet private key.
 
+## Phase 8 Validation
+
+Phase 8 was validated on mainnet on June 8, 2026 UTC:
+
+- Hot wallet: `PIFDE77B556D494F5DE4B1523D8CDDDCA961A76151E8C761`
+- Recipient: `PI3BEE15E913DD2BF4D1194E47B5127339D1AAF79C976CE2`
+- Transaction: `3f12faa6f9bd9a6455d7749f0437270cb1d5bf361696b8715b4fe4fdc13f45e3`
+- Amount: `0.001` PI
+- Transaction fee: `0.001` PI
+- Confirmed block: `10563`
+- Confirmed at: `2026-06-08T00:01:30.291963Z`
+- Local/reference nonce after confirmation: `confirmed_nonce=1`, `pending_nonce=0`, `next_nonce=2`
+
+The public exchange/full-node profile still runs read-only services by default. Signed withdrawals are an explicit operator workflow: the operator must provide a private hot-wallet JSON, run the Phase 8 smoke, and choose `--submit` deliberately.
+
 ## Service Preflight
 
 Before restarting services after a manual code refresh, verify systemd writable paths:
