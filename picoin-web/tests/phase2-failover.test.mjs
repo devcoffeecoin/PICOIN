@@ -74,8 +74,10 @@ const config = {
 
 {
   const calls = [];
-  const failover = loadFailover(async (url) => {
+  const requests = [];
+  const failover = loadFailover(async (url, options) => {
     calls.push(url);
+    requests.push({ url, options });
     return jsonResponse(504, { detail: "primary slow" });
   });
 
@@ -85,6 +87,7 @@ const config = {
     /Bootstrap endpoint failed/,
   );
   assert.deepEqual(calls, ["/api/bootstrap/tx/send"]);
+  assert.equal(requests[0].options.headers["Content-Type"], "application/json");
 }
 
 {

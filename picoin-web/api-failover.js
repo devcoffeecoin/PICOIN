@@ -109,6 +109,13 @@
         Accept: "application/json",
         ...(fetchOptions.headers || {}),
       };
+      const hasContentType = Object.keys(fetchOptions.headers).some(
+        (key) => key.toLowerCase() === "content-type",
+      );
+      const isFormData = typeof FormData !== "undefined" && fetchOptions.body instanceof FormData;
+      if (fetchOptions.body !== undefined && !isFormData && !hasContentType) {
+        fetchOptions.headers["Content-Type"] = "application/json";
+      }
 
       try {
         const response = await fetch(`${node.url}${safePath(path)}`, fetchOptions);
