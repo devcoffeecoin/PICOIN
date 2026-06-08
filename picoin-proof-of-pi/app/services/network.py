@@ -1027,6 +1027,8 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
         "peers_seen": 0,
         "mempool_inventory_seen": 0,
         "mempool_inventory_missing": 0,
+        "validator_heartbeat_inventory_seen": 0,
+        "validator_heartbeats_imported": 0,
         "transactions_seen": 0,
         "transactions_imported": 0,
         "proposals_seen": 0,
@@ -1103,6 +1105,20 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
                 result["errors"].append(f"tx {tx.get('tx_hash')}: {exc}")
     except Exception as exc:
         result["errors"].append(f"mempool: {exc}")
+
+    try:
+        heartbeat_rows = _fetch_peer_validator_heartbeats(peer_address, result, limit=100)
+        from app.services.mining import receive_validator_heartbeat_gossip
+
+        for heartbeat in heartbeat_rows:
+            try:
+                imported = receive_validator_heartbeat_gossip(heartbeat, source_peer=peer_address)
+                if imported.get("status") == "accepted":
+                    result["validator_heartbeats_imported"] += 1
+            except Exception as exc:
+                result["errors"].append(f"validator heartbeat {heartbeat.get('validator_id')}: {exc}")
+    except Exception as exc:
+        result["errors"].append(f"validator heartbeats: {exc}")
 
     try:
         block_sync = sync_blocks_until(peer_address, limit=100)
@@ -1211,6 +1227,26 @@ def _missing_mempool_tx_hashes(tx_hashes: list[str]) -> list[str]:
         ).fetchall()
     existing = {str(row["tx_hash"]) for row in rows}
     return [tx_hash for tx_hash in unique_hashes if tx_hash not in existing]
+
+
+def _fetch_peer_validator_heartbeats(
+    peer_address: str,
+    result: dict[str, Any],
+    *,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    response = requests.get(
+        f"{peer_address}/validators/heartbeat/inventory?limit={int(limit)}",
+        timeout=GOSSIP_TIMEOUT_SECONDS,
+    )
+    if hasattr(response, "raise_for_status"):
+        response.raise_for_status()
+    payload = response.json()
+    rows = payload.get("heartbeats", []) if isinstance(payload, dict) else []
+    if not isinstance(rows, list):
+        return []
+    result["validator_heartbeat_inventory_seen"] = len(rows)
+    return [row for row in rows if isinstance(row, dict)]
 
 
 def sync_blocks_until(
@@ -1329,6 +1365,7 @@ def reconcile_connected_peers(limit: int = 16) -> dict[str, Any]:
             for peer in peers
         ],
         "transactions_imported": sum(item["transactions_imported"] for item in results),
+        "validator_heartbeats_imported": sum(item.get("validator_heartbeats_imported", 0) for item in results),
         "proposals_imported": sum(item["proposals_imported"] for item in results),
         "blocks_imported": sum(item["blocks_imported"] for item in results),
         "peers_seen": sum(item["peers_seen"] for item in results),

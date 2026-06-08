@@ -188,11 +188,13 @@ from app.services.mining import (
     get_validator,
     get_validators,
     get_validators_status,
+    list_validator_heartbeat_inventory,
     lookup_miner_activity,
     prune_stale_miners,
     prune_stale_validators,
     record_miner_heartbeat,
     record_validator_heartbeat,
+    receive_validator_heartbeat_gossip,
     register_miner,
     register_validator,
     preview_retarget,
@@ -1060,6 +1062,22 @@ def register_validator_endpoint(payload: ValidatorRegisterRequest) -> dict:
 def validator_heartbeat(payload: ValidatorHeartbeatRequest, request: Request) -> dict:
     try:
         return record_validator_heartbeat(payload.model_dump(), request.client.host if request.client else None)
+    except MiningError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.get("/validators/heartbeat/inventory")
+def validator_heartbeat_inventory(
+    limit: int = Query(100, ge=1, le=500),
+    include_stale: bool = Query(False),
+) -> dict:
+    return list_validator_heartbeat_inventory(limit=limit, include_stale=include_stale)
+
+
+@router.post("/validators/heartbeat/receive")
+def validator_heartbeat_receive(payload: dict = Body(...)) -> dict:
+    try:
+        return receive_validator_heartbeat_gossip(payload)
     except MiningError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 

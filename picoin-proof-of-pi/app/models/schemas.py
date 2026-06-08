@@ -65,6 +65,7 @@ class ValidatorHeartbeatRequest(BaseModel):
     pending_replay_blocks: int = Field(default=0, ge=0)
     sync_lag: int = Field(default=0, ge=0)
     version: str = Field("0.18", min_length=1, max_length=32)
+    heartbeat_at: str | None = Field(default=None, max_length=64)
     signature: str = Field(..., min_length=1, max_length=256)
 
 
@@ -706,6 +707,7 @@ class PeerReconcileResponse(BaseModel):
     attempted: int = 0
     selected_peers: list[dict[str, Any]] = []
     transactions_imported: int = 0
+    validator_heartbeats_imported: int = 0
     proposals_imported: int = 0
     blocks_imported: int = 0
     peers_seen: int = 0

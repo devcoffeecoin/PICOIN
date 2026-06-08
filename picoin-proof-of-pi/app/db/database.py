@@ -682,6 +682,26 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 metadata TEXT NOT NULL DEFAULT '{}'
             );
 
+            CREATE TABLE IF NOT EXISTS validator_heartbeats (
+                heartbeat_id TEXT PRIMARY KEY,
+                validator_id TEXT NOT NULL,
+                public_key TEXT NOT NULL,
+                node_id TEXT NOT NULL,
+                advertised_address TEXT NOT NULL,
+                local_height INTEGER NOT NULL DEFAULT 0,
+                effective_height INTEGER NOT NULL DEFAULT 0,
+                latest_block_hash TEXT,
+                pending_replay_blocks INTEGER NOT NULL DEFAULT 0,
+                sync_lag INTEGER NOT NULL DEFAULT 0,
+                protocol_version TEXT NOT NULL,
+                heartbeat_at TEXT NOT NULL,
+                observed_at TEXT NOT NULL,
+                source_peer TEXT,
+                signature TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS mempool_transactions (
                 tx_hash TEXT PRIMARY KEY,
                 tx_type TEXT NOT NULL,
@@ -850,6 +870,8 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_scientific_treasury_epochs_status ON scientific_development_treasury_epochs(status);
             CREATE INDEX IF NOT EXISTS idx_network_peers_status ON network_peers(status);
             CREATE INDEX IF NOT EXISTS idx_network_peers_last_seen ON network_peers(last_seen);
+            CREATE INDEX IF NOT EXISTS idx_validator_heartbeats_validator ON validator_heartbeats(validator_id);
+            CREATE INDEX IF NOT EXISTS idx_validator_heartbeats_observed ON validator_heartbeats(observed_at);
             CREATE INDEX IF NOT EXISTS idx_mempool_status ON mempool_transactions(status);
             CREATE INDEX IF NOT EXISTS idx_mempool_sender_nonce ON mempool_transactions(sender, nonce);
             CREATE INDEX IF NOT EXISTS idx_mempool_selected_task ON mempool_transactions(selected_task_id);
