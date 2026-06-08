@@ -260,12 +260,19 @@ def command_validate(args: argparse.Namespace) -> int:
     completed = 0
 
     for index in range(args.loops):
-        heartbeat = send_validator_heartbeat(
-            server_url,
-            identity,
-            node_server_url=args.node_server.rstrip("/"),
-            timeout=args.node_timeout,
-        )
+        try:
+            heartbeat = send_validator_heartbeat(
+                server_url,
+                identity,
+                node_server_url=args.node_server.rstrip("/"),
+                timeout=args.node_timeout,
+            )
+        except requests.RequestException as exc:
+            print(f"Network/API error during validator heartbeat: {exc}", file=sys.stderr)
+            if args.once:
+                return 2
+            time.sleep(args.sleep)
+            continue
         if heartbeat.get("eligible") is False:
             print(
                 f"Validator node heartbeat accepted but not eligible: "
@@ -276,7 +283,14 @@ def command_validate(args: argparse.Namespace) -> int:
             time.sleep(args.sleep)
             continue
 
-        job = get_job(server_url, identity)
+        try:
+            job = get_job(server_url, identity)
+        except requests.RequestException as exc:
+            print(f"Network/API error while polling validation job: {exc}", file=sys.stderr)
+            if args.once:
+                return 2
+            time.sleep(args.sleep)
+            continue
         if job is None:
             print("No validation jobs available.")
             if args.once:
@@ -285,7 +299,14 @@ def command_validate(args: argparse.Namespace) -> int:
             continue
 
         approved, reason = validate_job(job)
-        result = submit_result(server_url, identity, job, approved, reason)
+        try:
+            result = submit_result(server_url, identity, job, approved, reason)
+        except requests.RequestException as exc:
+            print(f"Network/API error while submitting validation result: {exc}", file=sys.stderr)
+            if args.once:
+                return 2
+            time.sleep(args.sleep)
+            continue
         print(
             f"Validated {job['job_id']}: approved={approved} "
             f"status={result['status']} approvals={result.get('approvals', 0)}/"

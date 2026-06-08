@@ -1,4 +1,5 @@
 import asyncio
+import logging
 
 from fastapi import APIRouter, Body, HTTPException, Query, Request, Response, WebSocket, WebSocketDisconnect
 
@@ -211,6 +212,7 @@ from app.services.mining import (
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _science_error(exc: ScienceError) -> HTTPException:
@@ -1156,8 +1158,14 @@ def submit_task_endpoint(payload: TaskSubmitRequest) -> dict:
 
 @router.post("/tasks/commit", response_model=TaskCommitResponse)
 def commit_task_endpoint(payload: TaskCommitRequest) -> dict:
-    # Debug logging for received commit payload as requested by user
-    print(f"DEBUG: /tasks/commit received payload from miner: {payload.model_dump_json()}")
+    logger.debug(
+        "task commit received task_id=%s miner_id=%s tx_count=%s mempool_snapshot_id=%s compute_ms=%s",
+        payload.task_id,
+        payload.miner_id,
+        payload.tx_count,
+        payload.mempool_snapshot_id,
+        payload.compute_ms,
+    )
     return commit_task(
         task_id=payload.task_id,
         miner_id=payload.miner_id,
@@ -1176,8 +1184,14 @@ def commit_task_endpoint(payload: TaskCommitRequest) -> dict:
 
 @router.post("/tasks/reveal", response_model=TaskSubmitResponse)
 def reveal_task_endpoint(payload: TaskRevealRequest) -> dict:
-    # Debug logging for received reveal payload as requested by user
-    print(f"DEBUG: /tasks/reveal received payload from miner: {payload.model_dump_json()}")
+    logger.debug(
+        "task reveal received task_id=%s miner_id=%s sample_count=%s tx_count=%s mempool_snapshot_id=%s",
+        payload.task_id,
+        payload.miner_id,
+        len(payload.samples),
+        payload.tx_count,
+        payload.mempool_snapshot_id,
+    )
     response = reveal_task(
         task_id=payload.task_id,
         miner_id=payload.miner_id,

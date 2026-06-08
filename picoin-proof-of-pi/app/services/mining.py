@@ -1734,32 +1734,42 @@ def create_next_task(
         now = utc_now()
         expires_at = iso_at(_task_expiration_seconds_for_position(params, assignment["range_end"]))
 
-        connection.execute(
-            """
-            INSERT INTO tasks (
-                task_id, miner_id, range_start, range_end, algorithm, status,
-                assignment_seed, assignment_mode, competitive_round_height,
-                competitive_round_previous_hash, assignment_ms, protocol_params_id,
-                created_at, expires_at
+        try:
+            connection.execute(
+                """
+                INSERT INTO tasks (
+                    task_id, miner_id, range_start, range_end, algorithm, status,
+                    assignment_seed, assignment_mode, competitive_round_height,
+                    competitive_round_previous_hash, assignment_ms, protocol_params_id,
+                    created_at, expires_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'assigned', ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    miner_id,
+                    assignment["range_start"],
+                    assignment["range_end"],
+                    params["algorithm"],
+                    assignment["assignment_seed"],
+                    assignment_mode,
+                    assignment.get("round_height"),
+                    assignment.get("previous_hash"),
+                    assignment_ms,
+                    params["id"],
+                    now,
+                    expires_at,
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, 'assigned', ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                task_id,
-                miner_id,
-                assignment["range_start"],
-                assignment["range_end"],
-                params["algorithm"],
-                assignment["assignment_seed"],
-                assignment_mode,
-                assignment.get("round_height"),
-                assignment.get("previous_hash"),
-                assignment_ms,
-                params["id"],
-                now,
-                expires_at,
-            ),
-        )
+        except sqlite3.IntegrityError as exc:
+            if "tasks.task_id" not in str(exc):
+                raise
+            existing_task = row_to_dict(
+                connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+            )
+            if existing_task is None:
+                raise
+            return _task_for_next_response(connection, existing_task)
         next_height = int(assignment.get("round_height") or (_latest_chain_tip_in_connection(connection)["height"] + 1))
         if assignment_mode == COMPETITIVE_ROUND_ASSIGNMENT_MODE:
             tx_snapshot = freeze_transactions_for_competitive_round_task(

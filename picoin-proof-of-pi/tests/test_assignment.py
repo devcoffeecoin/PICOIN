@@ -158,6 +158,42 @@ def test_competitive_round_assignment_gives_miners_same_round_range(tmp_path, mo
     assert first_task["competitive_round_previous_hash"] == second_task["competitive_round_previous_hash"]
 
 
+def test_competitive_round_task_insert_collision_returns_existing_task(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-competitive-round-insert-collision.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr(mining_service, "MINING_TASK_MODE", "competitive_round")
+    init_db(db_path)
+
+    import app.db.database as database_module
+
+    keys = generate_keypair()
+    miner = register_miner("competitive-insert-race", keys["public_key"])
+    original_execute = database_module.PicoinConnection.execute
+    triggered = {"value": False}
+
+    def execute_with_task_insert_collision(self, sql, parameters=(), /):
+        cursor = original_execute(self, sql, parameters)
+        if not triggered["value"] and "INSERT INTO tasks" in sql:
+            triggered["value"] = True
+            raise sqlite3.IntegrityError("UNIQUE constraint failed: tasks.task_id")
+        return cursor
+
+    monkeypatch.setattr(database_module.PicoinConnection, "execute", execute_with_task_insert_collision)
+
+    task = create_next_task(miner["miner_id"])
+
+    assert triggered["value"] is True
+    assert task["miner_id"] == miner["miner_id"]
+    assert task["status"] == "assigned"
+    with get_connection() as connection:
+        task_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM tasks WHERE miner_id = ?",
+            (miner["miner_id"],),
+        ).fetchone()["count"]
+    assert task_count == 1
+
+
 def test_register_miner_reuses_portable_identity_for_public_key(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "assignment-portable-miner.sqlite3"
     monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
