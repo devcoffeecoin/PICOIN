@@ -163,6 +163,20 @@ Remaining before closing Phase 10:
 - Add signed monotonic heartbeat sequence for stronger replay protection.
 - Add pruning/rate limits for high-volume heartbeat history.
 
+Operator drill helper:
+
+```bash
+python3 deploy/scripts/phase10-readiness-heartbeat-drill.py \
+  --reconcile \
+  --required 3 \
+  A=http://NODE_A:8000 \
+  B=http://NODE_B:8000 \
+  C=http://NODE_C:8000
+```
+
+When known, pass the three validator ids with `--expected-validator` so the
+drill proves that those exact validators converged through heartbeat gossip.
+
 ## Phase 11: Distributed Validation Job Discovery
 
 Goal: validators can discover and vote on jobs created by any full node.
