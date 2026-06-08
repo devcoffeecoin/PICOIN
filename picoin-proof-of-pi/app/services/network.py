@@ -554,6 +554,15 @@ def get_sync_status() -> dict[str, Any]:
         replay_status = get_replay_status()
     except Exception as exc:
         replay_status = {"active": False, "error": str(exc)}
+    try:
+        from app.services.readiness import get_node_readiness
+
+        readiness = get_node_readiness(
+            sync_status=str(replay_status.get("sync_status") or "healthy"),
+            divergence_detected=bool(replay_status.get("divergence_detected")),
+        )
+    except Exception as exc:
+        readiness = {"error": str(exc)}
     return {
         **node_identity(),
         "latest_block_height": latest_height,
@@ -581,6 +590,7 @@ def get_sync_status() -> dict[str, Any]:
         "divergence_reason": replay_status.get("divergence_reason"),
         "auto_recovery_active": bool(replay_status.get("auto_recovery_active")),
         "consensus": {row["status"]: row["count"] for row in consensus_counts},
+        "readiness": readiness,
         "sync_mode": "proposal_vote_finalize_replay_alpha",
         "checked_at": _now(),
     }

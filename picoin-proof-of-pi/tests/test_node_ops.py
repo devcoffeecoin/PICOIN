@@ -3,6 +3,7 @@ from app.db.database import init_db
 from app.db.database import get_connection
 from app.models.schemas import NodeEventResponse
 from app.services.mining import (
+    get_protocol,
     get_health_status,
     get_node_status,
     get_recent_events,
@@ -11,6 +12,7 @@ from app.services.mining import (
     register_validator,
     request_faucet,
 )
+from app.services.network import get_sync_status
 
 
 def test_health_reports_empty_node_as_degraded_but_connected(tmp_path, monkeypatch) -> None:
@@ -23,9 +25,30 @@ def test_health_reports_empty_node_as_degraded_but_connected(tmp_path, monkeypat
 
     assert health["status"] == "degraded"
     assert health["database"]["connected"] is True
-    assert health["can_assign_tasks"] is True
+    assert health["readiness"]["read_ready"] is True
+    assert health["readiness"]["task_assign_ready"] is False
+    assert health["readiness"]["block_finalize_ready"] is False
+    assert health["can_assign_tasks"] is False
     assert health["mining_ready"] is False
+    assert "eligible validators 0 below required quorum" in health["readiness"]["reasons"]["task_assign_ready"][0]
     assert "not enough eligible validators for quorum" in health["issues"]
+
+
+def test_phase9_readiness_is_exposed_on_protocol_and_sync_status(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "phase9-readiness.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    protocol = get_protocol()
+    sync = get_sync_status()
+
+    assert protocol["node_role"] == "write_candidate"
+    assert protocol["node_capabilities"]["task_assign"] is True
+    assert sync["readiness"]["read_ready"] is True
+    assert sync["readiness"]["task_assign_ready"] is False
+    assert sync["readiness"]["block_finalize_ready"] is False
+    assert "eligible validators 0 below required quorum" in sync["readiness"]["reasons"]["block_finalize_ready"][0]
 
 
 def test_node_status_and_events_report_operational_testnet(tmp_path, monkeypatch) -> None:
@@ -52,6 +75,10 @@ def test_node_status_and_events_report_operational_testnet(tmp_path, monkeypatch
     events = get_recent_events()
 
     assert health["status"] == "ok"
+    assert health["readiness"]["read_ready"] is True
+    assert health["readiness"]["task_assign_ready"] is True
+    assert health["readiness"]["block_finalize_ready"] is True
+    assert health["can_assign_tasks"] is True
     assert health["mining_ready"] is True
     assert status["counts"]["miners"] == 1
     assert status["counts"]["eligible_validators"] == 3

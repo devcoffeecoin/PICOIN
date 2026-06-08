@@ -92,6 +92,19 @@ def _computed_genesis_hash() -> str:
 GENESIS_HASH = os.getenv("PICOIN_GENESIS_HASH", "").strip() or _computed_genesis_hash()
 NODE_ID = os.getenv("PICOIN_NODE_ID", "local-node").strip() or "local-node"
 NODE_TYPE = os.getenv("PICOIN_NODE_TYPE", "full").strip().lower() or "full"
+_DEFAULT_NODE_ROLE_BY_TYPE = {
+    "auditor": "read_only",
+    "bootstrap": "write_candidate",
+    "full": "write_candidate",
+    "miner": "write_candidate",
+    "validator": "validator_node",
+}
+NODE_ROLE = (
+    os.getenv("PICOIN_NODE_ROLE", "").strip().lower()
+    or _DEFAULT_NODE_ROLE_BY_TYPE.get(NODE_TYPE, "write_candidate")
+)
+if NODE_ROLE not in {"read_only", "write_candidate", "validator_node", "pool_node"}:
+    raise RuntimeError("PICOIN_NODE_ROLE must be read_only, write_candidate, validator_node, or pool_node")
 NODE_PUBLIC_ADDRESS = os.getenv("PICOIN_NODE_ADDRESS", "http://127.0.0.1:8000").strip()
 BOOTSTRAP_PEERS = tuple(
     peer.strip().rstrip("/")

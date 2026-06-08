@@ -52,13 +52,13 @@ def test_validator_liveness_transitions_online_stale_offline(tmp_path, monkeypat
     assert validator["online_status"] == "online"
 
     stale_time = datetime.now(timezone.utc) + timedelta(seconds=121)
-    refresh_participant_liveness(stale_time)
+    refresh_participant_liveness(stale_time, force=True)
     with get_connection() as connection:
         row = connection.execute("SELECT online_status FROM validators WHERE validator_id = 'validator_live'").fetchone()
     assert row["online_status"] == "stale"
 
     offline_time = datetime.now(timezone.utc) + timedelta(seconds=301)
-    refresh_participant_liveness(offline_time)
+    refresh_participant_liveness(offline_time, force=True)
     with get_connection() as connection:
         row = connection.execute("SELECT online_status FROM validators WHERE validator_id = 'validator_live'").fetchone()
     assert row["online_status"] == "offline"
@@ -76,7 +76,7 @@ def test_offline_validator_is_excluded_from_quorum_eligibility(tmp_path, monkeyp
             "UPDATE validators SET last_heartbeat_at = ? WHERE validator_id = ?",
             ((datetime.now(timezone.utc) - timedelta(seconds=600)).isoformat(), validator["validator_id"]),
         )
-    refresh_participant_liveness()
+    refresh_participant_liveness(force=True)
 
     assert validator["validator_id"] not in {item["validator_id"] for item in get_validators(eligible_only=True)}
 
