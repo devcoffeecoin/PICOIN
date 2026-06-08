@@ -180,6 +180,21 @@ For an unstaked lab drill, pass `--heartbeat-only`; this still requires signed
 heartbeat convergence for the expected validators, but does not require those
 validators to be wallet-staked or eligible for block finalization.
 
+After heartbeat-only convergence passes on disposable candidate nodes, a lab can
+exercise eligible quorum by applying identical synthetic wallet-backed stake to
+the three local candidate DBs:
+
+```bash
+python3 deploy/scripts/phase10-lab-stake-validators.py \
+  --db /var/lib/picoin/phase10-candidate/picoin.sqlite3 \
+  --validator validator_A \
+  --validator validator_B \
+  --validator validator_C
+```
+
+This helper refuses non-`phase10-candidate` DB paths by default and does not
+submit mainnet transactions. It is only for the isolated Phase 10/11 lab.
+
 ## Phase 11: Distributed Validation Job Discovery
 
 Goal: validators can discover and vote on jobs created by any full node.
