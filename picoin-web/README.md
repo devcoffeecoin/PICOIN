@@ -39,14 +39,12 @@ window.PICOIN_EXPLORER_CONFIG = {
   refreshMs: 30000,
   nodes: [
     { label: "mainnet-primary", url: "/api/bootstrap" },
-    { label: "candidate-a", url: "/api/bootstrap-a" },
-    { label: "candidate-b", url: "/api/bootstrap-b" },
-    { label: "candidate-c", url: "/api/bootstrap-c" }
+    { label: "pool1-full-node", url: "/api/pool1-node", enabled: false }
   ]
 };
 ```
 
-The proxies forward read-only explorer and wallet traffic to the mainnet API and Phase 2 bootstrap candidates. Browsers do not call the `http://` candidate URLs directly from the HTTPS site; they call same-origin `/api/bootstrap-*` routes and Vercel proxies upstream. Wallet transaction submission stays pinned to the primary route until write propagation through multiple public bootstraps is tested.
+The proxies forward read-only explorer and wallet traffic to public mainnet APIs. Retired bootstrap candidates should be removed from `nodes`, or left with `enabled: false`, so they do not affect the explorer network table or read failover. A pool full node can be prepared as `/api/pool1-node` and enabled only after its `/health` and `/node/sync-status` endpoints are healthy. Wallet transaction submission stays pinned to the primary route until write propagation through multiple public full nodes is tested.
 
 If the website is served over HTTPS, the Picoin APIs must also be exposed over HTTPS; browsers block HTTP API calls from HTTPS pages.
 

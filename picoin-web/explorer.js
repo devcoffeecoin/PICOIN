@@ -4,7 +4,9 @@ function cleanUrl(value) {
   return String(value || "").replace(/\/$/, "");
 }
 
-const configuredNodes = Array.isArray(explorerConfig.nodes) ? explorerConfig.nodes : [];
+const configuredNodes = Array.isArray(explorerConfig.nodes)
+  ? explorerConfig.nodes.filter((node) => node && node.enabled !== false)
+  : [];
 const fallbackApiBaseUrl = cleanUrl(explorerConfig.apiBaseUrl || window.location.origin);
 const nodes = (configuredNodes.length ? configuredNodes : [{ label: "Primary", url: fallbackApiBaseUrl }]).map((node, index) => ({
   label: node.label || `Node ${index + 1}`,

@@ -3,8 +3,6 @@ window.PICOIN_EXPLORER_CONFIG = {
   refreshMs: 60000,
   nodes: [
     { label: "mainnet-primary", url: "/api/bootstrap" },
-    { label: "candidate-a", url: "/api/bootstrap-a" },
-    { label: "candidate-b", url: "/api/bootstrap-b" },
-    { label: "candidate-c", url: "/api/bootstrap-c" }
+    { label: "pool1-full-node", url: "/api/pool1-node", enabled: false }
   ]
 };
