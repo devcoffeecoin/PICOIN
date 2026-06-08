@@ -4737,7 +4737,18 @@ def _get_health_status_uncached() -> dict[str, Any]:
             latest_height = _latest_block_height(connection)
             latest_hash = _latest_block_hash(connection)
             snapshot_base = active_snapshot_base_in_connection(connection)
-            miners = int(connection.execute("SELECT COUNT(*) AS count FROM miners").fetchone()["count"])
+            miner_counts = connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    COALESCE(SUM(CASE WHEN online_status = 'online' THEN 1 ELSE 0 END), 0) AS online,
+                    COALESCE(SUM(CASE WHEN online_status = 'stale' THEN 1 ELSE 0 END), 0) AS stale,
+                    COALESCE(SUM(CASE WHEN online_status = 'offline' THEN 1 ELSE 0 END), 0) AS offline
+                FROM miners
+                """
+            ).fetchone()
+            miners = int(miner_counts["total"])
+            online_miners = int(miner_counts["online"])
             validators = connection.execute("SELECT COUNT(*) AS total FROM validators").fetchone()
             active_protocol = params is not None
             eligible_validators = len(_eligible_validator_rows(connection))
@@ -4746,6 +4757,9 @@ def _get_health_status_uncached() -> dict[str, Any]:
                 "connected": True,
                 "active_protocol": active_protocol,
                 "miners": miners,
+                "online_miners": online_miners,
+                "stale_miners": int(miner_counts["stale"]),
+                "offline_miners": int(miner_counts["offline"]),
                 "validators": int(validators["total"]),
                 "eligible_validators": eligible_validators,
                 "maintenance": maintenance,
@@ -4756,6 +4770,7 @@ def _get_health_status_uncached() -> dict[str, Any]:
         latest_height = 0
         latest_hash = GENESIS_HASH
         miners = 0
+        online_miners = 0
         required_approvals = REQUIRED_VALIDATOR_APPROVALS
         eligible_validators = 0
         active_protocol = False
@@ -4810,7 +4825,7 @@ def _get_health_status_uncached() -> dict[str, Any]:
         issues.append("not enough eligible validators for quorum")
 
     can_assign_tasks = bool(database["connected"] and active_protocol)
-    mining_ready = bool(can_assign_tasks and miners > 0 and eligible_validators >= required_approvals)
+    mining_ready = bool(can_assign_tasks and online_miners > 0 and eligible_validators >= required_approvals)
     if sync_status in {"stalled", "divergent"}:
         can_assign_tasks = False
         mining_ready = False
@@ -4908,7 +4923,7 @@ def get_node_status() -> dict[str, Any]:
     audit = _basic_audit_health()
     performance = get_performance_stats()
     protocol = _protocol_payload(params)
-    mining_ready = counts["miners"] > 0 and counts["eligible_validators"] >= protocol["required_validator_approvals"]
+    mining_ready = counts["online_miners"] > 0 and counts["eligible_validators"] >= protocol["required_validator_approvals"]
 
     return {
         "project": PROJECT_NAME,
@@ -5681,6 +5696,17 @@ def _selection_jitter(seed: str, validator_id: str) -> float:
 
 def _node_counts(connection: Any, params: dict[str, Any]) -> dict[str, Any]:
     eligible_validators = len(_eligible_validator_rows(connection))
+    miners = connection.execute(
+        """
+        SELECT
+            COUNT(*) AS total,
+            COALESCE(SUM(CASE WHEN online_status = 'online' THEN 1 ELSE 0 END), 0) AS online,
+            COALESCE(SUM(CASE WHEN online_status = 'stale' THEN 1 ELSE 0 END), 0) AS stale,
+            COALESCE(SUM(CASE WHEN online_status = 'offline' THEN 1 ELSE 0 END), 0) AS offline,
+            COALESCE(SUM(CASE WHEN enabled = 0 THEN 1 ELSE 0 END), 0) AS disabled
+        FROM miners
+        """
+    ).fetchone()
     validators = connection.execute(
         """
         SELECT
@@ -5718,7 +5744,11 @@ def _node_counts(connection: Any, params: dict[str, Any]) -> dict[str, Any]:
         """
     ).fetchone()
     return {
-        "miners": int(connection.execute("SELECT COUNT(*) AS count FROM miners").fetchone()["count"]),
+        "miners": int(miners["total"]),
+        "online_miners": int(miners["online"]),
+        "stale_miners": int(miners["stale"]),
+        "offline_miners": int(miners["offline"]),
+        "disabled_miners": int(miners["disabled"]),
         "validators": int(validators["total"]),
         "active_validators": int(validators["active"]),
         "online_validators": int(validators["online"]),

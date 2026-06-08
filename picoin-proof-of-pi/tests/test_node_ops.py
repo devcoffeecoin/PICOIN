@@ -2,6 +2,7 @@ from app.core.signatures import generate_keypair, sign_payload
 from app.db.database import init_db
 from app.db.database import get_connection
 from app.models.schemas import NodeEventResponse
+from app.services import mining as mining_service
 from app.services.mining import (
     get_health_status,
     get_node_status,
@@ -13,11 +14,20 @@ from app.services.mining import (
 )
 
 
-def test_health_reports_empty_node_as_degraded_but_connected(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "health.sqlite3"
+def _use_db(tmp_path, monkeypatch, name: str):
+    db_path = tmp_path / name
     monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
     monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr(mining_service, "_PARTICIPANT_LIVENESS_LAST_RUN_MONOTONIC", 0.0)
+    monkeypatch.setattr(mining_service, "_EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC", 0.0)
+    with mining_service._STATUS_ENDPOINT_CACHE_LOCK:
+        mining_service._STATUS_ENDPOINT_CACHE.clear()
     init_db(db_path)
+    return db_path
+
+
+def test_health_reports_empty_node_as_degraded_but_connected(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "health.sqlite3")
 
     health = get_health_status()
 
@@ -29,10 +39,7 @@ def test_health_reports_empty_node_as_degraded_but_connected(tmp_path, monkeypat
 
 
 def test_node_status_and_events_report_operational_testnet(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "node-status.sqlite3"
-    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
-    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
-    init_db(db_path)
+    _use_db(tmp_path, monkeypatch, "node-status.sqlite3")
 
     miner_key = generate_keypair()
     first_validator_key = generate_keypair()
@@ -54,16 +61,43 @@ def test_node_status_and_events_report_operational_testnet(tmp_path, monkeypatch
     assert health["status"] == "ok"
     assert health["mining_ready"] is True
     assert status["counts"]["miners"] == 1
+    assert status["counts"]["online_miners"] == 1
     assert status["counts"]["eligible_validators"] == 3
     assert status["mining_ready"] is True
     assert any(event["type"] == "faucet_credit" for event in events)
 
 
+def test_health_requires_online_miners_for_mining_ready(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "node-status-offline-miner.sqlite3")
+
+    miner_key = generate_keypair()
+    first_validator_key = generate_keypair()
+    second_validator_key = generate_keypair()
+    third_validator_key = generate_keypair()
+    miner = register_miner("node-miner", miner_key["public_key"])
+    first_validator = register_validator("node-validator-one", first_validator_key["public_key"])
+    second_validator = register_validator("node-validator-two", second_validator_key["public_key"])
+    third_validator = register_validator("node-validator-three", third_validator_key["public_key"])
+    _heartbeat_validator(first_validator, first_validator_key, "node-validator-one")
+    _heartbeat_validator(second_validator, second_validator_key, "node-validator-two")
+    _heartbeat_validator(third_validator, third_validator_key, "node-validator-three")
+    with get_connection() as connection:
+        connection.execute("UPDATE miners SET online_status = 'offline' WHERE miner_id = ?", (miner["miner_id"],))
+
+    health = get_health_status()
+    status = get_node_status()
+
+    assert health["status"] == "ok"
+    assert health["database"]["miners"] == 1
+    assert health["database"]["online_miners"] == 0
+    assert health["mining_ready"] is False
+    assert status["counts"]["miners"] == 1
+    assert status["counts"]["online_miners"] == 0
+    assert status["mining_ready"] is False
+
+
 def test_node_events_normalize_science_event_ids(tmp_path, monkeypatch) -> None:
-    db_path = tmp_path / "node-science-events.sqlite3"
-    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
-    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
-    init_db(db_path)
+    _use_db(tmp_path, monkeypatch, "node-science-events.sqlite3")
 
     with get_connection() as connection:
         connection.execute(
