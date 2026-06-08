@@ -889,6 +889,7 @@ def get_validators_status(limit: int = 500) -> dict[str, Any]:
 
     def build() -> dict[str, Any]:
         with get_connection() as connection:
+            _maybe_expire_assigned_tasks(connection)
             rows = connection.execute(
                 """
                 SELECT *
@@ -956,6 +957,7 @@ def _get_validation_jobs_health_uncached(
         return max(0, elapsed // 1000)
 
     with get_connection() as connection:
+        _maybe_expire_assigned_tasks(connection)
         pending_rows = connection.execute(
             """
             SELECT
@@ -3921,6 +3923,7 @@ def get_stats() -> dict[str, Any]:
 
 def _get_stats_uncached() -> dict[str, Any]:
     with get_connection() as connection:
+        _maybe_expire_assigned_tasks(connection)
         miners = connection.execute("SELECT COUNT(*) AS count FROM miners").fetchone()["count"]
         tasks = connection.execute("SELECT COUNT(*) AS count FROM tasks").fetchone()["count"]
         pending = connection.execute("SELECT COUNT(*) AS count FROM tasks WHERE status = 'assigned'").fetchone()["count"]
@@ -4729,6 +4732,7 @@ def _get_health_status_uncached() -> dict[str, Any]:
     try:
         with get_connection() as connection:
             connection.execute("SELECT 1").fetchone()
+            maintenance = _maybe_expire_assigned_tasks(connection)
             params = _active_protocol_params(connection)
             latest_height = _latest_block_height(connection)
             latest_hash = _latest_block_hash(connection)
@@ -4744,6 +4748,7 @@ def _get_health_status_uncached() -> dict[str, Any]:
                 "miners": miners,
                 "validators": int(validators["total"]),
                 "eligible_validators": eligible_validators,
+                "maintenance": maintenance,
             }
     except Exception as exc:
         issues.append(f"database unavailable: {exc}")
@@ -5326,6 +5331,7 @@ def _reject_in_connection(
 
 
 def _expire_assigned_tasks(connection: Any) -> dict[str, int]:
+    released_assignments = _release_timed_out_validation_assignments(connection)
     expired_rows = connection.execute(
         """
         SELECT task_id
@@ -5395,6 +5401,7 @@ def _expire_assigned_tasks(connection: Any) -> dict[str, int]:
     return {
         "expired_tasks": max(0, task_cursor.rowcount) + revealed_expired_count,
         "expired_validation_jobs": job_expired_count,
+        "released_validation_assignments": released_assignments,
     }
 
 
@@ -5403,13 +5410,23 @@ def _maybe_expire_assigned_tasks(connection: Any) -> dict[str, Any]:
     min_interval = max(0, int(EXPIRED_TASK_CLEANUP_MIN_INTERVAL_SECONDS))
     monotonic_now = time.monotonic()
     if monotonic_now - _EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC < min_interval:
-        return {"expired_tasks": 0, "expired_validation_jobs": 0, "skipped": "recent"}
+        return {"expired_tasks": 0, "expired_validation_jobs": 0, "released_validation_assignments": 0, "skipped": "recent"}
     if not _EXPIRED_TASK_CLEANUP_LOCK.acquire(blocking=False):
-        return {"expired_tasks": 0, "expired_validation_jobs": 0, "skipped": "already_running"}
+        return {
+            "expired_tasks": 0,
+            "expired_validation_jobs": 0,
+            "released_validation_assignments": 0,
+            "skipped": "already_running",
+        }
     try:
         monotonic_now = time.monotonic()
         if monotonic_now - _EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC < min_interval:
-            return {"expired_tasks": 0, "expired_validation_jobs": 0, "skipped": "recent"}
+            return {
+                "expired_tasks": 0,
+                "expired_validation_jobs": 0,
+                "released_validation_assignments": 0,
+                "skipped": "recent",
+            }
         result = _expire_assigned_tasks(connection)
         _EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC = monotonic_now
         return result

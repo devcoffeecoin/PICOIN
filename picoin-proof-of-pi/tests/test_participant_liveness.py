@@ -4,6 +4,7 @@ import pytest
 
 from app.core.signatures import generate_keypair, sign_payload
 from app.db.database import get_connection, init_db
+from app.services import mining as mining_service
 from app.services.mining import (
     MiningError,
     cleanup_expired_tasks,
@@ -21,6 +22,10 @@ def _use_db(tmp_path, monkeypatch, name: str):
     db_path = tmp_path / name
     monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
     monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr(mining_service, "_PARTICIPANT_LIVENESS_LAST_RUN_MONOTONIC", 0.0)
+    monkeypatch.setattr(mining_service, "_EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC", 0.0)
+    with mining_service._STATUS_ENDPOINT_CACHE_LOCK:
+        mining_service._STATUS_ENDPOINT_CACHE.clear()
     init_db(db_path)
     return db_path
 
@@ -52,13 +57,13 @@ def test_validator_liveness_transitions_online_stale_offline(tmp_path, monkeypat
     assert validator["online_status"] == "online"
 
     stale_time = datetime.now(timezone.utc) + timedelta(seconds=121)
-    refresh_participant_liveness(stale_time)
+    refresh_participant_liveness(stale_time, force=True)
     with get_connection() as connection:
         row = connection.execute("SELECT online_status FROM validators WHERE validator_id = 'validator_live'").fetchone()
     assert row["online_status"] == "stale"
 
     offline_time = datetime.now(timezone.utc) + timedelta(seconds=301)
-    refresh_participant_liveness(offline_time)
+    refresh_participant_liveness(offline_time, force=True)
     with get_connection() as connection:
         row = connection.execute("SELECT online_status FROM validators WHERE validator_id = 'validator_live'").fetchone()
     assert row["online_status"] == "offline"
@@ -76,7 +81,7 @@ def test_offline_validator_is_excluded_from_quorum_eligibility(tmp_path, monkeyp
             "UPDATE validators SET last_heartbeat_at = ? WHERE validator_id = ?",
             ((datetime.now(timezone.utc) - timedelta(seconds=600)).isoformat(), validator["validator_id"]),
         )
-    refresh_participant_liveness()
+    refresh_participant_liveness(force=True)
 
     assert validator["validator_id"] not in {item["validator_id"] for item in get_validators(eligible_only=True)}
 
@@ -271,6 +276,64 @@ def test_validation_jobs_health_reports_stuck_partial_quorum(tmp_path, monkeypat
     assert health["jobs"][0]["voted_validator_ids"] == [first["validator_id"]]
     assert health["jobs"][0]["missing_eligible_validator_ids"] == [second["validator_id"]]
     assert health["jobs"][0]["missing_eligible_validators"][0]["node_id"] == "node-two"
+
+
+def test_validation_jobs_health_releases_timed_out_assignment_without_validator_poll(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "validation-health-release-assignment.sqlite3")
+    monkeypatch.setattr("app.services.mining._EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC", 0.0)
+    miner = register_miner("health-release-miner", generate_keypair()["public_key"])
+    first_keys = generate_keypair()
+    second_keys = generate_keypair()
+    first = register_validator("health-release-validator-one", first_keys["public_key"])
+    second = register_validator("health-release-validator-two", second_keys["public_key"])
+    record_validator_heartbeat(_signed_validator_heartbeat(first_keys, first["validator_id"], node_id="node-one"))
+    record_validator_heartbeat(_signed_validator_heartbeat(second_keys, second["validator_id"], node_id="node-two"))
+
+    old_time = (datetime.now(timezone.utc) - timedelta(seconds=300)).isoformat()
+    with get_connection() as connection:
+        protocol_params_id = connection.execute(
+            "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at
+            )
+            VALUES ('task_health_release', ?, 1000, 1063, 'bbp_hex_v1', 'revealed', ?, ?)
+            """,
+            (miner["miner_id"], protocol_params_id, old_time),
+        )
+        connection.execute(
+            """
+            INSERT INTO validation_jobs (
+                job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                samples, status, assigned_validator_id, assigned_at, created_at, job_created_at
+            )
+            VALUES ('job_health_release', 'task_health_release', ?, ?, ?, ?, '[]', 'pending', ?, ?, ?, ?)
+            """,
+            (miner["miner_id"], "a" * 64, "b" * 64, "c" * 64, first["validator_id"], old_time, old_time, old_time),
+        )
+
+    health = get_validation_jobs_health(stale_after_seconds=120)
+
+    assert health["counts"]["assignment_timeout_pending_release"] == 0
+    assert health["counts"]["stuck_no_votes"] == 1
+    assert health["jobs"][0]["job_id"] == "job_health_release"
+    assert health["jobs"][0]["assigned_validator_id"] is None
+    assert health["jobs"][0]["blocking_reason"] == "assigned_validator_timeout"
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT assigned_validator_id, assigned_at, assignment_failures, blocking_reason
+            FROM validation_jobs
+            WHERE job_id = 'job_health_release'
+            """
+        ).fetchone()
+    assert row["assigned_validator_id"] is None
+    assert row["assigned_at"] is None
+    assert row["assignment_failures"] == 1
+    assert row["blocking_reason"] == "assigned_validator_timeout"
 
 
 def test_validation_jobs_health_treats_recent_pending_as_healthy(tmp_path, monkeypatch) -> None:
