@@ -2215,6 +2215,10 @@ def test_reconcile_peer_fetches_blocks_after_active_snapshot_base(tmp_path, monk
             )
         if url.endswith("/node/peers"):
             return FakeResponse([])
+        if url.endswith("/mempool/inventory?status=pending&limit=100"):
+            return FakeResponse({"transactions": []})
+        if url.endswith("/mempool?status=pending&limit=100"):
+            return FakeResponse([])
         if url.endswith("/mempool?limit=100"):
             return FakeResponse([])
         if url.endswith("/consensus/proposals?limit=100"):
