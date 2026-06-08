@@ -238,7 +238,14 @@ def main() -> int:
     parser.add_argument("--post-reconcile-sleep", type=float, default=2.0, help="Seconds to wait after reconcile")
     parser.add_argument("--allow-read-only", action="store_true", help="Do not require write readiness fields to be true")
     parser.add_argument("--no-require-quorum", action="store_true", help="Do not fail when visible quorum is below --required")
+    parser.add_argument(
+        "--heartbeat-only",
+        action="store_true",
+        help="Require signed heartbeat convergence, but do not require wallet-staked eligible quorum",
+    )
     args = parser.parse_args()
+    if args.heartbeat_only:
+        args.allow_read_only = True
 
     started = time.time()
     nodes = [parse_node(raw, index + 1) for index, raw in enumerate(args.nodes)]
@@ -308,7 +315,9 @@ def main() -> int:
                     f"{key}={readiness.get(key)} reasons={readiness.get('reasons', {}).get(key)}",
                     node=node_name,
                 )
-        if not args.no_require_quorum:
+        require_eligible_quorum = not args.no_require_quorum and not args.heartbeat_only
+        require_heartbeat_quorum = not args.no_require_quorum or args.heartbeat_only
+        if require_eligible_quorum:
             visible_quorum = int(summary.get("eligible_validators") or 0)
             add_check(
                 checks,
@@ -317,6 +326,7 @@ def main() -> int:
                 f"eligible={visible_quorum} required={args.required}",
                 node=node_name,
             )
+        if require_heartbeat_quorum:
             add_check(
                 checks,
                 "heartbeat_quorum_visible",
@@ -327,13 +337,14 @@ def main() -> int:
         if expected_validators:
             eligible_ids = set(summary["eligible_validator_ids"])
             heartbeat_ids = set(summary["heartbeat_validator_ids"])
-            add_check(
-                checks,
-                "expected_validators_eligible",
-                expected_validators.issubset(eligible_ids),
-                f"missing={sorted(expected_validators - eligible_ids)}",
-                node=node_name,
-            )
+            if not args.heartbeat_only:
+                add_check(
+                    checks,
+                    "expected_validators_eligible",
+                    expected_validators.issubset(eligible_ids),
+                    f"missing={sorted(expected_validators - eligible_ids)}",
+                    node=node_name,
+                )
             add_check(
                 checks,
                 "expected_validators_in_heartbeat_inventory",
@@ -377,7 +388,8 @@ def main() -> int:
         heartbeat_converged = bool(heartbeat_sets) and all(item == heartbeat_sets[0] for item in heartbeat_sets)
         eligible_detail = f"common={sorted(common_eligible)} union={sorted(union_eligible)}"
         heartbeat_detail = f"common={sorted(common_heartbeats)} union={sorted(union_heartbeats)}"
-    add_check(checks, "eligible_validator_set_converged", eligible_converged, eligible_detail)
+    if not args.heartbeat_only:
+        add_check(checks, "eligible_validator_set_converged", eligible_converged, eligible_detail)
     add_check(checks, "heartbeat_inventory_converged", heartbeat_converged, heartbeat_detail)
 
     errors = [check for check in checks if check["severity"] == "error" and not check["ok"]]
@@ -386,6 +398,7 @@ def main() -> int:
         "duration_seconds": round(time.time() - started, 3),
         "required": int(args.required),
         "allowed_lag": int(args.allowed_lag),
+        "heartbeat_only": bool(args.heartbeat_only),
         "expected_validators": sorted(expected_validators),
         "reconcile_ran": bool(args.reconcile),
         "reconcile_results": reconcile_results,

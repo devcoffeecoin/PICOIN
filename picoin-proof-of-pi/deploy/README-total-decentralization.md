@@ -176,6 +176,9 @@ python3 deploy/scripts/phase10-readiness-heartbeat-drill.py \
 
 When known, pass the three validator ids with `--expected-validator` so the
 drill proves that those exact validators converged through heartbeat gossip.
+For an unstaked lab drill, pass `--heartbeat-only`; this still requires signed
+heartbeat convergence for the expected validators, but does not require those
+validators to be wallet-staked or eligible for block finalization.
 
 ## Phase 11: Distributed Validation Job Discovery
 
