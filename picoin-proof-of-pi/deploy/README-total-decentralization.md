@@ -45,6 +45,37 @@ Picoin is considered totally decentralized only when all of these are true:
   divergent peers are resolved by deterministic protocol rules, not manual
   SQLite intervention.
 
+## Required Chain Branch Model
+
+Total decentralization requires explicit chain branch handling. A node must not
+pretend that there is only one linear chain while peers can deliver blocks in
+different orders.
+
+Required model:
+
+- Every block stores `height`, `block_hash`, `parent_hash`,
+  `finality_certificate_hash`, `branch_id`, `branch_status`, and
+  `inherited_state_root`.
+- The canonical branch is the branch selected by deterministic fork choice from
+  valid finality certificates, not by local arrival order.
+- A child block inherits balances, validator state, pending rewards, protocol
+  params, nonce state, and mempool settlement state from its selected parent.
+- A block whose parent is unknown is `orphan_pending_parent`, not divergent.
+- A block with a known parent but losing fork choice is `orphan_losing_branch`.
+- A block with invalid transactions, invalid state root, invalid certificate, or
+  wrong network identity is `rejected_invalid`, not orphan.
+- Orphan blocks are stored for audit and later adoption if their ancestors arrive
+  and fork choice selects them.
+- Applied state is updated only by the canonical branch. Losing branches never
+  mutate wallet balances, validator rewards, pool payout accounting, or nonce
+  state.
+- Reorg is allowed only to a valid branch with a stronger deterministic finality
+  proof and a known finalized ancestor. Reorg must rollback derived state to the
+  ancestor, then replay the winning branch.
+
+This branch model is a protocol requirement, not an explorer feature. Explorer
+labels are only a view over the consensus branch state.
+
 ## Non-Negotiable Mainnet Safety Rules
 
 - Do not remove the bootstrap from production until all bootstrap-off drills
@@ -166,30 +197,62 @@ Acceptance gates:
 
 ## Phase 13: Distributed Block Finality And Orphan Handling
 
-Goal: finalized blocks are selected by quorum certificates and deterministic
-conflict rules.
+Goal: finalized blocks are selected by quorum certificates, explicit chain
+branch inheritance, and deterministic conflict rules.
 
 Current finality certificates exist, but automatic reorg/orphan handling is not
 complete enough for full decentralization.
 
 Implementation work:
 
-- Reject two different certificates at the same height unless a deterministic
-  fork-choice rule selects one.
-- Quarantine conflicting block payloads and expose orphan status.
+- Add `block_branches` metadata or equivalent schema for `branch_id`,
+  `parent_hash`, `branch_status`, `ancestor_height`, `ancestor_hash`,
+  `inherited_state_root`, and `selected_at`.
+- Store every received block as one of: `canonical`, `orphan_pending_parent`,
+  `orphan_losing_branch`, `reorg_candidate`, `reorged_out`, or
+  `rejected_invalid`.
+- Add a deterministic fork-choice rule for same-height or competing descendant
+  branches. The rule must use finality certificate validity, certificate height,
+  quorum weight, block hash tie-break, and protocol params. It must not use local
+  receive time.
+- Reject two different certificates at the same height only when they cannot be
+  resolved by fork choice; otherwise persist the losing certificate as orphan or
+  slashable evidence.
+- Quarantine conflicting block payloads and expose orphan status through API,
+  CLI, audit, and explorer views.
 - Add slashable evidence for validators signing conflicting blocks at the same
   height.
 - Add automatic rollback to the latest valid finalized ancestor when a local
   node imports a losing branch.
-- Add replay from certificate chain, not only header order.
+- Add replay from parent/certificate chain, not only header order.
+- Add orphan adoption: if a missing parent arrives later and validates, the node
+  reevaluates descendants and adopts the branch only if fork choice selects it.
+- Add state inheritance checks so balances, nonces, validator eligibility,
+  pending rewards, mempool selected/released status, and pool payout
+  transactions derive from the selected parent branch.
+- Add branch pruning rules: keep enough orphan and reorg evidence for audit and
+  slashing, but prune old non-canonical payloads after a retention window.
+- Add migration code that marks all pre-Phase-13 existing mainnet blocks as the
+  initial canonical branch without changing balances.
 
 Acceptance gates:
 
 - A node receiving a block before its ancestor queues it without divergence.
 - A node receiving two block candidates at one height picks the same winner as
   every peer.
-- A losing block is marked orphan/rejected and never applied to balances.
+- A losing valid block is marked `orphan_losing_branch` and never applied to
+  balances.
+- An invalid block is marked `rejected_invalid`, not orphan.
+- A block whose parent arrives later moves from `orphan_pending_parent` to either
+  canonical, orphan losing branch, or rejected invalid after deterministic
+  reevaluation.
+- Reorg from branch A to branch B rolls back to the shared ancestor and replays
+  branch B with matching state root on every peer.
+- Pool payout accounting, wallet nonces, validator rewards, and transaction
+  status remain tied to the canonical branch after reorg.
 - A divergent test node recovers automatically to the latest finalized ancestor.
+- Explorer shows canonical, orphan, rejected, and reorged-out blocks without
+  mixing them into the main height history.
 
 ## Phase 14: Pool As A True Local Full-Node Miner
 
@@ -343,6 +406,12 @@ Each implementation phase must add or update tests in the matching layer:
 
 - Unit tests for deterministic ids, signatures, canonical ordering, fork choice,
   and idempotent imports.
+- Branch inheritance tests for parent/child state roots, nonce state, validator
+  rewards, pending rewards, and mempool settlement.
+- Orphan tests for missing parent, late parent arrival, losing branch,
+  invalid-block rejection, and orphan retention/pruning.
+- Reorg tests for rollback to shared ancestor, replay of winning branch, and
+  wallet/pool/validator accounting after reorg.
 - SQLite replay tests for two or more nodes with different local receive order.
 - API tests for inventory, receive, status, and duplicate submission endpoints.
 - Operational scripts for A/B/C node drills.
@@ -351,6 +420,9 @@ Each implementation phase must add or update tests in the matching layer:
 - Mainnet-shadow smoke tests before production rollout.
 
 ## Branch Policy
+
+This section is for Git branch policy. Chain branch handling is specified above
+in `Required Chain Branch Model` and Phase 13.
 
 - Work continues on `codex/total-decentralization-roadmap`.
 - `main` remains production-stable.
