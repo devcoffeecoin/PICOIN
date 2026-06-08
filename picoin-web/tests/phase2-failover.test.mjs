@@ -82,9 +82,32 @@ const config = {
   const client = failover.createClient({ config, defaultBaseUrl: "/api/bootstrap", storageKey: "test-post" });
   await assert.rejects(
     () => client.fetchJson("/tx/send", { method: "POST", body: "{}" }),
-    /All bootstrap endpoints failed/,
+    /Bootstrap endpoint failed/,
   );
   assert.deepEqual(calls, ["/api/bootstrap/tx/send"]);
+}
+
+{
+  const failover = loadFailover(async () =>
+    jsonResponse(422, {
+      detail: {
+        error: "transaction network or chain mismatch",
+        tx: "local/picoin-local-testnet",
+        node: "picoin-mainnet-v1/314159",
+      },
+    }),
+  );
+
+  const client = failover.createClient({ config, defaultBaseUrl: "/api/bootstrap", storageKey: "test-object-error" });
+  await assert.rejects(
+    () => client.fetchJson("/tx/submit", { method: "POST", body: "{}" }),
+    (error) => {
+      assert.match(error.message, /Bootstrap endpoint failed/);
+      assert.match(error.message, /transaction network or chain mismatch/);
+      assert.doesNotMatch(error.message, /\[object Object\]/);
+      return true;
+    },
+  );
 }
 
 console.log("phase2 failover tests passed");

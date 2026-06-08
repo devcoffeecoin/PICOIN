@@ -14,7 +14,7 @@ const NETWORKS = {
   localhost: "http://127.0.0.1:8000",
 };
 const NETWORK_LABELS = {
-  "picoin-mainnet-v1": "Public bootstrap failover",
+  "picoin-mainnet-v1": "Mainnet bootstrap",
   localhost: "http://127.0.0.1:8000",
 };
 
@@ -177,7 +177,12 @@ async function fetchJson(path, options = {}) {
   });
   const text = await response.text();
   const body = text ? JSON.parse(text) : {};
-  if (!response.ok) throw new Error(body.detail || text || response.statusText);
+  if (!response.ok) {
+    const detail = window.PicoinApiFailover
+      ? window.PicoinApiFailover.formatErrorDetail(body.detail || body)
+      : body.detail || text || response.statusText;
+    throw new Error(detail || response.statusText);
+  }
   return body;
 }
 
@@ -187,7 +192,10 @@ async function fetchFirst(paths, options = {}) {
     try {
       return await fetchJson(path, options);
     } catch (error) {
-      errors.push({ path, error: error.message });
+      const detail = window.PicoinApiFailover
+        ? window.PicoinApiFailover.formatErrorDetail(error.message || error)
+        : error.message || String(error);
+      errors.push({ path, error: detail });
     }
   }
   const errorDetails = errors.map(e => `${e.path}: ${e.error}`).join(" | ");
@@ -354,7 +362,7 @@ async function submitTransaction(event) {
   
   // Submit transaction
   let submitted = null;
-  let submitError = null;
+  const submitErrors = [];
   const submitEndpoints = ["/tx/send", "/transactions/submit", "/tx/submit"];
   
   for (const endpoint of submitEndpoints) {
@@ -363,13 +371,16 @@ async function submitTransaction(event) {
       console.log(`Success on ${endpoint}:`, submitted);
       break;
     } catch (error) {
-      console.warn(`Failed on ${endpoint}:`, error.message);
-      submitError = error;
+      const detail = window.PicoinApiFailover
+        ? window.PicoinApiFailover.formatErrorDetail(error.message || error)
+        : error.message || String(error);
+      console.warn(`Failed on ${endpoint}:`, detail);
+      submitErrors.push(`${endpoint}: ${detail}`);
     }
   }
   
   if (!submitted) {
-    throw submitError || new Error("Failed to submit transaction to all endpoints");
+    throw new Error(`Failed to submit transaction: ${submitErrors.join(" | ")}`);
   }
   
   // Verify transaction is in mempool

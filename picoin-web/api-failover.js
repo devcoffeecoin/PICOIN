@@ -8,6 +8,33 @@
     return value.startsWith("/") ? value : `/${value}`;
   }
 
+  function formatErrorDetail(value) {
+    if (value === null || value === undefined || value === "") return "";
+    if (typeof value === "string") return value;
+    if (Array.isArray(value)) {
+      return value.map(formatErrorDetail).filter(Boolean).join("; ");
+    }
+    if (typeof value === "object") {
+      if (value.detail !== undefined && value.detail !== value) {
+        return formatErrorDetail(value.detail);
+      }
+      if (value.message !== undefined) return formatErrorDetail(value.message);
+      if (value.error !== undefined) return formatErrorDetail(value.error);
+      try {
+        return JSON.stringify(value);
+      } catch (_error) {
+        return String(value);
+      }
+    }
+    return String(value);
+  }
+
+  function formatThrownError(error) {
+    if (!error) return "Unknown error";
+    if (error.message) return formatErrorDetail(error.message);
+    return formatErrorDetail(error);
+  }
+
   function storageAvailable() {
     try {
       return typeof window.localStorage !== "undefined";
@@ -95,7 +122,8 @@
           }
         }
         if (!response.ok) {
-          throw new Error(payload.detail || response.statusText || `Error ${response.status}`);
+          const detail = formatErrorDetail(payload.detail || payload);
+          throw new Error(detail || response.statusText || `Error ${response.status}`);
         }
         return payload;
       } catch (error) {
@@ -122,11 +150,12 @@
           remember(node.url);
           return { payload, baseUrl: node.url, label: node.label };
         } catch (error) {
-          errors.push(`${node.label}: ${error.message || String(error)}`);
+          errors.push(`${node.label}: ${formatThrownError(error)}`);
         }
       }
 
-      throw new Error(`All bootstrap endpoints failed for ${safePath(path)}: ${errors.join(" | ")}`);
+      const prefix = errors.length === 1 ? "Bootstrap endpoint failed" : "All bootstrap endpoints failed";
+      throw new Error(`${prefix} for ${safePath(path)}: ${errors.join(" | ")}`);
     }
 
     return {
@@ -139,6 +168,7 @@
   window.PicoinApiFailover = {
     cleanUrl,
     createClient,
+    formatErrorDetail,
     normalizeNodes,
   };
 })();

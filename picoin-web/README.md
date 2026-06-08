@@ -38,13 +38,12 @@ window.PICOIN_EXPLORER_CONFIG = {
   apiBaseUrl: "/api/bootstrap",
   refreshMs: 30000,
   nodes: [
-    { label: "mainnet-primary", url: "/api/bootstrap" },
-    { label: "pool1-full-node", url: "/api/pool1-node", enabled: false }
+    { label: "mainnet-bootstrap", url: "/api/bootstrap" }
   ]
 };
 ```
 
-The proxies forward read-only explorer and wallet traffic to public mainnet APIs. Retired bootstrap candidates should be removed from `nodes`, or left with `enabled: false`, so they do not affect the explorer network table or read failover. A pool full node can be prepared as `/api/pool1-node` and enabled only after its `/health` and `/node/sync-status` endpoints are healthy. Wallet transaction submission stays pinned to the primary route until write propagation through multiple public full nodes is tested.
+The production explorer and web wallet should stay pinned to the mainnet bootstrap until full-node mining, write propagation, and automatic recovery are proven end to end. Retired bootstrap candidates, pool full nodes, and experimental validator/full nodes should be removed from `nodes` or left disabled so they do not affect the explorer network table or read path. Wallet transaction submission stays pinned to the primary bootstrap route until write propagation through multiple public full nodes is tested.
 
 If the website is served over HTTPS, the Picoin APIs must also be exposed over HTTPS; browsers block HTTP API calls from HTTPS pages.
 
