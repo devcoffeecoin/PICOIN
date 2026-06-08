@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
@@ -27,7 +28,6 @@ from app.core.settings import (
     MAX_MEMPOOL_TXS_PER_ACCOUNT,
     MAX_TX_SIZE_BYTES,
     MEMPOOL_MAX_FEE,
-    MEMPOOL_TX_TTL_SECONDS,
     MIN_TX_FEE_UNITS,
     NETWORK_ID,
     NODE_ID,
@@ -51,6 +51,7 @@ from app.services.state import (
     latest_checkpoint_in_connection,
     restore_imported_snapshot_state,
 )
+from app.services.transactions import canonical_transaction_expires_at, canonical_transaction_timestamp
 from app.services.wallet import (
     address_matches_public_key,
     is_valid_address,
@@ -79,6 +80,7 @@ class NetworkError(Exception):
 ALLOWED_NODE_TYPES = {"full", "miner", "validator", "auditor", "bootstrap"}
 ALLOWED_TX_TYPES = {"transfer", "stake", "unstake", "science_job_create", "governance_action", "treasury_claim", "faucet"}
 TERMINAL_TX_STATUSES = {"confirmed", "rejected", "failed", "expired"}
+RECONCILE_PEER_TYPE_PRIORITY = {"bootstrap": 0, "full": 1, "validator": 2, "miner": 3, "auditor": 3}
 _PEER_DISCOVERY_TASK: asyncio.Task | None = None
 
 
@@ -112,6 +114,32 @@ def _normalize_peer_address(peer_address: str | None) -> str:
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         return ""
     return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def _is_reconcile_peer_address_allowed(peer_address: str) -> bool:
+    parsed = urlparse(peer_address)
+    host = parsed.hostname or ""
+    if not host:
+        return False
+    try:
+        host.encode("ascii")
+    except UnicodeEncodeError:
+        return False
+    if host.lower() == "localhost":
+        return False
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return True
+    return not (ip.is_loopback or ip.is_unspecified or ip.is_link_local)
+
+
+def _reconcile_peer_sort_key(peer: dict[str, Any]) -> tuple[int, int]:
+    peer_type = str(peer.get("peer_type") or "").lower()
+    peer_address = _normalize_peer_address(peer.get("peer_address"))
+    bootstrap_seed_addresses = {_normalize_peer_address(address) for address in BOOTSTRAP_PEERS}
+    seed_priority = 1 if peer_address in bootstrap_seed_addresses else 0
+    return (RECONCILE_PEER_TYPE_PRIORITY.get(peer_type, 99), seed_priority)
 
 
 def recover_from_peer_snapshot(
@@ -411,6 +439,36 @@ def list_peers(include_stale: bool = True) -> list[dict[str, Any]]:
         return [_decode_peer(row_to_dict(row)) for row in connection.execute(query, params).fetchall()]
 
 
+def select_reconcile_peers(limit: int = 16) -> list[dict[str, Any]]:
+    """Return unique, locally compatible peers for read-only catch-up/reconcile."""
+
+    max_peers = max(1, int(limit))
+    local_address = _normalize_peer_address(NODE_PUBLIC_ADDRESS)
+    selected: list[dict[str, Any]] = []
+    seen_addresses: set[str] = set()
+    for peer in sorted(list_peers(include_stale=False), key=_reconcile_peer_sort_key):
+        peer_address = _normalize_peer_address(peer.get("peer_address"))
+        if not peer_address or peer_address == local_address or peer_address in seen_addresses:
+            continue
+        if not _is_reconcile_peer_address_allowed(peer_address):
+            continue
+        if peer.get("network_id") != NETWORK_ID:
+            continue
+        if str(peer.get("chain_id")) != str(CHAIN_ID):
+            continue
+        if peer.get("genesis_hash") != GENESIS_HASH:
+            continue
+        if peer.get("protocol_version") != PROTOCOL_VERSION:
+            continue
+        normalized_peer = dict(peer)
+        normalized_peer["peer_address"] = peer_address
+        selected.append(normalized_peer)
+        seen_addresses.add(peer_address)
+        if len(selected) >= max_peers:
+            break
+    return selected
+
+
 def heartbeat_peer(peer_id: str) -> dict[str, Any]:
     timestamp = _now()
     with get_connection() as connection:
@@ -595,8 +653,39 @@ def get_blocks_since(from_height: int, limit: int = 100) -> dict[str, Any]:
                 (block["height"],),
             ).fetchall()
             block["transactions"] = [_decode_tx(row_to_dict(tx_row)) for tx_row in tx_rows]
+            certificate = _finality_certificate_for_block(connection, int(block["height"]))
+            if certificate is not None:
+                block["finality_certificate"] = certificate
             blocks.append(block)
     return {"from_height": from_height, "count": len(blocks), "blocks": blocks}
+
+
+def _finality_certificate_for_block(connection: Any, height: int) -> dict[str, Any] | None:
+    row = row_to_dict(
+        connection.execute(
+            "SELECT * FROM finality_certificates WHERE block_height = ?",
+            (int(height),),
+        ).fetchone()
+    )
+    if row is None:
+        return None
+    return {
+        "block_height": int(row["block_height"]),
+        "block_hash": row["block_hash"],
+        "task_id": row["task_id"],
+        "job_id": row["job_id"],
+        "miner_id": row["miner_id"],
+        "network_id": row["network_id"],
+        "chain_id": json.loads(row["payload_json"]).get("chain_id", row["chain_id"]),
+        "protocol_version": row["protocol_version"],
+        "protocol_params_id": row.get("protocol_params_id"),
+        "required_approvals": int(row["required_approvals"]),
+        "approval_count": int(row["approval_count"]),
+        "certificate_hash": row["certificate_hash"],
+        "payload": json.loads(row.get("payload_json") or "{}"),
+        "votes": json.loads(row.get("votes_json") or "[]"),
+        "created_at": row["created_at"],
+    }
 
 
 def _validator_reward_ids_for_related_id(connection: Any, related_id: str, limit: int) -> list[str]:
@@ -620,7 +709,7 @@ def _validator_reward_ids_for_related_id(connection: Any, related_id: str, limit
         SELECT validator_id
         FROM consensus_votes
         WHERE proposal_id = ? AND approved = 1
-        ORDER BY created_at ASC, id ASC
+        ORDER BY created_at ASC, vote_id ASC
         LIMIT ?
         """,
         (related_id, limit),
@@ -644,6 +733,10 @@ def receive_block_header(block: dict[str, Any], source_peer_id: str | None = Non
     reason = "accepted for distributed replay queue"
     with get_connection() as connection:
         local = connection.execute("SELECT block_hash FROM blocks WHERE height = ?", (int(block["height"]),)).fetchone()
+        queued = connection.execute(
+            "SELECT status, reason FROM network_block_headers WHERE block_hash = ?",
+            (block["block_hash"],),
+        ).fetchone()
         latest = connection.execute(
             "SELECT height, block_hash FROM blocks ORDER BY height DESC LIMIT 1"
         ).fetchone()
@@ -654,6 +747,26 @@ def receive_block_header(block: dict[str, Any], source_peer_id: str | None = Non
         if local is not None and local["block_hash"] == block["block_hash"]:
             status = "known"
             reason = "block already known locally"
+        elif queued is not None:
+            _record_sync_event(
+                connection,
+                source_peer_id,
+                "block_received",
+                "inbound",
+                "known",
+                {
+                    "height": int(block["height"]),
+                    "block_hash": block["block_hash"],
+                    "reason": "block header already queued",
+                    "queued_status": queued["status"],
+                },
+            )
+            return {
+                "accepted": True,
+                "status": "known",
+                "reason": "block header already queued",
+                "block_hash": block["block_hash"],
+            }
         elif local is not None and local["block_hash"] != block["block_hash"]:
             raise NetworkError(409, "conflicting block at height")
         elif active_base is not None and int(block["height"]) <= active_base_height:
@@ -744,7 +857,7 @@ def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str
         raise
     
     timestamp = _now()
-    expires_at = (datetime.now(timezone.utc) + timedelta(seconds=MEMPOOL_TX_TTL_SECONDS)).isoformat()
+    expires_at = canonical_transaction_expires_at(tx)
     payload_json = json.dumps(_unsigned_from_tx(tx), sort_keys=True)
     inserted = False
     with get_connection() as connection:
@@ -753,10 +866,7 @@ def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str
             (tx["tx_hash"],),
         ).fetchone()
         if existing is not None:
-            if existing["status"] in TERMINAL_TX_STATUSES:
-                logger.info(f"[TX_SUBMIT] Duplicate tx {tx_hash}: already {existing['status']}")
-                raise NetworkError(409, f"transaction already {existing['status']}")
-            logger.debug(f"[TX_SUBMIT] Tx {tx_hash} already pending, returning existing")
+            logger.debug(f"[TX_SUBMIT] Tx {tx_hash} already {existing['status']}, returning existing")
             return get_transaction(tx["tx_hash"]) or {}
         
         nonce_conflict = connection.execute(
@@ -813,7 +923,7 @@ def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str
     accepted = get_transaction(tx["tx_hash"]) or {}
     if inserted and not propagated:
         logger.debug(f"[TX_SUBMIT] Gossiping transaction {tx_hash} to peers")
-        gossip_result = gossip_json("/tx/receive", tx, "tx_gossip")
+        gossip_result = gossip_json("/tx/receive", _public_transaction_payload(tx), "tx_gossip")
         try:
             succeeded = int(gossip_result.get("succeeded", 0))
         except Exception:
@@ -886,12 +996,27 @@ def gossip_json(
     }
 
 
+def _local_replay_restore_required_status() -> dict[str, Any] | None:
+    from app.services.consensus import get_replay_status
+
+    replay_status = get_replay_status()
+    if bool(replay_status.get("divergence_detected")) or replay_status.get("sync_status") == "divergent":
+        return {
+            "status": "skipped",
+            "reason": "replay divergent; restore required",
+            **replay_status,
+        }
+    return None
+
+
 def reconcile_peer(peer_address: str) -> dict[str, Any]:
     peer_address = peer_address.rstrip("/")
     result = {
         "peer_address": peer_address,
         "identity_registered": False,
         "peers_seen": 0,
+        "mempool_inventory_seen": 0,
+        "mempool_inventory_missing": 0,
         "transactions_seen": 0,
         "transactions_imported": 0,
         "proposals_seen": 0,
@@ -907,6 +1032,20 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
         "headers_skipped_pre_snapshot": 0,
         "errors": [],
     }
+    try:
+        restore_required = _local_replay_restore_required_status()
+        if restore_required is not None:
+            result["replay"] = restore_required
+            result["headers_skipped_pre_snapshot"] = int(
+                restore_required.get("headers_skipped_pre_snapshot") or 0
+            )
+            result["errors"].append("replay divergent; restore required")
+            with get_connection() as connection:
+                _record_sync_event(connection, None, "peer_reconcile", "outbound", "skipped", result)
+            return result
+    except Exception as exc:
+        result["errors"].append(f"replay status: {exc}")
+
     try:
         identity = requests.get(f"{peer_address}/node/identity", timeout=GOSSIP_TIMEOUT_SECONDS).json()
         register_peer(
@@ -944,7 +1083,7 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
         result["errors"].append(f"peers: {exc}")
 
     try:
-        tx_rows = requests.get(f"{peer_address}/mempool?limit=100", timeout=GOSSIP_TIMEOUT_SECONDS).json()
+        tx_rows = _fetch_peer_mempool_transactions(peer_address, result, limit=100)
         for tx in tx_rows:
             result["transactions_seen"] += 1
             try:
@@ -994,6 +1133,76 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
     return result
 
 
+def _fetch_peer_mempool_transactions(
+    peer_address: str,
+    result: dict[str, Any],
+    *,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    try:
+        inventory_response = requests.get(
+            f"{peer_address}/mempool/inventory?status=pending&limit={int(limit)}",
+            timeout=GOSSIP_TIMEOUT_SECONDS,
+        )
+        inventory_response.raise_for_status()
+        inventory_payload = inventory_response.json()
+        inventory_rows = (
+            inventory_payload.get("transactions", [])
+            if isinstance(inventory_payload, dict)
+            else inventory_payload
+        )
+        result["mempool_inventory_seen"] = len(inventory_rows)
+        tx_hashes = [
+            str(item.get("tx_hash") or "")
+            for item in inventory_rows
+            if isinstance(item, dict) and isinstance(item.get("tx_hash"), str) and len(str(item.get("tx_hash"))) == 64
+        ]
+        missing_hashes = _missing_mempool_tx_hashes(tx_hashes)
+        result["mempool_inventory_missing"] = len(missing_hashes)
+        rows: list[dict[str, Any]] = []
+        for tx_hash in missing_hashes:
+            tx_response = requests.get(f"{peer_address}/tx/{tx_hash}", timeout=GOSSIP_TIMEOUT_SECONDS)
+            tx_response.raise_for_status()
+            rows.append(tx_response.json())
+        return rows
+    except Exception as inventory_exc:
+        result["mempool_inventory_error"] = str(inventory_exc)
+        try:
+            fallback_rows = requests.get(
+                f"{peer_address}/mempool?status=pending&limit={int(limit)}",
+                timeout=GOSSIP_TIMEOUT_SECONDS,
+            ).json()
+            if not isinstance(fallback_rows, list):
+                return []
+            result["mempool_fallback_seen"] = len(fallback_rows)
+            pending_rows = [
+                row
+                for row in fallback_rows
+                if isinstance(row, dict) and str(row.get("status") or "pending") == "pending"
+            ]
+            result["mempool_fallback_pending"] = len(pending_rows)
+            return pending_rows
+        except Exception as fallback_exc:
+            raise NetworkError(
+                502,
+                f"mempool inventory failed: {inventory_exc}; mempool fallback failed: {fallback_exc}",
+            ) from fallback_exc
+
+
+def _missing_mempool_tx_hashes(tx_hashes: list[str]) -> list[str]:
+    unique_hashes = list(dict.fromkeys(tx_hashes))
+    if not unique_hashes:
+        return []
+    placeholders = ",".join("?" for _ in unique_hashes)
+    with get_connection() as connection:
+        rows = connection.execute(
+            f"SELECT tx_hash FROM mempool_transactions WHERE tx_hash IN ({placeholders})",
+            tuple(unique_hashes),
+        ).fetchall()
+    existing = {str(row["tx_hash"]) for row in rows}
+    return [tx_hash for tx_hash in unique_hashes if tx_hash not in existing]
+
+
 def sync_blocks_until(
     peer_address: str,
     *,
@@ -1027,6 +1236,16 @@ def sync_blocks_until(
     result["effective_latest_block_height"] = effective_height
     result["sync_from_height"] = sync_from_height
     result["catch_up_start_height"] = sync_from_height
+
+    try:
+        restore_required = _local_replay_restore_required_status()
+        if restore_required is not None:
+            result["replay"] = restore_required
+            if AUTO_RECOVERY_ENABLED:
+                result["auto_recovery"] = recover_from_peer_snapshot(peer_address, source="auto-recovery")
+            return result
+    except Exception as exc:
+        result["errors"].append(f"replay status: {exc}")
 
     rounds = 0
     max_rounds = 20
@@ -1086,10 +1305,19 @@ def sync_blocks_until(
 
 
 def reconcile_connected_peers(limit: int = 16) -> dict[str, Any]:
-    peers = list_peers(include_stale=False)[:limit]
+    peers = select_reconcile_peers(limit)
     results = [reconcile_peer(peer["peer_address"]) for peer in peers]
     return {
         "attempted": len(results),
+        "selected_peers": [
+            {
+                "peer_id": peer["peer_id"],
+                "node_id": peer["node_id"],
+                "peer_address": peer["peer_address"],
+                "peer_type": peer["peer_type"],
+            }
+            for peer in peers
+        ],
         "transactions_imported": sum(item["transactions_imported"] for item in results),
         "proposals_imported": sum(item["proposals_imported"] for item in results),
         "blocks_imported": sum(item["blocks_imported"] for item in results),
@@ -1121,6 +1349,30 @@ def list_mempool(status: str | None = None, limit: int = 100) -> list[dict[str, 
     params = (*params, limit)
     with get_connection() as connection:
         return [_decode_tx(row_to_dict(row)) for row in connection.execute(query, params).fetchall()]
+
+
+def list_mempool_inventory(status: str | None = "pending", limit: int = 100) -> dict[str, Any]:
+    expire_mempool_transactions()
+    query = """
+        SELECT tx_hash, status, sender, recipient, nonce, fee_units, updated_at, created_at
+        FROM mempool_transactions
+    """
+    params: tuple[Any, ...]
+    if status:
+        query += " WHERE status = ?"
+        params = (status,)
+    else:
+        params = ()
+    query += " ORDER BY updated_at DESC, created_at DESC LIMIT ?"
+    params = (*params, limit)
+    with get_connection() as connection:
+        rows = [row_to_dict(row) for row in connection.execute(query, params).fetchall()]
+    return {
+        "status": status,
+        "count": len(rows),
+        "transactions": rows,
+        "checked_at": _now(),
+    }
 
 
 def list_recent_transactions(status: str | None = None, address: str | None = None, limit: int = 50) -> list[dict[str, Any]]:
@@ -1191,6 +1443,11 @@ def _validate_signed_transaction(tx: dict[str, Any]) -> None:
     
     if _tx_amount_units(tx) < 0:
         raise NetworkError(422, "amount must be >= 0")
+
+    try:
+        canonical_transaction_timestamp(tx["timestamp"])
+    except (TypeError, ValueError) as exc:
+        raise NetworkError(422, "invalid transaction timestamp") from exc
     
     if tx["tx_type"] == "transfer" and not is_valid_address(tx.get("recipient")):
         raise NetworkError(422, "transfer transaction requires a valid PI recipient")
@@ -1229,6 +1486,15 @@ def _unsigned_from_tx(tx: dict[str, Any]) -> dict[str, Any]:
         network_id=tx.get("network_id", NETWORK_ID),
         chain_id=tx.get("chain_id", CHAIN_ID),
     )
+
+
+def _public_transaction_payload(tx: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **_unsigned_from_tx(tx),
+        "public_key": tx["public_key"],
+        "signature": tx["signature"],
+        "tx_hash": tx["tx_hash"],
+    }
 
 
 def _tx_amount_units(tx: dict[str, Any]) -> int:

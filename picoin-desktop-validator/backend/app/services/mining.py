@@ -265,6 +265,11 @@ def _normalize_reward_address(reward_address: str | None) -> str | None:
     return normalized
 
 
+def miner_id_from_public_key(public_key: str) -> str:
+    normalized = str(public_key or "").strip()
+    return f"miner_{sha256_text(canonical_json({'public_key': normalized}))[:16]}"
+
+
 def register_miner(name: str, public_key: str | None = None, reward_address: str | None = None) -> dict[str, Any]:
     if public_key is None:
         raise MiningError(400, "public_key is required")
@@ -274,9 +279,61 @@ def register_miner(name: str, public_key: str | None = None, reward_address: str
         raise MiningError(400, str(exc)) from exc
     reward_address = _normalize_reward_address(reward_address)
 
-    miner_id = f"miner_{uuid.uuid4().hex[:16]}"
     timestamp = utc_now()
     with get_connection() as connection:
+        existing = row_to_dict(
+            connection.execute(
+                """
+                SELECT *
+                FROM miners
+                WHERE public_key = ?
+                ORDER BY registered_at ASC, miner_id ASC
+                LIMIT 1
+                """,
+                (public_key,),
+            ).fetchone()
+        )
+        if existing is not None:
+            connection.execute(
+                """
+                UPDATE miners
+                SET name = COALESCE(NULLIF(?, ''), name),
+                    reward_address = COALESCE(?, reward_address),
+                    last_seen_at = ?,
+                    last_heartbeat_at = ?,
+                    online_status = 'online',
+                    protocol_version = ?
+                WHERE miner_id = ?
+                """,
+                (
+                    (name or existing["miner_id"])[:80],
+                    reward_address,
+                    timestamp,
+                    timestamp,
+                    PROTOCOL_VERSION,
+                    existing["miner_id"],
+                ),
+            )
+            _ensure_balance_account(connection, existing["miner_id"], "miner")
+            if reward_address:
+                _ensure_balance_account(connection, reward_address, "wallet")
+            row = connection.execute("SELECT * FROM miners WHERE miner_id = ?", (existing["miner_id"],)).fetchone()
+            return enrich_miner(row_to_dict(row))
+
+        miner_id = miner_id_from_public_key(public_key)
+        collision = connection.execute(
+            """
+            SELECT public_key
+            FROM miners
+            WHERE miner_id = ?
+              AND COALESCE(public_key, '') != ?
+            LIMIT 1
+            """,
+            (miner_id, public_key),
+        ).fetchone()
+        if collision is not None:
+            raise MiningError(409, "miner id collision for public_key")
+
         connection.execute(
             """
             INSERT INTO miners (
@@ -284,6 +341,14 @@ def register_miner(name: str, public_key: str | None = None, reward_address: str
                 last_seen_at, last_heartbeat_at, online_status, protocol_version, enabled
             )
             VALUES (?, ?, ?, ?, ?, ?, ?, 'online', ?, 1)
+            ON CONFLICT(miner_id) DO UPDATE SET
+                name = COALESCE(NULLIF(excluded.name, ''), miners.name),
+                public_key = COALESCE(miners.public_key, excluded.public_key),
+                reward_address = COALESCE(excluded.reward_address, miners.reward_address),
+                last_seen_at = excluded.last_seen_at,
+                last_heartbeat_at = excluded.last_heartbeat_at,
+                online_status = 'online',
+                protocol_version = excluded.protocol_version
             """,
             (miner_id, name, public_key, reward_address, timestamp, timestamp, timestamp, PROTOCOL_VERSION),
         )
@@ -824,6 +889,7 @@ def get_validators_status(limit: int = 500) -> dict[str, Any]:
 
     def build() -> dict[str, Any]:
         with get_connection() as connection:
+            _maybe_expire_assigned_tasks(connection)
             rows = connection.execute(
                 """
                 SELECT *
@@ -891,6 +957,7 @@ def _get_validation_jobs_health_uncached(
         return max(0, elapsed // 1000)
 
     with get_connection() as connection:
+        _maybe_expire_assigned_tasks(connection)
         pending_rows = connection.execute(
             """
             SELECT
@@ -1512,6 +1579,55 @@ def prune_stale_miners(older_than_seconds: int = PARTICIPANT_OFFLINE_SECONDS) ->
     return {"deleted": deleted, "older_than_seconds": older_than_seconds, "checked_at": utc_now()}
 
 
+def _task_with_network_context(task: dict[str, Any] | None) -> dict[str, Any] | None:
+    if task is None:
+        return None
+    task["network_id"] = NETWORK_ID
+    task["chain_id"] = CHAIN_ID
+    return task
+
+
+def _task_for_next_response(connection: Any, task: dict[str, Any] | None) -> dict[str, Any] | None:
+    if task is None:
+        return None
+    response = dict(task)
+    if isinstance(response.get("selected_tx_hashes"), str):
+        try:
+            response["selected_tx_hashes"] = json.loads(response["selected_tx_hashes"])
+        except (TypeError, ValueError):
+            response["selected_tx_hashes"] = []
+    if response.get("status") == "committed":
+        commitment = connection.execute(
+            "SELECT 1 FROM commitments WHERE task_id = ? AND miner_id = ?",
+            (response["task_id"], response["miner_id"]),
+        ).fetchone()
+        if commitment is not None:
+            response["resume_status"] = "committed"
+            response["status"] = "assigned"
+    return _task_with_network_context(response)
+
+
+def _competitive_task_id(miner_id: str, assignment: dict[str, Any], params: dict[str, Any]) -> str:
+    digest = sha256_text(
+        canonical_json(
+            {
+                "mode": COMPETITIVE_ROUND_ASSIGNMENT_MODE,
+                "network_id": NETWORK_ID,
+                "chain_id": CHAIN_ID,
+                "miner_id": miner_id,
+                "height": int(assignment.get("round_height") or 0),
+                "previous_hash": assignment.get("previous_hash"),
+                "assignment_seed": assignment.get("assignment_seed"),
+                "range_start": int(assignment["range_start"]),
+                "range_end": int(assignment["range_end"]),
+                "algorithm": params["algorithm"],
+                "protocol_params_id": params["id"],
+            }
+        )
+    )
+    return f"task_{digest[:16]}"
+
+
 def create_next_task(
     miner_id: str,
     *,
@@ -1573,7 +1689,7 @@ def create_next_task(
                         409,
                         f"active task exceeds RETARGET_MAX_PI_POSITION={RETARGET_MAX_PI_POSITION_value}",
                     )
-                return task
+                return _task_for_next_response(connection, task)
 
         recent_assignments = connection.execute(
             """
@@ -1597,45 +1713,63 @@ def create_next_task(
         if MINING_TASK_MODE != COMPETITIVE_ROUND_ASSIGNMENT_MODE:
             pooled_task = _claim_global_task_for_miner(connection, miner_id, params)
             if pooled_task is not None:
-                return pooled_task
+                return _task_for_next_response(connection, pooled_task)
 
-        task_id = f"task_{uuid.uuid4().hex[:16]}"
         if MINING_TASK_MODE == COMPETITIVE_ROUND_ASSIGNMENT_MODE:
             assignment = _competitive_round_assignment(connection, params)
+            if _competitive_round_has_pending_validation_job(connection, assignment.get("assignment_seed")):
+                raise MiningError(429, "competitive round is waiting for validation; retry after next block")
             assignment_mode = COMPETITIVE_ROUND_ASSIGNMENT_MODE
+            task_id = _competitive_task_id(miner_id, assignment, params)
+            existing_round_task = row_to_dict(
+                connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+            )
+            if existing_round_task is not None:
+                return _task_for_next_response(connection, existing_round_task)
         else:
+            task_id = f"task_{uuid.uuid4().hex[:16]}"
             assignment = _assign_pseudo_random_range(connection, miner_id, task_id, params)
             assignment_mode = params["range_assignment_mode"]
         assignment_ms = elapsed_ms(started)
         now = utc_now()
         expires_at = iso_at(_task_expiration_seconds_for_position(params, assignment["range_end"]))
 
-        connection.execute(
-            """
-            INSERT INTO tasks (
-                task_id, miner_id, range_start, range_end, algorithm, status,
-                assignment_seed, assignment_mode, competitive_round_height,
-                competitive_round_previous_hash, assignment_ms, protocol_params_id,
-                created_at, expires_at
+        try:
+            connection.execute(
+                """
+                INSERT INTO tasks (
+                    task_id, miner_id, range_start, range_end, algorithm, status,
+                    assignment_seed, assignment_mode, competitive_round_height,
+                    competitive_round_previous_hash, assignment_ms, protocol_params_id,
+                    created_at, expires_at
+                )
+                VALUES (?, ?, ?, ?, ?, 'assigned', ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    miner_id,
+                    assignment["range_start"],
+                    assignment["range_end"],
+                    params["algorithm"],
+                    assignment["assignment_seed"],
+                    assignment_mode,
+                    assignment.get("round_height"),
+                    assignment.get("previous_hash"),
+                    assignment_ms,
+                    params["id"],
+                    now,
+                    expires_at,
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, 'assigned', ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                task_id,
-                miner_id,
-                assignment["range_start"],
-                assignment["range_end"],
-                params["algorithm"],
-                assignment["assignment_seed"],
-                assignment_mode,
-                assignment.get("round_height"),
-                assignment.get("previous_hash"),
-                assignment_ms,
-                params["id"],
-                now,
-                expires_at,
-            ),
-        )
+        except sqlite3.IntegrityError as exc:
+            if "tasks.task_id" not in str(exc):
+                raise
+            existing_task = row_to_dict(
+                connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+            )
+            if existing_task is None:
+                raise
+            return _task_for_next_response(connection, existing_task)
         next_height = int(assignment.get("round_height") or (_latest_chain_tip_in_connection(connection)["height"] + 1))
         if assignment_mode == COMPETITIVE_ROUND_ASSIGNMENT_MODE:
             tx_snapshot = freeze_transactions_for_competitive_round_task(
@@ -1670,12 +1804,7 @@ def create_next_task(
             )
         row = connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
         task = row_to_dict(row)
-        if isinstance(task.get("selected_tx_hashes"), str):
-            try:
-                task["selected_tx_hashes"] = json.loads(task["selected_tx_hashes"])
-            except (TypeError, ValueError):
-                task["selected_tx_hashes"] = []
-    return task
+    return _task_for_next_response(connection, task)
 
 
 def _restore_miner_identity(
@@ -1961,6 +2090,28 @@ def _competitive_round_has_earlier_pending_validation_job(connection: Any, job: 
                 created_at,
                 job_id,
             ),
+        ).fetchone()
+        is not None
+    )
+
+
+def _competitive_round_has_pending_validation_job(connection: Any, assignment_seed: str | None) -> bool:
+    assignment_seed = str(assignment_seed or "").strip()
+    if not assignment_seed:
+        return False
+    return (
+        connection.execute(
+            """
+            SELECT 1
+            FROM validation_jobs
+            JOIN tasks ON tasks.task_id = validation_jobs.task_id
+            WHERE validation_jobs.status = 'pending'
+              AND tasks.status = 'revealed'
+              AND tasks.assignment_mode = ?
+              AND tasks.assignment_seed = ?
+            LIMIT 1
+            """,
+            (COMPETITIVE_ROUND_ASSIGNMENT_MODE, assignment_seed),
         ).fetchone()
         is not None
     )
@@ -2517,15 +2668,74 @@ def commit_task(
         if miner is None:
             return _commit_rejected("miner not found")
         if task["status"] == "committed":
-            existing = row_to_dict(connection.execute("SELECT * FROM commitments WHERE task_id = ?", (task_id,)).fetchone())
+            existing = row_to_dict(
+                connection.execute(
+                    "SELECT * FROM commitments WHERE task_id = ? AND miner_id = ?",
+                    (task_id, miner_id),
+                ).fetchone()
+            )
             if existing is not None:
+                if result_hash != existing["result_hash"] or merkle_root != existing["merkle_root"]:
+                    return _commit_rejected("commitment mismatch")
+                expected_root = str(existing.get("tx_merkle_root") or "")
+                expected_snapshot_id = str(existing.get("mempool_snapshot_id") or "")
+                expected_hash = str(existing.get("selected_tx_hashes_hash") or "")
+                expected_count = int(existing.get("tx_count") or 0)
+                expected_fee_units = int(existing.get("tx_fee_total_units") or 0)
+                if (
+                    (tx_merkle_root or "") != expected_root
+                    or (mempool_snapshot_id or "") != expected_snapshot_id
+                    or (selected_tx_hashes_hash or "") != expected_hash
+                    or int(tx_count or 0) != expected_count
+                    or int(tx_fee_total_units or 0) != expected_fee_units
+                ):
+                    return _commit_rejected("invalid_tx_commitment")
+                payload = build_commit_signature_payload(
+                    task_id=task_id,
+                    miner_id=miner_id,
+                    range_start=task["range_start"],
+                    range_end=task["range_end"],
+                    algorithm=task["algorithm"],
+                    result_hash=result_hash,
+                    merkle_root=merkle_root,
+                    signed_at=signed_at,
+                    tx_merkle_root=expected_root,
+                    mempool_snapshot_id=expected_snapshot_id,
+                    selected_tx_hashes_hash=expected_hash,
+                    tx_count=expected_count,
+                    tx_fee_total_units=expected_fee_units,
+                    chain_id=CHAIN_ID,
+                    network_id=NETWORK_ID,
+                )
+                try:
+                    signature_valid = verify_payload_signature(miner["public_key"], payload, signature)
+                except (RuntimeError, ValueError):
+                    signature_valid = False
+                if not signature_valid and expected_count == 0:
+                    legacy_payload = build_commit_signature_payload(
+                        task_id=task_id,
+                        miner_id=miner_id,
+                        range_start=task["range_start"],
+                        range_end=task["range_end"],
+                        algorithm=task["algorithm"],
+                        result_hash=result_hash,
+                        merkle_root=merkle_root,
+                        signed_at=signed_at,
+                    )
+                    try:
+                        signature_valid = verify_payload_signature(miner["public_key"], legacy_payload, signature)
+                    except (RuntimeError, ValueError):
+                        signature_valid = False
+                if not signature_valid:
+                    return _commit_rejected("invalid miner signature")
                 return {
                     "accepted": True,
                     "status": "committed",
-                    "message": "task already committed",
+                    "message": "task already committed; reveal requested samples",
                     "challenge_seed": existing["challenge_seed"],
                     "samples": json.loads(existing["samples"]),
                 }
+            return _commit_rejected("commitment not found")
         if task["status"] == "stale":
             _record_submission(
                 connection,
@@ -3394,6 +3604,8 @@ def submit_validation_result(
                     "required_approvals": required,
                     "required_rejections": required,
                 }
+            savepoint_name = "validation_block_finalization"
+            connection.execute(f"SAVEPOINT {savepoint_name}")
             try:
                 block = _accept_block_in_connection(
                     connection=connection,
@@ -3409,6 +3621,8 @@ def submit_validation_result(
                     validation_job_id=job_id,
                 )
             except TransactionExecutionError as exc:
+                connection.execute(f"ROLLBACK TO {savepoint_name}")
+                connection.execute(f"RELEASE {savepoint_name}")
                 finalized_at = utc_now()
                 raw_reason = str(exc)
                 is_competitive_stale = raw_reason.startswith("competitive round")
@@ -3450,6 +3664,7 @@ def submit_validation_result(
                     "required_approvals": required,
                     "required_rejections": required,
                 }
+            connection.execute(f"RELEASE {savepoint_name}")
             finalized_at = utc_now()
             _mark_validation_job_finalized(connection, job_id=job_id, finalized_at=finalized_at)
             connection.execute(
@@ -3460,6 +3675,13 @@ def submit_validation_result(
                 WHERE job_id = ?
                 """,
                 (validator_id, reason, signature, validation_ms, finalized_at, job_id),
+            )
+            finality_certificate = _create_finality_certificate(
+                connection,
+                block=block,
+                job_id=job_id,
+                required_approvals=required,
+                created_at=finalized_at,
             )
             logger.info(
                 "validation task finalized job_id=%s task_id=%s block_height=%s finalization_ms=%s",
@@ -3473,6 +3695,7 @@ def submit_validation_result(
                 "status": "approved",
                 "message": "block accepted by validator quorum",
                 "block": block,
+                "finality_certificate": finality_certificate,
                 "approvals": counts["approvals"],
                 "rejections": counts["rejections"],
                 "required_approvals": required,
@@ -3519,6 +3742,160 @@ def submit_validation_result(
     }
 
 
+def _create_finality_certificate(
+    connection: Any,
+    *,
+    block: dict[str, Any],
+    job_id: str,
+    required_approvals: int,
+    created_at: str,
+) -> dict[str, Any]:
+    existing = row_to_dict(
+        connection.execute(
+            "SELECT * FROM finality_certificates WHERE block_height = ? OR job_id = ?",
+            (int(block["height"]), job_id),
+        ).fetchone()
+    )
+    if existing is not None:
+        return _decode_finality_certificate(existing) or {}
+
+    job = row_to_dict(connection.execute("SELECT * FROM validation_jobs WHERE job_id = ?", (job_id,)).fetchone())
+    if job is None:
+        raise MiningError(500, "validation job not found while creating finality certificate")
+
+    vote_rows = connection.execute(
+        """
+        SELECT
+            validation_votes.job_id,
+            validation_votes.task_id,
+            validation_votes.validator_id,
+            validation_votes.approved,
+            validation_votes.reason,
+            validation_votes.signature,
+            validation_votes.signed_at,
+            validation_votes.validation_ms,
+            validation_votes.submit_result_latency_ms,
+            validation_votes.created_at,
+            validators.name AS validator_name,
+            validators.public_key AS validator_public_key,
+            validators.reward_address AS validator_reward_address
+        FROM validation_votes
+        LEFT JOIN validators ON validators.validator_id = validation_votes.validator_id
+        WHERE validation_votes.job_id = ?
+          AND validation_votes.approved = 1
+        ORDER BY validation_votes.created_at ASC, validation_votes.validator_id ASC
+        """,
+        (job_id,),
+    ).fetchall()
+    votes = [row_to_dict(row) for row in vote_rows]
+    approval_count = len(votes)
+    if approval_count < int(required_approvals):
+        raise MiningError(500, "not enough validator approvals to create finality certificate")
+
+    vote_payloads = []
+    for vote in votes:
+        signature_payload = build_validation_result_signature_payload(
+            job_id=vote["job_id"],
+            validator_id=vote["validator_id"],
+            task_id=vote["task_id"],
+            approved=True,
+            reason=vote["reason"],
+            signed_at=vote["signed_at"],
+        )
+        vote_payloads.append(
+            {
+                "validator_id": vote["validator_id"],
+                "validator_name": vote.get("validator_name"),
+                "validator_public_key": vote.get("validator_public_key"),
+                "validator_reward_address": vote.get("validator_reward_address"),
+                "approved": True,
+                "reason": vote["reason"],
+                "signature": vote["signature"],
+                "signed_at": vote["signed_at"],
+                "signature_payload": signature_payload,
+                "validation_ms": vote.get("validation_ms"),
+                "submit_result_latency_ms": vote.get("submit_result_latency_ms"),
+                "voted_at": vote["created_at"],
+            }
+        )
+
+    task_id = job["task_id"]
+    protocol_params_id = block.get("protocol_params_id")
+    payload = {
+        "version": "picoin-finality-v1",
+        "network_id": NETWORK_ID,
+        "chain_id": CHAIN_ID,
+        "protocol_version": block.get("protocol_version") or PROTOCOL_VERSION,
+        "protocol_params_id": protocol_params_id,
+        "block": {
+            "height": int(block["height"]),
+            "block_hash": block["block_hash"],
+            "previous_hash": block["previous_hash"],
+            "state_root": block.get("state_root"),
+            "miner_id": block["miner_id"],
+            "task_id": task_id,
+            "result_hash": block["result_hash"],
+            "merkle_root": block.get("merkle_root"),
+            "tx_merkle_root": block.get("tx_merkle_root"),
+            "tx_count": int(block.get("tx_count") or 0),
+            "tx_fee_total_units": int(job.get("tx_fee_total_units") or 0),
+            "selected_tx_hashes_hash": job.get("selected_tx_hashes_hash"),
+        },
+        "validation": {
+            "job_id": job_id,
+            "challenge_seed": job["challenge_seed"],
+            "sample_count": len(json.loads(job.get("samples") or "[]")),
+            "required_approvals": int(required_approvals),
+            "approval_count": approval_count,
+            "status": "approved",
+        },
+    }
+    votes_json = canonical_json(vote_payloads)
+    payload_json = canonical_json(payload)
+    certificate_hash = sha256_text(canonical_json({"payload": payload, "votes": vote_payloads}))
+
+    connection.execute(
+        """
+        INSERT INTO finality_certificates (
+            block_height, block_hash, task_id, job_id, miner_id, network_id, chain_id,
+            protocol_version, protocol_params_id, required_approvals, approval_count,
+            certificate_hash, payload_json, votes_json, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(block["height"]),
+            block["block_hash"],
+            task_id,
+            job_id,
+            block["miner_id"],
+            NETWORK_ID,
+            str(CHAIN_ID),
+            payload["protocol_version"],
+            protocol_params_id,
+            int(required_approvals),
+            approval_count,
+            certificate_hash,
+            payload_json,
+            votes_json,
+            created_at,
+        ),
+    )
+    stored = row_to_dict(
+        connection.execute("SELECT * FROM finality_certificates WHERE block_height = ?", (int(block["height"]),)).fetchone()
+    )
+    return _decode_finality_certificate(stored) or {}
+
+
+def get_block_finality_certificate(height: int) -> dict[str, Any] | None:
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT * FROM finality_certificates WHERE block_height = ?",
+            (int(height),),
+        ).fetchone()
+    return _decode_finality_certificate(row_to_dict(row))
+
+
 def get_blocks(limit: int | None = None) -> list[dict[str, Any]]:
     with get_connection() as connection:
         if limit is not None:
@@ -3529,6 +3906,88 @@ def get_blocks(limit: int | None = None) -> list[dict[str, Any]]:
             return [_decode_block(row_to_dict(row)) for row in reversed(rows)]
         rows = connection.execute("SELECT * FROM blocks ORDER BY height ASC").fetchall()
         return [_decode_block(row_to_dict(row)) for row in rows]
+
+
+def get_task_status(task_id: str) -> dict[str, Any] | None:
+    task_id = str(task_id or "").strip()
+    if not task_id:
+        return None
+
+    with get_connection() as connection:
+        _expire_assigned_tasks(connection)
+        task = row_to_dict(connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone())
+        if task is None:
+            return None
+
+        block = _decode_block(row_to_dict(connection.execute("SELECT * FROM blocks WHERE task_id = ?", (task_id,)).fetchone()))
+        job = row_to_dict(
+            connection.execute(
+                """
+                SELECT *
+                FROM validation_jobs
+                WHERE task_id = ?
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (task_id,),
+            ).fetchone()
+        )
+
+        validation: dict[str, Any] | None = None
+        if job is not None:
+            vote_counts = _validation_vote_counts(connection, job["job_id"])
+            params = _protocol_params_for_task(connection, {**task, **job})
+            required = _effective_required_validator_approvals(connection, params)
+            validation = {
+                "job_id": job["job_id"],
+                "status": job["status"],
+                "result_reason": job.get("result_reason"),
+                "approvals": vote_counts["approvals"],
+                "rejections": vote_counts["rejections"],
+                "total_votes": vote_counts["approvals"] + vote_counts["rejections"],
+                "required_approvals": required,
+                "required_rejections": required,
+                "created_at": job.get("created_at"),
+                "completed_at": job.get("completed_at"),
+                "finalized_at": job.get("finalized_at"),
+            }
+
+        task_status = str(task.get("status") or "")
+        status = task_status
+        message = f"task status is {task_status}"
+        if block is not None:
+            status = "accepted"
+            message = "block accepted"
+        elif task_status == "revealed" and validation is not None and validation["status"] == "pending":
+            status = "validation_pending"
+            message = "reveal accepted; waiting for external validator"
+        elif validation is not None and validation["status"] in {"approved", "rejected", "expired"}:
+            if validation["status"] == "approved":
+                status = "accepted" if block is not None else task_status
+            elif validation["status"] == "expired":
+                status = "expired"
+            elif validation["status"] == "rejected" and task_status not in {"stale", "expired"}:
+                status = "rejected"
+            message = validation.get("result_reason") or message
+
+        return {
+            "task_id": task["task_id"],
+            "miner_id": task["miner_id"],
+            "status": status,
+            "task_status": task_status,
+            "message": message,
+            "assignment_seed": task.get("assignment_seed"),
+            "assignment_mode": task.get("assignment_mode"),
+            "competitive_round_height": task.get("competitive_round_height"),
+            "range_start": task.get("range_start"),
+            "range_end": task.get("range_end"),
+            "algorithm": task.get("algorithm"),
+            "created_at": task.get("created_at"),
+            "expires_at": task.get("expires_at"),
+            "submitted_at": task.get("submitted_at"),
+            "block": block,
+            "validation": validation,
+        }
 
 
 def get_block(height: int) -> dict[str, Any] | None:
@@ -3543,6 +4002,7 @@ def get_stats() -> dict[str, Any]:
 
 def _get_stats_uncached() -> dict[str, Any]:
     with get_connection() as connection:
+        _maybe_expire_assigned_tasks(connection)
         miners = connection.execute("SELECT COUNT(*) AS count FROM miners").fetchone()["count"]
         tasks = connection.execute("SELECT COUNT(*) AS count FROM tasks").fetchone()["count"]
         pending = connection.execute("SELECT COUNT(*) AS count FROM tasks WHERE status = 'assigned'").fetchone()["count"]
@@ -4351,11 +4811,23 @@ def _get_health_status_uncached() -> dict[str, Any]:
     try:
         with get_connection() as connection:
             connection.execute("SELECT 1").fetchone()
+            maintenance = _maybe_expire_assigned_tasks(connection)
             params = _active_protocol_params(connection)
             latest_height = _latest_block_height(connection)
             latest_hash = _latest_block_hash(connection)
             snapshot_base = active_snapshot_base_in_connection(connection)
-            miners = int(connection.execute("SELECT COUNT(*) AS count FROM miners").fetchone()["count"])
+            miner_counts = connection.execute(
+                """
+                SELECT
+                    COUNT(*) AS total,
+                    COALESCE(SUM(CASE WHEN online_status = 'online' THEN 1 ELSE 0 END), 0) AS online,
+                    COALESCE(SUM(CASE WHEN online_status = 'stale' THEN 1 ELSE 0 END), 0) AS stale,
+                    COALESCE(SUM(CASE WHEN online_status = 'offline' THEN 1 ELSE 0 END), 0) AS offline
+                FROM miners
+                """
+            ).fetchone()
+            miners = int(miner_counts["total"])
+            online_miners = int(miner_counts["online"])
             validators = connection.execute("SELECT COUNT(*) AS total FROM validators").fetchone()
             active_protocol = params is not None
             eligible_validators = len(_eligible_validator_rows(connection))
@@ -4364,8 +4836,12 @@ def _get_health_status_uncached() -> dict[str, Any]:
                 "connected": True,
                 "active_protocol": active_protocol,
                 "miners": miners,
+                "online_miners": online_miners,
+                "stale_miners": int(miner_counts["stale"]),
+                "offline_miners": int(miner_counts["offline"]),
                 "validators": int(validators["total"]),
                 "eligible_validators": eligible_validators,
+                "maintenance": maintenance,
             }
     except Exception as exc:
         issues.append(f"database unavailable: {exc}")
@@ -4373,6 +4849,7 @@ def _get_health_status_uncached() -> dict[str, Any]:
         latest_height = 0
         latest_hash = GENESIS_HASH
         miners = 0
+        online_miners = 0
         required_approvals = REQUIRED_VALIDATOR_APPROVALS
         eligible_validators = 0
         active_protocol = False
@@ -4427,7 +4904,7 @@ def _get_health_status_uncached() -> dict[str, Any]:
         issues.append("not enough eligible validators for quorum")
 
     can_assign_tasks = bool(database["connected"] and active_protocol)
-    mining_ready = bool(can_assign_tasks and miners > 0 and eligible_validators >= required_approvals)
+    mining_ready = bool(can_assign_tasks and online_miners > 0 and eligible_validators >= required_approvals)
     if sync_status in {"stalled", "divergent"}:
         can_assign_tasks = False
         mining_ready = False
@@ -4525,7 +5002,7 @@ def get_node_status() -> dict[str, Any]:
     audit = _basic_audit_health()
     performance = get_performance_stats()
     protocol = _protocol_payload(params)
-    mining_ready = counts["miners"] > 0 and counts["eligible_validators"] >= protocol["required_validator_approvals"]
+    mining_ready = counts["online_miners"] > 0 and counts["eligible_validators"] >= protocol["required_validator_approvals"]
 
     return {
         "project": PROJECT_NAME,
@@ -4948,6 +5425,7 @@ def _reject_in_connection(
 
 
 def _expire_assigned_tasks(connection: Any) -> dict[str, int]:
+    released_assignments = _release_timed_out_validation_assignments(connection)
     expired_rows = connection.execute(
         """
         SELECT task_id
@@ -5017,6 +5495,7 @@ def _expire_assigned_tasks(connection: Any) -> dict[str, int]:
     return {
         "expired_tasks": max(0, task_cursor.rowcount) + revealed_expired_count,
         "expired_validation_jobs": job_expired_count,
+        "released_validation_assignments": released_assignments,
     }
 
 
@@ -5025,13 +5504,23 @@ def _maybe_expire_assigned_tasks(connection: Any) -> dict[str, Any]:
     min_interval = max(0, int(EXPIRED_TASK_CLEANUP_MIN_INTERVAL_SECONDS))
     monotonic_now = time.monotonic()
     if monotonic_now - _EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC < min_interval:
-        return {"expired_tasks": 0, "expired_validation_jobs": 0, "skipped": "recent"}
+        return {"expired_tasks": 0, "expired_validation_jobs": 0, "released_validation_assignments": 0, "skipped": "recent"}
     if not _EXPIRED_TASK_CLEANUP_LOCK.acquire(blocking=False):
-        return {"expired_tasks": 0, "expired_validation_jobs": 0, "skipped": "already_running"}
+        return {
+            "expired_tasks": 0,
+            "expired_validation_jobs": 0,
+            "released_validation_assignments": 0,
+            "skipped": "already_running",
+        }
     try:
         monotonic_now = time.monotonic()
         if monotonic_now - _EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC < min_interval:
-            return {"expired_tasks": 0, "expired_validation_jobs": 0, "skipped": "recent"}
+            return {
+                "expired_tasks": 0,
+                "expired_validation_jobs": 0,
+                "released_validation_assignments": 0,
+                "skipped": "recent",
+            }
         result = _expire_assigned_tasks(connection)
         _EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC = monotonic_now
         return result
@@ -5061,6 +5550,8 @@ def _revealed_task_has_quorum_path(connection: Any, task_id: str) -> bool:
     counts = _validation_vote_counts(connection, job["job_id"])
     if counts["approvals"] >= required or counts["rejections"] >= required:
         return True
+    if counts["approvals"] == 0 and counts["rejections"] == 0 and not job.get("assigned_validator_id"):
+        return False
     voted_rows = connection.execute(
         "SELECT validator_id FROM validation_votes WHERE job_id = ?",
         (job["job_id"],),
@@ -5284,6 +5775,17 @@ def _selection_jitter(seed: str, validator_id: str) -> float:
 
 def _node_counts(connection: Any, params: dict[str, Any]) -> dict[str, Any]:
     eligible_validators = len(_eligible_validator_rows(connection))
+    miners = connection.execute(
+        """
+        SELECT
+            COUNT(*) AS total,
+            COALESCE(SUM(CASE WHEN online_status = 'online' THEN 1 ELSE 0 END), 0) AS online,
+            COALESCE(SUM(CASE WHEN online_status = 'stale' THEN 1 ELSE 0 END), 0) AS stale,
+            COALESCE(SUM(CASE WHEN online_status = 'offline' THEN 1 ELSE 0 END), 0) AS offline,
+            COALESCE(SUM(CASE WHEN enabled = 0 THEN 1 ELSE 0 END), 0) AS disabled
+        FROM miners
+        """
+    ).fetchone()
     validators = connection.execute(
         """
         SELECT
@@ -5321,7 +5823,11 @@ def _node_counts(connection: Any, params: dict[str, Any]) -> dict[str, Any]:
         """
     ).fetchone()
     return {
-        "miners": int(connection.execute("SELECT COUNT(*) AS count FROM miners").fetchone()["count"]),
+        "miners": int(miners["total"]),
+        "online_miners": int(miners["online"]),
+        "stale_miners": int(miners["stale"]),
+        "offline_miners": int(miners["offline"]),
+        "disabled_miners": int(miners["disabled"]),
         "validators": int(validators["total"]),
         "active_validators": int(validators["active"]),
         "online_validators": int(validators["online"]),
@@ -6208,6 +6714,30 @@ def _decode_block(block: dict[str, Any] | None) -> dict[str, Any] | None:
     block["fee_reward"] = round(float(block.get("fee_reward") or 0), 8)
     block["fraudulent"] = bool(block.get("fraudulent", 0))
     return block
+
+
+def _decode_finality_certificate(certificate: dict[str, Any] | None) -> dict[str, Any] | None:
+    if certificate is None:
+        return None
+    payload = json.loads(certificate.get("payload_json") or "{}")
+    votes = json.loads(certificate.get("votes_json") or "[]")
+    return {
+        "block_height": int(certificate["block_height"]),
+        "block_hash": certificate["block_hash"],
+        "task_id": certificate["task_id"],
+        "job_id": certificate["job_id"],
+        "miner_id": certificate["miner_id"],
+        "network_id": certificate["network_id"],
+        "chain_id": payload.get("chain_id", certificate["chain_id"]),
+        "protocol_version": certificate["protocol_version"],
+        "protocol_params_id": certificate.get("protocol_params_id"),
+        "required_approvals": int(certificate["required_approvals"]),
+        "approval_count": int(certificate["approval_count"]),
+        "certificate_hash": certificate["certificate_hash"],
+        "payload": payload,
+        "votes": votes,
+        "created_at": certificate["created_at"],
+    }
 
 
 def _decode_retroactive_audit(audit: dict[str, Any] | None) -> dict[str, Any] | None:
