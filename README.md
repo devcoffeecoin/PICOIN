@@ -735,6 +735,7 @@ Branch policy:
 - Active decentralization work continues on `codex/decentralization-roadmap`.
 - Older phase branches are treated as historical evidence only after their changes are contained in the unified branch.
 - Each new phase must keep the previous phase tests passing on the same branch before it can be checked off.
+- Post-Phase-8 total decentralization work continues on `codex/total-decentralization-roadmap`; see `picoin-proof-of-pi/deploy/README-total-decentralization.md` for the mining, validator, pool, wallet, and bootstrap-off roadmap.
 
 ### Phase 0: Stable Mainnet Baseline
 
@@ -1109,6 +1110,7 @@ Use separate wallets for treasury, governance, miner rewards, validator rewards,
 | Document | Purpose |
 | --- | --- |
 | `picoin-proof-of-pi/deploy/README-mainnet.md` | Mainnet deployment runbook |
+| `picoin-proof-of-pi/deploy/README-total-decentralization.md` | Post-Phase-8 roadmap for mining, validators, pools, wallets, and full nodes without bootstrap dependency |
 | `picoin-proof-of-pi/deploy/README-exchange-full-node.md` | Phase 7 exchange/infrastructure full-node install and operations |
 | `picoin-proof-of-pi/deploy/README-full-node-phase1.md` | Decentralization Phase 1 full-node verification lab |
 | `picoin-proof-of-pi/deploy/README-mainnet-shadow-full-node.md` | Phase 1B read-only mainnet shadow full-node verification |
