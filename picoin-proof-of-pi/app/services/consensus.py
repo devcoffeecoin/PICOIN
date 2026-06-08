@@ -2085,16 +2085,6 @@ def _ensure_task(connection: Any, block: dict[str, Any], local_protocol_params_i
     existing = connection.execute("SELECT task_id FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
     if existing is not None:
         return task_id
-    matching_range = connection.execute(
-        """
-        SELECT task_id
-        FROM tasks
-        WHERE range_start = ? AND range_end = ? AND algorithm = ?
-        """,
-        (block["range_start"], block["range_end"], block["algorithm"]),
-    ).fetchone()
-    if matching_range is not None:
-        return matching_range["task_id"]
     connection.execute(
         """
         INSERT INTO tasks (

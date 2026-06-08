@@ -238,9 +238,40 @@ def test_finality_certificate_exports_and_imports_with_block_sync(tmp_path, monk
     monkeypatch.setattr("app.core.settings.DATABASE_PATH", target_db_path)
     init_db(target_db_path)
     with get_connection() as connection:
+        protocol_params_id = connection.execute(
+            "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        connection.execute(
+            """
+            INSERT INTO miners (miner_id, name, public_key, registered_at)
+            VALUES ('miner-local-competing-range', 'local competing range', NULL, '2026-05-10T00:00:00+00:00')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at, expires_at
+            )
+            VALUES (?, 'miner-local-competing-range', ?, ?, ?, 'assigned', ?, ?, ?)
+            """,
+            (
+                "task_local_competing_same_range",
+                exported_block["range_start"],
+                exported_block["range_end"],
+                exported_block["algorithm"],
+                protocol_params_id,
+                "2026-05-10T00:00:00+00:00",
+                "2026-05-10T00:10:00+00:00",
+            ),
+        )
         imported = _import_finalized_block(connection, exported_block, "proposal_finality_sync")
         stored = connection.execute(
             "SELECT certificate_hash, block_hash, task_id, job_id FROM finality_certificates WHERE block_height = 1"
+        ).fetchone()
+        imported_task = connection.execute("SELECT status FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+        local_task = connection.execute(
+            "SELECT status FROM tasks WHERE task_id = 'task_local_competing_same_range'"
         ).fetchone()
 
     assert imported is True
@@ -249,6 +280,8 @@ def test_finality_certificate_exports_and_imports_with_block_sync(tmp_path, monk
     assert stored["block_hash"] == exported_block["block_hash"]
     assert stored["task_id"] == task_id
     assert stored["job_id"] == job_id
+    assert imported_task["status"] == "accepted"
+    assert local_task["status"] == "assigned"
 
 
 def test_duplicate_validation_job_for_accepted_task_is_idempotent(tmp_path, monkeypatch) -> None:
