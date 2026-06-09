@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -168,7 +169,23 @@ def send_validator_heartbeat(
     return response.json()
 
 
-def validate_job(job: dict[str, Any]) -> tuple[bool, str]:
+def calculate_sample_digit(args: tuple[int, str]) -> tuple[int, str]:
+    position, algorithm = args
+    return position, calculate_pi_segment(position, position, algorithm)
+
+
+def expected_sample_digits(samples: list[dict[str, Any]], algorithm: str, workers: int) -> dict[int, str]:
+    positions = sorted({int(sample["position"]) for sample in samples})
+    if workers <= 1 or len(positions) <= 1:
+        return {position: calculate_pi_segment(position, position, algorithm) for position in positions}
+
+    worker_count = min(max(1, workers), len(positions))
+    with ProcessPoolExecutor(max_workers=worker_count) as executor:
+        results = executor.map(calculate_sample_digit, ((position, algorithm) for position in positions))
+    return {position: digit for position, digit in results}
+
+
+def validate_job(job: dict[str, Any], workers: int = 1) -> tuple[bool, str]:
     tx_hashes = list(job.get("selected_tx_hashes") or [])
     transactions = list(job.get("transactions") or [])
     if len(tx_hashes) != int(job.get("tx_count") or 0):
@@ -210,10 +227,12 @@ def validate_job(job: dict[str, Any]) -> tuple[bool, str]:
             return False, "invalid_tx_merkle_root"
         if int(commitment["tx_fee_total_units"]) != int(job.get("tx_fee_total_units") or 0):
             return False, "invalid_fee_total"
-    for sample in job["samples"]:
+    samples = list(job["samples"])
+    expected_digits = expected_sample_digits(samples, job["algorithm"], workers)
+    for sample in samples:
         position = sample["position"]
         digit = str(sample["digit"]).upper()
-        expected_digit = calculate_pi_segment(position, position, job["algorithm"])
+        expected_digit = expected_digits[int(position)]
         if digit != expected_digit:
             return False, f"digit mismatch at position {position}"
         if not verify_merkle_proof(position, digit, sample["proof"], job["merkle_root"]):
@@ -308,7 +327,7 @@ def command_validate(args: argparse.Namespace) -> int:
             time.sleep(args.sleep)
             continue
 
-        approved, reason = validate_job(job)
+        approved, reason = validate_job(job, workers=max(1, int(args.workers)))
         try:
             result = submit_result(server_url, identity, job, approved, reason, timeout=args.submit_timeout)
         except requests.RequestException as exc:
@@ -351,6 +370,7 @@ def parse_args() -> argparse.Namespace:
     validate_parser.add_argument("--node-server", default=DEFAULT_NODE_SERVER, help="Local Picoin node API used for signed validator liveness")
     validate_parser.add_argument("--node-timeout", type=float, default=10.0, help="Seconds to wait for the local node heartbeat probe")
     validate_parser.add_argument("--submit-timeout", type=float, default=90.0, help="Seconds to wait while submitting a validation vote")
+    validate_parser.add_argument("--workers", type=int, default=1, help="Parallel workers for validating revealed sample digits")
     validate_parser.set_defaults(func=command_validate)
 
     return parser.parse_args()

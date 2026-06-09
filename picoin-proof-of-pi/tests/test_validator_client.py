@@ -12,6 +12,8 @@ def _validate_args(*, once: bool = False, loops: int = 2) -> SimpleNamespace:
         identity=Path("validator.json"),
         node_server="http://127.0.0.1:8000",
         node_timeout=10.0,
+        submit_timeout=90.0,
+        workers=1,
         loops=loops,
         sleep=0.0,
         once=once,
@@ -37,11 +39,11 @@ def test_command_validate_continues_after_transient_job_poll_timeout(monkeypatch
         return {"job_id": "job_ok", "task_id": "task_ok"}
 
     monkeypatch.setattr(validator_client, "get_job", get_job)
-    monkeypatch.setattr(validator_client, "validate_job", lambda job: (True, "ok"))
+    monkeypatch.setattr(validator_client, "validate_job", lambda job, workers=1: (True, "ok"))
     monkeypatch.setattr(
         validator_client,
         "submit_result",
-        lambda server_url, loaded_identity, job, approved, reason: {
+        lambda server_url, loaded_identity, job, approved, reason, timeout=90.0: {
             "status": "approved",
             "approvals": 1,
             "required_approvals": 3,
@@ -69,5 +71,6 @@ def test_command_validate_once_treats_network_timeout_as_idle(monkeypatch) -> No
         "send_validator_heartbeat",
         lambda *args, **kwargs: (_ for _ in ()).throw(requests.ReadTimeout("node timed out")),
     )
+    monkeypatch.setattr(validator_client, "get_job", lambda *args, **kwargs: None)
 
     assert validator_client.command_validate(_validate_args(once=True, loops=1)) == 0

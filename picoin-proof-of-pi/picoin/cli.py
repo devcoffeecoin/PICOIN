@@ -2008,6 +2008,12 @@ def add_validator_parser(subparsers: argparse._SubParsersAction) -> None:
         default=90.0,
         help="Seconds to wait while submitting a validation vote",
     )
+    validate_parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Parallel workers for validating revealed sample digits",
+    )
     validate_parser.set_defaults(func=command_validate)
 
 
