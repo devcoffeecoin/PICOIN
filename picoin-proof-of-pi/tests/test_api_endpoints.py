@@ -39,6 +39,18 @@ def test_node_sync_status_endpoint_returns_200(tmp_path, monkeypatch) -> None:
     assert response.status_code == 200
 
 
+def test_node_liveness_endpoint_returns_lightweight_tip(tmp_path, monkeypatch) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+    response = client.get("/node/liveness")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["effective_latest_block_height"] == 0
+    assert payload["effective_latest_block_hash"] == GENESIS_HASH
+    assert payload["pending_replay_blocks"] == 0
+    assert payload["divergence_detected"] is False
+
+
 def test_consensus_orphan_reorg_plan_endpoint_returns_dry_run_plan(tmp_path, monkeypatch) -> None:
     client = _build_test_client(tmp_path, monkeypatch)
 

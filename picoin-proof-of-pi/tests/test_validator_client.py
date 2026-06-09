@@ -3,6 +3,7 @@ from types import SimpleNamespace
 
 import requests
 
+from app.core.signatures import generate_keypair
 from validator import client as validator_client
 
 
@@ -142,3 +143,131 @@ def test_command_validate_retries_heartbeat_after_transient_failure(monkeypatch)
 
     assert validator_client.command_validate(_validate_args(loops=2)) == 0
     assert calls == {"heartbeats": 2, "jobs": 2}
+
+
+def test_send_validator_heartbeat_prefers_liveness_status(monkeypatch) -> None:
+    keys = generate_keypair()
+    identity = {
+        "validator_id": "validator_test",
+        "public_key": keys["public_key"],
+        "private_key": keys["private_key"],
+    }
+    calls: list[tuple[str, str]] = []
+
+    class Response:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, timeout=0):
+        calls.append(("get", url))
+        if url.endswith("/node/liveness"):
+            return Response(
+                {
+                    "node_id": "node-a",
+                    "peer_address": "http://node-a:8000",
+                    "effective_latest_block_height": 10,
+                    "latest_block_height": 10,
+                    "local_block_height": 10,
+                    "effective_latest_block_hash": "a" * 64,
+                    "latest_block_hash": "a" * 64,
+                    "pending_replay_blocks": 0,
+                    "protocol_version": "1.0",
+                }
+            )
+        if url.endswith("/node/sync-status"):
+            raise requests.ReadTimeout("sync-status timed out")
+        raise AssertionError(url)
+
+    def fake_post(url, json=None, timeout=0):
+        calls.append(("post", url))
+        assert json["effective_height"] == 10
+        assert json["latest_block_hash"] == "a" * 64
+        return Response({"eligible": True})
+
+    monkeypatch.setattr(validator_client.requests, "get", fake_get)
+    monkeypatch.setattr(validator_client.requests, "post", fake_post)
+
+    result = validator_client.send_validator_heartbeat(
+        "http://coordinator.example",
+        identity,
+        node_server_url="http://node-a:8000",
+        timeout=1.0,
+    )
+
+    assert result == {"eligible": True}
+    assert ("get", "http://node-a:8000/node/liveness") in calls
+    assert ("get", "http://node-a:8000/node/sync-status") not in calls
+    assert ("post", "http://coordinator.example/validators/heartbeat") in calls
+
+
+def test_send_validator_heartbeat_falls_back_to_sync_status(monkeypatch) -> None:
+    keys = generate_keypair()
+    identity = {
+        "validator_id": "validator_test",
+        "public_key": keys["public_key"],
+        "private_key": keys["private_key"],
+    }
+    calls: list[tuple[str, str]] = []
+
+    class Response:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, timeout=0):
+        calls.append(("get", url))
+        if url.endswith("/node/liveness"):
+            response = Response({"detail": "not found"})
+
+            def raise_not_found():
+                raise requests.HTTPError("404 not found")
+
+            response.raise_for_status = raise_not_found
+            return response
+        if url.endswith("/node/sync-status"):
+            return Response(
+                {
+                    "node_id": "node-a",
+                    "peer_address": "http://node-a:8000",
+                    "effective_latest_block_height": 11,
+                    "latest_block_height": 11,
+                    "local_block_height": 11,
+                    "effective_latest_block_hash": "b" * 64,
+                    "latest_block_hash": "b" * 64,
+                    "pending_replay_blocks": 0,
+                    "protocol_version": "1.0",
+                }
+            )
+        raise AssertionError(url)
+
+    def fake_post(url, json=None, timeout=0):
+        calls.append(("post", url))
+        assert json["effective_height"] == 11
+        assert json["latest_block_hash"] == "b" * 64
+        return Response({"eligible": True})
+
+    monkeypatch.setattr(validator_client.requests, "get", fake_get)
+    monkeypatch.setattr(validator_client.requests, "post", fake_post)
+
+    result = validator_client.send_validator_heartbeat(
+        "http://coordinator.example",
+        identity,
+        node_server_url="http://node-a:8000",
+        timeout=1.0,
+    )
+
+    assert result == {"eligible": True}
+    assert ("get", "http://node-a:8000/node/liveness") in calls
+    assert ("get", "http://node-a:8000/node/sync-status") in calls
+    assert ("post", "http://coordinator.example/validators/heartbeat") in calls

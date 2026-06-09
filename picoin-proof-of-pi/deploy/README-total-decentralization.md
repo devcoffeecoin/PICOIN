@@ -835,3 +835,11 @@ The worker and CLI defaults now favor shorter liveness loops:
 This does not change quorum, fork choice, finality certificates, or block
 validity. It only reduces the chance that a slow node/API call leaves a healthy
 validator stale long enough to delay quorum.
+
+Follow-up lab evidence showed B could have the pending job locally and still
+return `No validation jobs available` because the validator row was already
+`stale`. The heartbeat path depended on `/node/sync-status`, which can be slow on
+small droplets. The validator client now uses `/node/liveness`, a lightweight tip
+endpoint with height/hash/replay fields, before falling back to `/node/sync-status`
+for older nodes. This keeps validator liveness fresh enough for the job endpoint
+to serve already-visible pending jobs.

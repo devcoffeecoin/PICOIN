@@ -596,6 +596,58 @@ def get_sync_status() -> dict[str, Any]:
     }
 
 
+def get_node_liveness_status() -> dict[str, Any]:
+    with get_connection() as connection:
+        latest_block = connection.execute(
+            """
+            SELECT height, block_hash
+            FROM blocks
+            ORDER BY height DESC
+            LIMIT 1
+            """
+        ).fetchone()
+        pending_headers = connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM network_block_headers
+            WHERE status IN ('pending_replay', 'pending_missing_ancestors')
+            """
+        ).fetchone()
+        active_base = active_snapshot_base_in_connection(connection)
+    latest_height = int(latest_block["height"]) if latest_block else 0
+    latest_hash = latest_block["block_hash"] if latest_block else GENESIS_HASH
+    effective_height = latest_height
+    effective_hash = latest_hash
+    snapshot_height = int(active_base["height"]) if active_base is not None else 0
+    snapshot_hash = active_base["block_hash"] if active_base is not None else None
+    if active_base is not None and int(active_base.get("height") or 0) > effective_height:
+        effective_height = int(active_base["height"])
+        effective_hash = active_base["block_hash"]
+    try:
+        from app.services.consensus import get_replay_status
+
+        replay_status = get_replay_status()
+    except Exception as exc:
+        replay_status = {"active": False, "error": str(exc)}
+    return {
+        **node_identity(),
+        "latest_block_height": latest_height,
+        "latest_block_hash": latest_hash,
+        "local_block_height": latest_height,
+        "local_block_hash": latest_hash,
+        "snapshot_height": snapshot_height,
+        "snapshot_hash": snapshot_hash,
+        "effective_latest_block_height": effective_height,
+        "effective_latest_block_hash": effective_hash,
+        "pending_replay_blocks": int(pending_headers["count"] if pending_headers else 0),
+        "replay": replay_status,
+        "sync_status": replay_status.get("sync_status", "healthy"),
+        "divergence_detected": bool(replay_status.get("divergence_detected")),
+        "divergence_reason": replay_status.get("divergence_reason"),
+        "checked_at": _now(),
+    }
+
+
 def get_blocks_since(from_height: int, limit: int = 100) -> dict[str, Any]:
     if from_height < 0:
         raise NetworkError(422, "from_height must be >= 0")

@@ -99,6 +99,7 @@ from app.services.consensus_queue import submit_block_proposal
 from app.services.network import (
     NetworkError,
     get_blocks_since,
+    get_node_liveness_status,
     get_transaction,
     get_sync_status,
     heartbeat_peer,
@@ -269,6 +270,11 @@ def node_status() -> dict:
 @router.get("/node/identity", response_model=NodeIdentityResponse)
 def node_identity_route() -> dict:
     return node_identity()
+
+
+@router.get("/node/liveness")
+def node_liveness() -> dict:
+    return get_node_liveness_status()
 
 
 @router.get("/node/peers", response_model=list[PeerResponse])

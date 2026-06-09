@@ -120,14 +120,10 @@ def send_validator_heartbeat(
 ) -> dict[str, Any]:
     node_server = node_server_url.rstrip("/")
     coordinator = server_url.rstrip("/")
-    local_response = requests.get(f"{node_server}/node/sync-status", timeout=timeout)
-    local_response.raise_for_status()
-    local_status = local_response.json()
+    local_status = _heartbeat_node_status(node_server, timeout=timeout)
 
     try:
-        remote_response = requests.get(f"{coordinator}/node/sync-status", timeout=timeout)
-        remote_response.raise_for_status()
-        remote_status = remote_response.json()
+        remote_status = _heartbeat_node_status(coordinator, timeout=timeout)
         remote_height = int(
             remote_status.get("effective_latest_block_height")
             or remote_status.get("latest_block_height")
@@ -168,6 +164,20 @@ def send_validator_heartbeat(
     response = requests.post(f"{coordinator}/validators/heartbeat", json=payload, timeout=timeout)
     response.raise_for_status()
     return response.json()
+
+
+def _heartbeat_node_status(server_url: str, *, timeout: float) -> dict[str, Any]:
+    last_error: requests.RequestException | None = None
+    for path in ("/node/liveness", "/node/sync-status"):
+        try:
+            response = requests.get(f"{server_url.rstrip('/')}{path}", timeout=timeout)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise requests.RequestException("node status unavailable")
 
 
 def calculate_sample_digit(args: tuple[int, str]) -> tuple[int, str]:
