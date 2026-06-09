@@ -221,7 +221,15 @@ def validate_job(job: dict[str, Any]) -> tuple[bool, str]:
     return True, "external validator accepted samples"
 
 
-def submit_result(server_url: str, identity: dict[str, Any], job: dict[str, Any], approved: bool, reason: str) -> dict[str, Any]:
+def submit_result(
+    server_url: str,
+    identity: dict[str, Any],
+    job: dict[str, Any],
+    approved: bool,
+    reason: str,
+    *,
+    timeout: float = 90.0,
+) -> dict[str, Any]:
     signed_at = utc_now()
     payload = build_validation_result_signature_payload(
         job_id=job["job_id"],
@@ -242,7 +250,7 @@ def submit_result(server_url: str, identity: dict[str, Any], job: dict[str, Any]
             "signature": signature,
             "signed_at": signed_at,
         },
-        timeout=20,
+        timeout=timeout,
     )
     response.raise_for_status()
     return response.json()
@@ -301,7 +309,7 @@ def command_validate(args: argparse.Namespace) -> int:
 
         approved, reason = validate_job(job)
         try:
-            result = submit_result(server_url, identity, job, approved, reason)
+            result = submit_result(server_url, identity, job, approved, reason, timeout=args.submit_timeout)
         except requests.RequestException as exc:
             print(f"Validator coordinator temporarily unavailable while submitting validation result: {exc}", file=sys.stderr)
             if args.once:
@@ -341,6 +349,7 @@ def parse_args() -> argparse.Namespace:
     validate_parser.add_argument("--sleep", type=float, default=1.0, help="Seconds between polls")
     validate_parser.add_argument("--node-server", default=DEFAULT_NODE_SERVER, help="Local Picoin node API used for signed validator liveness")
     validate_parser.add_argument("--node-timeout", type=float, default=10.0, help="Seconds to wait for the local node heartbeat probe")
+    validate_parser.add_argument("--submit-timeout", type=float, default=90.0, help="Seconds to wait while submitting a validation vote")
     validate_parser.set_defaults(func=command_validate)
 
     return parser.parse_args()
