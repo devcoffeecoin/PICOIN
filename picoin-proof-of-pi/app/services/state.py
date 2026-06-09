@@ -17,6 +17,9 @@ class StateError(Exception):
         super().__init__(detail)
 
 
+SNAPSHOT_EXPORT_MAX_ATTEMPTS = 3
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -496,6 +499,16 @@ def verify_checkpoint(height: int) -> dict[str, Any]:
 
 
 def export_canonical_snapshot(height: int | None = None) -> dict[str, Any]:
+    last_document: dict[str, Any] | None = None
+    for _attempt in range(SNAPSHOT_EXPORT_MAX_ATTEMPTS):
+        document = _export_canonical_snapshot_once(height)
+        if document.get("valid") is True:
+            return document
+        last_document = document
+    return last_document or {}
+
+
+def _export_canonical_snapshot_once(height: int | None = None) -> dict[str, Any]:
     with get_connection() as connection:
         if height is None:
             latest = connection.execute("SELECT COALESCE(MAX(height), 0) AS height FROM blocks").fetchone()
