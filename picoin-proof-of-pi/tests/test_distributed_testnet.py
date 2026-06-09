@@ -1556,7 +1556,7 @@ def test_wallet_nonce_status_tracks_pending_and_confirmed_transactions(tmp_path,
     assert confirmed["pending_count"] == 0
 
 
-def test_expired_nonce_gap_does_not_block_next_pending_transaction(tmp_path, monkeypatch) -> None:
+def test_expired_nonce_gap_blocks_next_pending_transaction(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "wallet-expired-nonce-gap.sqlite3")
 
     sender = create_wallet("alice-expired-gap")
@@ -1601,8 +1601,8 @@ def test_expired_nonce_gap_does_not_block_next_pending_transaction(tmp_path, mon
 
     assert nonce_status["confirmed_nonce"] == 0
     assert nonce_status["pending_nonce"] == 2
-    assert nonce_status["next_nonce"] == 3
-    assert selected[0]["tx_hash"] == next_tx["tx_hash"]
+    assert nonce_status["next_nonce"] == 1
+    assert selected == []
 
 
 def test_block_transaction_selection_prioritizes_fee_without_reordering_sender_nonce(tmp_path, monkeypatch) -> None:

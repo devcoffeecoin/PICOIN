@@ -50,7 +50,7 @@ from app.services.wallet import (
 
 SUPPORTED_BLOCK_TX_TYPES = {"transfer", "stake", "unstake", "science_job_create", "governance_action", "treasury_claim", "faucet"}
 ACTIVE_NONCE_STATUSES = {"pending", "propagated", "selected", "released"}
-CONSUMED_TERMINAL_NONCE_STATUSES = {"expired"}
+CONSUMED_TERMINAL_NONCE_STATUSES: set[str] = set()
 SCIENCE_RESERVE_GOVERNANCE_ACTIONS = {
     "propose_activation",
     "approve_activation",
@@ -629,7 +629,7 @@ def get_wallet_nonce_status(connection: Any, address: str) -> dict[str, Any]:
         "address": address,
         "confirmed_nonce": confirmed_nonce,
         "pending_nonce": pending_nonce,
-        "next_nonce": max(next_nonce, pending_nonce + 1 if pending_nonce else next_nonce),
+        "next_nonce": next_nonce,
         "pending_count": int(row["pending_count"] if row else 0),
         "checked_at": utc_now(),
     }
