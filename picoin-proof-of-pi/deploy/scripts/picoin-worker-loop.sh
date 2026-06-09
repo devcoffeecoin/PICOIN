@@ -13,6 +13,7 @@ PICOIN_MINER_SERVER="${PICOIN_MINER_SERVER:-${PICOIN_BOOTSTRAP_COORDINATOR:-$PIC
 PICOIN_VALIDATOR_SERVER="${PICOIN_VALIDATOR_SERVER:-$PICOIN_SERVER}"
 PICOIN_WORKER_ROLE="${PICOIN_WORKER_ROLE:-}"
 PICOIN_WORKER_SLEEP="${PICOIN_WORKER_SLEEP:-10}"
+PICOIN_VALIDATOR_ITERATION_TIMEOUT="${PICOIN_VALIDATOR_ITERATION_TIMEOUT:-75s}"
 
 if [ -z "$PICOIN_WORKER_ROLE" ]; then
   echo "PICOIN_WORKER_ROLE is required: miner or validator" >&2
@@ -46,18 +47,18 @@ while true; do
 
       echo "[$(date +%T)] Intentando validación con: ${PICOIN_VALIDATOR_NAME} coordinator=${PICOIN_VALIDATOR_SERVER} node=${PICOIN_VALIDATOR_NODE_SERVER:-http://127.0.0.1:8000}" >&2
 
-      "$PICOIN_PYTHON" -m picoin validator \
+      timeout "$PICOIN_VALIDATOR_ITERATION_TIMEOUT" "$PICOIN_PYTHON" -m picoin validator \
         --server "$PICOIN_VALIDATOR_SERVER" \
         --identity "$CURRENT_IDENTITY" \
         validate \
         --node-server "${PICOIN_VALIDATOR_NODE_SERVER:-http://127.0.0.1:8000}" \
-        --node-timeout "${PICOIN_VALIDATOR_NODE_TIMEOUT:-30}" \
-        --submit-timeout "${PICOIN_VALIDATOR_SUBMIT_TIMEOUT:-90}" \
-        --loops "${PICOIN_VALIDATOR_LOOPS:-60}" \
+        --node-timeout "${PICOIN_VALIDATOR_NODE_TIMEOUT:-10}" \
+        --submit-timeout "${PICOIN_VALIDATOR_SUBMIT_TIMEOUT:-30}" \
+        --loops "${PICOIN_VALIDATOR_LOOPS:-12}" \
         --sleep "${PICOIN_VALIDATOR_SLEEP:-1}" \
         --poll-seconds "${PICOIN_VALIDATOR_POLL_SECONDS:-1}" \
-        --heartbeat-interval "${PICOIN_VALIDATOR_HEARTBEAT_INTERVAL_SECONDS:-30}" \
-        --workers "${PICOIN_VALIDATOR_WORKERS:-2}"
+        --heartbeat-interval "${PICOIN_VALIDATOR_HEARTBEAT_INTERVAL_SECONDS:-15}" \
+        --workers "${PICOIN_VALIDATOR_WORKERS:-4}"
       rc=$?
 
       if [ "$rc" -ne 0 ]; then

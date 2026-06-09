@@ -2006,7 +2006,7 @@ def add_validator_parser(subparsers: argparse._SubParsersAction) -> None:
     validate_parser.add_argument(
         "--workers",
         type=int,
-        default=int(os.getenv("PICOIN_VALIDATOR_WORKERS", "2")),
+        default=int(os.getenv("PICOIN_VALIDATOR_WORKERS", "4")),
         help="Parallel workers used to verify validation samples",
     )
     validate_parser.add_argument(

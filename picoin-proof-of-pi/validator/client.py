@@ -24,7 +24,7 @@ AUTO_REGISTER_IDENTITY = os.getenv("PICOIN_AUTO_REGISTER_IDENTITY", "1").strip()
 VALIDATOR_REWARD_ADDRESS = os.getenv("PICOIN_VALIDATOR_REWARD_ADDRESS", "").strip()
 DEFAULT_NODE_SERVER = os.getenv("PICOIN_VALIDATOR_NODE_SERVER", os.getenv("PICOIN_NODE_SERVER", "http://127.0.0.1:8000"))
 VALIDATOR_NODE_ADDRESS = os.getenv("PICOIN_VALIDATOR_NODE_ADDRESS", "").strip().rstrip("/")
-DEFAULT_VALIDATOR_WORKERS = max(1, int(os.getenv("PICOIN_VALIDATOR_WORKERS", "2")))
+DEFAULT_VALIDATOR_WORKERS = max(1, int(os.getenv("PICOIN_VALIDATOR_WORKERS", "4")))
 
 
 def utc_now() -> str:
@@ -310,8 +310,7 @@ def command_validate(args: argparse.Namespace) -> int:
                     "continuing to poll validation jobs with previous liveness",
                     file=sys.stderr,
                 )
-                heartbeat = None
-                heartbeat_at = time.monotonic()
+                heartbeat_at = 0.0
         if heartbeat is not None and heartbeat.get("eligible") is False:
             print(
                 f"Validator node heartbeat accepted but not eligible: "

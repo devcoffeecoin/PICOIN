@@ -812,3 +812,26 @@ diagnostic noise: reconcile could report many `validation job not found` errors
 when a peer advertised votes for jobs the local node no longer had. Reconcile now
 defers those votes with `validation_vote_inventory_missing_job` instead of
 counting them as import failures.
+
+## Phase 13.4 Slice: Validator Worker Liveness Hardening
+
+The next A/B/C run reached height `11512` with quorum `3/3`, but exposed a
+validator liveness weakness: all three validators could remain synced while
+being reported as `stale`, leaving a revealed validation job waiting for quorum
+until a worker was restarted or manually forced.
+
+The worker and CLI defaults now favor shorter liveness loops:
+
+- A failed heartbeat is retried on the next validator loop instead of consuming
+  the full heartbeat interval.
+- The systemd worker wrapper bounds each validator iteration with
+  `PICOIN_VALIDATOR_ITERATION_TIMEOUT` defaulting to `75s`.
+- Default validator heartbeat interval is `15s`.
+- Default validator node timeout is `10s`.
+- Default validation-result submit timeout is `30s`.
+- Default validator polling loops per process are reduced to `12`.
+- Default validator verification workers are increased to `4`.
+
+This does not change quorum, fork choice, finality certificates, or block
+validity. It only reduces the chance that a slow node/API call leaves a healthy
+validator stale long enough to delay quorum.

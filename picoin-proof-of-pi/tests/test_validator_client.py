@@ -114,3 +114,31 @@ def test_command_validate_once_treats_network_timeout_as_idle(monkeypatch) -> No
     monkeypatch.setattr(validator_client, "get_job", lambda *args, **kwargs: None)
 
     assert validator_client.command_validate(_validate_args(once=True, loops=1)) == 0
+
+
+def test_command_validate_retries_heartbeat_after_transient_failure(monkeypatch) -> None:
+    identity = {
+        "validator_id": "validator_test",
+        "public_key": "ed25519:test",
+        "private_key": "private-test",
+        "name": "validator-test",
+    }
+    calls = {"heartbeats": 0, "jobs": 0}
+
+    monkeypatch.setattr(validator_client, "load_or_register_identity", lambda server_url, path: identity)
+
+    def heartbeat(*args, **kwargs):
+        calls["heartbeats"] += 1
+        if calls["heartbeats"] == 1:
+            raise requests.ReadTimeout("node timed out")
+        return {"eligible": True}
+
+    def get_job(*args, **kwargs):
+        calls["jobs"] += 1
+        return None
+
+    monkeypatch.setattr(validator_client, "send_validator_heartbeat", heartbeat)
+    monkeypatch.setattr(validator_client, "get_job", get_job)
+
+    assert validator_client.command_validate(_validate_args(loops=2)) == 0
+    assert calls == {"heartbeats": 2, "jobs": 2}
