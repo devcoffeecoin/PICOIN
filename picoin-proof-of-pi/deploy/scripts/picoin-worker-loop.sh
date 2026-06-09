@@ -30,7 +30,7 @@ while true; do
         mine \
         --loops "${PICOIN_MINER_LOOPS:-1}" \
         --sleep "${PICOIN_MINER_SLEEP:-5}" \
-        --workers "${PICOIN_MINER_WORKERS:-1}"
+        --workers "${PICOIN_MINER_WORKERS:-2}"
       rc=$?
       if [ "$rc" -ne 0 ]; then
         echo "picoin $PICOIN_WORKER_ROLE iteration exited with rc=$rc; continuing after sleep" >&2
@@ -53,9 +53,11 @@ while true; do
         --node-server "${PICOIN_VALIDATOR_NODE_SERVER:-http://127.0.0.1:8000}" \
         --node-timeout "${PICOIN_VALIDATOR_NODE_TIMEOUT:-30}" \
         --submit-timeout "${PICOIN_VALIDATOR_SUBMIT_TIMEOUT:-90}" \
-        --workers "${PICOIN_VALIDATOR_WORKERS:-1}" \
-        --loops "${PICOIN_VALIDATOR_LOOPS:-1}" \
-        --sleep "${PICOIN_VALIDATOR_SLEEP:-3}"
+        --loops "${PICOIN_VALIDATOR_LOOPS:-60}" \
+        --sleep "${PICOIN_VALIDATOR_SLEEP:-1}" \
+        --poll-seconds "${PICOIN_VALIDATOR_POLL_SECONDS:-1}" \
+        --heartbeat-interval "${PICOIN_VALIDATOR_HEARTBEAT_INTERVAL_SECONDS:-30}" \
+        --workers "${PICOIN_VALIDATOR_WORKERS:-2}"
       rc=$?
 
       if [ "$rc" -ne 0 ]; then

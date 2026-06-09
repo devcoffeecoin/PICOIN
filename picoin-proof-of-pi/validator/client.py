@@ -24,6 +24,7 @@ AUTO_REGISTER_IDENTITY = os.getenv("PICOIN_AUTO_REGISTER_IDENTITY", "1").strip()
 VALIDATOR_REWARD_ADDRESS = os.getenv("PICOIN_VALIDATOR_REWARD_ADDRESS", "").strip()
 DEFAULT_NODE_SERVER = os.getenv("PICOIN_VALIDATOR_NODE_SERVER", os.getenv("PICOIN_NODE_SERVER", "http://127.0.0.1:8000"))
 VALIDATOR_NODE_ADDRESS = os.getenv("PICOIN_VALIDATOR_NODE_ADDRESS", "").strip().rstrip("/")
+DEFAULT_VALIDATOR_WORKERS = max(1, int(os.getenv("PICOIN_VALIDATOR_WORKERS", "2")))
 
 
 def utc_now() -> str:
@@ -286,22 +287,31 @@ def command_validate(args: argparse.Namespace) -> int:
     server_url = args.server.rstrip("/")
     identity = load_or_register_identity(server_url, args.identity)
     completed = 0
+    poll_seconds = float(getattr(args, "poll_seconds", getattr(args, "sleep", 1.0)))
+    heartbeat_interval = max(1.0, float(getattr(args, "heartbeat_interval", 30.0)))
+    workers = max(1, int(getattr(args, "workers", DEFAULT_VALIDATOR_WORKERS)))
+    heartbeat: dict[str, Any] | None = None
+    heartbeat_at = 0.0
 
     for index in range(args.loops):
-        try:
-            heartbeat = send_validator_heartbeat(
-                server_url,
-                identity,
-                node_server_url=args.node_server.rstrip("/"),
-                timeout=args.node_timeout,
-            )
-        except requests.RequestException as exc:
-            print(
-                f"Validator coordinator temporarily unavailable during heartbeat: {exc}; "
-                "continuing to poll validation jobs with previous liveness",
-                file=sys.stderr,
-            )
-            heartbeat = None
+        should_send_heartbeat = heartbeat_at <= 0.0 or (time.monotonic() - heartbeat_at) >= heartbeat_interval
+        if should_send_heartbeat:
+            try:
+                heartbeat = send_validator_heartbeat(
+                    server_url,
+                    identity,
+                    node_server_url=args.node_server.rstrip("/"),
+                    timeout=args.node_timeout,
+                )
+                heartbeat_at = time.monotonic()
+            except requests.RequestException as exc:
+                print(
+                    f"Validator coordinator temporarily unavailable during heartbeat: {exc}; "
+                    "continuing to poll validation jobs with previous liveness",
+                    file=sys.stderr,
+                )
+                heartbeat = None
+                heartbeat_at = time.monotonic()
         if heartbeat is not None and heartbeat.get("eligible") is False:
             print(
                 f"Validator node heartbeat accepted but not eligible: "
@@ -309,7 +319,7 @@ def command_validate(args: argparse.Namespace) -> int:
             )
             if args.once:
                 return 0
-            time.sleep(args.sleep)
+            time.sleep(poll_seconds)
             continue
 
         try:
@@ -318,23 +328,23 @@ def command_validate(args: argparse.Namespace) -> int:
             print(f"Validator coordinator temporarily unavailable while polling validation job: {exc}", file=sys.stderr)
             if args.once:
                 return 0
-            time.sleep(args.sleep)
+            time.sleep(poll_seconds)
             continue
         if job is None:
             print("No validation jobs available.")
             if args.once:
                 return 0
-            time.sleep(args.sleep)
+            time.sleep(poll_seconds)
             continue
 
-        approved, reason = validate_job(job, workers=max(1, int(args.workers)))
+        approved, reason = validate_job(job, workers=workers)
         try:
             result = submit_result(server_url, identity, job, approved, reason, timeout=args.submit_timeout)
         except requests.RequestException as exc:
             print(f"Validator coordinator temporarily unavailable while submitting validation result: {exc}", file=sys.stderr)
             if args.once:
                 return 0
-            time.sleep(args.sleep)
+            time.sleep(poll_seconds)
             continue
         print(
             f"Validated {job['job_id']}: approved={approved} "
@@ -346,7 +356,7 @@ def command_validate(args: argparse.Namespace) -> int:
         if args.once:
             break
         if index + 1 < args.loops:
-            time.sleep(args.sleep)
+            time.sleep(poll_seconds)
 
     print(f"Done. validation_jobs_completed={completed}")
     return 0
@@ -367,10 +377,27 @@ def parse_args() -> argparse.Namespace:
     validate_parser.add_argument("--once", action="store_true", help="Validate at most one job")
     validate_parser.add_argument("--loops", type=int, default=1, help="Number of polling attempts")
     validate_parser.add_argument("--sleep", type=float, default=1.0, help="Seconds between polls")
+    validate_parser.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=float(os.getenv("PICOIN_VALIDATOR_POLL_SECONDS", "1")),
+        help="Seconds between validation job polls while the heartbeat remains fresh",
+    )
+    validate_parser.add_argument(
+        "--heartbeat-interval",
+        type=float,
+        default=float(os.getenv("PICOIN_VALIDATOR_HEARTBEAT_INTERVAL_SECONDS", "30")),
+        help="Seconds between signed validator heartbeat refreshes",
+    )
     validate_parser.add_argument("--node-server", default=DEFAULT_NODE_SERVER, help="Local Picoin node API used for signed validator liveness")
     validate_parser.add_argument("--node-timeout", type=float, default=10.0, help="Seconds to wait for the local node heartbeat probe")
     validate_parser.add_argument("--submit-timeout", type=float, default=90.0, help="Seconds to wait while submitting a validation vote")
-    validate_parser.add_argument("--workers", type=int, default=1, help="Parallel workers for validating revealed sample digits")
+    validate_parser.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_VALIDATOR_WORKERS,
+        help="Parallel workers for validating revealed sample digits",
+    )
     validate_parser.set_defaults(func=command_validate)
 
     return parser.parse_args()
