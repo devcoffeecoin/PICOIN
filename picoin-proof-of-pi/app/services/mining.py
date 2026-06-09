@@ -691,11 +691,7 @@ def adaptive_required_validator_approvals(eligible_validators: int) -> int:
 
 
 def _effective_required_validator_approvals(connection: Any, params: dict[str, Any] | None = None) -> int:
-    eligible_count = len(_eligible_validator_rows(connection))
-    if eligible_count <= 0:
-        return int((params or {}).get("required_validator_approvals") or REQUIRED_VALIDATOR_APPROVALS)
-    configured = int((params or {}).get("required_validator_approvals") or REQUIRED_VALIDATOR_APPROVALS)
-    return max(1, min(configured, adaptive_required_validator_approvals(eligible_count)))
+    return max(1, int((params or {}).get("required_validator_approvals") or REQUIRED_VALIDATOR_APPROVALS))
 
 
 def refresh_participant_liveness(now: datetime | None = None, *, force: bool = False) -> dict[str, Any]:

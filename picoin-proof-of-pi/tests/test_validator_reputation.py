@@ -31,6 +31,7 @@ def test_validator_reputation_tracks_completed_approved_jobs(tmp_path, monkeypat
     monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
     monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
     init_db(db_path)
+    _set_required_validator_approvals(1)
 
     miner_id = _register_miner("miner-ok")
     validator_keys = generate_keypair()
@@ -69,6 +70,67 @@ def test_validator_reputation_tracks_completed_approved_jobs(tmp_path, monkeypat
     assert updated["invalid_results"] == 0
     assert updated["trust_score"] == 1.0
     assert updated["avg_validation_ms"] >= 0
+
+
+def test_quorum_does_not_drop_when_validators_go_stale(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "validator-quorum-no-downgrade.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    miner_id = _register_miner("miner-quorum-no-downgrade")
+    first_keys = generate_keypair()
+    second_keys = generate_keypair()
+    third_keys = generate_keypair()
+    first_validator = register_validator("validator-one", first_keys["public_key"])
+    second_validator = register_validator("validator-two", second_keys["public_key"])
+    third_validator = register_validator("validator-three", third_keys["public_key"])
+    job_id, task_id = _insert_validation_job(miner_id, first_validator["validator_id"], suffix="nodowngrade")
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE validators
+            SET online_status = 'stale'
+            WHERE validator_id IN (?, ?)
+            """,
+            (second_validator["validator_id"], third_validator["validator_id"]),
+        )
+
+    signed_at = "2026-05-10T00:00:00+00:00"
+    reason = "accepted by first"
+    response = submit_validation_result(
+        job_id=job_id,
+        validator_id=first_validator["validator_id"],
+        approved=True,
+        reason=reason,
+        signature=_sign_validation_result(
+            first_keys["private_key"],
+            job_id,
+            first_validator["validator_id"],
+            task_id,
+            True,
+            reason,
+            signed_at,
+        ),
+        signed_at=signed_at,
+    )
+
+    assert response["status"] == "validation_pending"
+    assert response["approvals"] == 1
+    assert response["required_approvals"] == 3
+    assert response["block"] is None
+    with get_connection() as connection:
+        job = connection.execute("SELECT status, completed_at FROM validation_jobs WHERE job_id = ?", (job_id,)).fetchone()
+        block_count = connection.execute("SELECT COUNT(*) AS count FROM blocks WHERE task_id = ?", (task_id,)).fetchone()
+        certificate_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM finality_certificates WHERE task_id = ?",
+            (task_id,),
+        ).fetchone()
+    assert job["status"] == "pending"
+    assert job["completed_at"] is None
+    assert block_count["count"] == 0
+    assert certificate_count["count"] == 0
 
 
 def test_block_is_accepted_after_validator_quorum(tmp_path, monkeypatch) -> None:
@@ -481,6 +543,14 @@ def _register_miner(name: str) -> str:
     keys = generate_keypair()
     miner = register_miner(name, keys["public_key"])
     return miner["miner_id"]
+
+
+def _set_required_validator_approvals(required: int) -> None:
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE protocol_params SET required_validator_approvals = ? WHERE active = 1",
+            (required,),
+        )
 
 
 def _signed_validator_heartbeat(keys: dict[str, str], validator_id: str) -> dict:
