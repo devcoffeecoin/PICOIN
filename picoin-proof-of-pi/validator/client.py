@@ -277,12 +277,13 @@ def command_validate(args: argparse.Namespace) -> int:
                 timeout=args.node_timeout,
             )
         except requests.RequestException as exc:
-            print(f"Validator coordinator temporarily unavailable during heartbeat: {exc}", file=sys.stderr)
-            if args.once:
-                return 0
-            time.sleep(args.sleep)
-            continue
-        if heartbeat.get("eligible") is False:
+            print(
+                f"Validator coordinator temporarily unavailable during heartbeat: {exc}; "
+                "continuing to poll validation jobs with previous liveness",
+                file=sys.stderr,
+            )
+            heartbeat = None
+        if heartbeat is not None and heartbeat.get("eligible") is False:
             print(
                 f"Validator node heartbeat accepted but not eligible: "
                 f"{heartbeat.get('reason_if_not_eligible') or heartbeat.get('sync_status') or heartbeat.get('online_status')}"
