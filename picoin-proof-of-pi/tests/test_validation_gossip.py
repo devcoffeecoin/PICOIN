@@ -13,6 +13,7 @@ from app.db.database import get_connection, init_db
 from app.services import mining as mining_service
 from app.services.mining import (
     MiningError,
+    get_task_status,
     list_validation_job_inventory,
     list_task_inventory,
     receive_validation_job_gossip,
@@ -276,3 +277,99 @@ def test_validation_vote_gossip_requires_valid_signature_and_is_idempotent(tmp_p
     }
     with pytest.raises(MiningError):
         receive_validation_vote_gossip(bad_vote, source_peer="http://node-b")
+
+
+def test_vote_gossip_marks_already_accepted_block_job_approved(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "already-accepted-vote.sqlite3")
+    monkeypatch.setattr(mining_service, "_effective_required_validator_approvals", lambda connection, params: 1)
+
+    miner = register_miner("accepted-block-miner", generate_keypair()["public_key"])
+    validator_keys = generate_keypair()
+    validator = register_validator("accepted-block-validator", validator_keys["public_key"])
+    now = datetime.now(timezone.utc).isoformat()
+    task_id = "task_already_accepted"
+    job_id = "job_already_accepted"
+    result_hash = "1" * 64
+    merkle_root = "2" * 64
+    block_hash = "3" * 64
+    with get_connection() as connection:
+        protocol_params_id = connection.execute(
+            "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at, submitted_at
+            )
+            VALUES (?, ?, 3000, 3007, 'bbp_hex_v1', 'accepted', ?, ?, ?)
+            """,
+            (task_id, miner["miner_id"], protocol_params_id, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO blocks (
+                height, previous_hash, miner_id, range_start, range_end, algorithm,
+                result_hash, merkle_root, samples, timestamp, block_hash, reward,
+                reward_units, tx_merkle_root, tx_count, tx_hashes, task_id,
+                protocol_params_id, protocol_version, validation_mode
+            )
+            VALUES (
+                1, ?, ?, 3000, 3007, 'bbp_hex_v1', ?, ?, '[]', ?, ?, 0,
+                0, ?, 0, '[]', ?, ?, '1.0', 'external_commit_reveal'
+            )
+            """,
+            ("0" * 64, miner["miner_id"], result_hash, merkle_root, now, block_hash, "4" * 64, task_id, protocol_params_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO validation_jobs (
+                job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                samples, status, created_at, job_created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, '[]', 'pending', ?, ?)
+            """,
+            (job_id, task_id, miner["miner_id"], result_hash, merkle_root, "5" * 64, now, now),
+        )
+
+    signed_at = datetime.now(timezone.utc).isoformat()
+    reason = "external validator accepted samples"
+    signature = sign_payload(
+        validator_keys["private_key"],
+        build_validation_result_signature_payload(
+            job_id=job_id,
+            validator_id=validator["validator_id"],
+            task_id=task_id,
+            approved=True,
+            reason=reason,
+            signed_at=signed_at,
+        ),
+    )
+    result = receive_validation_vote_gossip(
+        {
+            "vote": {
+                "job_id": job_id,
+                "task_id": task_id,
+                "validator_id": validator["validator_id"],
+                "approved": True,
+                "reason": reason,
+                "signature": signature,
+                "signed_at": signed_at,
+                "validation_ms": 3,
+                "created_at": signed_at,
+            }
+        },
+        source_peer="http://node-b",
+    )
+
+    assert result["status"] == "accepted"
+    assert result["finalization"]["status"] == "approved"
+    with get_connection() as connection:
+        task = connection.execute("SELECT status FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+        job = connection.execute("SELECT status, result_reason FROM validation_jobs WHERE job_id = ?", (job_id,)).fetchone()
+    assert task["status"] == "accepted"
+    assert job["status"] == "approved"
+    assert "already accepted" in job["result_reason"]
+    status = get_task_status(task_id)
+    assert status["status"] == "accepted"
+    assert status["validation"]["status"] == "approved"

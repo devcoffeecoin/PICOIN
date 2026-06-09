@@ -1627,12 +1627,54 @@ def _finalize_validation_quorum_from_gossip(
 ) -> dict[str, Any] | None:
     job_id = job["job_id"]
     if approved and counts["approvals"] >= required:
-        duplicate_block = connection.execute(
-            "SELECT height FROM blocks WHERE result_hash = ? OR task_id = ?",
+        duplicate_block = row_to_dict(connection.execute(
+            "SELECT * FROM blocks WHERE result_hash = ? OR task_id = ?",
             (job["result_hash"], job["task_id"]),
-        ).fetchone()
+        ).fetchone())
         if duplicate_block is not None:
             finalized_at = utc_now()
+            if (
+                str(duplicate_block.get("task_id") or "") == str(job["task_id"])
+                and str(duplicate_block.get("result_hash") or "") == str(job["result_hash"])
+            ):
+                reason_text = f"block already accepted at height {duplicate_block['height']}"
+                connection.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'accepted', submitted_at = COALESCE(submitted_at, ?)
+                    WHERE task_id = ?
+                    """,
+                    (finalized_at, job["task_id"]),
+                )
+                _mark_validation_job_finalized(connection, job_id=job_id, finalized_at=finalized_at)
+                connection.execute(
+                    """
+                    UPDATE validation_jobs
+                    SET status = 'approved', assigned_validator_id = ?, result_reason = ?,
+                        validator_signature = ?, validation_ms = ?, completed_at = ?
+                    WHERE job_id = ?
+                    """,
+                    (validator_id, reason_text, signature, validation_ms, finalized_at, job_id),
+                )
+                finality_certificate = _create_finality_certificate(
+                    connection,
+                    block=duplicate_block,
+                    job_id=job_id,
+                    required_approvals=required,
+                    created_at=finalized_at,
+                )
+                return {
+                    "accepted": True,
+                    "status": "approved",
+                    "message": reason_text,
+                    "block": _decode_block(duplicate_block),
+                    "finality_certificate": finality_certificate,
+                    "approvals": counts["approvals"],
+                    "rejections": counts["rejections"],
+                    "required_approvals": required,
+                    "required_rejections": required,
+                }
+
             reason_text = f"duplicate competitive result already accepted at block {duplicate_block['height']}"
             connection.execute(
                 "UPDATE tasks SET status = 'rejected', submitted_at = ? WHERE task_id = ?",

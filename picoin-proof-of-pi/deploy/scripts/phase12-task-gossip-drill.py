@@ -125,6 +125,8 @@ def summarize_node(view: dict[str, Any], task_id: str | None) -> dict[str, Any]:
     vote_inventory = view.get("validation_vote_inventory") if isinstance(view.get("validation_vote_inventory"), dict) else {}
     replay = replay_payload(sync)
     task_status = view.get("task_status") if isinstance(view.get("task_status"), dict) else None
+    status_validation = task_status.get("validation") if isinstance(task_status, dict) and isinstance(task_status.get("validation"), dict) else {}
+    status_block = task_status.get("block") if isinstance(task_status, dict) and isinstance(task_status.get("block"), dict) else {}
     task_envelope = task_from_inventory(task_inventory, task_id) if task_id else None
     task = task_envelope.get("task") if isinstance(task_envelope, dict) and isinstance(task_envelope.get("task"), dict) else None
     commitment = task_envelope.get("commitment") if isinstance(task_envelope, dict) and isinstance(task_envelope.get("commitment"), dict) else None
@@ -154,6 +156,13 @@ def summarize_node(view: dict[str, Any], task_id: str | None) -> dict[str, Any]:
             "assignment_mode": task.get("assignment_mode") if task else None,
             "has_commitment": commitment is not None,
             "has_snapshot": snapshot is not None,
+            "status_endpoint_status": task_status.get("status") if isinstance(task_status, dict) else None,
+            "block_height": status_block.get("height"),
+            "block_hash": status_block.get("block_hash"),
+            "validation_job_id": status_validation.get("job_id"),
+            "validation_status": status_validation.get("status"),
+            "validation_approvals": status_validation.get("approvals"),
+            "validation_required_approvals": status_validation.get("required_approvals"),
         },
         "errors": view.get("errors") or {},
         "timings": view.get("timings") or {},
@@ -255,7 +264,20 @@ def main() -> int:
             status = str(match.get("status") or "")
             signature = "|".join(
                 str(match.get(key) or "")
-                for key in ("status", "range_start", "range_end", "assignment_seed", "assignment_mode")
+                for key in (
+                    "status",
+                    "range_start",
+                    "range_end",
+                    "assignment_seed",
+                    "assignment_mode",
+                    "status_endpoint_status",
+                    "block_height",
+                    "block_hash",
+                    "validation_job_id",
+                    "validation_status",
+                    "validation_approvals",
+                    "validation_required_approvals",
+                )
             )
             signatures.setdefault(signature, set()).add(str(item["name"]))
             add_check(checks, "task_visible_in_inventory", bool(match.get("found")), f"task_id={args.task_id}", node=str(item["name"]))
@@ -263,6 +285,14 @@ def main() -> int:
             add_check(checks, "task_has_snapshot", bool(match.get("has_snapshot")), f"task_id={args.task_id}", node=str(item["name"]), severity="warning")
             if expected_statuses:
                 add_check(checks, "task_status_expected", status in expected_statuses, f"status={status} expected={sorted(expected_statuses)}", node=str(item["name"]))
+            if status == "accepted" or str(match.get("status_endpoint_status") or "") == "accepted":
+                add_check(
+                    checks,
+                    "accepted_task_validation_approved",
+                    str(match.get("validation_status") or "") == "approved",
+                    f"validation_status={match.get('validation_status')} approvals={match.get('validation_approvals')}/{match.get('validation_required_approvals')}",
+                    node=str(item["name"]),
+                )
         non_empty_signatures = {key: value for key, value in signatures.items() if key.strip("|")}
         add_check(checks, "task_state_converged", len(non_empty_signatures) == 1, f"signatures={non_empty_signatures}")
 
