@@ -53,7 +53,7 @@ while true; do
         --node-server "${PICOIN_VALIDATOR_NODE_SERVER:-http://127.0.0.1:8000}" \
         --node-timeout "${PICOIN_VALIDATOR_NODE_TIMEOUT:-30}" \
         --submit-timeout "${PICOIN_VALIDATOR_SUBMIT_TIMEOUT:-90}" \
-        --loops "${PICOIN_VALIDATOR_LOOPS:-3}" \
+        --loops "${PICOIN_VALIDATOR_LOOPS:-1}" \
         --sleep "${PICOIN_VALIDATOR_SLEEP:-3}"
       rc=$?
 
