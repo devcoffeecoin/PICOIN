@@ -1408,6 +1408,242 @@ def list_fork_choice_groups(limit: int = 10, connection: Any | None = None) -> l
             connection.close()
 
 
+def list_orphan_candidates(limit: int = 20, connection: Any | None = None) -> list[dict[str, Any]]:
+    safe_limit = max(1, min(int(limit or 1), 100))
+    owns_connection = connection is None
+    if owns_connection:
+        connection = get_connection()
+    try:
+        candidates: list[dict[str, Any]] = []
+        seen: set[tuple[int, str, str]] = set()
+        for source in _queued_block_candidates(connection, safe_limit * 3):
+            block = source.get("block") or {}
+            try:
+                height = int(block.get("height") or source.get("height") or 0)
+            except (TypeError, ValueError):
+                continue
+            if height <= 1:
+                continue
+            previous_hash = str(block.get("previous_hash") or source.get("previous_hash") or "")
+            if not previous_hash:
+                continue
+            local_parent = row_to_dict(
+                connection.execute(
+                    """
+                    SELECT height, block_hash, previous_hash, task_id, miner_id, timestamp
+                    FROM blocks
+                    WHERE height = ?
+                    """,
+                    (height - 1,),
+                ).fetchone()
+            )
+            if local_parent is None or str(local_parent["block_hash"]) == previous_hash:
+                continue
+            key = (height - 1, str(local_parent["block_hash"]), previous_hash)
+            if key in seen:
+                continue
+            seen.add(key)
+            remote_parent = _find_queued_block_by_hash(connection, previous_hash)
+            local_certificate = _local_finality_certificate_summary(
+                connection,
+                int(local_parent["height"]),
+                str(local_parent["block_hash"]),
+            )
+            child_certificate = _block_finality_certificate_summary(block)
+            remote_parent_certificate = _block_finality_certificate_summary(
+                (remote_parent or {}).get("block") or {}
+            )
+            verdict = "remote_chain_has_certified_child" if child_certificate["quorum_met"] else "missing_remote_parent"
+            candidates.append(
+                {
+                    "local_height": int(local_parent["height"]),
+                    "local_block_hash": local_parent["block_hash"],
+                    "local_task_id": local_parent.get("task_id"),
+                    "remote_parent_hash": previous_hash,
+                    "remote_parent_known": remote_parent is not None,
+                    "remote_parent_source": (remote_parent or {}).get("source"),
+                    "remote_parent_certificate": remote_parent_certificate,
+                    "strongest_child": {
+                        "height": height,
+                        "block_hash": block.get("block_hash") or source.get("block_hash"),
+                        "source": source["source"],
+                        "status": source.get("status"),
+                        "reason": source.get("reason"),
+                        "certificate": child_certificate,
+                    },
+                    "local_certificate": local_certificate,
+                    "verdict": verdict,
+                    "reorg_required": child_certificate["quorum_met"],
+                    "recovery_action": "canonical_reorg_required" if child_certificate["quorum_met"] else "fetch_missing_parent",
+                }
+            )
+            if len(candidates) >= safe_limit:
+                break
+        return candidates
+    finally:
+        if owns_connection:
+            connection.close()
+
+
+def _queued_block_candidates(connection: Any, limit: int) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    proposal_rows = connection.execute(
+        """
+        SELECT proposal_id AS id, block_hash, height, previous_hash, status,
+               rejection_reason AS reason, payload, updated_at AS seen_at
+        FROM consensus_block_proposals
+        WHERE status NOT IN ('rejected', 'imported')
+        ORDER BY height ASC, updated_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    for row in proposal_rows:
+        block = _json_block_payload(row["payload"])
+        rows.append(
+            {
+                "source": "proposal",
+                "id": row["id"],
+                "block_hash": row["block_hash"],
+                "height": int(row["height"]),
+                "previous_hash": row["previous_hash"],
+                "status": row["status"],
+                "reason": row["reason"],
+                "seen_at": row["seen_at"],
+                "block": block,
+            }
+        )
+    header_rows = connection.execute(
+        """
+        SELECT block_hash AS id, block_hash, height, previous_hash, status,
+               reason, payload, received_at AS seen_at
+        FROM network_block_headers
+        WHERE status IN ('pending_replay', 'pending_missing_ancestors')
+        ORDER BY height ASC, received_at DESC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+    for row in header_rows:
+        block = _json_block_payload(row["payload"])
+        rows.append(
+            {
+                "source": "header",
+                "id": row["id"],
+                "block_hash": row["block_hash"],
+                "height": int(row["height"]),
+                "previous_hash": row["previous_hash"],
+                "status": row["status"],
+                "reason": row["reason"],
+                "seen_at": row["seen_at"],
+                "block": block,
+            }
+        )
+    rows.sort(key=lambda item: (int(item.get("height") or 0), str(item.get("seen_at") or ""), str(item["source"])))
+    return rows[:limit]
+
+
+def _find_queued_block_by_hash(connection: Any, block_hash: str) -> dict[str, Any] | None:
+    row = connection.execute(
+        """
+        SELECT proposal_id AS id, block_hash, height, previous_hash, status,
+               rejection_reason AS reason, payload, updated_at AS seen_at
+        FROM consensus_block_proposals
+        WHERE block_hash = ? AND status NOT IN ('rejected')
+        ORDER BY updated_at DESC
+        LIMIT 1
+        """,
+        (block_hash,),
+    ).fetchone()
+    if row is not None:
+        return {
+            "source": "proposal",
+            "id": row["id"],
+            "block_hash": row["block_hash"],
+            "height": int(row["height"]),
+            "previous_hash": row["previous_hash"],
+            "status": row["status"],
+            "reason": row["reason"],
+            "seen_at": row["seen_at"],
+            "block": _json_block_payload(row["payload"]),
+        }
+    row = connection.execute(
+        """
+        SELECT block_hash AS id, block_hash, height, previous_hash, status,
+               reason, payload, received_at AS seen_at
+        FROM network_block_headers
+        WHERE block_hash = ?
+        ORDER BY received_at DESC
+        LIMIT 1
+        """,
+        (block_hash,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "source": "header",
+        "id": row["id"],
+        "block_hash": row["block_hash"],
+        "height": int(row["height"]),
+        "previous_hash": row["previous_hash"],
+        "status": row["status"],
+        "reason": row["reason"],
+        "seen_at": row["seen_at"],
+        "block": _json_block_payload(row["payload"]),
+    }
+
+
+def _json_block_payload(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, dict):
+        return payload
+    try:
+        decoded = json.loads(payload or "{}")
+    except (TypeError, ValueError):
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _block_finality_certificate_summary(block: dict[str, Any] | None) -> dict[str, Any]:
+    certificate = (block or {}).get("finality_certificate") or {}
+    if not isinstance(certificate, dict):
+        certificate = {}
+    return _certificate_summary(certificate)
+
+
+def _local_finality_certificate_summary(connection: Any, height: int, block_hash: str) -> dict[str, Any]:
+    row = connection.execute(
+        """
+        SELECT required_approvals, approval_count, certificate_hash, job_id, task_id, created_at
+        FROM finality_certificates
+        WHERE block_height = ? AND block_hash = ?
+        """,
+        (height, block_hash),
+    ).fetchone()
+    if row is None:
+        return _certificate_summary({})
+    return _certificate_summary(row_to_dict(row))
+
+
+def _certificate_summary(certificate: dict[str, Any]) -> dict[str, Any]:
+    try:
+        required = int(certificate.get("required_approvals") or 0)
+    except (TypeError, ValueError):
+        required = 0
+    try:
+        approvals = int(certificate.get("approval_count") or 0)
+    except (TypeError, ValueError):
+        approvals = 0
+    return {
+        "required_approvals": required,
+        "approval_count": approvals,
+        "quorum_met": required > 0 and approvals >= required,
+        "certificate_hash": certificate.get("certificate_hash"),
+        "job_id": certificate.get("job_id"),
+        "task_id": certificate.get("task_id"),
+        "created_at": certificate.get("created_at"),
+    }
+
+
 def list_block_proposals(status: str | None = None, limit: int = 100) -> list[dict[str, Any]]:
     query = "SELECT * FROM consensus_block_proposals"
     params: tuple[Any, ...]
@@ -1648,6 +1884,7 @@ def consensus_status() -> dict[str, Any]:
         ).fetchall()
         fork_groups = list_fork_choice_groups(limit=10, connection=connection)
         competing_proposals = sum(int(group["proposal_count"]) for group in fork_groups)
+        orphan_candidates = list_orphan_candidates(limit=10, connection=connection)
     quorum_warning = None
     if eligible_count < required_approvals:
         quorum_warning = (
@@ -1679,6 +1916,8 @@ def consensus_status() -> dict[str, Any]:
         "competing_proposal_count": competing_proposals,
         "fork_groups": fork_groups,
         "fork_choices": [group["winner"] for group in fork_groups if group.get("winner") is not None],
+        "orphan_candidate_count": len(orphan_candidates),
+        "orphan_candidates": orphan_candidates,
         "validation_timing": {
             "jobs_total": int(validation_timing["jobs_total"] if validation_timing else 0),
             "jobs_pending": int(validation_timing["jobs_pending"] if validation_timing else 0),

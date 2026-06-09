@@ -736,3 +736,39 @@ This slice directly addresses the remaining lab behavior where a miner can hold
 or reuse a pending task while the network progresses. That behavior should be
 resolved by protocol task-state gossip, not by manual database cleanup or by
 lowering quorum.
+
+## Phase 12 Lab Evidence: Deterministic Candidate Finalization
+
+The A/B/C lab exposed a consensus safety bug before automatic reorg work:
+validators could approve the same validation job, but different nodes could
+create different block hashes for that job because finalization used each
+node's local clock for `timestamp` and `total_block_ms`.
+
+Fix `fa42f21` makes validation-job block finalization deterministic by deriving
+the block timestamp from `validation_jobs.job_created_at`. After all three
+candidates were restored to the same tip, A mined block `11506`, the job reached
+`required_approvals=3`, and A/B/C all converged to the same block hash:
+
+- Height: `11506`
+- Hash: `5508b9c077583b932b3de81ed1d68fc43701057b8d30eadb862561205a094a4f`
+- Job: `job_79fc45d9bdfb46b0`
+- Task: `task_c930b6fec6fd2f95`
+- Votes: A/B/C validator quorum, `3/3`
+- Replay: healthy on all candidates
+
+## Phase 13 Slice: Orphan/Fork Detection Before Reorg
+
+Goal: detect the losing local branch before implementing destructive reorg.
+
+Implementation work:
+
+- Add a read-only orphan detector that looks for queued certified blocks whose
+  `previous_hash` points away from the local parent block.
+- Surface local orphan candidates through `/consensus/status` and
+  `/consensus/orphans`.
+- Include local block hash, remote parent hash, remote parent availability,
+  child certificate quorum, and recommended recovery action.
+
+This is intentionally diagnostic only. The next slice will use this detector to
+perform bounded canonical reorg from a shared ancestor, with accounting rollback
+tests before any mainnet use.

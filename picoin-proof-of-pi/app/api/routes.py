@@ -89,6 +89,7 @@ from app.services.consensus import (
     get_replay_status,
     list_consensus_votes,
     list_block_proposals,
+    list_orphan_candidates,
     replay_divergence_report,
     replay_finalized_blocks,
     vote_on_proposal,
@@ -446,6 +447,15 @@ def node_reconcile(
 @router.get("/consensus/status", response_model=ConsensusStatusResponse)
 def consensus_status_route() -> dict:
     return consensus_status()
+
+
+@router.get("/consensus/orphans")
+def consensus_orphans(limit: int = Query(20, ge=1, le=100)) -> dict:
+    candidates = list_orphan_candidates(limit=limit)
+    return {
+        "count": len(candidates),
+        "candidates": candidates,
+    }
 
 
 @router.get("/consensus/debug/block/{height}")

@@ -14,6 +14,7 @@ from app.services.consensus import (
     block_hash_debug,
     debug_block_determinism,
     get_replay_status,
+    list_orphan_candidates,
     propose_block,
     replay_finalized_blocks,
 )
@@ -1009,6 +1010,85 @@ def test_health_keeps_missing_ancestor_replay_recoverable(tmp_path, monkeypatch)
     assert health["divergence_detected"] is False
     assert health["mining_ready"] is False
     assert health["can_assign_tasks"] is False
+
+
+def test_orphan_detector_flags_local_parent_when_remote_certified_child_continues_other_hash(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _init_network_db(tmp_path, monkeypatch, "orphan-detector.sqlite3")
+    miner_key = generate_keypair()
+    miner = register_miner("orphan-detector-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    local_block = get_block(1)
+    assert local_block is not None
+
+    remote_parent_hash = "8" * 64
+    remote_child_hash = "9" * 64
+    timestamp = "2026-06-09T17:30:00+00:00"
+    remote_parent = {
+        "height": 1,
+        "previous_hash": GENESIS_HASH,
+        "block_hash": remote_parent_hash,
+        "timestamp": timestamp,
+        "finality_certificate": {
+            "required_approvals": 3,
+            "approval_count": 3,
+            "certificate_hash": "a" * 64,
+            "job_id": "job_remote_parent",
+            "task_id": "task_remote_parent",
+            "created_at": timestamp,
+        },
+    }
+    remote_child = {
+        "height": 2,
+        "previous_hash": remote_parent_hash,
+        "block_hash": remote_child_hash,
+        "timestamp": timestamp,
+        "finality_certificate": {
+            "required_approvals": 3,
+            "approval_count": 3,
+            "certificate_hash": "b" * 64,
+            "job_id": "job_remote_child",
+            "task_id": "task_remote_child",
+            "created_at": timestamp,
+        },
+    }
+    with get_connection() as connection:
+        for block in (remote_parent, remote_child):
+            connection.execute(
+                """
+                INSERT INTO consensus_block_proposals (
+                    proposal_id, block_hash, height, previous_hash, proposer_node_id,
+                    status, payload, approvals, rejections, rejection_reason,
+                    finalized_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, 'remote-node', 'pending_missing_ancestors', ?, 0, 0,
+                        'proposal accepted but previous_hash is not local chain tip', NULL, ?, ?)
+                """,
+                (
+                    sha256_text(f"proposal:{block['block_hash']}"),
+                    block["block_hash"],
+                    block["height"],
+                    block["previous_hash"],
+                    json.dumps(block, sort_keys=True),
+                    timestamp,
+                    timestamp,
+                ),
+            )
+
+    candidates = list_orphan_candidates()
+
+    assert candidates
+    candidate = candidates[0]
+    assert candidate["local_height"] == 1
+    assert candidate["local_block_hash"] == local_block["block_hash"]
+    assert candidate["remote_parent_hash"] == remote_parent_hash
+    assert candidate["remote_parent_known"] is True
+    assert candidate["strongest_child"]["block_hash"] == remote_child_hash
+    assert candidate["strongest_child"]["certificate"]["quorum_met"] is True
+    assert candidate["verdict"] == "remote_chain_has_certified_child"
+    assert candidate["reorg_required"] is True
 
 
 def test_sync_blocks_drains_replay_backlog_with_bounded_batch(tmp_path, monkeypatch) -> None:
