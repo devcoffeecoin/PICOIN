@@ -1800,6 +1800,32 @@ def test_canonical_snapshot_exports_and_imports_into_fresh_node(tmp_path, monkey
     assert imports[0]["source"] == "peer-a"
 
 
+def test_canonical_snapshot_export_retries_invalid_racy_document(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "snapshot-export-racy-source.sqlite3")
+
+    miner_key = generate_keypair()
+    miner = register_miner("snapshot-export-racy-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    real_validate = validate_snapshot_document
+    calls = {"count": 0}
+
+    def flaky_validate(document: dict) -> dict:
+        calls["count"] += 1
+        result = real_validate(document)
+        if calls["count"] == 1:
+            return {**result, "valid": False, "issues": ["snapshot_hash mismatch"]}
+        return result
+
+    monkeypatch.setattr("app.services.state.validate_snapshot_document", flaky_validate)
+
+    snapshot = export_canonical_snapshot(height=1)
+
+    assert calls["count"] == 2
+    assert snapshot["valid"] is True
+    assert snapshot["issues"] == []
+    assert real_validate(snapshot)["valid"] is True
+
+
 def test_snapshot_restore_preserves_retargeted_protocol_params_for_replay(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "snapshot-protocol-source.sqlite3")
     active_protocol_params_id = _retarget_active_protocol_for_test(segment_size=8, difficulty=0.03125)
