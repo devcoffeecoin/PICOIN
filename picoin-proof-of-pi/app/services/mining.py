@@ -1023,6 +1023,371 @@ def _json_payload_text(value: Any, default: Any) -> str:
     return json.dumps(value, sort_keys=True)
 
 
+TASK_GOSSIP_STATUSES = {"assigned", "committed", "revealed", "accepted", "rejected", "stale", "expired"}
+_TASK_GOSSIP_STATUS_RANK = {
+    "assigned": 10,
+    "committed": 20,
+    "revealed": 30,
+    "expired": 40,
+    "rejected": 40,
+    "stale": 40,
+    "accepted": 50,
+}
+
+
+def _decode_task_gossip_row(row: Any) -> dict[str, Any]:
+    task = row_to_dict(row)
+    if task is None:
+        return {}
+    task["selected_tx_hashes"] = json.loads(task.get("selected_tx_hashes") or "[]")
+    return task
+
+
+def _decode_commitment_gossip_row(row: Any) -> dict[str, Any] | None:
+    commitment = row_to_dict(row)
+    if commitment is None:
+        return None
+    commitment["samples"] = json.loads(commitment.get("samples") or "[]")
+    return commitment
+
+
+def _decode_task_tx_snapshot_gossip_row(row: Any) -> dict[str, Any] | None:
+    snapshot = row_to_dict(row)
+    if snapshot is None:
+        return None
+    snapshot["tx_hashes"] = json.loads(snapshot.get("tx_hashes_json") or "[]")
+    return snapshot
+
+
+def list_task_inventory(status: str | None = None, limit: int = 100) -> dict[str, Any]:
+    safe_limit = max(1, min(int(limit), 500))
+    filters: list[str] = []
+    params: list[Any] = []
+    if status:
+        if status not in TASK_GOSSIP_STATUSES:
+            raise MiningError(422, "invalid task status")
+        filters.append("status = ?")
+        params.append(status)
+    query = "SELECT * FROM tasks"
+    if filters:
+        query += " WHERE " + " AND ".join(filters)
+    query += " ORDER BY COALESCE(submitted_at, stale_at, created_at) DESC, task_id DESC LIMIT ?"
+    params.append(safe_limit)
+
+    with get_connection() as connection:
+        rows = connection.execute(query, tuple(params)).fetchall()
+        tasks: list[dict[str, Any]] = []
+        for row in rows:
+            task = _decode_task_gossip_row(row)
+            if not task:
+                continue
+            miner = row_to_dict(connection.execute("SELECT * FROM miners WHERE miner_id = ?", (task["miner_id"],)).fetchone())
+            commitment = _decode_commitment_gossip_row(
+                connection.execute("SELECT * FROM commitments WHERE task_id = ?", (task["task_id"],)).fetchone()
+            )
+            snapshot = _decode_task_tx_snapshot_gossip_row(
+                connection.execute(
+                    """
+                    SELECT task_tx_snapshots.*
+                    FROM tasks
+                    LEFT JOIN task_tx_snapshots
+                      ON task_tx_snapshots.task_id = tasks.task_id
+                      OR task_tx_snapshots.snapshot_id = tasks.mempool_snapshot_id
+                    WHERE tasks.task_id = ?
+                    ORDER BY CASE WHEN task_tx_snapshots.task_id = tasks.task_id THEN 0 ELSE 1 END
+                    LIMIT 1
+                    """,
+                    (task["task_id"],),
+                ).fetchone()
+            )
+            tasks.append(
+                {
+                    "gossip_version": "task-state-v1",
+                    "task": task,
+                    "miner": miner,
+                    "commitment": commitment,
+                    "snapshot": snapshot,
+                }
+            )
+    return {
+        "status": status,
+        "count": len(tasks),
+        "tasks": tasks,
+        "checked_at": utc_now(),
+    }
+
+
+def _gossip_task_protocol_params_id(connection: Any, task: dict[str, Any]) -> int | None:
+    protocol_params_id = task.get("protocol_params_id")
+    if protocol_params_id is not None:
+        exists = connection.execute("SELECT 1 FROM protocol_params WHERE id = ?", (protocol_params_id,)).fetchone()
+        if exists is not None:
+            return int(protocol_params_id)
+    active_params = connection.execute("SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1").fetchone()
+    return int(active_params["id"]) if active_params else None
+
+
+def _task_gossip_block_height(task: dict[str, Any], snapshot: dict[str, Any] | None) -> int:
+    if snapshot and snapshot.get("block_height") is not None:
+        return int(snapshot.get("block_height") or 0)
+    if task.get("competitive_round_height") is not None:
+        return int(task.get("competitive_round_height") or 0)
+    return 0
+
+
+def _upsert_task_tx_snapshot_from_gossip(connection: Any, task: dict[str, Any], snapshot: dict[str, Any] | None) -> None:
+    task_id = str(task.get("task_id") or "")
+    selected_hashes = task.get("selected_tx_hashes")
+    if isinstance(selected_hashes, str):
+        try:
+            selected_hashes = json.loads(selected_hashes)
+        except (TypeError, ValueError):
+            selected_hashes = []
+    if not isinstance(selected_hashes, list):
+        selected_hashes = []
+    snapshot_id = str(
+        (snapshot or {}).get("snapshot_id")
+        or task.get("mempool_snapshot_id")
+        or ""
+    )
+    if not snapshot_id:
+        return
+    existing = connection.execute(
+        "SELECT 1 FROM task_tx_snapshots WHERE snapshot_id = ? OR task_id = ?",
+        (snapshot_id, task_id),
+    ).fetchone()
+    if existing is not None:
+        return
+    tx_hashes_json = _json_payload_text((snapshot or {}).get("tx_hashes") or selected_hashes, [])
+    connection.execute(
+        """
+        INSERT INTO task_tx_snapshots (
+            snapshot_id, task_id, block_height, tx_hashes_json, tx_merkle_root,
+            tx_count, tx_fee_total_units, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            snapshot_id,
+            task_id,
+            _task_gossip_block_height(task, snapshot),
+            tx_hashes_json,
+            str((snapshot or {}).get("tx_merkle_root") or task.get("tx_merkle_root") or ""),
+            int((snapshot or {}).get("tx_count") or task.get("tx_count") or 0),
+            int((snapshot or {}).get("tx_fee_total_units") or task.get("tx_fee_total_units") or 0),
+            str((snapshot or {}).get("created_at") or task.get("created_at") or utc_now()),
+        ),
+    )
+
+
+def _validate_gossip_commitment(task: dict[str, Any], miner: dict[str, Any], commitment: dict[str, Any]) -> None:
+    signature = str(commitment.get("signature") or "")
+    signed_at = str(commitment.get("signed_at") or "")
+    payload = build_commit_signature_payload(
+        task_id=str(task["task_id"]),
+        miner_id=str(task["miner_id"]),
+        range_start=int(task.get("range_start") or 0),
+        range_end=int(task.get("range_end") or 0),
+        algorithm=str(task.get("algorithm") or "bbp_hex_v1"),
+        result_hash=str(commitment.get("result_hash") or ""),
+        merkle_root=str(commitment.get("merkle_root") or ""),
+        signed_at=signed_at,
+        tx_merkle_root=str(commitment.get("tx_merkle_root") or ""),
+        mempool_snapshot_id=str(commitment.get("mempool_snapshot_id") or ""),
+        selected_tx_hashes_hash=str(commitment.get("selected_tx_hashes_hash") or ""),
+        tx_count=int(commitment.get("tx_count") or 0),
+        tx_fee_total_units=int(commitment.get("tx_fee_total_units") or 0),
+        chain_id=CHAIN_ID,
+        network_id=NETWORK_ID,
+    )
+    try:
+        signature_valid = verify_payload_signature(str(miner.get("public_key") or ""), payload, signature)
+    except (RuntimeError, ValueError):
+        signature_valid = False
+    if not signature_valid and int(commitment.get("tx_count") or 0) == 0:
+        legacy_payload = build_commit_signature_payload(
+            task_id=str(task["task_id"]),
+            miner_id=str(task["miner_id"]),
+            range_start=int(task.get("range_start") or 0),
+            range_end=int(task.get("range_end") or 0),
+            algorithm=str(task.get("algorithm") or "bbp_hex_v1"),
+            result_hash=str(commitment.get("result_hash") or ""),
+            merkle_root=str(commitment.get("merkle_root") or ""),
+            signed_at=signed_at,
+        )
+        try:
+            signature_valid = verify_payload_signature(str(miner.get("public_key") or ""), legacy_payload, signature)
+        except (RuntimeError, ValueError):
+            signature_valid = False
+    if not signature_valid:
+        raise MiningError(400, "invalid task commitment signature")
+
+
+def receive_task_gossip(payload: dict[str, Any], source_peer: str | None = None) -> dict[str, Any]:
+    envelope = dict(payload or {})
+    task = dict(envelope.get("task") or envelope)
+    miner = envelope.get("miner") if isinstance(envelope.get("miner"), dict) else None
+    commitment = envelope.get("commitment") if isinstance(envelope.get("commitment"), dict) else None
+    snapshot = envelope.get("snapshot") if isinstance(envelope.get("snapshot"), dict) else None
+    task_id = str(task.get("task_id") or "").strip()
+    miner_id = str(task.get("miner_id") or "").strip()
+    status = str(task.get("status") or "").strip()
+    if not task_id or not miner_id or not status:
+        raise MiningError(422, "task gossip requires task_id, miner_id, and status")
+    if status not in TASK_GOSSIP_STATUSES:
+        raise MiningError(422, "invalid task gossip status")
+
+    with get_connection() as connection:
+        existing_task = row_to_dict(connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone())
+        inserted_task = existing_task is None
+        commitment_inserted = False
+        if existing_task is not None:
+            for column in ("miner_id", "range_start", "range_end", "algorithm"):
+                if str(existing_task.get(column)) != str(task.get(column, existing_task.get(column))):
+                    raise MiningError(409, f"task gossip mismatch: {column}")
+        else:
+            _insert_gossip_miner_if_missing(connection, miner, miner_id)
+            protocol_params_id = _gossip_task_protocol_params_id(connection, task)
+            connection.execute(
+                """
+                INSERT INTO tasks (
+                    task_id, miner_id, range_start, range_end, algorithm, status,
+                    assignment_seed, assignment_mode, competitive_round_height,
+                    competitive_round_previous_hash, assignment_ms, compute_ms,
+                    protocol_params_id, created_at, expires_at, submitted_at,
+                    stale_at, stale_reason, mempool_snapshot_id, selected_tx_hashes,
+                    tx_merkle_root, tx_count, tx_fee_total_units, selected_tx_hashes_hash
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    task_id,
+                    miner_id,
+                    int(task.get("range_start") or 0),
+                    int(task.get("range_end") or 0),
+                    str(task.get("algorithm") or "bbp_hex_v1"),
+                    status,
+                    task.get("assignment_seed"),
+                    task.get("assignment_mode"),
+                    task.get("competitive_round_height"),
+                    task.get("competitive_round_previous_hash"),
+                    task.get("assignment_ms"),
+                    task.get("compute_ms"),
+                    protocol_params_id,
+                    str(task.get("created_at") or utc_now()),
+                    task.get("expires_at"),
+                    task.get("submitted_at"),
+                    task.get("stale_at"),
+                    task.get("stale_reason"),
+                    task.get("mempool_snapshot_id"),
+                    _json_payload_text(task.get("selected_tx_hashes"), []),
+                    str(task.get("tx_merkle_root") or ""),
+                    int(task.get("tx_count") or 0),
+                    int(task.get("tx_fee_total_units") or 0),
+                    task.get("selected_tx_hashes_hash"),
+                ),
+            )
+            existing_task = row_to_dict(connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone())
+
+        _upsert_task_tx_snapshot_from_gossip(connection, task, snapshot)
+
+        if commitment is not None:
+            db_miner = row_to_dict(connection.execute("SELECT * FROM miners WHERE miner_id = ?", (miner_id,)).fetchone())
+            if db_miner is None:
+                raise MiningError(404, "task gossip miner not found")
+            existing_commitment = row_to_dict(connection.execute("SELECT * FROM commitments WHERE task_id = ?", (task_id,)).fetchone())
+            if existing_commitment is not None:
+                for column in ("miner_id", "result_hash", "merkle_root", "challenge_seed"):
+                    if str(existing_commitment.get(column)) != str(commitment.get(column, existing_commitment.get(column))):
+                        raise MiningError(409, f"task commitment mismatch: {column}")
+            else:
+                _validate_gossip_commitment(task, db_miner, commitment)
+                connection.execute(
+                    """
+                    INSERT INTO commitments (
+                        task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                        samples, tx_merkle_root, mempool_snapshot_id, selected_tx_hashes_hash,
+                        tx_count, tx_fee_total_units, signature, signed_at, commit_ms, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        task_id,
+                        miner_id,
+                        str(commitment.get("result_hash") or ""),
+                        str(commitment.get("merkle_root") or ""),
+                        str(commitment.get("challenge_seed") or ""),
+                        _json_payload_text(commitment.get("samples"), []),
+                        str(commitment.get("tx_merkle_root") or ""),
+                        commitment.get("mempool_snapshot_id"),
+                        commitment.get("selected_tx_hashes_hash"),
+                        int(commitment.get("tx_count") or 0),
+                        int(commitment.get("tx_fee_total_units") or 0),
+                        str(commitment.get("signature") or ""),
+                        str(commitment.get("signed_at") or ""),
+                        commitment.get("commit_ms"),
+                        str(commitment.get("created_at") or utc_now()),
+                    ),
+                )
+                commitment_inserted = True
+
+        incoming_rank = _TASK_GOSSIP_STATUS_RANK[status]
+        existing_status = str((existing_task or {}).get("status") or "")
+        existing_rank = _TASK_GOSSIP_STATUS_RANK.get(existing_status, 0)
+        selected_tx_hashes_text = _json_payload_text(task.get("selected_tx_hashes"), [])
+        task_changed = inserted_task or status != existing_status
+        for column in (
+            "expires_at",
+            "submitted_at",
+            "stale_at",
+            "stale_reason",
+            "compute_ms",
+            "mempool_snapshot_id",
+            "tx_merkle_root",
+            "tx_count",
+            "tx_fee_total_units",
+            "selected_tx_hashes_hash",
+        ):
+            if task.get(column) is not None and str((existing_task or {}).get(column) or "") != str(task.get(column) or ""):
+                task_changed = True
+                break
+        if str((existing_task or {}).get("selected_tx_hashes") or "[]") != selected_tx_hashes_text:
+            task_changed = True
+
+        if incoming_rank > existing_rank or (incoming_rank == existing_rank and (task_changed or commitment_inserted)):
+            connection.execute(
+                """
+                UPDATE tasks
+                SET status = ?, expires_at = ?, submitted_at = ?, stale_at = ?,
+                    stale_reason = ?, compute_ms = COALESCE(?, compute_ms),
+                    mempool_snapshot_id = COALESCE(?, mempool_snapshot_id),
+                    selected_tx_hashes = ?,
+                    tx_merkle_root = COALESCE(?, tx_merkle_root),
+                    tx_count = COALESCE(?, tx_count),
+                    tx_fee_total_units = COALESCE(?, tx_fee_total_units),
+                    selected_tx_hashes_hash = COALESCE(?, selected_tx_hashes_hash)
+                WHERE task_id = ?
+                """,
+                (
+                    status,
+                    task.get("expires_at"),
+                    task.get("submitted_at"),
+                    task.get("stale_at"),
+                    task.get("stale_reason"),
+                    task.get("compute_ms"),
+                    task.get("mempool_snapshot_id"),
+                    selected_tx_hashes_text,
+                    task.get("tx_merkle_root"),
+                    task.get("tx_count"),
+                    task.get("tx_fee_total_units"),
+                    task.get("selected_tx_hashes_hash"),
+                    task_id,
+                ),
+            )
+            return {"status": "accepted", "task_id": task_id, "task_status": status, "source_peer": source_peer}
+    return {"status": "duplicate", "task_id": task_id, "task_status": existing_status, "source_peer": source_peer}
+
+
 def _decode_validation_job_gossip_row(row: Any) -> dict[str, Any]:
     job = row_to_dict(row)
     job["samples"] = json.loads(job.get("samples") or "[]")

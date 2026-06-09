@@ -2,17 +2,27 @@ from datetime import datetime, timezone
 
 import pytest
 
-from app.core.signatures import build_validation_result_signature_payload, generate_keypair, sign_payload
+from app.core.signatures import (
+    build_commit_signature_payload,
+    build_reveal_signature_payload,
+    build_validation_result_signature_payload,
+    generate_keypair,
+    sign_payload,
+)
 from app.db.database import get_connection, init_db
 from app.services import mining as mining_service
 from app.services.mining import (
     MiningError,
     list_validation_job_inventory,
+    list_task_inventory,
     receive_validation_job_gossip,
+    receive_task_gossip,
     receive_validation_vote_gossip,
     register_miner,
     register_validator,
+    reveal_task,
 )
+from app.services.transactions import transaction_commitment
 
 
 def _use_db(tmp_path, monkeypatch, name: str):
@@ -78,6 +88,133 @@ def test_validation_job_gossip_imports_task_and_miner(tmp_path, monkeypatch) -> 
     assert job is not None
     assert job["status"] == "pending"
     assert miner is not None
+
+
+def test_task_gossip_imports_commitment_and_snapshot_for_reveal(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "source-task.sqlite3")
+    miner_keys = generate_keypair()
+    miner = register_miner("task-gossip-miner", miner_keys["public_key"])
+    task_id = "task_state_gossip"
+    now = datetime.now(timezone.utc).isoformat()
+    tx_commitment = transaction_commitment([])
+    snapshot_id = "snapshot_task_state_gossip"
+    result_hash = "d" * 64
+    merkle_root = "e" * 64
+    challenge_seed = "f" * 64
+    signed_at = now
+    commit_signature = sign_payload(
+        miner_keys["private_key"],
+        build_commit_signature_payload(
+            task_id=task_id,
+            miner_id=miner["miner_id"],
+            range_start=2000,
+            range_end=2007,
+            algorithm="bbp_hex_v1",
+            result_hash=result_hash,
+            merkle_root=merkle_root,
+            signed_at=signed_at,
+            tx_merkle_root=tx_commitment["tx_merkle_root"],
+            mempool_snapshot_id=snapshot_id,
+            selected_tx_hashes_hash=tx_commitment["selected_tx_hashes_hash"],
+            tx_count=tx_commitment["tx_count"],
+            tx_fee_total_units=tx_commitment["tx_fee_total_units"],
+            chain_id=mining_service.CHAIN_ID,
+            network_id=mining_service.NETWORK_ID,
+        ),
+    )
+    with get_connection() as connection:
+        protocol_params_id = connection.execute(
+            "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at, mempool_snapshot_id,
+                selected_tx_hashes, tx_merkle_root, tx_count,
+                tx_fee_total_units, selected_tx_hashes_hash
+            )
+            VALUES (?, ?, 2000, 2007, 'bbp_hex_v1', 'committed', ?, ?, ?, '[]', ?, 0, 0, ?)
+            """,
+            (task_id, miner["miner_id"], protocol_params_id, now, snapshot_id, tx_commitment["tx_merkle_root"], tx_commitment["selected_tx_hashes_hash"]),
+        )
+        connection.execute(
+            """
+            INSERT INTO task_tx_snapshots (
+                snapshot_id, task_id, block_height, tx_hashes_json, tx_merkle_root,
+                tx_count, tx_fee_total_units, created_at
+            )
+            VALUES (?, ?, 1, '[]', ?, 0, 0, ?)
+            """,
+            (snapshot_id, task_id, tx_commitment["tx_merkle_root"], now),
+        )
+        connection.execute(
+            """
+            INSERT INTO commitments (
+                task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                samples, tx_merkle_root, mempool_snapshot_id, selected_tx_hashes_hash,
+                tx_count, tx_fee_total_units, signature, signed_at, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, '[]', ?, ?, ?, 0, 0, ?, ?, ?)
+            """,
+            (
+                task_id,
+                miner["miner_id"],
+                result_hash,
+                merkle_root,
+                challenge_seed,
+                tx_commitment["tx_merkle_root"],
+                snapshot_id,
+                tx_commitment["selected_tx_hashes_hash"],
+                commit_signature,
+                signed_at,
+                now,
+            ),
+        )
+    envelope = list_task_inventory(status="committed")["tasks"][0]
+
+    _use_db(tmp_path, monkeypatch, "target-task.sqlite3")
+    result = receive_task_gossip(envelope, source_peer="http://node-a")
+    duplicate = receive_task_gossip(envelope, source_peer="http://node-a")
+
+    assert result["status"] == "accepted"
+    assert duplicate["status"] == "duplicate"
+    reveal_signed_at = datetime.now(timezone.utc).isoformat()
+    reveal_signature = sign_payload(
+        miner_keys["private_key"],
+        build_reveal_signature_payload(
+            task_id=task_id,
+            miner_id=miner["miner_id"],
+            merkle_root=merkle_root,
+            challenge_seed=challenge_seed,
+            signed_at=reveal_signed_at,
+            tx_merkle_root=tx_commitment["tx_merkle_root"],
+            mempool_snapshot_id=snapshot_id,
+            selected_tx_hashes_hash=tx_commitment["selected_tx_hashes_hash"],
+        ),
+    )
+    reveal = reveal_task(
+        task_id=task_id,
+        miner_id=miner["miner_id"],
+        revealed_samples=[],
+        signature=reveal_signature,
+        signed_at=reveal_signed_at,
+        tx_merkle_root=tx_commitment["tx_merkle_root"],
+        mempool_snapshot_id=snapshot_id,
+        selected_tx_hashes_hash=tx_commitment["selected_tx_hashes_hash"],
+    )
+
+    assert reveal["accepted"] is True
+    assert reveal["status"] == "validation_pending"
+    with get_connection() as connection:
+        task = connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+        commitment = connection.execute("SELECT * FROM commitments WHERE task_id = ?", (task_id,)).fetchone()
+        snapshot = connection.execute("SELECT * FROM task_tx_snapshots WHERE task_id = ?", (task_id,)).fetchone()
+        job = connection.execute("SELECT * FROM validation_jobs WHERE task_id = ?", (task_id,)).fetchone()
+    assert task is not None and task["status"] == "revealed"
+    assert commitment is not None
+    assert snapshot is not None
+    assert job is not None and job["status"] == "pending"
 
 
 def test_validation_vote_gossip_requires_valid_signature_and_is_idempotent(tmp_path, monkeypatch) -> None:

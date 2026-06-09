@@ -189,6 +189,7 @@ from app.services.mining import (
     get_validator,
     get_validators,
     get_validators_status,
+    list_task_inventory,
     list_validation_job_inventory,
     list_validation_vote_inventory,
     list_validator_heartbeat_inventory,
@@ -197,6 +198,7 @@ from app.services.mining import (
     prune_stale_validators,
     record_miner_heartbeat,
     record_validator_heartbeat,
+    receive_task_gossip,
     receive_validation_job_gossip,
     receive_validation_vote_gossip,
     receive_validator_heartbeat_gossip,
@@ -1136,6 +1138,25 @@ def validator_by_id(validator_id: str) -> dict:
 def faucet(payload: FaucetRequest) -> dict:
     try:
         return request_faucet(payload.account_id, payload.account_type, payload.amount)
+    except MiningError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.get("/tasks/inventory")
+def tasks_inventory(
+    status: str | None = Query(None, min_length=1),
+    limit: int = Query(100, ge=1, le=500),
+) -> dict:
+    try:
+        return list_task_inventory(status=status, limit=limit)
+    except MiningError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+
+
+@router.post("/tasks/receive")
+def task_receive(payload: dict = Body(...)) -> dict:
+    try:
+        return receive_task_gossip(payload)
     except MiningError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 

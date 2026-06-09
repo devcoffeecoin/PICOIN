@@ -1029,6 +1029,8 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
         "mempool_inventory_missing": 0,
         "validator_heartbeat_inventory_seen": 0,
         "validator_heartbeats_imported": 0,
+        "task_inventory_seen": 0,
+        "tasks_imported": 0,
         "validation_job_inventory_seen": 0,
         "validation_job_inventory_missing": 0,
         "validation_jobs_imported": 0,
@@ -1125,6 +1127,21 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
                 result["errors"].append(f"validator heartbeat {heartbeat.get('validator_id')}: {exc}")
     except Exception as exc:
         result["errors"].append(f"validator heartbeats: {exc}")
+
+    try:
+        task_rows = _fetch_peer_tasks(peer_address, result, limit=100)
+        from app.services.mining import receive_task_gossip
+
+        for task in task_rows:
+            try:
+                imported = receive_task_gossip(task, source_peer=peer_address)
+                if imported.get("status") == "accepted":
+                    result["tasks_imported"] += 1
+            except Exception as exc:
+                task_payload = task.get("task") if isinstance(task.get("task"), dict) else task
+                result["errors"].append(f"task {task_payload.get('task_id')}: {exc}")
+    except Exception as exc:
+        result["errors"].append(f"tasks: {exc}")
 
     try:
         job_rows = _fetch_peer_validation_jobs(peer_address, result, limit=100)
@@ -1284,6 +1301,26 @@ def _fetch_peer_validator_heartbeats(
     if not isinstance(rows, list):
         return []
     result["validator_heartbeat_inventory_seen"] = len(rows)
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _fetch_peer_tasks(
+    peer_address: str,
+    result: dict[str, Any],
+    *,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    response = requests.get(
+        f"{peer_address}/tasks/inventory?limit={int(limit)}",
+        timeout=GOSSIP_TIMEOUT_SECONDS,
+    )
+    if hasattr(response, "raise_for_status"):
+        response.raise_for_status()
+    payload = response.json()
+    rows = payload.get("tasks", []) if isinstance(payload, dict) else []
+    if not isinstance(rows, list):
+        return []
+    result["task_inventory_seen"] = len(rows)
     return [row for row in rows if isinstance(row, dict)]
 
 
@@ -1510,6 +1547,7 @@ def reconcile_connected_peers(limit: int = 16) -> dict[str, Any]:
         ],
         "transactions_imported": sum(item["transactions_imported"] for item in results),
         "validator_heartbeats_imported": sum(item.get("validator_heartbeats_imported", 0) for item in results),
+        "tasks_imported": sum(item.get("tasks_imported", 0) for item in results),
         "validation_jobs_imported": sum(item.get("validation_jobs_imported", 0) for item in results),
         "validation_votes_imported": sum(item.get("validation_votes_imported", 0) for item in results),
         "proposals_imported": sum(item["proposals_imported"] for item in results),
