@@ -280,6 +280,59 @@ Phase 11 closure evidence:
   - `validator_b1b25c2436b64aa4` approved at
     `2026-06-09T01:37:24.797324+00:00`.
 
+Additional candidate drill evidence:
+
+- Date: 2026-06-09 UTC.
+- Branch: `codex/total-decentralization`, commit `bb44470`.
+- Candidate nodes:
+  - A: `http://159.89.90.163:8000`, node id `phase10-a`,
+    validator `validator_b1b25c2436b64aa4`.
+  - B: `http://68.183.113.210:8000`, node id `phase10-b`,
+    validator `validator_9c28627a04ab43d6`.
+  - C: `http://159.223.96.125:8000`, node id `phase10-c`,
+    validator `validator_20c12a849f384ea7`.
+- B initially had the validation job locally but did not vote because its
+  validator service executed an older CLI path. The log showed
+  `picoin: error: unrecognized arguments: --poll-seconds 1 --heartbeat-interval 30`.
+  The service was fixed by forcing `PICOIN_HOME`, `PYTHONPATH`, and
+  `PICOIN_PYTHON` to the git checkout under
+  `/opt/picoin/src/PICOIN/picoin-proof-of-pi`.
+- C then failed eligibility because its local node was replay-divergent:
+  `finalized block previous_hash does not match local chain tip`. C was
+  recovered from an A snapshot and returned to `replay=healthy`,
+  `divergent=False`, `pending=0`.
+- After B and C were healthy, a fresh block mined through A finalized with all
+  three validator votes:
+  - block `11502`, task `task_7a9cceed77c3a0e1`,
+    job `job_37e4bfe293794db6`, `required_approvals=3`.
+  - votes:
+    - `validator_9c28627a04ab43d6` at
+      `2026-06-09T15:50:24.177122+00:00`.
+    - `validator_20c12a849f384ea7` at
+      `2026-06-09T15:50:28.715839+00:00`.
+    - `validator_b1b25c2436b64aa4` at
+      `2026-06-09T15:50:29.431580+00:00`.
+- A two-block follow-up drill was run with only two mining attempts because
+  the droplets were CPU constrained:
+  - block `11503`, task `task_8c730ad1d508ad3f`,
+    job `job_4e741fcd2d2941b4`, `required_approvals=3`,
+    `approval_count=3`.
+  - job `job_799bf12dc7114bcd`, task `task_ea358b03b26ba865`, reached
+    quorum with votes from C, A, and B at
+    `2026-06-09T16:13:51.072126+00:00`.
+- During the follow-up drill, B also diverged with
+  `finalized block previous_hash does not match local chain tip`. B was
+  recovered from an A snapshot and then contributed the missing third vote.
+
+Phase 11 conclusion:
+
+- Distributed validator presence, job visibility, vote gossip, and 3-of-3
+  certificate finalization were proven across A/B/C.
+- The candidate network still required manual snapshot recovery when a node
+  received a finalized block whose parent did not match the local tip.
+- That manual recovery is not acceptable for total decentralization. Automatic
+  orphan/reorg handling is now the next blocking protocol task.
+
 Operational fixes included in the closure:
 
 - Finality import now matches imported certificates to the certificate task
@@ -310,6 +363,15 @@ PICOIN_VALIDATOR_SUBMIT_TIMEOUT=90
 PICOIN_VALIDATOR_LOOPS=1
 PICOIN_VALIDATOR_SLEEP=3
 PICOIN_VALIDATOR_WORKERS=4
+```
+
+Candidate validator systemd path hardening used after the B/C mismatch:
+
+```ini
+[Service]
+WorkingDirectory=/opt/picoin/src/PICOIN/picoin-proof-of-pi
+ExecStart=
+ExecStart=/usr/bin/bash -lc 'export PICOIN_HOME=/opt/picoin/src/PICOIN/picoin-proof-of-pi; export PYTHONPATH=/opt/picoin/src/PICOIN/picoin-proof-of-pi; export PICOIN_PYTHON=/opt/picoin/picoin-proof-of-pi/.venv/bin/python; exec /opt/picoin/src/PICOIN/picoin-proof-of-pi/deploy/scripts/picoin-worker-loop.sh'
 ```
 
 Candidate reconciler profile used in the closing drill:
@@ -414,6 +476,17 @@ branch inheritance, and deterministic conflict rules.
 
 Current finality certificates exist, but automatic reorg/orphan handling is not
 complete enough for full decentralization.
+
+Lab observation from Phase 11:
+
+- Candidates B and C both reached states where replay marked the node
+  divergent with `finalized block previous_hash does not match local chain tip`.
+- In both cases, the operator recovered the node manually by restoring a fresh
+  snapshot from candidate A.
+- This proves the missing protocol behavior: a finalized block that does not
+  connect to the local tip must be stored and resolved through deterministic
+  orphan/reorg logic. It must not leave the node permanently divergent and
+  dependent on manual snapshot restore.
 
 Implementation work:
 

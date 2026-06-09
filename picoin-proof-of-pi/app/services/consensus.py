@@ -158,12 +158,19 @@ _REPLAY_HEALTH: dict[str, Any] = {
 }
 _DIVERGENCE_MARKERS = (
     "state_root mismatch",
-    "cannot import block before ancestors",
     "orphan replay chain",
     "block_hash does not match canonical payload",
     "missing block fields",
-    "previous_hash",
 )
+_MISSING_ANCESTOR_REPLAY_MARKERS = (
+    "cannot import block before ancestors",
+    "finalized block previous_hash does not match local chain tip",
+)
+
+
+def _is_missing_ancestor_replay_error(reason: str) -> bool:
+    lower = reason.lower()
+    return any(marker in lower for marker in _MISSING_ANCESTOR_REPLAY_MARKERS)
 
 
 def utc_now() -> str:
@@ -960,6 +967,18 @@ def replay_finalized_blocks(limit: int = 100) -> dict[str, Any]:
                     connection.execute("RELEASE SAVEPOINT replay_finalized_block")
                     skipped += 1
                     reason = str(exc)
+                    if _is_missing_ancestor_replay_error(reason):
+                        connection.execute(
+                            """
+                            UPDATE consensus_block_proposals
+                            SET status = 'pending_missing_ancestors',
+                                rejection_reason = ?,
+                                updated_at = ?
+                            WHERE proposal_id = ?
+                            """,
+                            (reason, utc_now(), proposal_id),
+                        )
+                        continue
                     errors.append(f"proposal {proposal_id}: {reason}")
                     if any(marker in reason.lower() for marker in _DIVERGENCE_MARKERS):
                         logger.error(
@@ -1191,9 +1210,11 @@ def _replay_pending_block_headers(connection: Any, limit: int) -> dict[str, Any]
             connection.execute("RELEASE SAVEPOINT replay_pending_header")
             skipped += 1
             reason = str(exc)
-            status = "pending_missing_ancestors" if "ancestor" in reason.lower() else "pending_replay"
-            errors.append(f"header {block_hash}: {reason}")
-            if any(marker in reason.lower() for marker in _DIVERGENCE_MARKERS):
+            missing_ancestor = _is_missing_ancestor_replay_error(reason)
+            status = "pending_missing_ancestors" if missing_ancestor else "pending_replay"
+            if not missing_ancestor:
+                errors.append(f"header {block_hash}: {reason}")
+            if not missing_ancestor and any(marker in reason.lower() for marker in _DIVERGENCE_MARKERS):
                 logger.error(
                     "Picoin replay divergence header=%s height=%s reason=%s",
                     block_hash,

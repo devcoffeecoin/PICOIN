@@ -10,6 +10,7 @@ from app.core.signatures import build_submission_signature_payload, generate_key
 from app.db.database import get_connection, init_db
 from app.models.schemas import SignedTransactionRequest
 from app.services.consensus import (
+    _mark_replay_divergent,
     block_hash_debug,
     debug_block_determinism,
     get_replay_status,
@@ -88,6 +89,34 @@ def _init_network_db(tmp_path, monkeypatch, name: str) -> None:
     monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
     monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
     init_db(db_path)
+
+
+def _full_block_with_nonlocal_parent(tmp_path, monkeypatch, *, source_name: str, target_name: str) -> dict:
+    _init_network_db(tmp_path, monkeypatch, source_name)
+    miner_key = generate_keypair()
+    miner = register_miner("missing-parent-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    block = dict(get_block(1) or {})
+    assert block
+    block["previous_hash"] = "f" * 64
+    block["block_hash"] = block_hash_debug(block)["computed_hash"]
+
+    _init_network_db(tmp_path, monkeypatch, target_name)
+    return block
+
+
+def _queue_replay_backlog_for_divergence_guard() -> None:
+    receive_block_header(
+        {
+            "height": 1,
+            "previous_hash": "f" * 64,
+            "block_hash": "a" * 64,
+            "timestamp": "2026-05-12T00:00:00+00:00",
+        },
+        source_peer_id="peer-a",
+    )
+    status = get_replay_status()
+    assert status["queue_size"] == 1
 
 
 def _retarget_active_protocol_for_test(*, segment_size: int = 8, difficulty: float = 0.03125) -> int:
@@ -959,35 +988,36 @@ def test_sync_status_reports_replay_queue_metrics(tmp_path, monkeypatch) -> None
     assert "replay_stalled" in sync_status
 
 
-def test_health_exposes_replay_divergence_state(tmp_path, monkeypatch) -> None:
-    _init_network_db(tmp_path, monkeypatch, "health-replay-divergent.sqlite3")
-    block = {
-        "height": 1,
-        "previous_hash": "f" * 64,
-        "block_hash": "a" * 64,
-        "timestamp": "2026-05-12T00:00:00+00:00",
-    }
+def test_health_keeps_missing_ancestor_replay_recoverable(tmp_path, monkeypatch) -> None:
+    block = _full_block_with_nonlocal_parent(
+        tmp_path,
+        monkeypatch,
+        source_name="health-replay-missing-ancestor-source.sqlite3",
+        target_name="health-replay-missing-ancestor.sqlite3",
+    )
     receive_block_header(block, source_peer_id="peer-a")
 
     replay = replay_finalized_blocks()
     health = get_health_status()
 
-    assert replay["sync_status"] == "divergent"
-    assert health["sync_status"] == "divergent"
-    assert health["replay_stalled"] is True
-    assert health["divergence_detected"] is True
+    assert replay["status"] == "partial"
+    assert replay["missing_ancestors"] == 1
+    assert replay["errors"] == []
+    assert replay["sync_status"] == "catching_up"
+    assert health["sync_status"] == "catching_up"
+    assert health["replay_stalled"] is False
+    assert health["divergence_detected"] is False
     assert health["mining_ready"] is False
     assert health["can_assign_tasks"] is False
 
 
 def test_sync_blocks_drains_replay_backlog_with_bounded_batch(tmp_path, monkeypatch) -> None:
-    _init_network_db(tmp_path, monkeypatch, "sync-replay-throttle.sqlite3")
-    block = {
-        "height": 1,
-        "previous_hash": "f" * 64,
-        "block_hash": "a" * 64,
-        "timestamp": "2026-05-12T00:00:00+00:00",
-    }
+    block = _full_block_with_nonlocal_parent(
+        tmp_path,
+        monkeypatch,
+        source_name="sync-replay-throttle-source.sqlite3",
+        target_name="sync-replay-throttle.sqlite3",
+    )
     receive_block_header(block, source_peer_id="peer-a")
 
     class EmptyBlocksResponse:
@@ -1002,20 +1032,14 @@ def test_sync_blocks_drains_replay_backlog_with_bounded_batch(tmp_path, monkeypa
     assert result["replay"]["status"] == "partial"
     assert result["replay"]["reason"] == "replay backlog drained with bounded batch"
     assert result["replay"]["queue_size"] == 1
-    assert result["replay"]["sync_status"] == "divergent"
-    assert result["replay"]["replay_stalled"] is True
+    assert result["replay"]["sync_status"] == "catching_up"
+    assert result["replay"]["replay_stalled"] is False
 
 
 def test_sync_blocks_skips_peer_fetch_when_replay_already_divergent(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "sync-replay-already-divergent.sqlite3")
-    block = {
-        "height": 1,
-        "previous_hash": "f" * 64,
-        "block_hash": "a" * 64,
-        "timestamp": "2026-05-12T00:00:00+00:00",
-    }
-    receive_block_header(block, source_peer_id="peer-a")
-    replay_finalized_blocks()
+    _queue_replay_backlog_for_divergence_guard()
+    _mark_replay_divergent("state_root mismatch after canonical replay")
 
     def fail_get(*args, **kwargs):
         raise AssertionError("divergent replay should not fetch peer blocks")
@@ -1034,14 +1058,8 @@ def test_sync_blocks_skips_peer_fetch_when_replay_already_divergent(tmp_path, mo
 
 def test_reconcile_peer_skips_network_when_replay_already_divergent(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "reconcile-replay-already-divergent.sqlite3")
-    block = {
-        "height": 1,
-        "previous_hash": "f" * 64,
-        "block_hash": "a" * 64,
-        "timestamp": "2026-05-12T00:00:00+00:00",
-    }
-    receive_block_header(block, source_peer_id="peer-a")
-    replay_finalized_blocks()
+    _queue_replay_backlog_for_divergence_guard()
+    _mark_replay_divergent("state_root mismatch after canonical replay")
 
     def fail_get(*args, **kwargs):
         raise AssertionError("divergent replay should not contact reconcile peer")
@@ -1062,14 +1080,8 @@ def test_reconcile_peer_skips_network_when_replay_already_divergent(tmp_path, mo
 
 def test_sync_blocks_can_trigger_opt_in_auto_recovery_after_divergence(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "sync-auto-recovery.sqlite3")
-    block = {
-        "height": 1,
-        "previous_hash": "f" * 64,
-        "block_hash": "a" * 64,
-        "timestamp": "2026-05-12T00:00:00+00:00",
-    }
-    receive_block_header(block, source_peer_id="peer-a")
-    replay_finalized_blocks()
+    _queue_replay_backlog_for_divergence_guard()
+    _mark_replay_divergent("state_root mismatch after canonical replay")
 
     class EmptyBlocksResponse:
         def json(self) -> dict:
@@ -2287,6 +2299,8 @@ def test_reconcile_peer_fetches_blocks_after_active_snapshot_base(tmp_path, monk
     miner = register_miner("snapshot-reconcile-miner", miner_key["public_key"])
     _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
     snapshot = export_canonical_snapshot(height=1)
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    next_block = get_blocks_since(1)["blocks"][0]
 
     _init_network_db(tmp_path, monkeypatch, "snapshot-reconcile-target.sqlite3")
     imported = import_canonical_snapshot(snapshot, source="peer-a")
@@ -2323,6 +2337,12 @@ def test_reconcile_peer_fetches_blocks_after_active_snapshot_base(tmp_path, monk
             return FakeResponse([])
         if url.endswith("/validators/heartbeat/inventory?limit=100"):
             return FakeResponse({"heartbeats": []})
+        if url.endswith("/tasks/inventory?limit=100"):
+            return FakeResponse({"tasks": []})
+        if url.endswith("/validation/jobs/inventory?status=pending&limit=100"):
+            return FakeResponse({"jobs": []})
+        if url.endswith("/validation/votes/inventory?limit=100"):
+            return FakeResponse({"votes": []})
         if url.endswith("/consensus/proposals?limit=100"):
             return FakeResponse(
                 [
@@ -2343,14 +2363,7 @@ def test_reconcile_peer_fetches_blocks_after_active_snapshot_base(tmp_path, monk
                 {
                     "from_height": 1,
                     "count": 1,
-                    "blocks": [
-                        {
-                            "height": 2,
-                            "previous_hash": snapshot["checkpoint"]["block_hash"],
-                            "block_hash": "a" * 64,
-                            "timestamp": "2026-05-12T00:01:00+00:00",
-                        }
-                    ],
+                    "blocks": [next_block],
                 }
             )
         raise AssertionError(f"unexpected URL: {url}")
