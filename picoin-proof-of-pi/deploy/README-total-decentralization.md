@@ -356,6 +356,57 @@ Acceptance gates:
 - Late reveal after a finalized winner becomes stale everywhere.
 - Bootstrap-off drill still assigns work from non-bootstrap nodes.
 
+Branch implementation status:
+
+- Added `/tasks/inventory` and `/tasks/receive`.
+- Task gossip exports the task row plus the associated miner identity,
+  commitment, and mempool task snapshot when present.
+- Reconcile now imports task state before validation jobs so a remote revealed
+  job can be validated without manual SQLite repair.
+- Task receive verifies miner commitment signatures before importing committed
+  or revealed state.
+- Duplicate task gossip is idempotent and returns duplicate success instead of
+  noisy conflicts.
+- Added a focused test proving a task committed on one node can be imported on
+  another node with commitment and snapshot data, then revealed locally.
+
+Operator drill helper:
+
+Run this first to prove A/B/C expose the Phase 12 routes and still agree on
+height, tip hash, replay health, and validator quorum:
+
+```bash
+python3 deploy/scripts/phase12-task-gossip-drill.py \
+  --reconcile \
+  --required 3 \
+  A=http://159.89.90.163:8000 \
+  B=http://68.183.113.210:8000 \
+  C=http://159.223.96.125:8000
+```
+
+After mining or revealing a specific task, pass the task id to prove the task
+state converged across all three peers:
+
+```bash
+python3 deploy/scripts/phase12-task-gossip-drill.py \
+  --reconcile \
+  --required 3 \
+  --task-id task_xxx \
+  --expect-task-status assigned \
+  --expect-task-status committed \
+  --expect-task-status revealed \
+  --expect-task-status accepted \
+  --expect-task-status stale \
+  A=http://159.89.90.163:8000 \
+  B=http://68.183.113.210:8000 \
+  C=http://159.223.96.125:8000
+```
+
+The drill fails on replay divergence, tip mismatch, missing validator quorum, a
+missing task inventory route, or a task state that does not converge. Commitment
+and snapshot presence are warnings because assigned-only tasks legitimately do
+not have those records yet.
+
 ## Phase 13: Distributed Block Finality And Orphan Handling
 
 Goal: finalized blocks are selected by quorum certificates, explicit chain
@@ -594,17 +645,18 @@ in `Required Chain Branch Model` and Phase 13.
 
 ## Immediate Next Engineering Slice
 
-Phase 10 and Phase 11 are now lab-proven on the A/B/C candidate set. The next
-natural slice is Phase 12: decentralized task assignment and reveal convergence.
+Phase 10 and Phase 11 are now lab-proven on the A/B/C candidate set. Phase 12
+has its first implementation slice merged on the branch: task-state inventory,
+receive, reconcile import, and a drill helper for A/B/C convergence.
+
+The next natural slice is to close the remaining Phase 12 acceptance gates:
 
 1. Make task identity deterministic across synced write-capable peers.
-2. Add task inventory gossip for assigned, committed, revealed, stale, accepted,
-   and rejected states.
+2. Prove commit on A and reveal/status/finality convergence on B/C.
 3. Add deterministic first-valid-reveal conflict handling across nodes.
-4. Prove commit on A and reveal/status/finality convergence on B/C.
-5. Prove a late miner reveal becomes stale everywhere after another valid block
+4. Prove a late miner reveal becomes stale everywhere after another valid block
    wins the round.
-6. Keep the current quorum rule fixed: no block certificate is acceptable unless
+5. Keep the current quorum rule fixed: no block certificate is acceptable unless
    it reaches the configured protocol quorum.
 
 This slice directly addresses the remaining lab behavior where a miner can hold
