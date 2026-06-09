@@ -490,9 +490,9 @@ def enrich_miner(miner: dict[str, Any] | None) -> dict[str, Any] | None:
 
 def _ensure_replay_can_accept_work() -> None:
     try:
-        from app.services.consensus import get_replay_status
+        from app.services.consensus import get_replay_liveness_status
 
-        replay_status = get_replay_status()
+        replay_status = get_replay_liveness_status()
     except Exception:
         return
     sync_status = str(replay_status.get("sync_status") or "healthy")

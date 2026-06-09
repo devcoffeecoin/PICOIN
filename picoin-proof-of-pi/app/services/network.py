@@ -68,6 +68,8 @@ _PEER_STALE_MARK_LOCK = threading.Lock()
 _PEER_STALE_MARK_LAST_RUN_MONOTONIC = 0.0
 _PEER_REGISTER_LOCK = threading.Lock()
 _PEER_REGISTER_LAST_RUN_MONOTONIC_BY_ID: dict[str, float] = {}
+_NODE_LIVENESS_CACHE_LOCK = threading.Lock()
+_NODE_LIVENESS_CACHE: dict[str, Any] | None = None
 
 
 class NetworkError(Exception):
@@ -597,23 +599,39 @@ def get_sync_status() -> dict[str, Any]:
 
 
 def get_node_liveness_status() -> dict[str, Any]:
-    with get_connection() as connection:
-        latest_block = connection.execute(
-            """
-            SELECT height, block_hash
-            FROM blocks
-            ORDER BY height DESC
-            LIMIT 1
-            """
-        ).fetchone()
-        pending_headers = connection.execute(
-            """
-            SELECT COUNT(*) AS count
-            FROM network_block_headers
-            WHERE status IN ('pending_replay', 'pending_missing_ancestors')
-            """
-        ).fetchone()
-        active_base = active_snapshot_base_in_connection(connection)
+    global _NODE_LIVENESS_CACHE
+    latest_block = None
+    pending_headers = None
+    active_base = None
+    liveness_error = None
+    try:
+        with get_connection() as connection:
+            connection.execute("PRAGMA busy_timeout = 250")
+            latest_block = connection.execute(
+                """
+                SELECT height, block_hash
+                FROM blocks
+                ORDER BY height DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            pending_headers = connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM network_block_headers
+                WHERE status IN ('pending_replay', 'pending_missing_ancestors')
+                """
+            ).fetchone()
+            active_base = active_snapshot_base_in_connection(connection)
+    except sqlite3.Error as exc:
+        liveness_error = str(exc)
+        with _NODE_LIVENESS_CACHE_LOCK:
+            cached = dict(_NODE_LIVENESS_CACHE or {})
+        if cached:
+            cached["checked_at"] = _now()
+            cached["liveness_stale"] = True
+            cached["liveness_error"] = liveness_error
+            return cached
     latest_height = int(latest_block["height"]) if latest_block else 0
     latest_hash = latest_block["block_hash"] if latest_block else GENESIS_HASH
     effective_height = latest_height
@@ -624,12 +642,12 @@ def get_node_liveness_status() -> dict[str, Any]:
         effective_height = int(active_base["height"])
         effective_hash = active_base["block_hash"]
     try:
-        from app.services.consensus import get_replay_status
+        from app.services.consensus import get_replay_liveness_status
 
-        replay_status = get_replay_status()
+        replay_status = get_replay_liveness_status()
     except Exception as exc:
         replay_status = {"active": False, "error": str(exc)}
-    return {
+    status = {
         **node_identity(),
         "latest_block_height": latest_height,
         "latest_block_hash": latest_hash,
@@ -646,6 +664,12 @@ def get_node_liveness_status() -> dict[str, Any]:
         "divergence_reason": replay_status.get("divergence_reason"),
         "checked_at": _now(),
     }
+    if liveness_error is not None:
+        status["liveness_error"] = liveness_error
+    else:
+        with _NODE_LIVENESS_CACHE_LOCK:
+            _NODE_LIVENESS_CACHE = dict(status)
+    return status
 
 
 def get_blocks_since(from_height: int, limit: int = 100) -> dict[str, Any]:

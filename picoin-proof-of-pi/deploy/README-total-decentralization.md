@@ -843,3 +843,10 @@ small droplets. The validator client now uses `/node/liveness`, a lightweight ti
 endpoint with height/hash/replay fields, before falling back to `/node/sync-status`
 for older nodes. This keeps validator liveness fresh enough for the job endpoint
 to serve already-visible pending jobs.
+
+The same lab run later showed `/node/liveness` and `/validation/jobs` timing out
+while the validator row was already `online` and the job was locally visible. The
+root cause was another full replay-status check in the hot path. Liveness now
+uses a low-wait DB read plus cached replay health, and validation job polling
+uses replay health from memory instead of rebuilding full sync status before
+serving a job.

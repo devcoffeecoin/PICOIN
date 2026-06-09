@@ -684,6 +684,14 @@ def _replay_health_snapshot() -> dict[str, Any]:
     return snapshot
 
 
+def get_replay_liveness_status() -> dict[str, Any]:
+    return {
+        "active": bool(_REPLAY_METRICS.get("active")) or _REPLAY_LOCK.locked(),
+        **_replay_health_snapshot(),
+        "checked_at": utc_now(),
+    }
+
+
 def _reset_replay_health_for_database(database_path: str | None) -> None:
     with _REPLAY_HEALTH_LOCK:
         if _REPLAY_HEALTH.get("database_path") == database_path:
