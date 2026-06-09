@@ -3,6 +3,7 @@ import json
 import os
 import sys
 import time
+from concurrent.futures import ProcessPoolExecutor
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,7 @@ AUTO_REGISTER_IDENTITY = os.getenv("PICOIN_AUTO_REGISTER_IDENTITY", "1").strip()
 VALIDATOR_REWARD_ADDRESS = os.getenv("PICOIN_VALIDATOR_REWARD_ADDRESS", "").strip()
 DEFAULT_NODE_SERVER = os.getenv("PICOIN_VALIDATOR_NODE_SERVER", os.getenv("PICOIN_NODE_SERVER", "http://127.0.0.1:8000"))
 VALIDATOR_NODE_ADDRESS = os.getenv("PICOIN_VALIDATOR_NODE_ADDRESS", "").strip().rstrip("/")
+DEFAULT_VALIDATOR_WORKERS = max(1, int(os.getenv("PICOIN_VALIDATOR_WORKERS", "2")))
 
 
 def utc_now() -> str:
@@ -167,7 +169,39 @@ def send_validator_heartbeat(
     return response.json()
 
 
-def validate_job(job: dict[str, Any]) -> tuple[bool, str]:
+def validate_sample(args: tuple[dict[str, Any], str, str]) -> tuple[bool, str]:
+    sample, algorithm, merkle_root = args
+    position = sample["position"]
+    digit = str(sample["digit"]).upper()
+    expected_digit = calculate_pi_segment(position, position, algorithm)
+    if digit != expected_digit:
+        return False, f"digit mismatch at position {position}"
+    if not verify_merkle_proof(position, digit, sample["proof"], merkle_root):
+        return False, f"invalid merkle proof at position {position}"
+    return True, ""
+
+
+def validate_samples(job: dict[str, Any], workers: int) -> tuple[bool, str]:
+    samples = list(job["samples"])
+    algorithm = job["algorithm"]
+    merkle_root = job["merkle_root"]
+    if workers <= 1 or len(samples) <= 1:
+        for sample in samples:
+            ok, reason = validate_sample((sample, algorithm, merkle_root))
+            if not ok:
+                return ok, reason
+        return True, ""
+
+    worker_count = max(1, min(int(workers), len(samples)))
+    with ProcessPoolExecutor(max_workers=worker_count) as executor:
+        results = executor.map(validate_sample, ((sample, algorithm, merkle_root) for sample in samples))
+    for ok, reason in results:
+        if not ok:
+            return ok, reason
+    return True, ""
+
+
+def validate_job(job: dict[str, Any], workers: int = 1) -> tuple[bool, str]:
     tx_hashes = list(job.get("selected_tx_hashes") or [])
     transactions = list(job.get("transactions") or [])
     if len(tx_hashes) != int(job.get("tx_count") or 0):
@@ -209,14 +243,9 @@ def validate_job(job: dict[str, Any]) -> tuple[bool, str]:
             return False, "invalid_tx_merkle_root"
         if int(commitment["tx_fee_total_units"]) != int(job.get("tx_fee_total_units") or 0):
             return False, "invalid_fee_total"
-    for sample in job["samples"]:
-        position = sample["position"]
-        digit = str(sample["digit"]).upper()
-        expected_digit = calculate_pi_segment(position, position, job["algorithm"])
-        if digit != expected_digit:
-            return False, f"digit mismatch at position {position}"
-        if not verify_merkle_proof(position, digit, sample["proof"], job["merkle_root"]):
-            return False, f"invalid merkle proof at position {position}"
+    samples_valid, sample_reason = validate_samples(job, workers)
+    if not samples_valid:
+        return False, sample_reason
     return True, "external validator accepted samples"
 
 
@@ -258,21 +287,29 @@ def command_validate(args: argparse.Namespace) -> int:
     server_url = args.server.rstrip("/")
     identity = load_or_register_identity(server_url, args.identity)
     completed = 0
+    poll_seconds = float(getattr(args, "poll_seconds", getattr(args, "sleep", 1.0)))
+    heartbeat_interval = max(1.0, float(getattr(args, "heartbeat_interval", 30.0)))
+    workers = max(1, int(getattr(args, "workers", DEFAULT_VALIDATOR_WORKERS)))
+    heartbeat: dict[str, Any] | None = None
+    heartbeat_at = 0.0
 
     for index in range(args.loops):
-        try:
-            heartbeat = send_validator_heartbeat(
-                server_url,
-                identity,
-                node_server_url=args.node_server.rstrip("/"),
-                timeout=args.node_timeout,
-            )
-        except requests.RequestException as exc:
-            print(f"Validator coordinator temporarily unavailable during heartbeat: {exc}", file=sys.stderr)
-            if args.once:
-                return 0
-            time.sleep(args.sleep)
-            continue
+        should_send_heartbeat = heartbeat is None or (time.monotonic() - heartbeat_at) >= heartbeat_interval
+        if should_send_heartbeat:
+            try:
+                heartbeat = send_validator_heartbeat(
+                    server_url,
+                    identity,
+                    node_server_url=args.node_server.rstrip("/"),
+                    timeout=args.node_timeout,
+                )
+                heartbeat_at = time.monotonic()
+            except requests.RequestException as exc:
+                print(f"Validator coordinator temporarily unavailable during heartbeat: {exc}", file=sys.stderr)
+                if args.once:
+                    return 0
+                time.sleep(poll_seconds)
+                continue
         if heartbeat.get("eligible") is False:
             print(
                 f"Validator node heartbeat accepted but not eligible: "
@@ -280,7 +317,7 @@ def command_validate(args: argparse.Namespace) -> int:
             )
             if args.once:
                 return 0
-            time.sleep(args.sleep)
+            time.sleep(poll_seconds)
             continue
 
         try:
@@ -289,23 +326,23 @@ def command_validate(args: argparse.Namespace) -> int:
             print(f"Validator coordinator temporarily unavailable while polling validation job: {exc}", file=sys.stderr)
             if args.once:
                 return 0
-            time.sleep(args.sleep)
+            time.sleep(poll_seconds)
             continue
         if job is None:
             print("No validation jobs available.")
             if args.once:
                 return 0
-            time.sleep(args.sleep)
+            time.sleep(poll_seconds)
             continue
 
-        approved, reason = validate_job(job)
+        approved, reason = validate_job(job, workers=workers)
         try:
             result = submit_result(server_url, identity, job, approved, reason)
         except requests.RequestException as exc:
             print(f"Validator coordinator temporarily unavailable while submitting validation result: {exc}", file=sys.stderr)
             if args.once:
                 return 0
-            time.sleep(args.sleep)
+            time.sleep(poll_seconds)
             continue
         print(
             f"Validated {job['job_id']}: approved={approved} "
@@ -317,7 +354,7 @@ def command_validate(args: argparse.Namespace) -> int:
         if args.once:
             break
         if index + 1 < args.loops:
-            time.sleep(args.sleep)
+            time.sleep(poll_seconds)
 
     print(f"Done. validation_jobs_completed={completed}")
     return 0

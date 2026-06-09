@@ -1969,7 +1969,7 @@ def add_miner_parser(subparsers: argparse._SubParsersAction) -> None:
     mine_parser.add_argument("--once", action="store_true")
     mine_parser.add_argument("--loops", type=int, default=1)
     mine_parser.add_argument("--sleep", type=float, default=1.0)
-    mine_parser.add_argument("--workers", type=int, default=1)
+    mine_parser.add_argument("--workers", type=int, default=int(os.getenv("PICOIN_MINER_WORKERS", "2")))
     mine_parser.set_defaults(func=command_mine)
 
     stats_parser = miner_subparsers.add_parser("stats", help="Show miner stats")
@@ -1991,6 +1991,24 @@ def add_validator_parser(subparsers: argparse._SubParsersAction) -> None:
     validate_parser.add_argument("--once", action="store_true")
     validate_parser.add_argument("--loops", type=int, default=1)
     validate_parser.add_argument("--sleep", type=float, default=1.0)
+    validate_parser.add_argument(
+        "--poll-seconds",
+        type=float,
+        default=float(os.getenv("PICOIN_VALIDATOR_POLL_SECONDS", "1")),
+        help="Seconds between validation job polls while the heartbeat remains fresh",
+    )
+    validate_parser.add_argument(
+        "--heartbeat-interval",
+        type=float,
+        default=float(os.getenv("PICOIN_VALIDATOR_HEARTBEAT_INTERVAL_SECONDS", "30")),
+        help="Seconds between signed validator heartbeat refreshes",
+    )
+    validate_parser.add_argument(
+        "--workers",
+        type=int,
+        default=int(os.getenv("PICOIN_VALIDATOR_WORKERS", "2")),
+        help="Parallel workers used to verify validation samples",
+    )
     validate_parser.add_argument(
         "--node-server",
         default=os.getenv("PICOIN_VALIDATOR_NODE_SERVER", os.getenv("PICOIN_NODE_SERVER", "http://127.0.0.1:8000")),
