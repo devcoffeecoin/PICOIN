@@ -246,13 +246,89 @@ Acceptance gates:
 - All nodes converge on the same job status and vote set.
 - Duplicate job/vote gossip returns idempotent success without noisy errors.
 
-Remaining before closing Phase 11:
+Phase 11 closure evidence:
 
-- Run the three-node drill with an actual miner reveal on node A.
-- Run one validator against each node.
-- Reconcile A/B/C until the validation job, vote set, block status, and
-  finality certificate converge.
-- Record the command output in this README or the release notes for the phase.
+- Date: 2026-06-09 UTC.
+- Branch: `codex/total-decentralization`.
+- Candidate A: `http://159.89.90.163:8000`, node id `phase10-a`,
+  validator `validator_b1b25c2436b64aa4`.
+- Candidate B: `http://68.183.113.210:8000`, node id `phase10-b`,
+  validator `validator_9c28627a04ab43d6`.
+- Candidate C: `http://159.223.96.125:8000`, node id `phase10-c`,
+  validator `validator_20c12a849f384ea7`.
+- A/B/C were restored from mainnet snapshots, reconciled with each other, and
+  observed at the same canonical tip during the drill, for example height
+  `11485` with hash
+  `569c9850105486dc88ef5e8b7bb3b885cc315383d3ce9e648b5dac521a82640c`.
+- All three candidate validators became online, synced, and eligible with
+  `required_validator_approvals=3` and `eligible_validators=3`.
+- A miner revealed work through candidate A.
+- Validation jobs were closed with three validator approvals and finality
+  certificates were written locally.
+- Recorded certificates:
+  - block `11497`, task `task_d48288cdf0d51045`,
+    job `job_d69103a05ebe4971`, `required_approvals=3`,
+    `approval_count=3`.
+  - block `11498`, task `task_df91e17c4e2b357b`,
+    job `job_12b8a679c7684e5d`, `required_approvals=3`,
+    `approval_count=3`.
+- Recorded votes for block `11498`:
+  - `validator_9c28627a04ab43d6` approved at
+    `2026-06-09T01:36:05.978246+00:00`.
+  - `validator_20c12a849f384ea7` approved at
+    `2026-06-09T01:36:14.491532+00:00`.
+  - `validator_b1b25c2436b64aa4` approved at
+    `2026-06-09T01:37:24.797324+00:00`.
+
+Operational fixes included in the closure:
+
+- Finality import now matches imported certificates to the certificate task
+  instead of accidentally reusing a same-range local task.
+- Validator quorum remains fixed at protocol quorum. It no longer silently
+  collapses from `3` to the currently online validator count, preventing unsafe
+  `1/1` certificates during liveness loss.
+- Reconciler can continuously reconcile multiple configured peers instead of a
+  single peer.
+- Validator worker defaults to the local node as coordinator, so a validator
+  attached to a candidate node does not silently return to bootstrap.
+- Validator result submission exposes a longer timeout for slow finalization.
+- Validator loop iterations are intentionally short so heartbeat freshness is
+  not lost while one worker process waits on long polling/finalization.
+- Heartbeat probe timeouts no longer stop validators from polling available
+  validation jobs.
+- Validator sample verification can run with local process workers. This is
+  CPU parallelism inside one validator; it does not increase vote count or
+  change quorum.
+
+Candidate validator service profile used in the closing drill:
+
+```bash
+PICOIN_VALIDATOR_SERVER=http://127.0.0.1:8000
+PICOIN_VALIDATOR_NODE_SERVER=http://127.0.0.1:8000
+PICOIN_VALIDATOR_NODE_TIMEOUT=30
+PICOIN_VALIDATOR_SUBMIT_TIMEOUT=90
+PICOIN_VALIDATOR_LOOPS=1
+PICOIN_VALIDATOR_SLEEP=3
+PICOIN_VALIDATOR_WORKERS=4
+```
+
+Candidate reconciler profile used in the closing drill:
+
+```bash
+PICOIN_RECONCILER_MODE=reconcile
+PICOIN_RECONCILE_PEERS=http://159.89.90.163:8000,http://68.183.113.210:8000,http://159.223.96.125:8000
+PICOIN_RECONCILE_LIMIT=64
+PICOIN_RECONCILER_SLEEP_SECONDS=15
+```
+
+Known Phase 11 boundary:
+
+- The drill proves distributed validator presence, validation job/vote gossip,
+  fixed quorum certificates, and multi-peer reconciliation.
+- It does not yet prove full task assignment independence. Task assignment and
+  reveal convergence are Phase 12.
+- It does not yet prove automatic orphan/reorg recovery. Branch inheritance,
+  orphan queues, and deterministic reorg are Phase 13.
 
 ## Phase 12: Decentralized Task Assignment
 
@@ -509,7 +585,7 @@ Each implementation phase must add or update tests in the matching layer:
 This section is for Git branch policy. Chain branch handling is specified above
 in `Required Chain Branch Model` and Phase 13.
 
-- Work continues on `codex/total-decentralization-roadmap`.
+- Work continues on `codex/total-decentralization`.
 - `main` remains production-stable.
 - Each phase must merge forward from `main` before deployment testing.
 - Each phase must preserve all prior phase tests.
@@ -518,15 +594,20 @@ in `Required Chain Branch Model` and Phase 13.
 
 ## Immediate Next Engineering Slice
 
-Start with Phase 9 and Phase 10 together:
+Phase 10 and Phase 11 are now lab-proven on the A/B/C candidate set. The next
+natural slice is Phase 12: decentralized task assignment and reveal convergence.
 
-1. Add explicit write-readiness fields so operators can see why a full node
-   cannot mine.
-2. Add signed validator heartbeat gossip so a full node can build local
-   validator quorum from the network.
-3. Add a pool local-node preflight that refuses unsafe local mining until quorum
-   is visible.
+1. Make task identity deterministic across synced write-capable peers.
+2. Add task inventory gossip for assigned, committed, revealed, stale, accepted,
+   and rejected states.
+3. Add deterministic first-valid-reveal conflict handling across nodes.
+4. Prove commit on A and reveal/status/finality convergence on B/C.
+5. Prove a late miner reveal becomes stale everywhere after another valid block
+   wins the round.
+6. Keep the current quorum rule fixed: no block certificate is acceptable unless
+   it reaches the configured protocol quorum.
 
-That slice directly addresses the current failure: Pool 1 had a synced full
-node, but the node could not safely mine because it had no local validator
-quorum.
+This slice directly addresses the remaining lab behavior where a miner can hold
+or reuse a pending task while the network progresses. That behavior should be
+resolved by protocol task-state gossip, not by manual database cleanup or by
+lowering quorum.
