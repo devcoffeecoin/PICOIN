@@ -90,6 +90,7 @@ from app.services.consensus import (
     list_consensus_votes,
     list_block_proposals,
     list_orphan_candidates,
+    plan_orphan_reorg,
     replay_divergence_report,
     replay_finalized_blocks,
     vote_on_proposal,
@@ -456,6 +457,14 @@ def consensus_orphans(limit: int = Query(20, ge=1, le=100)) -> dict:
         "count": len(candidates),
         "candidates": candidates,
     }
+
+
+@router.get("/consensus/orphans/reorg-plan")
+def consensus_orphan_reorg_plan(
+    limit: int = Query(20, ge=1, le=100),
+    max_depth: int = Query(1, ge=1, le=10),
+) -> dict:
+    return plan_orphan_reorg(limit=limit, max_depth=max_depth)
 
 
 @router.get("/consensus/debug/block/{height}")

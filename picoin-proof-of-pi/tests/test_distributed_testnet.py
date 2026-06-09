@@ -15,6 +15,7 @@ from app.services.consensus import (
     debug_block_determinism,
     get_replay_status,
     list_orphan_candidates,
+    plan_orphan_reorg,
     propose_block,
     replay_finalized_blocks,
 )
@@ -1089,6 +1090,35 @@ def test_orphan_detector_flags_local_parent_when_remote_certified_child_continue
     assert candidate["strongest_child"]["certificate"]["quorum_met"] is True
     assert candidate["verdict"] == "remote_chain_has_certified_child"
     assert candidate["reorg_required"] is True
+
+    plan = plan_orphan_reorg(max_depth=1)
+
+    assert plan["can_apply"] is True
+    assert plan["dry_run"] is True
+    assert plan["reason"] == "ready"
+    assert plan["selected"]["depth"] == 1
+    assert plan["selected"]["local_orphan"]["block_hash"] == local_block["block_hash"]
+    assert plan["selected"]["remote_parent"]["block_hash"] == remote_parent_hash
+    assert plan["selected"]["remote_parent"]["certificate"]["quorum_met"] is True
+    assert plan["selected"]["remote_child"]["block_hash"] == remote_child_hash
+    assert plan["selected"]["remote_child"]["certificate"]["quorum_met"] is True
+    assert [operation["step"] for operation in plan["selected"]["operations"]] == [
+        "orphan_local_tip",
+        "rewind_accounting_from_height",
+        "import_remote_parent",
+        "replay_remote_child",
+    ]
+
+
+def test_orphan_reorg_plan_reports_no_candidates(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "orphan-reorg-empty.sqlite3")
+
+    plan = plan_orphan_reorg()
+
+    assert plan["can_apply"] is False
+    assert plan["reason"] == "no_orphan_candidates"
+    assert plan["candidate_count"] == 0
+    assert plan["selected"] is None
 
 
 def test_sync_blocks_drains_replay_backlog_with_bounded_batch(tmp_path, monkeypatch) -> None:

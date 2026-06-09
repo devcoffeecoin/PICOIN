@@ -39,6 +39,18 @@ def test_node_sync_status_endpoint_returns_200(tmp_path, monkeypatch) -> None:
     assert response.status_code == 200
 
 
+def test_consensus_orphan_reorg_plan_endpoint_returns_dry_run_plan(tmp_path, monkeypatch) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+
+    response = client.get("/consensus/orphans/reorg-plan")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["dry_run"] is True
+    assert payload["can_apply"] is False
+    assert payload["reason"] == "no_orphan_candidates"
+
+
 def test_mempool_inventory_returns_pending_hashes_without_full_payload(tmp_path, monkeypatch) -> None:
     client = _build_test_client(tmp_path, monkeypatch)
     with get_connection() as connection:

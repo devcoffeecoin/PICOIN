@@ -1485,6 +1485,159 @@ def list_orphan_candidates(limit: int = 20, connection: Any | None = None) -> li
             connection.close()
 
 
+def plan_orphan_reorg(
+    limit: int = 20,
+    *,
+    max_depth: int = 1,
+    connection: Any | None = None,
+) -> dict[str, Any]:
+    safe_limit = max(1, min(int(limit or 1), 100))
+    safe_max_depth = max(1, min(int(max_depth or 1), 10))
+    owns_connection = connection is None
+    if owns_connection:
+        connection = get_connection()
+    try:
+        candidates = list_orphan_candidates(limit=safe_limit, connection=connection)
+        local_tip = _latest_tip(connection)
+        plans = [
+            _orphan_candidate_reorg_plan(connection, candidate, local_tip, safe_max_depth)
+            for candidate in candidates
+            if candidate.get("reorg_required")
+        ]
+        selected = next((plan for plan in plans if plan["can_apply"]), plans[0] if plans else None)
+        if selected is None:
+            reason = "no_orphan_candidates"
+        elif selected["can_apply"]:
+            reason = "ready"
+        else:
+            reason = selected["reason"]
+        return {
+            "can_apply": bool(selected and selected["can_apply"]),
+            "dry_run": True,
+            "reason": reason,
+            "max_depth": safe_max_depth,
+            "local_tip": local_tip,
+            "candidate_count": len(candidates),
+            "plan_count": len(plans),
+            "selected": selected,
+            "plans": plans,
+            "checked_at": utc_now(),
+        }
+    finally:
+        if owns_connection:
+            connection.close()
+
+
+def _orphan_candidate_reorg_plan(
+    connection: Any,
+    candidate: dict[str, Any],
+    local_tip: dict[str, Any],
+    max_depth: int,
+) -> dict[str, Any]:
+    reasons: list[str] = []
+    local_height = int(candidate.get("local_height") or 0)
+    tip_height = int(local_tip.get("height") or 0)
+    depth = tip_height - local_height + 1
+    remote_parent_hash = str(candidate.get("remote_parent_hash") or "")
+    remote_parent = _find_queued_block_by_hash(connection, remote_parent_hash)
+    child_hash = str((candidate.get("strongest_child") or {}).get("block_hash") or "")
+    remote_child = _find_queued_block_by_hash(connection, child_hash)
+    remote_parent_block = (remote_parent or {}).get("block") or {}
+    remote_child_block = (remote_child or {}).get("block") or {}
+    remote_parent_certificate = _block_finality_certificate_summary(remote_parent_block)
+    remote_child_certificate = _block_finality_certificate_summary(remote_child_block)
+
+    if local_height <= 0:
+        reasons.append("invalid_local_height")
+    if tip_height != local_height or str(local_tip.get("block_hash")) != str(candidate.get("local_block_hash")):
+        reasons.append("orphan_candidate_is_not_local_tip")
+    if depth < 1:
+        reasons.append("invalid_reorg_depth")
+    if depth > max_depth:
+        reasons.append("reorg_depth_exceeds_limit")
+    if remote_parent is None:
+        reasons.append("remote_parent_missing")
+    if remote_child is None:
+        reasons.append("remote_child_missing")
+    if remote_parent is not None and int(remote_parent.get("height") or 0) != local_height:
+        reasons.append("remote_parent_height_mismatch")
+    if remote_child is not None and int(remote_child.get("height") or 0) != local_height + 1:
+        reasons.append("remote_child_height_mismatch")
+    if remote_child_block and remote_child_block.get("previous_hash") != remote_parent_hash:
+        reasons.append("remote_child_not_contiguous")
+    if not remote_parent_certificate["quorum_met"]:
+        reasons.append("remote_parent_not_certified")
+    if not remote_child_certificate["quorum_met"]:
+        reasons.append("remote_child_not_certified")
+
+    can_apply = not reasons
+    return {
+        "can_apply": can_apply,
+        "reason": "ready" if can_apply else reasons[0],
+        "reasons": reasons,
+        "depth": depth,
+        "max_depth": max_depth,
+        "local_tip": local_tip,
+        "local_orphan": {
+            "height": local_height,
+            "block_hash": candidate.get("local_block_hash"),
+            "task_id": candidate.get("local_task_id"),
+            "certificate": candidate.get("local_certificate"),
+        },
+        "remote_parent": _reorg_block_plan_summary(remote_parent, remote_parent_certificate),
+        "remote_child": _reorg_block_plan_summary(remote_child, remote_child_certificate),
+        "operations": [
+            {
+                "step": "orphan_local_tip",
+                "height": local_height,
+                "block_hash": candidate.get("local_block_hash"),
+            },
+            {
+                "step": "rewind_accounting_from_height",
+                "height": local_height,
+                "tables": [
+                    "blocks",
+                    "finality_certificates",
+                    "ledger_entries",
+                    "balances",
+                    "account_nonces",
+                    "mempool_transactions",
+                    "pending_rewards",
+                ],
+            },
+            {
+                "step": "import_remote_parent",
+                "height": int(remote_parent.get("height") or 0) if remote_parent else None,
+                "block_hash": remote_parent_hash or None,
+            },
+            {
+                "step": "replay_remote_child",
+                "height": int(remote_child.get("height") or 0) if remote_child else None,
+                "block_hash": child_hash or None,
+            },
+        ],
+    }
+
+
+def _reorg_block_plan_summary(
+    source: dict[str, Any] | None,
+    certificate: dict[str, Any],
+) -> dict[str, Any] | None:
+    if source is None:
+        return None
+    block = source.get("block") or {}
+    return {
+        "height": int(source.get("height") or block.get("height") or 0),
+        "block_hash": source.get("block_hash") or block.get("block_hash"),
+        "previous_hash": source.get("previous_hash") or block.get("previous_hash"),
+        "source": source.get("source"),
+        "status": source.get("status"),
+        "reason": source.get("reason"),
+        "seen_at": source.get("seen_at"),
+        "certificate": certificate,
+    }
+
+
 def _queued_block_candidates(connection: Any, limit: int) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     proposal_rows = connection.execute(

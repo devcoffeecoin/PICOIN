@@ -772,3 +772,23 @@ Implementation work:
 This is intentionally diagnostic only. The next slice will use this detector to
 perform bounded canonical reorg from a shared ancestor, with accounting rollback
 tests before any mainnet use.
+
+## Phase 13.2 Slice: Bounded Reorg Plan
+
+Goal: make orphan recovery actionable before enabling destructive mutation.
+
+Implementation work:
+
+- Add `/consensus/orphans/reorg-plan`.
+- Require the local orphan to be the current local tip.
+- Require the remote replacement parent and its certified child to be present.
+- Require both remote blocks to carry quorum-met finality certificates.
+- Limit the first supported recovery depth to one local block by default.
+- Return the exact accounting tables that must be rewound before importing the
+  remote canonical branch.
+
+This slice is still dry-run only. It exists so A/B/C candidate nodes can explain
+why a pending ancestor chain is safe or unsafe to recover. The apply phase must
+add rollback tests for balances, ledger entries, account nonces, mempool
+transactions, rewards, finality certificates, and block import before any
+automatic reorg is enabled.
