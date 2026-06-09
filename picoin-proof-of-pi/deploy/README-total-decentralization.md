@@ -825,7 +825,9 @@ The worker and CLI defaults now favor shorter liveness loops:
 - A failed heartbeat is retried on the next validator loop instead of consuming
   the full heartbeat interval.
 - The systemd worker wrapper bounds each validator iteration with
-  `PICOIN_VALIDATOR_ITERATION_TIMEOUT` defaulting to `75s`.
+  `PICOIN_VALIDATOR_ITERATION_TIMEOUT` defaulting to `600s`. High range
+  validation can take several minutes on 512 MB droplets because validators
+  recompute the revealed samples before voting.
 - Default validator heartbeat interval is `15s`.
 - Default validator node timeout is `10s`.
 - Default validation-result submit timeout is `30s`.
