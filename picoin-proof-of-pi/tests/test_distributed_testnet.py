@@ -695,6 +695,84 @@ def test_reconcile_peer_imports_validator_heartbeat_inventory(tmp_path, monkeypa
     assert validator["advertised_address"] == "http://validator-peer:8000"
 
 
+def test_reconcile_peer_defers_votes_for_missing_validation_jobs(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "peer-reconcile-missing-vote-jobs.sqlite3")
+    vote_rows = [
+        {
+            "vote": {
+                "job_id": "job_missing_a",
+                "task_id": "task_missing_a",
+                "validator_id": "validator_peer_a",
+                "approved": True,
+            }
+        },
+        {
+            "vote": {
+                "job_id": "job_missing_b",
+                "task_id": "task_missing_b",
+                "validator_id": "validator_peer_b",
+                "approved": True,
+            }
+        },
+    ]
+
+    class Response:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, timeout=0):
+        if url == "http://peer-a:8000/node/identity":
+            return Response(
+                {
+                    "node_id": "peer-a",
+                    "peer_address": "http://peer-a:8000",
+                    "peer_type": "full",
+                    "protocol_version": PROTOCOL_VERSION,
+                    "network_id": NETWORK_ID,
+                    "chain_id": CHAIN_ID,
+                    "genesis_hash": GENESIS_HASH,
+                    "bootstrap_peers": [],
+                }
+            )
+        if url == "http://peer-a:8000/node/peers":
+            return Response([])
+        if url == "http://peer-a:8000/mempool/inventory?status=pending&limit=100":
+            return Response({"transactions": []})
+        if url == "http://peer-a:8000/validators/heartbeat/inventory?limit=100":
+            return Response({"heartbeats": []})
+        if url == "http://peer-a:8000/tasks/inventory?limit=100":
+            return Response({"tasks": []})
+        if url == "http://peer-a:8000/validation/jobs/inventory?status=pending&limit=100":
+            return Response({"jobs": []})
+        if url == "http://peer-a:8000/validation/votes/inventory?limit=100":
+            return Response({"votes": vote_rows})
+        if url == "http://peer-a:8000/node/sync/blocks?from_height=0&limit=100":
+            return Response({"from_height": 0, "count": 0, "blocks": []})
+        if url == "http://peer-a:8000/consensus/proposals?limit=100":
+            return Response([])
+        raise AssertionError(url)
+
+    def fail_vote_import(*args, **kwargs):
+        raise AssertionError("votes without local jobs should be deferred")
+
+    monkeypatch.setattr("app.services.network.requests.get", fake_get)
+    monkeypatch.setattr("app.services.mining.receive_validation_vote_gossip", fail_vote_import)
+
+    result = reconcile_peer("http://peer-a:8000")
+
+    assert result["validation_vote_inventory_seen"] == 2
+    assert result["validation_vote_inventory_missing"] == 0
+    assert result["validation_vote_inventory_missing_job"] == 2
+    assert result["validation_votes_imported"] == 0
+    assert result["errors"] == []
+
+
 def test_reconcile_peer_fallback_imports_pending_mempool_only(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "peer-reconcile-fallback-pending.sqlite3")
     pending_hash = "b" * 64

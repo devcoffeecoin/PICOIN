@@ -792,3 +792,23 @@ why a pending ancestor chain is safe or unsafe to recover. The apply phase must
 add rollback tests for balances, ledger entries, account nonces, mempool
 transactions, rewards, finality certificates, and block import before any
 automatic reorg is enabled.
+
+## Phase 13.3 Lab Evidence: Isolation Recovery And Reconcile Noise
+
+The A/B/C candidate lab then tested temporary validator isolation:
+
+- A, B, and C started aligned at height `11510` with hash
+  `67f52a44a2bb496e3bfef8d9e96d374c55d94494c6cdb0652d1bd5e0d24874fc`.
+- B was isolated from A/C at the firewall and mined a local pending candidate.
+- A/C continued with a canonical candidate while B had only partial visibility.
+- After the firewall was reopened, B reconciled to A/C without a manual reorg:
+  A/B/C converged to height `11511`, hash
+  `2d43f81c63413482def039633c77b6b6beb43ebdd9db02be7a4e798617bf199e`,
+  `pending=0`, replay healthy, divergent false, and orphan count `0`.
+
+That test confirms the previous stuck behavior was expected under deliberate
+network isolation, not a consensus bug by itself. The remaining issue was
+diagnostic noise: reconcile could report many `validation job not found` errors
+when a peer advertised votes for jobs the local node no longer had. Reconcile now
+defers those votes with `validation_vote_inventory_missing_job` instead of
+counting them as import failures.

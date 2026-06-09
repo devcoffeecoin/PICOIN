@@ -1036,6 +1036,7 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
         "validation_jobs_imported": 0,
         "validation_vote_inventory_seen": 0,
         "validation_vote_inventory_missing": 0,
+        "validation_vote_inventory_missing_job": 0,
         "validation_votes_imported": 0,
         "transactions_seen": 0,
         "transactions_imported": 0,
@@ -1399,8 +1400,10 @@ def _fetch_peer_validation_votes(
         validator_id = str(vote.get("validator_id") or "")
         if job_id and validator_id:
             vote_keys.append((job_id, validator_id))
-    missing_keys = set(_missing_validation_vote_keys(vote_keys))
+    missing_vote_keys, missing_job_count = _missing_validation_vote_keys(vote_keys)
+    missing_keys = set(missing_vote_keys)
     result["validation_vote_inventory_missing"] = len(missing_keys)
+    result["validation_vote_inventory_missing_job"] = missing_job_count
     return [
         row
         for row in rows
@@ -1413,13 +1416,31 @@ def _fetch_peer_validation_votes(
     ]
 
 
-def _missing_validation_vote_keys(vote_keys: list[tuple[str, str]]) -> list[tuple[str, str]]:
-    unique_keys = list(dict.fromkeys((str(job_id), str(validator_id)) for job_id, validator_id in vote_keys if job_id and validator_id))
+def _missing_validation_vote_keys(vote_keys: list[tuple[str, str]]) -> tuple[list[tuple[str, str]], int]:
+    unique_keys = list(
+        dict.fromkeys(
+            (str(job_id), str(validator_id))
+            for job_id, validator_id in vote_keys
+            if job_id and validator_id
+        )
+    )
     if not unique_keys:
-        return []
-    conditions = " OR ".join("(job_id = ? AND validator_id = ?)" for _ in unique_keys)
+        return [], 0
+    unique_job_ids = list(dict.fromkeys(job_id for job_id, _ in unique_keys))
+    job_placeholders = ",".join("?" for _ in unique_job_ids)
+    with get_connection() as connection:
+        job_rows = connection.execute(
+            f"SELECT job_id FROM validation_jobs WHERE job_id IN ({job_placeholders})",
+            tuple(unique_job_ids),
+        ).fetchall()
+    known_job_ids = {str(row["job_id"]) for row in job_rows}
+    importable_keys = [key for key in unique_keys if key[0] in known_job_ids]
+    missing_job_count = len(unique_keys) - len(importable_keys)
+    if not importable_keys:
+        return [], missing_job_count
+    conditions = " OR ".join("(job_id = ? AND validator_id = ?)" for _ in importable_keys)
     params: list[str] = []
-    for job_id, validator_id in unique_keys:
+    for job_id, validator_id in importable_keys:
         params.extend([job_id, validator_id])
     with get_connection() as connection:
         rows = connection.execute(
@@ -1427,7 +1448,7 @@ def _missing_validation_vote_keys(vote_keys: list[tuple[str, str]]) -> list[tupl
             tuple(params),
         ).fetchall()
     existing = {(str(row["job_id"]), str(row["validator_id"])) for row in rows}
-    return [key for key in unique_keys if key not in existing]
+    return [key for key in importable_keys if key not in existing], missing_job_count
 
 
 def sync_blocks_until(
