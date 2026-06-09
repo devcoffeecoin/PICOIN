@@ -1,3 +1,4 @@
+import json
 from datetime import datetime, timezone
 
 import pytest
@@ -373,3 +374,93 @@ def test_vote_gossip_marks_already_accepted_block_job_approved(tmp_path, monkeyp
     status = get_task_status(task_id)
     assert status["status"] == "accepted"
     assert status["validation"]["status"] == "approved"
+
+
+def test_task_status_prefers_finality_certificate_over_rejected_job(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "finality-status.sqlite3")
+
+    miner = register_miner("finality-status-miner", generate_keypair()["public_key"])
+    now = datetime.now(timezone.utc).isoformat()
+    task_id = "task_finality_status"
+    job_id = "job_finality_status"
+    result_hash = "6" * 64
+    merkle_root = "7" * 64
+    block_hash = "8" * 64
+    certificate_hash = "9" * 64
+    with get_connection() as connection:
+        protocol_params_id = connection.execute(
+            "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at, submitted_at
+            )
+            VALUES (?, ?, 4000, 4007, 'bbp_hex_v1', 'accepted', ?, ?, ?)
+            """,
+            (task_id, miner["miner_id"], protocol_params_id, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO validation_jobs (
+                job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                samples, status, result_reason, created_at, job_created_at,
+                completed_at, finalized_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, '[]', 'rejected', 'competitive round closed', ?, ?, ?, ?)
+            """,
+            (job_id, task_id, miner["miner_id"], result_hash, merkle_root, "a" * 64, now, now, now, now),
+        )
+        connection.execute(
+            """
+            INSERT INTO blocks (
+                height, previous_hash, miner_id, range_start, range_end, algorithm,
+                result_hash, merkle_root, samples, timestamp, block_hash, reward,
+                reward_units, tx_merkle_root, tx_count, tx_hashes, task_id,
+                protocol_params_id, protocol_version, validation_mode
+            )
+            VALUES (
+                1, ?, ?, 4000, 4007, 'bbp_hex_v1', ?, ?, '[]', ?, ?, 0,
+                0, ?, 0, '[]', ?, ?, '1.0', 'external_commit_reveal'
+            )
+            """,
+            ("0" * 64, miner["miner_id"], result_hash, merkle_root, now, block_hash, "b" * 64, task_id, protocol_params_id),
+        )
+        payload = {
+            "version": "picoin-finality-v1",
+            "network_id": mining_service.NETWORK_ID,
+            "chain_id": mining_service.CHAIN_ID,
+            "block": {"height": 1, "block_hash": block_hash, "task_id": task_id},
+            "validation": {"job_id": job_id, "required_approvals": 3, "approval_count": 3},
+        }
+        connection.execute(
+            """
+            INSERT INTO finality_certificates (
+                block_height, block_hash, task_id, job_id, miner_id, network_id, chain_id,
+                protocol_version, protocol_params_id, required_approvals, approval_count,
+                certificate_hash, payload_json, votes_json, created_at
+            )
+            VALUES (1, ?, ?, ?, ?, ?, ?, '1.0', ?, 3, 3, ?, ?, '[]', ?)
+            """,
+            (
+                block_hash,
+                task_id,
+                job_id,
+                miner["miner_id"],
+                mining_service.NETWORK_ID,
+                str(mining_service.CHAIN_ID),
+                protocol_params_id,
+                certificate_hash,
+                json.dumps(payload),
+                now,
+            ),
+        )
+
+    status = get_task_status(task_id)
+
+    assert status["status"] == "accepted"
+    assert status["validation"]["status"] == "approved"
+    assert status["validation"]["job_id"] == job_id
+    assert status["validation"]["approvals"] == 3
+    assert status["validation"]["required_approvals"] == 3

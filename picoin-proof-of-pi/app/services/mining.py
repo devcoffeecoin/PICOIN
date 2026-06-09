@@ -5040,22 +5040,91 @@ def get_task_status(task_id: str) -> dict[str, Any] | None:
         )
 
         validation: dict[str, Any] | None = None
+        finality_certificate: dict[str, Any] | None = None
+        if block is not None:
+            finality_certificate = _decode_finality_certificate(
+                row_to_dict(
+                    connection.execute(
+                        """
+                        SELECT *
+                        FROM finality_certificates
+                        WHERE block_height = ? OR block_hash = ? OR task_id = ?
+                        ORDER BY block_height DESC
+                        LIMIT 1
+                        """,
+                        (int(block["height"]), block["block_hash"], task_id),
+                    ).fetchone()
+                )
+            )
+            if finality_certificate is not None and (
+                job is None or str(job.get("job_id") or "") != str(finality_certificate.get("job_id") or "")
+            ):
+                certificate_job = row_to_dict(
+                    connection.execute(
+                        "SELECT * FROM validation_jobs WHERE job_id = ?",
+                        (finality_certificate.get("job_id"),),
+                    ).fetchone()
+                )
+                if certificate_job is not None:
+                    job = certificate_job
         if job is not None:
             vote_counts = _validation_vote_counts(connection, job["job_id"])
             params = _protocol_params_for_task(connection, {**task, **job})
             required = _effective_required_validator_approvals(connection, params)
+            status = job["status"]
+            result_reason = job.get("result_reason")
+            approvals = vote_counts["approvals"]
+            rejections = vote_counts["rejections"]
+            total_votes = approvals + rejections
+            completed_at = job.get("completed_at")
+            finalized_at = job.get("finalized_at")
+            if block is not None:
+                same_result = str(job.get("result_hash") or "") == str(block.get("result_hash") or "")
+                if finality_certificate is not None:
+                    status = "approved"
+                    result_reason = (
+                        job.get("result_reason")
+                        if job.get("status") == "approved" and job.get("result_reason")
+                        else "block accepted by finality certificate"
+                    )
+                    approvals = max(approvals, int(finality_certificate.get("approval_count") or 0))
+                    required = int(finality_certificate.get("required_approvals") or required)
+                    total_votes = max(total_votes, approvals)
+                    completed_at = completed_at or finality_certificate.get("created_at")
+                    finalized_at = finalized_at or finality_certificate.get("created_at")
+                elif same_result and approvals >= required:
+                    status = "approved"
+                    result_reason = (
+                        job.get("result_reason")
+                        if job.get("status") == "approved" and job.get("result_reason")
+                        else "block accepted with validator quorum"
+                    )
             validation = {
                 "job_id": job["job_id"],
-                "status": job["status"],
-                "result_reason": job.get("result_reason"),
-                "approvals": vote_counts["approvals"],
-                "rejections": vote_counts["rejections"],
-                "total_votes": vote_counts["approvals"] + vote_counts["rejections"],
+                "status": status,
+                "result_reason": result_reason,
+                "approvals": approvals,
+                "rejections": rejections,
+                "total_votes": total_votes,
                 "required_approvals": required,
                 "required_rejections": required,
                 "created_at": job.get("created_at"),
-                "completed_at": job.get("completed_at"),
-                "finalized_at": job.get("finalized_at"),
+                "completed_at": completed_at,
+                "finalized_at": finalized_at,
+            }
+        elif finality_certificate is not None:
+            validation = {
+                "job_id": finality_certificate["job_id"],
+                "status": "approved",
+                "result_reason": "block accepted by finality certificate",
+                "approvals": int(finality_certificate.get("approval_count") or 0),
+                "rejections": 0,
+                "total_votes": int(finality_certificate.get("approval_count") or 0),
+                "required_approvals": int(finality_certificate.get("required_approvals") or 0),
+                "required_rejections": int(finality_certificate.get("required_approvals") or 0),
+                "created_at": finality_certificate.get("created_at"),
+                "completed_at": finality_certificate.get("created_at"),
+                "finalized_at": finality_certificate.get("created_at"),
             }
 
         task_status = str(task.get("status") or "")
