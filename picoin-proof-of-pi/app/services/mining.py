@@ -4538,6 +4538,28 @@ def _mark_validation_job_finalized(
     )
 
 
+def _block_timestamp_for_validation_job(connection: Any, validation_job_id: str | None) -> str:
+    if not validation_job_id:
+        return utc_now()
+    row = connection.execute(
+        "SELECT job_created_at, created_at FROM validation_jobs WHERE job_id = ?",
+        (validation_job_id,),
+    ).fetchone()
+    if row is None:
+        return utc_now()
+    for column in ("job_created_at", "created_at"):
+        value = row[column]
+        if not value:
+            continue
+        try:
+            parsed = parse_iso(str(value))
+        except (TypeError, ValueError):
+            continue
+        if parsed is not None:
+            return str(value)
+    return utc_now()
+
+
 def submit_validation_result(
     job_id: str,
     validator_id: str,
@@ -8658,11 +8680,8 @@ def _accept_block_in_connection(
     tip = _latest_chain_tip_in_connection(connection)
     next_height = tip["height"] + 1
     previous_hash = tip["block_hash"]
-    timestamp = utc_now()
-    created_at = parse_iso(task.get("created_at"))
-    total_task_ms = None
-    if created_at is not None:
-        total_task_ms = max(0, round((utc_now_dt() - created_at).total_seconds() * 1000))
+    timestamp = _block_timestamp_for_validation_job(connection, validation_job_id)
+    total_task_ms = _elapsed_iso_ms(task.get("created_at"), timestamp)
     total_block_ms = total_task_ms
     block_transactions = load_snapshot_transactions(connection, task["task_id"])
     tx_commitment = transaction_commitment(block_transactions)
