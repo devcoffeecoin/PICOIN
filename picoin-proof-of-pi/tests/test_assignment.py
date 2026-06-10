@@ -535,6 +535,58 @@ def test_competitive_round_stops_new_assignments_while_reveal_is_pending(tmp_pat
     assert second_task["assignment_seed"] == first_task["assignment_seed"]
 
 
+def test_competitive_round_reactivates_expired_uncommitted_task(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-competitive-expired-retry.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr(mining_service, "MINING_TASK_MODE", "competitive_round")
+    init_db(db_path)
+
+    keys = generate_keypair()
+    miner = register_miner("competitive-expired-retry", keys["public_key"])
+    task = create_next_task(miner["miner_id"])
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE tasks
+            SET status = 'expired',
+                expires_at = '2026-06-01T00:00:00+00:00',
+                submitted_at = NULL,
+                stale_at = NULL,
+                stale_reason = NULL
+            WHERE task_id = ?
+            """,
+            (task["task_id"],),
+        )
+
+    retried = create_next_task(miner["miner_id"])
+
+    assert retried["task_id"] == task["task_id"]
+    assert retried["status"] == "assigned"
+    assert retried["assignment_mode"] == "competitive_round"
+    assert retried["assignment_seed"] == task["assignment_seed"]
+    assert retried["expires_at"] != "2026-06-01T00:00:00+00:00"
+    with get_connection() as connection:
+        row = connection.execute(
+            """
+            SELECT status, submitted_at, stale_at, stale_reason
+            FROM tasks
+            WHERE task_id = ?
+            """,
+            (task["task_id"],),
+        ).fetchone()
+        job_count = connection.execute(
+            "SELECT COUNT(*) AS count FROM validation_jobs WHERE task_id = ?",
+            (task["task_id"],),
+        ).fetchone()["count"]
+    assert row["status"] == "assigned"
+    assert row["submitted_at"] is None
+    assert row["stale_at"] is None
+    assert row["stale_reason"] is None
+    assert job_count == 0
+
+
 def test_competitive_round_accepts_one_winner_and_marks_late_task_stale(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "assignment-competitive-winner.sqlite3"
     monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
