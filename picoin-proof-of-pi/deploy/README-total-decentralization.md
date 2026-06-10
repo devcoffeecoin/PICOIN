@@ -874,3 +874,23 @@ This slice deliberately does not apply reorgs. It creates the durable branch
 labels needed for the next step: a bounded depth-1 reorg apply path with explicit
 rollback tests for balances, ledger entries, nonces, rewards, mempool status,
 certificates, and block rows.
+
+## Phase 13.5b Slice: Reorg Evidence Preparation
+
+Goal: preserve fork evidence before any canonical chain mutation.
+
+Implementation work:
+
+- Add `chain_branch_blocks` as an audit table for non-canonical or candidate
+  branch blocks.
+- Add `POST /consensus/orphans/reorg-prepare`.
+- When a bounded reorg plan is ready, archive the current local losing tip as
+  `orphan_losing_branch`.
+- Archive the selected remote replacement parent and child as `reorg_candidate`.
+- Make the operation idempotent by upserting on `block_hash`.
+- Return explicit `apply_blockers`; the endpoint remains dry-run for chain
+  mutation.
+
+This prevents the next apply step from destroying evidence. The remaining apply
+work is to add a guarded depth-1 rollback path that can replace the local tip
+only after tests prove accounting rollback and replay are deterministic.

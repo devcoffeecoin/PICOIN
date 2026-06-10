@@ -1536,6 +1536,202 @@ def plan_orphan_reorg(
             connection.close()
 
 
+def prepare_orphan_reorg(
+    limit: int = 20,
+    *,
+    max_depth: int = 1,
+    connection: Any | None = None,
+) -> dict[str, Any]:
+    safe_limit = max(1, min(int(limit or 1), 100))
+    safe_max_depth = max(1, min(int(max_depth or 1), 10))
+    owns_connection = connection is None
+    if owns_connection:
+        connection = get_connection()
+    try:
+        plan = plan_orphan_reorg(limit=safe_limit, max_depth=safe_max_depth, connection=connection)
+        selected = plan.get("selected") or {}
+        if not plan.get("can_apply"):
+            return {
+                "prepared": False,
+                "reason": plan.get("reason"),
+                "dry_run": True,
+                "plan": plan,
+                "records": [],
+                "apply_blockers": ["reorg_plan_not_ready"],
+                "checked_at": utc_now(),
+            }
+
+        records: list[dict[str, Any]] = []
+        blockers = _orphan_reorg_apply_blockers(connection, selected)
+        local_orphan = selected.get("local_orphan") or {}
+        local_hash = str(local_orphan.get("block_hash") or "")
+        local_height = int(local_orphan.get("height") or 0)
+        if local_hash and local_height > 0:
+            local_block = _local_block_payload_for_branch_record(connection, local_height, local_hash)
+            local_certificate = local_orphan.get("certificate") or {}
+            records.append(
+                _upsert_chain_branch_block(
+                    connection,
+                    block=local_block,
+                    branch_id=f"orphan:{local_hash[:16]}",
+                    branch_status="orphan_losing_branch",
+                    source="local_tip",
+                    source_id=None,
+                    certificate=local_certificate,
+                    reason="local tip would be reorged out by selected certified branch",
+                )
+            )
+
+        for key in ("remote_parent", "remote_child"):
+            summary = selected.get(key) or {}
+            block_hash = str(summary.get("block_hash") or "")
+            source = _find_queued_block_by_hash(connection, block_hash) if block_hash else None
+            if source is None:
+                continue
+            block = dict(source.get("block") or {})
+            if not block:
+                block = {
+                    "height": int(source.get("height") or 0),
+                    "block_hash": source.get("block_hash"),
+                    "previous_hash": source.get("previous_hash"),
+                }
+            records.append(
+                _upsert_chain_branch_block(
+                    connection,
+                    block=block,
+                    branch_id=f"reorg:{str((selected.get('remote_parent') or {}).get('block_hash') or block_hash)[:16]}",
+                    branch_status="reorg_candidate",
+                    source=str(source.get("source") or key),
+                    source_id=str(source.get("id") or ""),
+                    certificate=summary.get("certificate") or _block_finality_certificate_summary(block),
+                    reason=f"{key} selected by bounded orphan reorg plan",
+                )
+            )
+
+        if owns_connection:
+            connection.commit()
+        return {
+            "prepared": True,
+            "reason": "prepared",
+            "dry_run": True,
+            "plan": plan,
+            "records": records,
+            "record_count": len(records),
+            "apply_blockers": blockers,
+            "checked_at": utc_now(),
+        }
+    finally:
+        if owns_connection:
+            connection.close()
+
+
+def _orphan_reorg_apply_blockers(connection: Any, selected: dict[str, Any]) -> list[str]:
+    blockers = ["state_mutation_not_enabled"]
+    for key in ("remote_parent", "remote_child"):
+        summary = selected.get(key) or {}
+        block_hash = str(summary.get("block_hash") or "")
+        source = _find_queued_block_by_hash(connection, block_hash) if block_hash else None
+        block = (source or {}).get("block") or {}
+        missing = sorted(BLOCK_REQUIRED_FIELDS - set(block))
+        if missing:
+            blockers.append(f"{key}_payload_missing:{','.join(missing)}")
+        if int(block.get("tx_count") or 0) > 0:
+            blockers.append(f"{key}_transactions_require_rollback")
+    return blockers
+
+
+def _local_block_payload_for_branch_record(connection: Any, height: int, block_hash: str) -> dict[str, Any]:
+    block = row_to_dict(
+        connection.execute(
+            "SELECT * FROM blocks WHERE height = ? AND block_hash = ?",
+            (height, block_hash),
+        ).fetchone()
+    )
+    if block is None:
+        return {"height": height, "block_hash": block_hash}
+    if isinstance(block.get("samples"), str):
+        block["samples"] = _json_block_payload_list(block.get("samples"))
+    if isinstance(block.get("tx_hashes"), str):
+        block["tx_hashes"] = _json_block_payload_list(block.get("tx_hashes"))
+    return block
+
+
+def _json_block_payload_list(payload: Any) -> list[Any]:
+    try:
+        decoded = json.loads(payload or "[]")
+    except (TypeError, ValueError):
+        return []
+    return decoded if isinstance(decoded, list) else []
+
+
+def _upsert_chain_branch_block(
+    connection: Any,
+    *,
+    block: dict[str, Any],
+    branch_id: str,
+    branch_status: str,
+    source: str,
+    source_id: str | None,
+    certificate: dict[str, Any],
+    reason: str,
+) -> dict[str, Any]:
+    block_hash = str(block.get("block_hash") or "")
+    if not block_hash:
+        raise ConsensusError(422, "branch block record requires block_hash")
+    height = int(block.get("height") or 0)
+    parent_hash = str(block.get("parent_hash") or block.get("previous_hash") or "")
+    if height <= 0 or not parent_hash:
+        raise ConsensusError(422, "branch block record requires height and parent hash")
+    now = utc_now()
+    payload_json = canonical_json(block)
+    certificate_json = canonical_json(certificate or {})
+    connection.execute(
+        """
+        INSERT INTO chain_branch_blocks (
+            block_hash, height, parent_hash, branch_id, branch_status, source,
+            source_id, payload, certificate_json, reason, first_seen_at, updated_at,
+            selected_at, reorged_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, NULL)
+        ON CONFLICT(block_hash) DO UPDATE SET
+            height = excluded.height,
+            parent_hash = excluded.parent_hash,
+            branch_id = excluded.branch_id,
+            branch_status = excluded.branch_status,
+            source = excluded.source,
+            source_id = excluded.source_id,
+            payload = excluded.payload,
+            certificate_json = excluded.certificate_json,
+            reason = excluded.reason,
+            updated_at = excluded.updated_at
+        """,
+        (
+            block_hash,
+            height,
+            parent_hash,
+            branch_id,
+            branch_status,
+            source,
+            source_id,
+            payload_json,
+            certificate_json,
+            reason,
+            now,
+            now,
+        ),
+    )
+    return {
+        "block_hash": block_hash,
+        "height": height,
+        "parent_hash": parent_hash,
+        "branch_id": branch_id,
+        "branch_status": branch_status,
+        "source": source,
+        "source_id": source_id,
+        "reason": reason,
+    }
+
+
 def _orphan_candidate_reorg_plan(
     connection: Any,
     candidate: dict[str, Any],

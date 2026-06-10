@@ -16,6 +16,7 @@ from app.services.consensus import (
     get_replay_status,
     list_orphan_candidates,
     plan_orphan_reorg,
+    prepare_orphan_reorg,
     propose_block,
     replay_finalized_blocks,
 )
@@ -1186,6 +1187,36 @@ def test_orphan_detector_flags_local_parent_when_remote_certified_child_continue
         "import_remote_parent",
         "replay_remote_child",
     ]
+
+    prepared = prepare_orphan_reorg(max_depth=1)
+
+    assert prepared["prepared"] is True
+    assert prepared["record_count"] == 3
+    assert "state_mutation_not_enabled" in prepared["apply_blockers"]
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT block_hash, height, parent_hash, branch_status, source
+            FROM chain_branch_blocks
+            ORDER BY height ASC, branch_status ASC, block_hash ASC
+            """
+        ).fetchall()
+    branch_rows = [dict(row) for row in rows]
+    assert {row["block_hash"] for row in branch_rows} == {
+        local_block["block_hash"],
+        remote_parent_hash,
+        remote_child_hash,
+    }
+    assert {
+        row["branch_status"]
+        for row in branch_rows
+        if row["block_hash"] == local_block["block_hash"]
+    } == {"orphan_losing_branch"}
+    assert {
+        row["branch_status"]
+        for row in branch_rows
+        if row["block_hash"] in {remote_parent_hash, remote_child_hash}
+    } == {"reorg_candidate"}
 
 
 def test_canonical_blocks_get_branch_metadata_defaults(tmp_path, monkeypatch) -> None:

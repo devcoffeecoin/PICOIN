@@ -91,6 +91,7 @@ from app.services.consensus import (
     list_block_proposals,
     list_orphan_candidates,
     plan_orphan_reorg,
+    prepare_orphan_reorg,
     replay_divergence_report,
     replay_finalized_blocks,
     vote_on_proposal,
@@ -471,6 +472,17 @@ def consensus_orphan_reorg_plan(
     max_depth: int = Query(1, ge=1, le=10),
 ) -> dict:
     return plan_orphan_reorg(limit=limit, max_depth=max_depth)
+
+
+@router.post("/consensus/orphans/reorg-prepare")
+def consensus_orphan_reorg_prepare(
+    limit: int = Query(20, ge=1, le=100),
+    max_depth: int = Query(1, ge=1, le=10),
+) -> dict:
+    try:
+        return prepare_orphan_reorg(limit=limit, max_depth=max_depth)
+    except ConsensusError as exc:
+        raise _consensus_error(exc) from exc
 
 
 @router.get("/consensus/debug/block/{height}")

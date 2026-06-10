@@ -772,6 +772,23 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 created_at TEXT NOT NULL
             );
 
+            CREATE TABLE IF NOT EXISTS chain_branch_blocks (
+                block_hash TEXT PRIMARY KEY,
+                height INTEGER NOT NULL,
+                parent_hash TEXT NOT NULL,
+                branch_id TEXT NOT NULL,
+                branch_status TEXT NOT NULL,
+                source TEXT NOT NULL,
+                source_id TEXT,
+                payload TEXT NOT NULL DEFAULT '{}',
+                certificate_json TEXT NOT NULL DEFAULT '{}',
+                reason TEXT,
+                first_seen_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                selected_at TEXT,
+                reorged_at TEXT
+            );
+
             CREATE TABLE IF NOT EXISTS consensus_block_proposals (
                 proposal_id TEXT PRIMARY KEY,
                 block_hash TEXT NOT NULL UNIQUE,
@@ -885,6 +902,9 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_task_tx_snapshots_task ON task_tx_snapshots(task_id);
             CREATE INDEX IF NOT EXISTS idx_task_tx_snapshots_block ON task_tx_snapshots(block_height);
             CREATE INDEX IF NOT EXISTS idx_network_block_headers_height ON network_block_headers(height);
+            CREATE INDEX IF NOT EXISTS idx_chain_branch_blocks_height ON chain_branch_blocks(height);
+            CREATE INDEX IF NOT EXISTS idx_chain_branch_blocks_status ON chain_branch_blocks(branch_status);
+            CREATE INDEX IF NOT EXISTS idx_chain_branch_blocks_parent ON chain_branch_blocks(parent_hash);
             CREATE INDEX IF NOT EXISTS idx_consensus_block_proposals_status ON consensus_block_proposals(status);
             CREATE INDEX IF NOT EXISTS idx_consensus_block_proposals_height ON consensus_block_proposals(height);
             CREATE INDEX IF NOT EXISTS idx_consensus_votes_proposal ON consensus_votes(proposal_id);
