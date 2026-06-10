@@ -7933,6 +7933,16 @@ def _decode_block(block: dict[str, Any] | None) -> dict[str, Any] | None:
     block["tx_count"] = int(block.get("tx_count") or 0)
     block["fee_reward"] = round(float(block.get("fee_reward") or 0), 8)
     block["fraudulent"] = bool(block.get("fraudulent", 0))
+    block["parent_hash"] = block.get("parent_hash") or block.get("previous_hash")
+    block["branch_id"] = block.get("branch_id") or "canonical"
+    block["branch_status"] = block.get("branch_status") or "canonical"
+    block["ancestor_height"] = (
+        int(block["ancestor_height"])
+        if block.get("ancestor_height") is not None
+        else max(0, int(block.get("height") or 0) - 1)
+    )
+    block["ancestor_hash"] = block.get("ancestor_hash") or block.get("previous_hash")
+    block["selected_at"] = block.get("selected_at") or block.get("timestamp")
     return block
 
 

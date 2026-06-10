@@ -362,6 +362,13 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 fraudulent INTEGER NOT NULL DEFAULT 0,
                 fraud_reason TEXT,
                 fraud_detected_at TEXT,
+                parent_hash TEXT,
+                branch_id TEXT NOT NULL DEFAULT 'canonical',
+                branch_status TEXT NOT NULL DEFAULT 'canonical',
+                ancestor_height INTEGER,
+                ancestor_hash TEXT,
+                inherited_state_root TEXT,
+                selected_at TEXT,
                 FOREIGN KEY(miner_id) REFERENCES miners(miner_id),
                 FOREIGN KEY(task_id) REFERENCES tasks(task_id),
                 FOREIGN KEY(protocol_params_id) REFERENCES protocol_params(id)
@@ -961,6 +968,14 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
         _ensure_column(connection, "blocks", "fraudulent", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "blocks", "fraud_reason", "TEXT")
         _ensure_column(connection, "blocks", "fraud_detected_at", "TEXT")
+        _ensure_column(connection, "blocks", "parent_hash", "TEXT")
+        _ensure_column(connection, "blocks", "branch_id", "TEXT NOT NULL DEFAULT 'canonical'")
+        _ensure_column(connection, "blocks", "branch_status", "TEXT NOT NULL DEFAULT 'canonical'")
+        _ensure_column(connection, "blocks", "ancestor_height", "INTEGER")
+        _ensure_column(connection, "blocks", "ancestor_hash", "TEXT")
+        _ensure_column(connection, "blocks", "inherited_state_root", "TEXT")
+        _ensure_column(connection, "blocks", "selected_at", "TEXT")
+        _ensure_block_branch_metadata(connection)
         _ensure_column(connection, "retroactive_audits", "automatic", "INTEGER NOT NULL DEFAULT 0")
         _ensure_column(connection, "retroactive_audits", "reward", "REAL NOT NULL DEFAULT 0")
         _ensure_column(connection, "retroactive_audits", "reward_account_id", "TEXT")
@@ -1071,6 +1086,53 @@ def _ensure_column(connection: sqlite3.Connection, table_name: str, column_name:
     }
     if column_name.lower() not in columns:
         connection.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {definition}")
+
+
+def _ensure_block_branch_metadata(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        """
+        UPDATE blocks
+        SET
+            parent_hash = COALESCE(NULLIF(parent_hash, ''), previous_hash),
+            branch_id = COALESCE(NULLIF(branch_id, ''), 'canonical'),
+            branch_status = COALESCE(NULLIF(branch_status, ''), 'canonical'),
+            ancestor_height = COALESCE(ancestor_height, CASE WHEN height > 0 THEN height - 1 ELSE NULL END),
+            ancestor_hash = COALESCE(NULLIF(ancestor_hash, ''), previous_hash),
+            selected_at = COALESCE(NULLIF(selected_at, ''), timestamp)
+        WHERE parent_hash IS NULL
+           OR parent_hash = ''
+           OR branch_id IS NULL
+           OR branch_id = ''
+           OR branch_status IS NULL
+           OR branch_status = ''
+           OR ancestor_height IS NULL
+           OR ancestor_hash IS NULL
+           OR ancestor_hash = ''
+           OR selected_at IS NULL
+           OR selected_at = ''
+        """
+    )
+    connection.executescript(
+        """
+        CREATE INDEX IF NOT EXISTS idx_blocks_branch_status ON blocks(branch_status);
+        CREATE INDEX IF NOT EXISTS idx_blocks_parent_hash ON blocks(parent_hash);
+        CREATE INDEX IF NOT EXISTS idx_blocks_branch_id_height ON blocks(branch_id, height);
+
+        CREATE TRIGGER IF NOT EXISTS trg_blocks_branch_metadata_after_insert
+        AFTER INSERT ON blocks
+        BEGIN
+            UPDATE blocks
+            SET
+                parent_hash = COALESCE(NULLIF(NEW.parent_hash, ''), NEW.previous_hash),
+                branch_id = COALESCE(NULLIF(NEW.branch_id, ''), 'canonical'),
+                branch_status = COALESCE(NULLIF(NEW.branch_status, ''), 'canonical'),
+                ancestor_height = COALESCE(NEW.ancestor_height, CASE WHEN NEW.height > 0 THEN NEW.height - 1 ELSE NULL END),
+                ancestor_hash = COALESCE(NULLIF(NEW.ancestor_hash, ''), NEW.previous_hash),
+                selected_at = COALESCE(NULLIF(NEW.selected_at, ''), NEW.timestamp)
+            WHERE height = NEW.height;
+        END;
+        """
+    )
 
 
 def _backfill_reward_maturity_fields(connection: sqlite3.Connection) -> None:

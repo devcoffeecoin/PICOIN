@@ -718,24 +718,23 @@ in `Required Chain Branch Model` and Phase 13.
 
 ## Immediate Next Engineering Slice
 
-Phase 10 and Phase 11 are now lab-proven on the A/B/C candidate set. Phase 12
-has its first implementation slice merged on the branch: task-state inventory,
-receive, reconcile import, and a drill helper for A/B/C convergence.
+Phase 10, Phase 11, and the Phase 12/13 candidate finality path are now
+lab-proven on the A/B/C candidate set through height `11512` with quorum `3/3`
+certificates and healthy replay on all three nodes.
 
-The next natural slice is to close the remaining Phase 12 acceptance gates:
+The next natural slice is to make bounded reorg application safe enough to
+test:
 
-1. Make task identity deterministic across synced write-capable peers.
-2. Prove commit on A and reveal/status/finality convergence on B/C.
-3. Add deterministic first-valid-reveal conflict handling across nodes.
-4. Prove a late miner reveal becomes stale everywhere after another valid block
-   wins the round.
-5. Keep the current quorum rule fixed: no block certificate is acceptable unless
-   it reaches the configured protocol quorum.
+1. Persist explicit branch metadata for every canonical block.
+2. Keep orphan/reorg detection dry-run until rollback accounting is covered.
+3. Add deterministic apply rules only for depth-1 reorg from a known certified
+   ancestor.
+4. Prove balances, ledger entries, account nonces, mempool state, rewards,
+   finality certificates, and block records rewind and replay correctly.
+5. Only then allow automatic orphan adoption or deeper reorg plans.
 
-This slice directly addresses the remaining lab behavior where a miner can hold
-or reuse a pending task while the network progresses. That behavior should be
-resolved by protocol task-state gossip, not by manual database cleanup or by
-lowering quorum.
+This keeps Phase 14 pool-local mining blocked until Phase 13 can recover from
+real fork/orphan cases without manual SQLite intervention.
 
 ## Phase 12 Lab Evidence: Deterministic Candidate Finalization
 
@@ -853,3 +852,25 @@ root cause was another full replay-status check in the hot path. Liveness now
 uses a low-wait DB read plus cached replay health, and validation job polling
 uses replay health from memory instead of rebuilding full sync status before
 serving a job.
+
+## Phase 13.5a Slice: Canonical Branch Metadata
+
+Goal: prepare for safe reorg application without mutating accounting yet.
+
+Implementation work:
+
+- Add branch metadata columns to `blocks`: `parent_hash`, `branch_id`,
+  `branch_status`, `ancestor_height`, `ancestor_hash`,
+  `inherited_state_root`, and `selected_at`.
+- Backfill existing blocks as `branch_status='canonical'` with
+  `parent_hash=previous_hash`.
+- Add an insert trigger so older code paths and tests that insert blocks without
+  branch fields still produce canonical branch metadata.
+- Surface default branch metadata from block decode paths without changing
+  canonical block hashing.
+- Keep `/consensus/orphans/reorg-plan` dry-run only.
+
+This slice deliberately does not apply reorgs. It creates the durable branch
+labels needed for the next step: a bounded depth-1 reorg apply path with explicit
+rollback tests for balances, ledger entries, nonces, rewards, mempool status,
+certificates, and block rows.

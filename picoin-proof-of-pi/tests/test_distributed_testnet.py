@@ -1188,6 +1188,39 @@ def test_orphan_detector_flags_local_parent_when_remote_certified_child_continue
     ]
 
 
+def test_canonical_blocks_get_branch_metadata_defaults(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "branch-metadata-defaults.sqlite3")
+    miner_key = generate_keypair()
+    miner = register_miner("branch-metadata-miner", miner_key["public_key"])
+
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+
+    block = get_block(1)
+    assert block is not None
+    assert block["parent_hash"] == block["previous_hash"]
+    assert block["branch_id"] == "canonical"
+    assert block["branch_status"] == "canonical"
+    assert block["ancestor_height"] == 0
+    assert block["ancestor_hash"] == block["previous_hash"]
+    assert block["selected_at"] == block["timestamp"]
+
+    with get_connection() as connection:
+        stored = connection.execute(
+            """
+            SELECT parent_hash, branch_id, branch_status, ancestor_height, ancestor_hash, selected_at
+            FROM blocks
+            WHERE height = 1
+            """
+        ).fetchone()
+    assert stored is not None
+    assert stored["parent_hash"] == block["previous_hash"]
+    assert stored["branch_id"] == "canonical"
+    assert stored["branch_status"] == "canonical"
+    assert stored["ancestor_height"] == 0
+    assert stored["ancestor_hash"] == block["previous_hash"]
+    assert stored["selected_at"] == block["timestamp"]
+
+
 def test_orphan_reorg_plan_reports_no_candidates(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "orphan-reorg-empty.sqlite3")
 
