@@ -53,7 +53,7 @@ while true; do
         validate \
         --node-server "${PICOIN_VALIDATOR_NODE_SERVER:-http://127.0.0.1:8000}" \
         --node-timeout "${PICOIN_VALIDATOR_NODE_TIMEOUT:-10}" \
-        --submit-timeout "${PICOIN_VALIDATOR_SUBMIT_TIMEOUT:-30}" \
+        --submit-timeout "${PICOIN_VALIDATOR_SUBMIT_TIMEOUT:-180}" \
         --loops "${PICOIN_VALIDATOR_LOOPS:-12}" \
         --sleep "${PICOIN_VALIDATOR_SLEEP:-1}" \
         --poll-seconds "${PICOIN_VALIDATOR_POLL_SECONDS:-1}" \

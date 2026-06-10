@@ -830,7 +830,8 @@ The worker and CLI defaults now favor shorter liveness loops:
   recompute the revealed samples before voting.
 - Default validator heartbeat interval is `15s`.
 - Default validator node timeout is `10s`.
-- Default validation-result submit timeout is `30s`.
+- Default validation-result submit timeout is `180s`, so the client can wait
+  while the coordinator records the vote and finalizes the block after quorum.
 - Default validator polling loops per process are reduced to `12`.
 - Default validator verification workers are increased to `4`.
 
