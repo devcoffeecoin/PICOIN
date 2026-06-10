@@ -64,6 +64,9 @@ logger = logging.getLogger(__name__)
 
 PEER_STALE_MARK_MIN_INTERVAL_SECONDS = int(os.getenv("PICOIN_PEER_STALE_MARK_MIN_INTERVAL_SECONDS", "60"))
 PEER_REGISTER_MIN_INTERVAL_SECONDS = int(os.getenv("PICOIN_PEER_REGISTER_MIN_INTERVAL_SECONDS", "60"))
+RECONCILE_FETCH_TIMEOUT_SECONDS = float(
+    os.getenv("PICOIN_RECONCILE_FETCH_TIMEOUT_SECONDS", str(max(30.0, float(GOSSIP_TIMEOUT_SECONDS) * 3)))
+)
 _PEER_STALE_MARK_LOCK = threading.Lock()
 _PEER_STALE_MARK_LAST_RUN_MONOTONIC = 0.0
 _PEER_REGISTER_LOCK = threading.Lock()
@@ -1095,6 +1098,15 @@ def _local_replay_restore_required_status() -> dict[str, Any] | None:
     return None
 
 
+def _local_effective_block_height() -> int:
+    with get_connection() as connection:
+        latest = connection.execute("SELECT COALESCE(MAX(height), 0) AS height FROM blocks").fetchone()
+        active_base = active_snapshot_base_in_connection(connection)
+    latest_height = int(latest["height"] if latest else 0)
+    snapshot_height = int(active_base["height"]) if active_base is not None else 0
+    return max(latest_height, snapshot_height)
+
+
 def reconcile_peer(peer_address: str) -> dict[str, Any]:
     peer_address = peer_address.rstrip("/")
     result = {
@@ -1272,11 +1284,20 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
     try:
         from app.services.consensus import propose_block
 
-        proposals = requests.get(f"{peer_address}/consensus/proposals?limit=100", timeout=GOSSIP_TIMEOUT_SECONDS).json()
+        proposal_floor_height = max(
+            int(result.get("sync_from_height") or 0),
+            int(result.get("effective_latest_block_height") or 0),
+        )
+        if proposal_floor_height <= 0:
+            proposal_floor_height = _local_effective_block_height()
+        proposals = requests.get(
+            f"{peer_address}/consensus/proposals?limit=100",
+            timeout=RECONCILE_FETCH_TIMEOUT_SECONDS,
+        ).json()
         for proposal in proposals:
             result["proposals_seen"] += 1
             payload = proposal.get("payload") or {}
-            if int(payload.get("height") or 0) <= int(result["sync_from_height"]):
+            if int(payload.get("height") or 0) <= proposal_floor_height:
                 continue
             try:
                 propose_block(payload, proposal["proposer_node_id"], gossip=False)
@@ -1369,7 +1390,7 @@ def _fetch_peer_validator_heartbeats(
 ) -> list[dict[str, Any]]:
     response = requests.get(
         f"{peer_address}/validators/heartbeat/inventory?limit={int(limit)}",
-        timeout=GOSSIP_TIMEOUT_SECONDS,
+        timeout=RECONCILE_FETCH_TIMEOUT_SECONDS,
     )
     if hasattr(response, "raise_for_status"):
         response.raise_for_status()
@@ -1389,7 +1410,7 @@ def _fetch_peer_tasks(
 ) -> list[dict[str, Any]]:
     response = requests.get(
         f"{peer_address}/tasks/inventory?limit={int(limit)}",
-        timeout=GOSSIP_TIMEOUT_SECONDS,
+        timeout=RECONCILE_FETCH_TIMEOUT_SECONDS,
     )
     if hasattr(response, "raise_for_status"):
         response.raise_for_status()
@@ -1409,7 +1430,7 @@ def _fetch_peer_validation_jobs(
 ) -> list[dict[str, Any]]:
     response = requests.get(
         f"{peer_address}/validation/jobs/inventory?status=pending&limit={int(limit)}",
-        timeout=GOSSIP_TIMEOUT_SECONDS,
+        timeout=RECONCILE_FETCH_TIMEOUT_SECONDS,
     )
     if hasattr(response, "raise_for_status"):
         response.raise_for_status()
@@ -1458,7 +1479,7 @@ def _fetch_peer_validation_votes(
 ) -> list[dict[str, Any]]:
     response = requests.get(
         f"{peer_address}/validation/votes/inventory?limit={int(limit)}",
-        timeout=GOSSIP_TIMEOUT_SECONDS,
+        timeout=RECONCILE_FETCH_TIMEOUT_SECONDS,
     )
     if hasattr(response, "raise_for_status"):
         response.raise_for_status()
@@ -1582,7 +1603,7 @@ def sync_blocks_until(
             request_limit = max(1, min(request_limit, int(target_height) - sync_from_height))
         block_rows = requests.get(
             f"{peer_address}/node/sync/blocks?from_height={sync_from_height}&limit={request_limit}",
-            timeout=GOSSIP_TIMEOUT_SECONDS,
+            timeout=RECONCILE_FETCH_TIMEOUT_SECONDS,
         ).json()
         blocks = sorted(block_rows.get("blocks", []), key=lambda item: int(item.get("height") or 0))
         if not blocks:

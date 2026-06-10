@@ -774,6 +774,80 @@ def test_reconcile_peer_defers_votes_for_missing_validation_jobs(tmp_path, monke
     assert result["errors"] == []
 
 
+def test_reconcile_peer_skips_old_proposals_when_block_sync_times_out(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "peer-reconcile-skip-old-proposals.sqlite3")
+    miner_key = generate_keypair()
+    miner = register_miner("local-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+
+    class Response:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, timeout=0):
+        if url == "http://peer-a:8000/node/identity":
+            return Response(
+                {
+                    "node_id": "peer-a",
+                    "peer_address": "http://peer-a:8000",
+                    "peer_type": "full",
+                    "protocol_version": PROTOCOL_VERSION,
+                    "network_id": NETWORK_ID,
+                    "chain_id": CHAIN_ID,
+                    "genesis_hash": GENESIS_HASH,
+                    "bootstrap_peers": [],
+                }
+            )
+        if url == "http://peer-a:8000/node/peers":
+            return Response([])
+        if url == "http://peer-a:8000/mempool/inventory?status=pending&limit=100":
+            return Response({"transactions": []})
+        if url == "http://peer-a:8000/validators/heartbeat/inventory?limit=100":
+            return Response({"heartbeats": []})
+        if url == "http://peer-a:8000/tasks/inventory?limit=100":
+            return Response({"tasks": []})
+        if url == "http://peer-a:8000/validation/jobs/inventory?status=pending&limit=100":
+            return Response({"jobs": []})
+        if url == "http://peer-a:8000/validation/votes/inventory?limit=100":
+            return Response({"votes": []})
+        if url == "http://peer-a:8000/node/sync/blocks?from_height=1&limit=100":
+            raise TimeoutError("slow block inventory")
+        if url == "http://peer-a:8000/consensus/proposals?limit=100":
+            return Response(
+                [
+                    {
+                        "proposal_id": "old-local-height-proposal",
+                        "proposer_node_id": "peer-a",
+                        "payload": {
+                            "height": 1,
+                            "previous_hash": GENESIS_HASH,
+                            "block_hash": "a" * 64,
+                            "timestamp": "2026-05-12T00:00:00+00:00",
+                        },
+                    }
+                ]
+            )
+        raise AssertionError(url)
+
+    def fail_propose_block(*args, **kwargs):
+        raise AssertionError("already-finalized proposals should be skipped")
+
+    monkeypatch.setattr("app.services.network.requests.get", fake_get)
+    monkeypatch.setattr("app.services.consensus.propose_block", fail_propose_block)
+
+    result = reconcile_peer("http://peer-a:8000")
+
+    assert result["proposals_seen"] == 1
+    assert result["proposals_imported"] == 0
+    assert result["errors"] == ["blocks: slow block inventory"]
+
+
 def test_reconcile_peer_fallback_imports_pending_mempool_only(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "peer-reconcile-fallback-pending.sqlite3")
     pending_hash = "b" * 64
@@ -1286,6 +1360,29 @@ def test_sync_blocks_drains_replay_backlog_with_bounded_batch(tmp_path, monkeypa
     assert result["replay"]["queue_size"] == 1
     assert result["replay"]["sync_status"] == "catching_up"
     assert result["replay"]["replay_stalled"] is False
+
+
+def test_sync_blocks_uses_reconcile_fetch_timeout(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "sync-blocks-reconcile-timeout.sqlite3")
+    timeouts: list[float] = []
+
+    class EmptyBlocksResponse:
+        def json(self) -> dict:
+            return {"blocks": []}
+
+    def fake_get(url, timeout=0):
+        if "/node/sync/blocks" in url:
+            timeouts.append(timeout)
+            return EmptyBlocksResponse()
+        raise AssertionError(url)
+
+    monkeypatch.setattr("app.services.network.RECONCILE_FETCH_TIMEOUT_SECONDS", 42.0)
+    monkeypatch.setattr("app.services.network.requests.get", fake_get)
+
+    result = sync_blocks_until("http://peer-a:8000", limit=10)
+
+    assert result["blocks_seen"] == 0
+    assert timeouts == [42.0]
 
 
 def test_sync_blocks_skips_peer_fetch_when_replay_already_divergent(tmp_path, monkeypatch) -> None:

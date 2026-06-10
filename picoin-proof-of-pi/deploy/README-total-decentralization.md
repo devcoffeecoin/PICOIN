@@ -894,3 +894,22 @@ Implementation work:
 This prevents the next apply step from destroying evidence. The remaining apply
 work is to add a guarded depth-1 rollback path that can replace the local tip
 only after tests prove accounting rollback and replay are deterministic.
+
+## Phase 13.5c Slice: Reconcile Slow Peer Hardening
+
+Goal: keep validator catch-up from failing during short DB/API stalls on a peer.
+
+Implementation work:
+
+- Add `PICOIN_RECONCILE_FETCH_TIMEOUT_SECONDS`, defaulting to at least 30s, for
+  reconcile inventory and block catch-up reads.
+- Keep short gossip timeouts for ordinary gossip paths.
+- Use the longer reconcile timeout for validator heartbeats, tasks, validation
+  jobs, validation votes, block sync, and proposal inventory.
+- If block catch-up cannot read from a peer, skip proposals at or below the local
+  effective height instead of counting historical finalized proposals as conflicts.
+
+This addresses the field case where a candidate could connect to a peer but the
+peer took longer than 10s to return task/job/vote/block inventories. The node now
+waits longer for catch-up data and avoids noisy conflict errors from old proposals
+when block sync timed out.
