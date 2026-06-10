@@ -31,6 +31,8 @@ from app.core.settings import (
     REPLAY_WORKER_ENABLED,
     REPLAY_WORKER_INTERVAL_SECONDS,
     REQUIRED_VALIDATOR_APPROVALS,
+    RETROACTIVE_AUDIT_INTERVAL_BLOCKS,
+    SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID,
     VALIDATION_MODE,
     VALIDATOR_ELIGIBILITY_STAKE_FIELD,
     VALIDATOR_MIN_TRUST_SCORE,
@@ -1625,8 +1627,124 @@ def prepare_orphan_reorg(
             connection.close()
 
 
+def apply_orphan_reorg(
+    limit: int = 20,
+    *,
+    max_depth: int = 1,
+    connection: Any | None = None,
+) -> dict[str, Any]:
+    safe_limit = max(1, min(int(limit or 1), 100))
+    safe_max_depth = max(1, min(int(max_depth or 1), 10))
+    owns_connection = connection is None
+    if owns_connection:
+        connection = get_connection()
+    try:
+        connection.execute("SAVEPOINT orphan_reorg_apply")
+        try:
+            prepared = prepare_orphan_reorg(limit=safe_limit, max_depth=safe_max_depth, connection=connection)
+            if not prepared.get("prepared"):
+                connection.execute("RELEASE SAVEPOINT orphan_reorg_apply")
+                return {
+                    "applied": False,
+                    "reason": prepared.get("reason"),
+                    "prepared": prepared,
+                    "checked_at": utc_now(),
+                }
+            blockers = list(prepared.get("apply_blockers") or [])
+            if blockers:
+                connection.execute("RELEASE SAVEPOINT orphan_reorg_apply")
+                return {
+                    "applied": False,
+                    "reason": "apply_blocked",
+                    "apply_blockers": blockers,
+                    "prepared": prepared,
+                    "checked_at": utc_now(),
+                }
+            selected = (prepared.get("plan") or {}).get("selected") or {}
+            result = _apply_selected_orphan_reorg(connection, selected)
+            connection.execute("RELEASE SAVEPOINT orphan_reorg_apply")
+        except Exception:
+            connection.execute("ROLLBACK TO SAVEPOINT orphan_reorg_apply")
+            connection.execute("RELEASE SAVEPOINT orphan_reorg_apply")
+            raise
+        if owns_connection:
+            connection.commit()
+        _reset_replay_health_for_database(_connection_database_path(connection))
+        return {
+            "applied": True,
+            "reason": "applied",
+            "prepared": prepared,
+            **result,
+            "checked_at": utc_now(),
+        }
+    finally:
+        if owns_connection:
+            connection.close()
+
+
 def _orphan_reorg_apply_blockers(connection: Any, selected: dict[str, Any]) -> list[str]:
-    blockers = ["state_mutation_not_enabled"]
+    blockers: list[str] = []
+    depth = int(selected.get("depth") or 0)
+    if depth != 1:
+        blockers.append("only_depth_1_reorg_apply_supported")
+    local_orphan = selected.get("local_orphan") or {}
+    local_height = int(local_orphan.get("height") or 0)
+    local_hash = str(local_orphan.get("block_hash") or "")
+    local_block = row_to_dict(
+        connection.execute(
+            "SELECT height, block_hash, tx_count FROM blocks WHERE height = ? AND block_hash = ?",
+            (local_height, local_hash),
+        ).fetchone()
+    )
+    if local_block is None:
+        blockers.append("local_orphan_block_missing")
+    elif int(local_block.get("tx_count") or 0) > 0:
+        blockers.append("local_orphan_transactions_require_rollback")
+
+    future = connection.execute(
+        "SELECT COUNT(*) AS count FROM blocks WHERE height > ?",
+        (local_height,),
+    ).fetchone()
+    if int((future or {})["count"] if future else 0) > 0:
+        blockers.append("local_orphan_is_not_current_tip")
+
+    active_base = active_snapshot_base_in_connection(connection)
+    if active_base is not None and active_base.get("state_applied") and local_height <= int(active_base["height"]):
+        blockers.append("active_snapshot_base_requires_snapshot_restore")
+
+    if (
+        local_height > 0
+        and RETROACTIVE_AUDIT_INTERVAL_BLOCKS > 0
+        and local_height % RETROACTIVE_AUDIT_INTERVAL_BLOCKS == 0
+    ):
+        blockers.append("retroactive_audit_trigger_height_requires_manual_reorg")
+
+    retarget = connection.execute(
+        "SELECT COUNT(*) AS count FROM retarget_events WHERE epoch_end_height >= ?",
+        (local_height,),
+    ).fetchone()
+    if int((retarget or {})["count"] if retarget else 0) > 0:
+        blockers.append("retarget_events_require_manual_reorg")
+
+    unsupported_ledger_rows = connection.execute(
+        """
+        SELECT DISTINCT entry_type
+        FROM ledger_entries
+        WHERE block_height >= ?
+          AND entry_type NOT IN (
+              'block_reward',
+              'validator_reward',
+              'science_reserve_accrual',
+              'scientific_development_treasury_accrual'
+          )
+        ORDER BY entry_type
+        """,
+        (local_height,),
+    ).fetchall()
+    unsupported_ledger = [str(row["entry_type"]) for row in unsupported_ledger_rows]
+    if unsupported_ledger:
+        blockers.append(f"unsupported_ledger_entries:{','.join(unsupported_ledger)}")
+
     for key in ("remote_parent", "remote_child"):
         summary = selected.get(key) or {}
         block_hash = str(summary.get("block_hash") or "")
@@ -1638,6 +1756,320 @@ def _orphan_reorg_apply_blockers(connection: Any, selected: dict[str, Any]) -> l
         if int(block.get("tx_count") or 0) > 0:
             blockers.append(f"{key}_transactions_require_rollback")
     return blockers
+
+
+def _apply_selected_orphan_reorg(connection: Any, selected: dict[str, Any]) -> dict[str, Any]:
+    local_orphan = selected.get("local_orphan") or {}
+    local_height = int(local_orphan.get("height") or 0)
+    local_hash = str(local_orphan.get("block_hash") or "")
+    remote_parent = selected.get("remote_parent") or {}
+    remote_child = selected.get("remote_child") or {}
+    remote_parent_hash = str(remote_parent.get("block_hash") or "")
+    remote_child_hash = str(remote_child.get("block_hash") or "")
+    if not local_height or not local_hash or not remote_parent_hash or not remote_child_hash:
+        raise ConsensusError(422, "reorg plan is missing required block hashes")
+
+    tip = _latest_tip(connection)
+    if int(tip["height"]) != local_height or str(tip["block_hash"]) != local_hash:
+        raise ConsensusError(409, "local tip moved before orphan reorg apply")
+
+    blockers = _orphan_reorg_apply_blockers(connection, selected)
+    if blockers:
+        raise ConsensusError(409, f"orphan reorg apply blocked: {', '.join(blockers)}")
+
+    parent_source = _find_queued_block_by_hash(connection, remote_parent_hash)
+    child_source = _find_queued_block_by_hash(connection, remote_child_hash)
+    if parent_source is None or child_source is None:
+        raise ConsensusError(404, "selected reorg branch payload is missing")
+    parent_block = dict(parent_source.get("block") or {})
+    child_block = dict(child_source.get("block") or {})
+    now = utc_now()
+
+    removed = _remove_local_orphan_tip_for_reorg(connection, local_height, local_hash, now)
+    imported: list[dict[str, Any]] = []
+    for label, source, block in (
+        ("remote_parent", parent_source, parent_block),
+        ("remote_child", child_source, child_block),
+    ):
+        source_id = f"reorg:{source.get('source')}:{source.get('id')}"
+        did_import = _import_finalized_block(connection, block, source_id)
+        _mark_reorg_source_imported(connection, source, block, now)
+        connection.execute(
+            """
+            UPDATE tasks
+            SET status = 'accepted',
+                submitted_at = COALESCE(submitted_at, ?),
+                stale_at = NULL,
+                stale_reason = NULL
+            WHERE task_id = ?
+            """,
+            (block["timestamp"], block.get("task_id")),
+        )
+        imported.append(
+            {
+                "step": label,
+                "height": int(block["height"]),
+                "block_hash": block["block_hash"],
+                "imported": bool(did_import),
+                "source": source.get("source"),
+                "source_id": source.get("id"),
+            }
+        )
+
+    new_tip = _latest_tip(connection)
+    if int(new_tip["height"]) != int(child_block["height"]) or str(new_tip["block_hash"]) != child_block["block_hash"]:
+        raise ConsensusError(500, "orphan reorg apply did not end at selected remote child")
+
+    connection.execute(
+        """
+        UPDATE chain_branch_blocks
+        SET branch_status = 'orphaned',
+            reorged_at = ?,
+            updated_at = ?
+        WHERE block_hash = ?
+        """,
+        (now, now, local_hash),
+    )
+    connection.execute(
+        """
+        UPDATE chain_branch_blocks
+        SET branch_status = 'canonical_after_reorg',
+            selected_at = COALESCE(selected_at, ?),
+            reorged_at = ?,
+            updated_at = ?
+        WHERE block_hash IN (?, ?)
+        """,
+        (now, now, now, remote_parent_hash, remote_child_hash),
+    )
+    _promote_ready_missing_ancestor_proposals(connection)
+    return {
+        "local_orphan": {"height": local_height, "block_hash": local_hash},
+        "removed": removed,
+        "imported": imported,
+        "new_tip": new_tip,
+    }
+
+
+def _remove_local_orphan_tip_for_reorg(connection: Any, height: int, block_hash: str, timestamp: str) -> dict[str, Any]:
+    block = row_to_dict(
+        connection.execute(
+            "SELECT * FROM blocks WHERE height = ? AND block_hash = ?",
+            (height, block_hash),
+        ).fetchone()
+    )
+    if block is None:
+        raise ConsensusError(404, "local orphan block not found")
+    certificate = row_to_dict(
+        connection.execute(
+            "SELECT * FROM finality_certificates WHERE block_height = ? AND block_hash = ?",
+            (height, block_hash),
+        ).fetchone()
+    )
+    ledger_summary = _ledger_summary_from_height(connection, height)
+    _reverse_reorg_side_table_accruals(connection, ledger_summary, timestamp)
+
+    connection.execute(
+        """
+        UPDATE rewards
+        SET status = 'immature',
+            matured_at = NULL
+        WHERE status = 'mature'
+          AND matures_at_height >= ?
+          AND block_height < ?
+        """,
+        (height, height),
+    )
+    reward_rows = connection.execute(
+        "SELECT COUNT(*) AS count FROM rewards WHERE block_height >= ?",
+        (height,),
+    ).fetchone()
+    connection.execute("DELETE FROM rewards WHERE block_height >= ?", (height,))
+    ledger_cursor = connection.execute("DELETE FROM ledger_entries WHERE block_height >= ?", (height,))
+    connection.execute("DELETE FROM canonical_checkpoints WHERE height >= ?", (height,))
+    connection.execute("DELETE FROM finality_certificates WHERE block_height = ? AND block_hash = ?", (height, block_hash))
+    connection.execute("DELETE FROM blocks WHERE height = ? AND block_hash = ?", (height, block_hash))
+    _rebuild_balances_from_ledger(connection, timestamp)
+
+    task_id = block.get("task_id")
+    if task_id:
+        connection.execute(
+            """
+            UPDATE tasks
+            SET status = 'stale',
+                stale_at = ?,
+                stale_reason = 'orphaned by certified branch reorg'
+            WHERE task_id = ?
+            """,
+            (timestamp, task_id),
+        )
+        connection.execute(
+            """
+            UPDATE validation_jobs
+            SET status = CASE WHEN status = 'pending' THEN 'rejected' ELSE status END,
+                result_reason = COALESCE(result_reason, 'orphaned by certified branch reorg'),
+                completed_at = COALESCE(completed_at, ?),
+                finalized_at = COALESCE(finalized_at, ?)
+            WHERE task_id = ?
+            """,
+            (timestamp, timestamp, task_id),
+        )
+    connection.execute(
+        """
+        UPDATE consensus_block_proposals
+        SET status = 'rejected',
+            rejection_reason = 'orphaned by certified branch reorg',
+            updated_at = ?
+        WHERE block_hash = ?
+        """,
+        (timestamp, block_hash),
+    )
+    return {
+        "height": height,
+        "block_hash": block_hash,
+        "task_id": task_id,
+        "certificate_job_id": (certificate or {}).get("job_id"),
+        "deleted_rewards": int((reward_rows or {})["count"] if reward_rows else 0),
+        "deleted_ledger_entries": int(ledger_cursor.rowcount),
+        "reversed_ledger": ledger_summary,
+    }
+
+
+def _ledger_summary_from_height(connection: Any, height: int) -> dict[str, Any]:
+    rows = connection.execute(
+        """
+        SELECT entry_type, COALESCE(SUM(amount_units), 0) AS amount_units, COUNT(*) AS count
+        FROM ledger_entries
+        WHERE block_height >= ?
+        GROUP BY entry_type
+        """,
+        (height,),
+    ).fetchall()
+    return {
+        str(row["entry_type"]): {
+            "amount_units": int(row["amount_units"] or 0),
+            "amount": units_to_float(int(row["amount_units"] or 0)),
+            "count": int(row["count"] or 0),
+        }
+        for row in rows
+    }
+
+
+def _reverse_reorg_side_table_accruals(
+    connection: Any,
+    ledger_summary: dict[str, Any],
+    timestamp: str,
+) -> None:
+    science_units = int((ledger_summary.get("science_reserve_accrual") or {}).get("amount_units") or 0)
+    if science_units:
+        science_amount = units_to_float(science_units)
+        connection.execute(
+            """
+            UPDATE science_reward_reserve
+            SET total_reserved = MAX(0, total_reserved - ?),
+                updated_at = ?
+            WHERE epoch = (
+                SELECT epoch FROM science_reward_reserve ORDER BY updated_at DESC LIMIT 1
+            )
+            """,
+            (science_amount, timestamp),
+        )
+
+    treasury_units = int((ledger_summary.get("scientific_development_treasury_accrual") or {}).get("amount_units") or 0)
+    if treasury_units:
+        treasury_amount = units_to_float(treasury_units)
+        connection.execute(
+            """
+            UPDATE scientific_development_treasury
+            SET total_accumulated = MAX(0, total_accumulated - ?),
+                locked_balance = MAX(0, locked_balance - ?),
+                updated_at = ?
+            WHERE treasury_id = ?
+            """,
+            (
+                treasury_amount,
+                treasury_amount,
+                timestamp,
+                SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID,
+            ),
+        )
+        connection.execute(
+            """
+            UPDATE scientific_development_treasury_epochs
+            SET locked_amount = MAX(0, locked_amount - ?),
+                updated_at = ?
+            WHERE epoch = (
+                SELECT current_epoch
+                FROM scientific_development_treasury
+                WHERE treasury_id = ?
+            )
+            """,
+            (treasury_amount, timestamp, SCIENTIFIC_DEVELOPMENT_TREASURY_ACCOUNT_ID),
+        )
+
+
+def _rebuild_balances_from_ledger(connection: Any, timestamp: str) -> None:
+    rows = connection.execute(
+        """
+        SELECT account_id, account_type, amount_units
+        FROM ledger_entries
+        ORDER BY id ASC
+        """
+    ).fetchall()
+    balances: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        account_id = str(row["account_id"])
+        item = balances.setdefault(
+            account_id,
+            {"account_id": account_id, "account_type": row["account_type"], "balance_units": 0},
+        )
+        item["account_type"] = row["account_type"] or item["account_type"]
+        item["balance_units"] += int(row["amount_units"] or 0)
+    connection.execute("DELETE FROM balances")
+    for item in balances.values():
+        balance_units = int(item["balance_units"])
+        if balance_units == 0:
+            continue
+        connection.execute(
+            """
+            INSERT INTO balances (account_id, account_type, balance, balance_units, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                item["account_id"],
+                item["account_type"],
+                units_to_float(balance_units),
+                balance_units,
+                timestamp,
+            ),
+        )
+
+
+def _mark_reorg_source_imported(
+    connection: Any,
+    source: dict[str, Any],
+    block: dict[str, Any],
+    timestamp: str,
+) -> None:
+    block_hash = block["block_hash"]
+    connection.execute(
+        """
+        UPDATE network_block_headers
+        SET status = 'imported',
+            reason = 'imported via orphan reorg apply'
+        WHERE block_hash = ?
+        """,
+        (block_hash,),
+    )
+    connection.execute(
+        """
+        UPDATE consensus_block_proposals
+        SET status = 'imported',
+            rejection_reason = COALESCE(rejection_reason, 'imported via orphan reorg apply'),
+            updated_at = ?
+        WHERE block_hash = ? AND status NOT IN ('rejected')
+        """,
+        (timestamp, block_hash),
+    )
 
 
 def _local_block_payload_for_branch_record(connection: Any, height: int, block_hash: str) -> dict[str, Any]:

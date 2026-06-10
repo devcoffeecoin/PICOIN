@@ -5,12 +5,25 @@ import pytest
 
 from app.core.crypto import canonical_json, hash_result, sha256_text
 from app.core.pi import calculate_pi_segment
-from app.core.settings import CHAIN_ID, GENESIS_HASH, MEMPOOL_TX_TTL_SECONDS, NETWORK_ID, PROTOCOL_VERSION
-from app.core.signatures import build_submission_signature_payload, generate_keypair, sign_payload
+from app.core.settings import (
+    CHAIN_ID,
+    GENESIS_HASH,
+    MEMPOOL_TX_TTL_SECONDS,
+    NETWORK_ID,
+    PROTOCOL_VERSION,
+    VALIDATION_MODE,
+)
+from app.core.signatures import (
+    build_submission_signature_payload,
+    build_validation_result_signature_payload,
+    generate_keypair,
+    sign_payload,
+)
 from app.db.database import get_connection, init_db
 from app.models.schemas import SignedTransactionRequest
 from app.services.consensus import (
     _mark_replay_divergent,
+    apply_orphan_reorg,
     block_hash_debug,
     debug_block_determinism,
     get_replay_status,
@@ -106,6 +119,147 @@ def _full_block_with_nonlocal_parent(tmp_path, monkeypatch, *, source_name: str,
 
     _init_network_db(tmp_path, monkeypatch, target_name)
     return block
+
+
+def _certified_reorg_block(
+    *,
+    height: int,
+    previous_hash: str,
+    task_id: str,
+    job_id: str,
+    miner_id: str = "remote-reorg-miner",
+    timestamp: str = "2026-06-09T17:30:00+00:00",
+) -> dict:
+    samples = [{"position": height, "digit": str(height % 10), "proof": []}]
+    block = {
+        "height": height,
+        "previous_hash": previous_hash,
+        "miner_id": miner_id,
+        "range_start": height,
+        "range_end": height,
+        "algorithm": "bbp_hex_v1",
+        "result_hash": sha256_text(f"remote-result:{height}:{task_id}"),
+        "merkle_root": sha256_text(f"remote-merkle:{height}:{task_id}"),
+        "samples": samples,
+        "timestamp": timestamp,
+        "reward": 2.51328,
+        "protocol_version": PROTOCOL_VERSION,
+        "validation_mode": VALIDATION_MODE,
+        "total_block_ms": 1000,
+        "tx_merkle_root": "",
+        "tx_count": 0,
+        "tx_hashes": [],
+        "fee_reward": 0.0,
+        "task_id": task_id,
+    }
+    block["block_hash"] = block_hash_debug({**block, "block_hash": "0" * 64})["computed_hash"]
+    block["finality_certificate"] = _finality_certificate_for_test_block(block, task_id=task_id, job_id=job_id)
+    return block
+
+
+def _finality_certificate_for_test_block(block: dict, *, task_id: str, job_id: str) -> dict:
+    created_at = block["timestamp"]
+    votes = []
+    for index in range(3):
+        validator_key = generate_keypair()
+        validator_id = f"validator_reorg_{index}"
+        signed_at = f"2026-06-09T17:30:0{index}+00:00"
+        reason = "external validator accepted samples"
+        signature_payload = build_validation_result_signature_payload(
+            job_id=job_id,
+            validator_id=validator_id,
+            task_id=task_id,
+            approved=True,
+            reason=reason,
+            signed_at=signed_at,
+        )
+        votes.append(
+            {
+                "validator_id": validator_id,
+                "validator_name": validator_id,
+                "validator_public_key": validator_key["public_key"],
+                "validator_reward_address": None,
+                "approved": True,
+                "reason": reason,
+                "signature": sign_payload(validator_key["private_key"], signature_payload),
+                "signed_at": signed_at,
+                "signature_payload": signature_payload,
+                "validation_ms": 1,
+                "submit_result_latency_ms": 1,
+                "voted_at": signed_at,
+            }
+        )
+    payload = {
+        "version": "picoin-finality-v1",
+        "network_id": NETWORK_ID,
+        "chain_id": CHAIN_ID,
+        "protocol_version": block.get("protocol_version") or PROTOCOL_VERSION,
+        "protocol_params_id": block.get("protocol_params_id"),
+        "block": {
+            "height": int(block["height"]),
+            "block_hash": block["block_hash"],
+            "previous_hash": block["previous_hash"],
+            "state_root": block.get("state_root"),
+            "miner_id": block["miner_id"],
+            "task_id": task_id,
+            "result_hash": block["result_hash"],
+            "merkle_root": block.get("merkle_root"),
+            "tx_merkle_root": block.get("tx_merkle_root"),
+            "tx_count": int(block.get("tx_count") or 0),
+            "tx_fee_total_units": 0,
+            "selected_tx_hashes_hash": None,
+        },
+        "validation": {
+            "job_id": job_id,
+            "challenge_seed": sha256_text(job_id),
+            "sample_count": len(block.get("samples") or []),
+            "required_approvals": 3,
+            "approval_count": 3,
+            "status": "approved",
+        },
+    }
+    return {
+        "block_height": int(block["height"]),
+        "block_hash": block["block_hash"],
+        "task_id": task_id,
+        "job_id": job_id,
+        "miner_id": block["miner_id"],
+        "network_id": NETWORK_ID,
+        "chain_id": str(CHAIN_ID),
+        "protocol_version": payload["protocol_version"],
+        "protocol_params_id": payload.get("protocol_params_id"),
+        "required_approvals": 3,
+        "approval_count": 3,
+        "certificate_hash": sha256_text(canonical_json({"payload": payload, "votes": votes})),
+        "payload": payload,
+        "votes": votes,
+        "created_at": created_at,
+    }
+
+
+def _queue_reorg_block_proposal(block: dict) -> None:
+    timestamp = block["timestamp"]
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO consensus_block_proposals (
+                proposal_id, block_hash, height, previous_hash, proposer_node_id,
+                status, payload, approvals, rejections, rejection_reason,
+                finalized_at, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, 'remote-node', 'pending_missing_ancestors', ?, 0, 0,
+                    'proposal accepted but previous_hash is not local chain tip', NULL, ?, ?)
+            """,
+            (
+                sha256_text(f"proposal:{block['block_hash']}"),
+                block["block_hash"],
+                block["height"],
+                block["previous_hash"],
+                json.dumps(block, sort_keys=True),
+                timestamp,
+                timestamp,
+            ),
+        )
 
 
 def _queue_replay_backlog_for_divergence_guard() -> None:
@@ -1266,7 +1420,8 @@ def test_orphan_detector_flags_local_parent_when_remote_certified_child_continue
 
     assert prepared["prepared"] is True
     assert prepared["record_count"] == 3
-    assert "state_mutation_not_enabled" in prepared["apply_blockers"]
+    assert any(blocker.startswith("remote_parent_payload_missing:") for blocker in prepared["apply_blockers"])
+    assert any(blocker.startswith("remote_child_payload_missing:") for blocker in prepared["apply_blockers"])
     with get_connection() as connection:
         rows = connection.execute(
             """
@@ -1291,6 +1446,64 @@ def test_orphan_detector_flags_local_parent_when_remote_certified_child_continue
         for row in branch_rows
         if row["block_hash"] in {remote_parent_hash, remote_child_hash}
     } == {"reorg_candidate"}
+
+
+def test_orphan_reorg_apply_replaces_local_tip_with_certified_branch(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "orphan-reorg-apply.sqlite3")
+    miner_key = generate_keypair()
+    miner = register_miner("orphan-reorg-apply-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    local_block = get_block(1)
+    assert local_block is not None
+
+    remote_parent = _certified_reorg_block(
+        height=1,
+        previous_hash=GENESIS_HASH,
+        task_id="task_remote_parent_apply",
+        job_id="job_remote_parent_apply",
+    )
+    remote_child = _certified_reorg_block(
+        height=2,
+        previous_hash=remote_parent["block_hash"],
+        task_id="task_remote_child_apply",
+        job_id="job_remote_child_apply",
+    )
+    _queue_reorg_block_proposal(remote_parent)
+    _queue_reorg_block_proposal(remote_child)
+
+    plan = plan_orphan_reorg(max_depth=1)
+    assert plan["can_apply"] is True
+    prepared = prepare_orphan_reorg(max_depth=1)
+    assert prepared["prepared"] is True
+    assert prepared["apply_blockers"] == []
+
+    result = apply_orphan_reorg(max_depth=1)
+
+    assert result["applied"] is True
+    assert result["new_tip"] == {"height": 2, "block_hash": remote_child["block_hash"]}
+    assert [item["block_hash"] for item in result["imported"]] == [
+        remote_parent["block_hash"],
+        remote_child["block_hash"],
+    ]
+    assert get_block(1)["block_hash"] == remote_parent["block_hash"]
+    assert get_block(2)["block_hash"] == remote_child["block_hash"]
+    assert get_full_economic_audit()["valid"] is True
+    with get_connection() as connection:
+        local_task = connection.execute(
+            "SELECT status, stale_reason FROM tasks WHERE task_id = ?",
+            (local_block["task_id"],),
+        ).fetchone()
+        statuses = {
+            row["block_hash"]: row["branch_status"]
+            for row in connection.execute(
+                "SELECT block_hash, branch_status FROM chain_branch_blocks"
+            ).fetchall()
+        }
+    assert local_task["status"] == "stale"
+    assert local_task["stale_reason"] == "orphaned by certified branch reorg"
+    assert statuses[local_block["block_hash"]] == "orphaned"
+    assert statuses[remote_parent["block_hash"]] == "canonical_after_reorg"
+    assert statuses[remote_child["block_hash"]] == "canonical_after_reorg"
 
 
 def test_canonical_blocks_get_branch_metadata_defaults(tmp_path, monkeypatch) -> None:

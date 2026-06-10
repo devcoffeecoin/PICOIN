@@ -81,6 +81,7 @@ from app.models.schemas import (
 )
 from app.services.consensus import (
     ConsensusError,
+    apply_orphan_reorg,
     block_hash_debug,
     consensus_status,
     debug_block_determinism,
@@ -481,6 +482,17 @@ def consensus_orphan_reorg_prepare(
 ) -> dict:
     try:
         return prepare_orphan_reorg(limit=limit, max_depth=max_depth)
+    except ConsensusError as exc:
+        raise _consensus_error(exc) from exc
+
+
+@router.post("/consensus/orphans/reorg-apply")
+def consensus_orphan_reorg_apply(
+    limit: int = Query(20, ge=1, le=100),
+    max_depth: int = Query(1, ge=1, le=10),
+) -> dict:
+    try:
+        return apply_orphan_reorg(limit=limit, max_depth=max_depth)
     except ConsensusError as exc:
         raise _consensus_error(exc) from exc
 
