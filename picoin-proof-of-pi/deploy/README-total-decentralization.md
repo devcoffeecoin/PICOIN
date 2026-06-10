@@ -913,3 +913,19 @@ This addresses the field case where a candidate could connect to a peer but the
 peer took longer than 10s to return task/job/vote/block inventories. The node now
 waits longer for catch-up data and avoids noisy conflict errors from old proposals
 when block sync timed out.
+
+## Phase 13.5d Slice: Obsolete Competitive Job Cleanup
+
+Goal: prevent stale competitive validation jobs from remaining pending forever.
+
+Implementation work:
+
+- During task/job cleanup, scan pending validation jobs for competitive-round
+  tasks.
+- Close jobs whose round was already won by a canonical block or whose task no
+  longer matches the current competitive round.
+- Preserve pending jobs for the current active competitive round.
+
+This handles outage/race cases where a node learns about a losing competitive
+candidate after the winning block already exists locally. The losing task is
+marked stale and its validation job is rejected instead of being left pending.

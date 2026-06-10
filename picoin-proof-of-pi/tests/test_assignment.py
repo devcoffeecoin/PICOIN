@@ -12,6 +12,7 @@ from app.db.database import init_db
 from app.services import mining as mining_service
 from app.services.mining import (
     MiningError,
+    cleanup_expired_tasks,
     create_next_task,
     get_full_economic_audit,
     get_validation_job,
@@ -581,6 +582,129 @@ def test_competitive_round_accepts_one_winner_and_marks_late_task_stale(tmp_path
     assert blocks == 1
     assert {row["status"]: row["count"] for row in rewards} == {"immature": 1}
     assert get_full_economic_audit()["valid"] is True
+
+
+def test_cleanup_closes_obsolete_competitive_job_after_winner_exists(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-competitive-obsolete-job.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr(mining_service, "MINING_TASK_MODE", "competitive_round")
+    init_db(db_path)
+
+    winner_keys = generate_keypair()
+    late_keys = generate_keypair()
+    winner_miner = register_miner("competitive-obsolete-winner", winner_keys["public_key"])
+    late_miner = register_miner("competitive-obsolete-late", late_keys["public_key"])
+
+    winner_task = create_next_task(winner_miner["miner_id"])
+    winner_response = _submit_legacy_task(winner_task, winner_miner["miner_id"], winner_keys["private_key"])
+    assert winner_response["accepted"] is True
+
+    with get_connection() as connection:
+        protocol_params_id = connection.execute(
+            "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                assignment_seed, assignment_mode, competitive_round_height,
+                competitive_round_previous_hash, protocol_params_id, created_at, expires_at
+            )
+            VALUES (?, ?, ?, ?, ?, 'revealed', ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "task_obsolete_late",
+                late_miner["miner_id"],
+                winner_task["range_start"],
+                winner_task["range_end"],
+                winner_task["algorithm"],
+                winner_task["assignment_seed"],
+                winner_task["assignment_mode"],
+                winner_task["competitive_round_height"],
+                winner_task["competitive_round_previous_hash"],
+                protocol_params_id,
+                "2026-06-04T00:00:00+00:00",
+                "2099-01-01T00:00:00+00:00",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO validation_jobs (
+                job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                samples, status, created_at
+            )
+            VALUES ('job_obsolete_late', 'task_obsolete_late', ?, ?, ?, ?, '[]', 'pending', ?)
+            """,
+            (late_miner["miner_id"], "a" * 64, "b" * 64, "c" * 64, "2026-06-04T00:00:01+00:00"),
+        )
+
+    result = cleanup_expired_tasks()
+
+    assert result["closed_competitive_validation_jobs"] == 1
+    with get_connection() as connection:
+        task = connection.execute(
+            "SELECT status, stale_reason FROM tasks WHERE task_id = 'task_obsolete_late'"
+        ).fetchone()
+        job = connection.execute(
+            "SELECT status, result_reason FROM validation_jobs WHERE job_id = 'job_obsolete_late'"
+        ).fetchone()
+    assert task["status"] == "stale"
+    assert "competitive round already won by" in task["stale_reason"]
+    assert job["status"] == "rejected"
+    assert job["result_reason"] == task["stale_reason"]
+
+
+def test_cleanup_keeps_current_competitive_job_pending(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-competitive-current-job.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr(mining_service, "MINING_TASK_MODE", "competitive_round")
+    init_db(db_path)
+
+    first_keys = generate_keypair()
+    pending_keys = generate_keypair()
+    first_miner = register_miner("competitive-current-first", first_keys["public_key"])
+    pending_miner = register_miner("competitive-current-pending", pending_keys["public_key"])
+
+    first_task = create_next_task(first_miner["miner_id"])
+    first_response = _submit_legacy_task(first_task, first_miner["miner_id"], first_keys["private_key"])
+    assert first_response["accepted"] is True
+    pending_task = create_next_task(pending_miner["miner_id"])
+
+    with get_connection() as connection:
+        connection.execute("UPDATE tasks SET status = 'revealed' WHERE task_id = ?", (pending_task["task_id"],))
+        connection.execute(
+            """
+            INSERT INTO validation_jobs (
+                job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                samples, status, created_at
+            )
+            VALUES ('job_current_pending', ?, ?, ?, ?, ?, '[]', 'pending', ?)
+            """,
+            (
+                pending_task["task_id"],
+                pending_miner["miner_id"],
+                "d" * 64,
+                "e" * 64,
+                "f" * 64,
+                "2026-06-04T00:00:00+00:00",
+            ),
+        )
+
+    result = cleanup_expired_tasks()
+
+    assert result["closed_competitive_validation_jobs"] == 0
+    with get_connection() as connection:
+        task = connection.execute(
+            "SELECT status FROM tasks WHERE task_id = ?",
+            (pending_task["task_id"],),
+        ).fetchone()
+        job = connection.execute(
+            "SELECT status FROM validation_jobs WHERE job_id = 'job_current_pending'"
+        ).fetchone()
+    assert task["status"] == "revealed"
+    assert job["status"] == "pending"
 
 
 def test_task_assignment_restores_known_miner_identity_after_db_restore(tmp_path, monkeypatch) -> None:

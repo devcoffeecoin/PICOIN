@@ -3276,6 +3276,61 @@ def _mark_competitive_task_stale(
     return changed
 
 
+def _close_obsolete_competitive_validation_jobs(connection: Any) -> int:
+    rows = connection.execute(
+        """
+        SELECT tasks.*
+        FROM validation_jobs
+        JOIN tasks ON tasks.task_id = validation_jobs.task_id
+        WHERE validation_jobs.status = 'pending'
+          AND tasks.status IN ('assigned', 'committed', 'revealed')
+          AND tasks.assignment_mode = ?
+        GROUP BY tasks.task_id
+        ORDER BY tasks.created_at ASC, tasks.task_id ASC
+        """,
+        (COMPETITIVE_ROUND_ASSIGNMENT_MODE,),
+    ).fetchall()
+    closed_jobs = 0
+    for row in rows:
+        task = row_to_dict(row)
+        if task is None:
+            continue
+        reason: str | None = None
+        winner = _competitive_round_winner(connection, task)
+        if winner is not None and winner["task_id"] != task["task_id"]:
+            reason = f"competitive round already won by {winner['task_id']} at block {winner['height']}"
+        else:
+            round_height = _task_competitive_round_height(task)
+            if round_height is not None:
+                canonical = row_to_dict(
+                    connection.execute(
+                        "SELECT height, task_id FROM blocks WHERE height = ?",
+                        (round_height,),
+                    ).fetchone()
+                )
+                if canonical is not None and canonical.get("task_id") != task["task_id"]:
+                    reason = f"competitive round already won by {canonical['task_id']} at block {canonical['height']}"
+            if reason is None:
+                params = _protocol_params_for_task(connection, task)
+                if not _competitive_task_matches_current_round(connection, task, params):
+                    reason = "competitive round closed"
+        if reason is None:
+            continue
+        pending_jobs = int(
+            connection.execute(
+                """
+                SELECT COUNT(*) AS count
+                FROM validation_jobs
+                WHERE task_id = ? AND status = 'pending'
+                """,
+                (task["task_id"],),
+            ).fetchone()["count"]
+        )
+        if _mark_competitive_task_stale(connection, task["task_id"], reason):
+            closed_jobs += pending_jobs
+    return closed_jobs
+
+
 def _expire_stale_competitive_task(
     connection: Any,
     task: dict[str, Any],
@@ -6646,6 +6701,7 @@ def _reject_in_connection(
 
 def _expire_assigned_tasks(connection: Any) -> dict[str, int]:
     released_assignments = _release_timed_out_validation_assignments(connection)
+    closed_competitive_jobs = _close_obsolete_competitive_validation_jobs(connection)
     expired_rows = connection.execute(
         """
         SELECT task_id
@@ -6716,6 +6772,7 @@ def _expire_assigned_tasks(connection: Any) -> dict[str, int]:
         "expired_tasks": max(0, task_cursor.rowcount) + revealed_expired_count,
         "expired_validation_jobs": job_expired_count,
         "released_validation_assignments": released_assignments,
+        "closed_competitive_validation_jobs": closed_competitive_jobs,
     }
 
 
