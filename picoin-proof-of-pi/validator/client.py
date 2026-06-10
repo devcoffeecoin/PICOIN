@@ -10,6 +10,7 @@ from typing import Any
 
 import requests
 
+from app.core.http import worker_http_timeout_seconds
 from app.core.merkle import verify_merkle_proof
 from app.core.money import canonical_amount, to_units
 from app.core.pi import calculate_pi_segment
@@ -76,7 +77,7 @@ def register(server_url: str, name: str, identity_path: Path, overwrite: bool) -
     response = requests.post(
         f"{server_url}/validators/register",
         json={"name": name, "public_key": keypair["public_key"], "reward_address": VALIDATOR_REWARD_ADDRESS or None},
-        timeout=20,
+        timeout=worker_http_timeout_seconds(),
     )
     response.raise_for_status()
     validator = response.json()
@@ -104,7 +105,11 @@ def get_job(server_url: str, identity: dict[str, Any] | str) -> dict[str, Any] |
             "reward_address": identity.get("reward_address"),
         }
         params = {key: value for key, value in params.items() if value}
-    response = requests.get(f"{server_url}/validation/jobs", params=params, timeout=20)
+    response = requests.get(
+        f"{server_url}/validation/jobs",
+        params=params,
+        timeout=worker_http_timeout_seconds(),
+    )
     response.raise_for_status()
     if not response.content or response.text == "null":
         return None
@@ -399,7 +404,12 @@ def parse_args() -> argparse.Namespace:
         help="Seconds between signed validator heartbeat refreshes",
     )
     validate_parser.add_argument("--node-server", default=DEFAULT_NODE_SERVER, help="Local Picoin node API used for signed validator liveness")
-    validate_parser.add_argument("--node-timeout", type=float, default=10.0, help="Seconds to wait for the local node heartbeat probe")
+    validate_parser.add_argument(
+        "--node-timeout",
+        type=float,
+        default=worker_http_timeout_seconds(default=10.0),
+        help="Seconds to wait for the local node heartbeat probe",
+    )
     validate_parser.add_argument("--submit-timeout", type=float, default=90.0, help="Seconds to wait while submitting a validation vote")
     validate_parser.add_argument(
         "--workers",

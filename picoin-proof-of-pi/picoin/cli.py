@@ -10,6 +10,7 @@ from typing import Any
 import requests
 import uvicorn
 
+from app.core.http import http_timeout_seconds
 from app.tools.bootstrap_testnet import main as bootstrap_testnet_main
 from app.tools.reset_testnet import main as reset_testnet_main
 from app.tools.run_testnet_cycle import main as run_testnet_cycle_main
@@ -70,14 +71,6 @@ DEFAULT_HOST = os.getenv("PICOIN_HOST", "127.0.0.1")
 DEFAULT_PORT = int(os.getenv("PICOIN_PORT", "8000"))
 DEFAULT_SCIENCE_ADDRESS = os.getenv("PICOIN_SCIENCE_ADDRESS", "local-science-user")
 DEFAULT_WALLET_PATH = Path(os.getenv("PICOIN_WALLET_PATH", str(Path.home() / ".picoin" / "wallets" / "default.json")))
-
-
-def http_timeout_seconds() -> float:
-    value = os.getenv("PICOIN_HTTP_TIMEOUT_SECONDS") or os.getenv("PICOIN_SMOKE_TIMEOUT") or "20"
-    try:
-        return max(1.0, float(value))
-    except ValueError:
-        return 20.0
 
 
 def normalize_server_url(server: str) -> str:

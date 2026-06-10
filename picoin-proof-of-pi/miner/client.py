@@ -11,6 +11,7 @@ from typing import Any
 import requests
 
 from app.core.crypto import hash_result
+from app.core.http import worker_http_timeout_seconds
 from app.core.merkle import merkle_proof, merkle_root
 from app.core.performance import elapsed_ms, now_perf
 from app.core.pi import calculate_pi_segment
@@ -141,7 +142,7 @@ def register(server_url: str, name: str, identity_path: Path, overwrite: bool) -
     response = requests.post(
         f"{server_url}/miners/register",
         json={"name": name, "public_key": keypair["public_key"], "reward_address": MINER_REWARD_ADDRESS or None},
-        timeout=20,
+        timeout=worker_http_timeout_seconds(),
     )
     response.raise_for_status()
     miner = response.json()
@@ -159,7 +160,11 @@ def register(server_url: str, name: str, identity_path: Path, overwrite: bool) -
 
 
 def get_task(server_url: str, miner_id: str) -> dict[str, Any]:
-    response = requests.get(f"{server_url}/tasks/next", params={"miner_id": miner_id}, timeout=20)
+    response = requests.get(
+        f"{server_url}/tasks/next",
+        params={"miner_id": miner_id},
+        timeout=worker_http_timeout_seconds(),
+    )
     return task_response_json(response)
 
 
@@ -171,12 +176,16 @@ def get_task_for_identity(server_url: str, identity: dict[str, Any]) -> dict[str
         "reward_address": identity.get("reward_address"),
     }
     params = {key: value for key, value in params.items() if value}
-    response = requests.get(f"{server_url}/tasks/next", params=params, timeout=20)
+    response = requests.get(
+        f"{server_url}/tasks/next",
+        params=params,
+        timeout=worker_http_timeout_seconds(),
+    )
     return task_response_json(response)
 
 
 def get_miner(server_url: str, miner_id: str) -> dict[str, Any]:
-    response = requests.get(f"{server_url}/miners/{miner_id}", timeout=20)
+    response = requests.get(f"{server_url}/miners/{miner_id}", timeout=worker_http_timeout_seconds())
     response.raise_for_status()
     return response.json()
 
@@ -210,7 +219,7 @@ def submit_result(
             "signature": signature,
             "signed_at": signed_at,
         },
-        timeout=20,
+        timeout=worker_http_timeout_seconds(),
     )
     response.raise_for_status()
     return response.json()
@@ -260,7 +269,7 @@ def commit_result(
             "signature": signature,
             "signed_at": signed_at,
         },
-        timeout=20,
+        timeout=worker_http_timeout_seconds(),
     )
     response.raise_for_status()
     return response.json()
@@ -312,7 +321,7 @@ def reveal_samples(
             "signature": signature,
             "signed_at": signed_at,
         },
-        timeout=20,
+        timeout=worker_http_timeout_seconds(),
     )
     response.raise_for_status()
     return response.json()
