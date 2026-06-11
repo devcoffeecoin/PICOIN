@@ -3959,6 +3959,15 @@ def commit_task(
             return _commit_rejected("task not found for miner")
         if miner is None:
             return _commit_rejected("miner not found")
+        if task["status"] == "expired" and MINING_TASK_MODE == COMPETITIVE_ROUND_ASSIGNMENT_MODE:
+            revived_task = _reactivate_expired_competitive_task(
+                connection,
+                task,
+                None,
+                _protocol_params_for_task(connection, task),
+            )
+            if revived_task is not None:
+                task = revived_task
         if task["status"] == "committed":
             existing = row_to_dict(
                 connection.execute(
