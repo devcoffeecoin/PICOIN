@@ -1116,9 +1116,10 @@ def register_validator_endpoint(payload: ValidatorRegisterRequest) -> dict:
 
 
 @router.post("/validators/heartbeat")
-def validator_heartbeat(payload: ValidatorHeartbeatRequest, request: Request) -> dict:
+def validator_heartbeat(request: Request, payload: dict = Body(...)) -> dict:
     try:
-        return record_validator_heartbeat(payload.model_dump(), request.client.host if request.client else None)
+        ValidatorHeartbeatRequest.model_validate(payload)
+        return record_validator_heartbeat(payload, request.client.host if request.client else None)
     except MiningError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
 
