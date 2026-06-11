@@ -178,6 +178,10 @@ class MiningError(Exception):
         self.detail = detail
 
 
+class ValidationFinalizationDeferred(Exception):
+    pass
+
+
 def utc_now_dt() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -1769,6 +1773,25 @@ def _finalize_validation_quorum_from_gossip(
                 params=params,
                 validation_job_id=job_id,
             )
+        except ValidationFinalizationDeferred as exc:
+            connection.execute(f"ROLLBACK TO {savepoint_name}")
+            connection.execute(f"RELEASE {savepoint_name}")
+            logger.warning(
+                "validation finalization deferred job_id=%s task_id=%s reason=%s",
+                job_id,
+                job["task_id"],
+                exc,
+            )
+            return {
+                "accepted": True,
+                "status": "validation_pending",
+                "message": str(exc),
+                "block": None,
+                "approvals": counts["approvals"],
+                "rejections": counts["rejections"],
+                "required_approvals": required,
+                "required_rejections": required,
+            }
         except TransactionExecutionError as exc:
             connection.execute(f"ROLLBACK TO {savepoint_name}")
             connection.execute(f"RELEASE {savepoint_name}")
@@ -1865,6 +1888,49 @@ def _finalize_validation_quorum_from_gossip(
     return None
 
 
+def _finalize_pending_validation_job_from_existing_votes(
+    connection: Any,
+    *,
+    job: dict[str, Any],
+    counts: dict[str, int],
+    required: int,
+) -> dict[str, Any] | None:
+    if str(job.get("status") or "") != "pending" or counts["approvals"] < required:
+        return None
+    task = row_to_dict(connection.execute("SELECT * FROM tasks WHERE task_id = ?", (job["task_id"],)).fetchone())
+    if task is None:
+        raise MiningError(404, "validation task not found")
+    vote = row_to_dict(
+        connection.execute(
+            """
+            SELECT *
+            FROM validation_votes
+            WHERE job_id = ?
+              AND approved = 1
+            ORDER BY created_at DESC, id DESC
+            LIMIT 1
+            """,
+            (job["job_id"],),
+        ).fetchone()
+    )
+    if vote is None:
+        return None
+    params = _protocol_params_for_task(connection, task)
+    return _finalize_validation_quorum_from_gossip(
+        connection,
+        job=job,
+        task=task,
+        validator_id=vote["validator_id"],
+        approved=True,
+        reason=vote["reason"],
+        signature=vote["signature"],
+        validation_ms=int(vote.get("validation_ms") or 0),
+        params=params,
+        counts=counts,
+        required=required,
+    )
+
+
 def receive_validation_vote_gossip(payload: dict[str, Any], source_peer: str | None = None) -> dict[str, Any]:
     envelope = dict(payload or {})
     vote = dict(envelope.get("vote") or envelope)
@@ -1895,7 +1961,7 @@ def receive_validation_vote_gossip(payload: dict[str, Any], source_peer: str | N
             counts = _validation_vote_counts(connection, job_id)
             params = _protocol_params_for_task(connection, job)
             required = _effective_required_validator_approvals(connection, params)
-            return {
+            response = {
                 "status": "duplicate",
                 "job_id": job_id,
                 "validator_id": validator_id,
@@ -1904,6 +1970,15 @@ def receive_validation_vote_gossip(payload: dict[str, Any], source_peer: str | N
                 "required_approvals": required,
                 "required_rejections": required,
             }
+            finalization = _finalize_pending_validation_job_from_existing_votes(
+                connection,
+                job=job,
+                counts=counts,
+                required=required,
+            )
+            if finalization is not None:
+                response["finalization"] = finalization
+            return response
 
         signature_payload = build_validation_result_signature_payload(
             job_id=job_id,
@@ -3230,6 +3305,50 @@ def _task_competitive_round_height(task: dict[str, Any]) -> int | None:
         return None
 
 
+def _block_anchor_for_task(connection: Any, task: dict[str, Any]) -> dict[str, Any]:
+    tip = _latest_chain_tip_in_connection(connection)
+    if _is_competitive_task(task):
+        round_height = _task_competitive_round_height(task)
+        previous_hash = str(task.get("competitive_round_previous_hash") or "").strip()
+        if round_height is not None and previous_hash:
+            return {
+                "height": round_height,
+                "previous_hash": previous_hash,
+                "anchored": True,
+                "tip": tip,
+            }
+    return {
+        "height": int(tip["height"]) + 1,
+        "previous_hash": tip["block_hash"],
+        "anchored": False,
+        "tip": tip,
+    }
+
+
+def _ensure_block_anchor_is_local_tip(anchor: dict[str, Any]) -> None:
+    if not anchor.get("anchored"):
+        return
+    tip = anchor["tip"]
+    expected_tip_height = int(anchor["height"]) - 1
+    if int(tip["height"]) == expected_tip_height and str(tip["block_hash"]) == str(anchor["previous_hash"]):
+        return
+    raise ValidationFinalizationDeferred(
+        "competitive round parent is not local chain tip: "
+        f"expected height={expected_tip_height} hash={anchor['previous_hash']} "
+        f"got height={tip['height']} hash={tip['block_hash']}"
+    )
+
+
+def _validation_block_elapsed_ms(task: dict[str, Any], timestamp: str) -> int | None:
+    compute_ms = task.get("compute_ms")
+    if compute_ms is not None:
+        try:
+            return max(0, int(compute_ms))
+        except (TypeError, ValueError):
+            pass
+    return _elapsed_iso_ms(task.get("created_at"), timestamp)
+
+
 def _competitive_round_has_earlier_pending_validation_job(connection: Any, job: dict[str, Any]) -> bool:
     if str(job.get("assignment_mode") or "") != COMPETITIVE_ROUND_ASSIGNMENT_MODE:
         return False
@@ -3547,10 +3666,16 @@ def _competitive_round_winner(connection: Any, task: dict[str, Any]) -> dict[str
     return row_to_dict(row)
 
 
-def _ensure_competitive_task_can_finalize(connection: Any, task: dict[str, Any], params: dict[str, Any]) -> None:
+def _ensure_competitive_task_can_finalize(
+    connection: Any,
+    task: dict[str, Any],
+    params: dict[str, Any],
+    *,
+    require_current_round: bool = True,
+) -> None:
     if not _is_competitive_task(task):
         return
-    if _expire_stale_competitive_task(connection, task, params):
+    if require_current_round and _expire_stale_competitive_task(connection, task, params):
         raise TransactionExecutionError("competitive round closed")
     winner = _competitive_round_winner(connection, task)
     if winner is not None and winner["task_id"] != task["task_id"]:
@@ -4861,10 +4986,32 @@ def submit_validation_result(
             counts = _validation_vote_counts(connection, job_id)
             params = _protocol_params_for_task(connection, job)
             required = _effective_required_validator_approvals(connection, params)
+            finalization = _finalize_pending_validation_job_from_existing_votes(
+                connection,
+                job=job,
+                counts=counts,
+                required=required,
+            )
+            if finalization is not None and finalization.get("status") == "approved":
+                return {
+                    "accepted": True,
+                    "status": "approved",
+                    "message": "block accepted by validator quorum",
+                    "block": finalization.get("block"),
+                    "finality_certificate": finalization.get("finality_certificate"),
+                    "approvals": counts["approvals"],
+                    "rejections": counts["rejections"],
+                    "required_approvals": required,
+                    "required_rejections": required,
+                }
             return {
                 "accepted": False,
                 "status": "already_voted",
-                "message": "validator already submitted a vote for this job",
+                "message": (
+                    str(finalization.get("message"))
+                    if finalization is not None and finalization.get("message")
+                    else "validator already submitted a vote for this job"
+                ),
                 "block": None,
                 "approvals": counts["approvals"],
                 "rejections": counts["rejections"],
@@ -4995,6 +5142,25 @@ def submit_validation_result(
                     params=params,
                     validation_job_id=job_id,
                 )
+            except ValidationFinalizationDeferred as exc:
+                connection.execute(f"ROLLBACK TO {savepoint_name}")
+                connection.execute(f"RELEASE {savepoint_name}")
+                logger.warning(
+                    "validation finalization deferred job_id=%s task_id=%s reason=%s",
+                    job_id,
+                    job["task_id"],
+                    exc,
+                )
+                return {
+                    "accepted": True,
+                    "status": "validation_pending",
+                    "message": str(exc),
+                    "block": None,
+                    "approvals": counts["approvals"],
+                    "rejections": counts["rejections"],
+                    "required_approvals": required,
+                    "required_rejections": required,
+                }
             except TransactionExecutionError as exc:
                 connection.execute(f"ROLLBACK TO {savepoint_name}")
                 connection.execute(f"RELEASE {savepoint_name}")
@@ -8932,15 +9098,16 @@ def _accept_block_in_connection(
 
     if params is None:
         params = _protocol_params_for_task(connection, task)
-    _ensure_competitive_task_can_finalize(connection, task, params)
+    anchor = _block_anchor_for_task(connection, task)
+    _ensure_block_anchor_is_local_tip(anchor)
+    _ensure_competitive_task_can_finalize(connection, task, params, require_current_round=False)
     total_block_reward = calculate_reward(params)
     reward = calculate_miner_reward(params)
     difficulty = calculate_difficulty(params)
-    tip = _latest_chain_tip_in_connection(connection)
-    next_height = tip["height"] + 1
-    previous_hash = tip["block_hash"]
+    next_height = int(anchor["height"])
+    previous_hash = str(anchor["previous_hash"])
     timestamp = _block_timestamp_for_validation_job(connection, validation_job_id)
-    total_task_ms = _elapsed_iso_ms(task.get("created_at"), timestamp)
+    total_task_ms = _validation_block_elapsed_ms(task, timestamp)
     total_block_ms = total_task_ms
     block_transactions = load_snapshot_transactions(connection, task["task_id"])
     tx_commitment = transaction_commitment(block_transactions)

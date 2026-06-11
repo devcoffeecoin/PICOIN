@@ -15,6 +15,7 @@ from app.db.database import get_connection, init_db
 from app.services import mining as mining_service
 from app.services.mining import (
     MiningError,
+    ValidationFinalizationDeferred,
     get_task_status,
     list_validation_job_inventory,
     list_task_inventory,
@@ -163,6 +164,192 @@ def test_same_validation_job_finalizes_to_same_block_hash_on_different_nodes(tmp
     assert first["total_block_ms"] == 7000
     assert second["total_block_ms"] == 7000
     assert first["block_hash"] == second["block_hash"]
+
+
+def test_validation_job_finalization_uses_task_compute_ms_for_stable_hash(tmp_path, monkeypatch) -> None:
+    miner_keys = generate_keypair()
+    task_id = "task_shared_compute_ms"
+    job_id = "job_shared_compute_ms"
+    job_created_at = "2026-06-11T13:44:35+00:00"
+    result_hash = "4" * 64
+    merkle_root = "5" * 64
+    challenge_seed = "6" * 64
+    compute_ms = 87006
+
+    def finalize(db_name: str, task_created_at: str) -> dict[str, Any]:
+        _use_db(tmp_path, monkeypatch, db_name)
+        miner = register_miner("shared-compute-miner", miner_keys["public_key"])
+        tx_commitment = transaction_commitment([])
+        with get_connection() as connection:
+            params = dict(
+                connection.execute("SELECT * FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1").fetchone()
+            )
+            assignment = mining_service._competitive_round_assignment(connection, params)
+            connection.execute(
+                """
+                INSERT INTO tasks (
+                    task_id, miner_id, range_start, range_end, algorithm, status,
+                    assignment_seed, assignment_mode, competitive_round_height,
+                    competitive_round_previous_hash, protocol_params_id, created_at,
+                    compute_ms, selected_tx_hashes, tx_merkle_root, tx_count,
+                    tx_fee_total_units, selected_tx_hashes_hash
+                )
+                VALUES (?, ?, ?, ?, ?, 'revealed', ?, ?, ?, ?, ?, ?, ?, '[]', ?, 0, 0, ?)
+                """,
+                (
+                    task_id,
+                    miner["miner_id"],
+                    assignment["range_start"],
+                    assignment["range_end"],
+                    params["algorithm"],
+                    assignment["assignment_seed"],
+                    mining_service.COMPETITIVE_ROUND_ASSIGNMENT_MODE,
+                    assignment["round_height"],
+                    assignment["previous_hash"],
+                    params["id"],
+                    task_created_at,
+                    compute_ms,
+                    tx_commitment["tx_merkle_root"],
+                    tx_commitment["selected_tx_hashes_hash"],
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO validation_jobs (
+                    job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                    samples, tx_merkle_root, selected_tx_hashes_hash, tx_count,
+                    tx_fee_total_units, tx_hashes_json, transactions_json,
+                    status, job_created_at, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, '[]', ?, ?, 0, 0, '[]', '[]', 'pending', ?, ?)
+                """,
+                (
+                    job_id,
+                    task_id,
+                    miner["miner_id"],
+                    result_hash,
+                    merkle_root,
+                    challenge_seed,
+                    tx_commitment["tx_merkle_root"],
+                    tx_commitment["selected_tx_hashes_hash"],
+                    job_created_at,
+                    job_created_at,
+                ),
+            )
+            task = dict(connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone())
+            return _accept_block_in_connection(
+                connection=connection,
+                task=task,
+                miner_id=miner["miner_id"],
+                result_hash=result_hash,
+                merkle_root=merkle_root,
+                samples=[],
+                signature="validator-quorum",
+                submission_reason="validator quorum",
+                validation_ms=1,
+                params=params,
+                validation_job_id=job_id,
+            )
+
+    first = finalize("shared-compute-a.sqlite3", "2026-06-11T13:00:00+00:00")
+    second = finalize("shared-compute-b.sqlite3", "2026-06-10T02:48:48+00:00")
+
+    assert first["timestamp"] == job_created_at
+    assert second["timestamp"] == job_created_at
+    assert first["total_block_ms"] == compute_ms
+    assert second["total_block_ms"] == compute_ms
+    assert first["block_hash"] == second["block_hash"]
+
+
+def test_validation_finalization_defers_when_competitive_parent_is_not_tip(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "defer-parent-mismatch.sqlite3")
+    miner = register_miner("defer-miner", generate_keypair()["public_key"])
+    now = "2026-06-11T14:00:00+00:00"
+    local_tip_hash = "b" * 64
+    expected_parent_hash = "a" * 64
+    tx_commitment = transaction_commitment([])
+
+    with get_connection() as connection:
+        params = dict(
+            connection.execute("SELECT * FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1").fetchone()
+        )
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at
+            )
+            VALUES ('task_local_parent', ?, 1, 8, 'bbp_hex_v1', 'accepted', ?, ?)
+            """,
+            (miner["miner_id"], params["id"], now),
+        )
+        connection.execute(
+            """
+            INSERT INTO blocks (
+                height, previous_hash, miner_id, range_start, range_end, algorithm,
+                result_hash, merkle_root, samples, timestamp, block_hash, reward,
+                reward_units, tx_merkle_root, tx_count, tx_hashes, fee_reward,
+                fee_reward_units, difficulty, task_id, protocol_params_id,
+                protocol_version, validation_mode
+            )
+            VALUES (1, ?, ?, 1, 8, 'bbp_hex_v1', ?, ?, '[]', ?, ?, 0,
+                    0, '', 0, '[]', 0, 0, 0.03125, 'task_local_parent', ?,
+                    ?, ?)
+            """,
+            (
+                "0" * 64,
+                miner["miner_id"],
+                "c" * 64,
+                "d" * 64,
+                now,
+                local_tip_hash,
+                params["id"],
+                params["protocol_version"],
+                params["validation_mode"],
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                assignment_seed, assignment_mode, competitive_round_height,
+                competitive_round_previous_hash, protocol_params_id, created_at,
+                compute_ms, selected_tx_hashes, tx_merkle_root, tx_count,
+                tx_fee_total_units, selected_tx_hashes_hash
+            )
+            VALUES ('task_deferred_parent', ?, 10, 17, 'bbp_hex_v1', 'revealed',
+                    ?, ?, 2, ?, ?, ?, 1000, '[]', ?, 0, 0, ?)
+            """,
+            (
+                miner["miner_id"],
+                "seed_deferred_parent",
+                mining_service.COMPETITIVE_ROUND_ASSIGNMENT_MODE,
+                expected_parent_hash,
+                params["id"],
+                now,
+                tx_commitment["tx_merkle_root"],
+                tx_commitment["selected_tx_hashes_hash"],
+            ),
+        )
+        task = dict(connection.execute("SELECT * FROM tasks WHERE task_id = 'task_deferred_parent'").fetchone())
+
+        with pytest.raises(ValidationFinalizationDeferred):
+            _accept_block_in_connection(
+                connection=connection,
+                task=task,
+                miner_id=miner["miner_id"],
+                result_hash="e" * 64,
+                merkle_root="f" * 64,
+                samples=[],
+                signature="validator-quorum",
+                submission_reason="validator quorum",
+                validation_ms=1,
+                params=params,
+                validation_job_id=None,
+            )
+
+        inserted = connection.execute("SELECT 1 FROM blocks WHERE task_id = 'task_deferred_parent'").fetchone()
+        assert inserted is None
 
 
 def test_validation_job_gossip_imports_task_and_miner(tmp_path, monkeypatch) -> None:
