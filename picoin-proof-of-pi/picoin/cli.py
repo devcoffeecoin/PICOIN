@@ -1904,7 +1904,10 @@ def add_tx_parser(subparsers: argparse._SubParsersAction) -> None:
     status_parser.set_defaults(func=command_tx_status)
 
     mempool_parser = tx_subparsers.add_parser("mempool", help="List mempool transactions")
-    mempool_parser.add_argument("--status", choices=["pending", "propagated", "confirmed", "rejected", "expired"])
+    mempool_parser.add_argument(
+        "--status",
+        choices=["pending", "propagated", "selected", "released", "confirmed", "rejected", "failed", "expired"],
+    )
     mempool_parser.add_argument("--limit", type=int, default=100)
     mempool_parser.set_defaults(func=command_tx_mempool)
 
