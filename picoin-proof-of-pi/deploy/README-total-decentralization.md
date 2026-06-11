@@ -718,12 +718,13 @@ in `Required Chain Branch Model` and Phase 13.
 
 ## Immediate Next Engineering Slice
 
-Phase 10, Phase 11, and the Phase 12/13 candidate finality path are now
-lab-proven on the A/B/C candidate set through height `11512` with quorum `3/3`
-certificates and healthy replay on all three nodes.
+Phase 10, Phase 11, and the Phase 12/13.5 candidate finality path are now
+lab-proven on the A/B/C candidate set through height `11520` with quorum `3/3`
+certificates, zero pending replay, healthy replay, and identical tips on all
+three nodes.
 
-The next natural slice is to make bounded reorg application safe enough to
-test:
+The remaining rollout slice is to keep bounded reorg application guarded while
+preparing the branch for production review:
 
 1. Persist explicit branch metadata for every canonical block.
 2. Keep orphan/reorg detection dry-run until rollback accounting is covered.
@@ -733,8 +734,9 @@ test:
    finality certificates, and block records rewind and replay correctly.
 5. Only then allow automatic orphan adoption or deeper reorg plans.
 
-This keeps Phase 14 pool-local mining blocked until Phase 13 can recover from
-real fork/orphan cases without manual SQLite intervention.
+This keeps Phase 14 pool-local mining blocked until Phase 13 reorg application
+is either fully proven with rollback accounting tests or deliberately kept
+manual/disabled for the production rollout.
 
 ## Phase 12 Lab Evidence: Deterministic Candidate Finalization
 
@@ -929,3 +931,37 @@ Implementation work:
 This handles outage/race cases where a node learns about a losing competitive
 candidate after the winning block already exists locally. The losing task is
 marked stale and its validation job is rejected instead of being left pending.
+
+## Phase 13.5e Slice: Anchored Competitive Validation Finalization
+
+Goal: prevent different nodes from finalizing the same competitive validation
+job against different local timing or parent state.
+
+Implementation work:
+
+- Validation-job finalization now uses the task's competitive-round anchor:
+  `competitive_round_height` and `competitive_round_previous_hash`.
+- If the anchored parent is not the local tip, finalization is deferred until
+  the node reconciles to the anchored parent instead of producing a block on the
+  wrong local branch.
+- Validation-finalized blocks use the stored task `compute_ms` when available,
+  so nodes with different local `created_at` values still build the same block
+  payload and hash.
+- Duplicate-vote and already-voted paths retry pending quorum finalization after
+  the node catches up to the anchored parent.
+
+Lab evidence:
+
+- Before this fix, A finalized height `11519` as
+  `ac48d3c5833400fcdf89892ace661d3b9262da1375b3cd78353d349e3b771492`, while
+  B/C finalized an alternate height `11519`
+  `6c05c95cfc8007eae30501d17e42bd2ebdee1d50cc655f2a8438a185c6a87aa7`.
+- The divergence came from validation finalization using local elapsed block
+  time and the current local tip instead of the task's competitive-round
+  anchor.
+- After commit `51f4848`, A mined `task_dc19aa22ebb2ca14` with
+  `job_75e343d22b564da1`; quorum finalized and A/B/C converged to height
+  `11520`, hash
+  `faba2181e28999156df371d86d4a3a5d1ade1e79b3f985e004faa84658959c54`.
+- Final state on A/B/C: `pending=0`, replay healthy, divergent false, and no
+  orphan candidates.
