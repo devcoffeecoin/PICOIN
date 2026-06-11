@@ -51,7 +51,7 @@ def test_node_liveness_endpoint_returns_lightweight_tip(tmp_path, monkeypatch) -
     assert payload["divergence_detected"] is False
 
 
-def test_validator_heartbeat_endpoint_preserves_signed_extra_fields(tmp_path, monkeypatch) -> None:
+def test_validator_heartbeat_endpoint_accepts_legacy_signed_subset(tmp_path, monkeypatch) -> None:
     client = _build_test_client(tmp_path, monkeypatch)
     keys = generate_keypair()
     payload = {
@@ -68,7 +68,22 @@ def test_validator_heartbeat_endpoint_preserves_signed_extra_fields(tmp_path, mo
         "heartbeat_at": "2026-06-11T20:00:00+00:00",
         "client_build": "desktop-public-api",
     }
-    payload["signature"] = sign_payload(keys["private_key"], payload)
+    legacy_signed_payload = {
+        key: payload[key]
+        for key in (
+            "validator_id",
+            "node_id",
+            "public_key",
+            "address",
+            "local_height",
+            "effective_height",
+            "latest_block_hash",
+            "pending_replay_blocks",
+            "sync_lag",
+            "version",
+        )
+    }
+    payload["signature"] = sign_payload(keys["private_key"], legacy_signed_payload)
 
     response = client.post("/validators/heartbeat", json=payload)
 
