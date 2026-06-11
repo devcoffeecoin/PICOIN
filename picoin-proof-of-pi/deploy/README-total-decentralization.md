@@ -567,6 +567,32 @@ Acceptance gates:
   block through non-bootstrap peers.
 - Pool payouts submit through local node and confirm on the network.
 
+Lab evidence:
+
+- Candidate B was used as the local task server via `http://127.0.0.1:8000`.
+- B preflight reported `task_assign_ready=true`, `validation_job_ready=true`,
+  and `block_finalize_ready=true`.
+- B mined `task_ea81ca6fd82f39f4` through its local node as
+  `miner_34bd82eb89ddb06e`; quorum finalized `job_0d07cbf1d94e4950`.
+- A/B/C converged to height `11521`, hash
+  `0de3b61328f4daaebc7dadc73135433e3b2ed1d5d8811a315093f154ab595144`,
+  with `pending=0`, replay healthy, and divergent false.
+- B was then isolated from A/bootstrap at the firewall while keeping C
+  reachable. B still reported local write readiness and mined
+  `task_fce51f827209b91b` through `http://127.0.0.1:8000`.
+- While A was blocked from B, the job received only B/C votes and waited at
+  `2/3`. This is expected with the current `required_validator_approvals=3`
+  and only three active validators: the network has no fault tolerance for a
+  missing validator.
+- After unblocking A, the third vote arrived, `job_f7aff457eeb84698` finalized
+  idempotently, and A/B/C converged to height `11523`, hash
+  `e4b2c1ff6729b2d937dc59cf709d75ad50a80b687016d5e3a79b184781806fd5`.
+
+Conclusion: local-node mining is proven. Full bootstrap-off finality now depends
+on validator topology/quorum, not task assignment. The next closure gate needs
+either a fourth independent validator with quorum still at `3`, or an explicit
+testnet-only quorum reduction drill.
+
 ## Phase 15: Bootstrap Demotion
 
 Goal: `api.picoin.science` becomes one ordinary public full node.
