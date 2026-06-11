@@ -447,7 +447,7 @@ Confirmation count:
 confirmations = local_effective_latest_block_height - transaction_block_height + 1
 ```
 
-Protocol reward maturity is configured by `PICOIN_BLOCK_MATURITY_DEPTH`; exchange deposit credit can be stricter than protocol maturity.
+Protocol reward maturity is configured by `PICOIN_BLOCK_MATURITY_DEPTH`; the mainnet default is `6` blocks. Exchange deposit credit can be stricter than protocol maturity.
 
 ## Backup
 
