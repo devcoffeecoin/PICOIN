@@ -1424,6 +1424,8 @@ class PoolCoordinator:
             return "lost"
         if status == "unsettled":
             return "unsettled"
+        if status not in {"submitted", "validation_pending"}:
+            return status
 
         try:
             reveal = json.loads(row.get("raw_reveal_json") or "{}")

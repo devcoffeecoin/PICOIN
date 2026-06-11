@@ -571,6 +571,20 @@ def test_stats_separates_unsettled_from_active_validation_pending(tmp_path):
             """,
             ("{}", '{"accepted":true,"status":"validation_pending","block":null}'),
         )
+        connection.execute(
+            """
+            INSERT INTO pool_tasks (
+                pool_task_id, mainnet_task_id, status, range_start, range_end,
+                algorithm, raw_task_json, raw_reveal_json, error, created_at, completed_at
+            )
+            VALUES (
+                'pooltask_stale', 'task_stale', 'stale', 1, 1,
+                'bbp_hex_v1', ?, ?, 'mainnet task not found on local pool node',
+                '2026-06-05T00:04:30+00:00', '2026-06-05T00:05:30+00:00'
+            )
+            """,
+            ("{}", '{"accepted":true,"status":"validation_pending","block":null}'),
+        )
 
     coordinator = PoolCoordinator(
         db=db,
@@ -587,13 +601,14 @@ def test_stats_separates_unsettled_from_active_validation_pending(tmp_path):
     stats = coordinator.stats()
 
     assert stats["tasks"] == [
+        {"status": "stale", "count": 1},
         {"status": "unsettled", "count": 1},
         {"status": "validation_pending", "count": 1},
     ]
     assert stats["performance"]["validation_pending_tasks"] == 1
     assert stats["performance"]["unsettled_tasks"] == 1
     assert stats["performance"]["active_tasks"] == 0
-    assert stats["performance"]["completed_tasks"] == 1
+    assert stats["performance"]["completed_tasks"] == 2
 
 
 def test_reconcile_mainnet_task_statuses_uses_task_status_endpoint(tmp_path, monkeypatch):
