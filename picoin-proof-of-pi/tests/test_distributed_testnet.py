@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from app.core.crypto import canonical_json, hash_result, sha256_text
+from app.core.money import to_units
 from app.core.pi import calculate_pi_segment
 from app.core.settings import (
     CHAIN_ID,
@@ -129,8 +130,11 @@ def _certified_reorg_block(
     job_id: str,
     miner_id: str = "remote-reorg-miner",
     timestamp: str = "2026-06-09T17:30:00+00:00",
+    transactions: list[dict] | None = None,
 ) -> dict:
     samples = [{"position": height, "digit": str(height % 10), "proof": []}]
+    transactions = transactions or []
+    tx_commitment = transaction_commitment(transactions)
     block = {
         "height": height,
         "previous_hash": previous_hash,
@@ -146,10 +150,11 @@ def _certified_reorg_block(
         "protocol_version": PROTOCOL_VERSION,
         "validation_mode": VALIDATION_MODE,
         "total_block_ms": 1000,
-        "tx_merkle_root": "",
-        "tx_count": 0,
-        "tx_hashes": [],
-        "fee_reward": 0.0,
+        "tx_merkle_root": tx_commitment["tx_merkle_root"] if transactions else "",
+        "tx_count": tx_commitment["tx_count"],
+        "tx_hashes": tx_commitment["tx_hashes"],
+        "fee_reward": tx_commitment["fee_reward"],
+        "transactions": transactions,
         "task_id": task_id,
     }
     block["block_hash"] = block_hash_debug({**block, "block_hash": "0" * 64})["computed_hash"]
@@ -206,7 +211,7 @@ def _finality_certificate_for_test_block(block: dict, *, task_id: str, job_id: s
             "merkle_root": block.get("merkle_root"),
             "tx_merkle_root": block.get("tx_merkle_root"),
             "tx_count": int(block.get("tx_count") or 0),
-            "tx_fee_total_units": 0,
+            "tx_fee_total_units": int(transaction_commitment(block.get("transactions") or [])["tx_fee_total_units"]),
             "selected_tx_hashes_hash": None,
         },
         "validation": {
@@ -1504,6 +1509,76 @@ def test_orphan_reorg_apply_replaces_local_tip_with_certified_branch(tmp_path, m
     assert statuses[local_block["block_hash"]] == "orphaned"
     assert statuses[remote_parent["block_hash"]] == "canonical_after_reorg"
     assert statuses[remote_child["block_hash"]] == "canonical_after_reorg"
+
+
+def test_orphan_reorg_apply_rolls_back_and_replays_safe_transfer(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "orphan-reorg-apply-transfer.sqlite3")
+    miner_key = generate_keypair()
+    miner = register_miner("orphan-reorg-transfer-miner", miner_key["public_key"])
+    sender = create_wallet("reorg-sender")
+    recipient = create_wallet("reorg-recipient")
+    _fund_wallet_from_genesis(sender["address"], 2.0)
+    tx = sign_transaction(
+        private_key=sender["private_key"],
+        public_key=sender["public_key"],
+        tx_type="transfer",
+        sender=sender["address"],
+        recipient=recipient["address"],
+        amount=1.0,
+        nonce=1,
+        fee=0.01,
+        timestamp="2026-06-09T17:00:00+00:00",
+    )
+    submit_transaction(tx)
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    local_block = get_block(1)
+    assert local_block is not None
+    assert local_block["tx_count"] == 1
+    assert get_transaction(tx["tx_hash"])["status"] == "confirmed"
+    assert get_balance_amount(sender["address"]) == pytest.approx(0.99)
+
+    remote_parent = _certified_reorg_block(
+        height=1,
+        previous_hash=GENESIS_HASH,
+        task_id="task_remote_parent_transfer_apply",
+        job_id="job_remote_parent_transfer_apply",
+        timestamp="2026-06-09T17:30:00+00:00",
+        transactions=[tx],
+    )
+    remote_child = _certified_reorg_block(
+        height=2,
+        previous_hash=remote_parent["block_hash"],
+        task_id="task_remote_child_transfer_apply",
+        job_id="job_remote_child_transfer_apply",
+        timestamp="2026-06-09T17:31:00+00:00",
+    )
+    _queue_reorg_block_proposal(remote_parent)
+    _queue_reorg_block_proposal(remote_child)
+
+    prepared = prepare_orphan_reorg(max_depth=1)
+    assert prepared["prepared"] is True
+    assert prepared["apply_blockers"] == []
+
+    result = apply_orphan_reorg(max_depth=1)
+
+    assert result["applied"] is True
+    assert result["removed"]["released_transactions"]["tx_hashes"] == [tx["tx_hash"]]
+    assert result["new_tip"] == {"height": 2, "block_hash": remote_child["block_hash"]}
+    confirmed = get_transaction(tx["tx_hash"])
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["block_height"] == 1
+    assert get_block(1)["block_hash"] == remote_parent["block_hash"]
+    assert get_block(2)["block_hash"] == remote_child["block_hash"]
+    assert get_balance_amount(sender["address"]) == pytest.approx(0.99)
+    assert get_balance_amount(recipient["address"]) == pytest.approx(1.0)
+    assert get_balance_amount("remote-reorg-miner") == pytest.approx((2.51328 * 2) + 0.01)
+    with get_connection() as connection:
+        nonce = connection.execute(
+            "SELECT nonce FROM account_nonces WHERE account_id = ?",
+            (sender["address"],),
+        ).fetchone()
+    assert int(nonce["nonce"]) == 1
+    assert get_full_economic_audit()["valid"] is True
 
 
 def test_canonical_blocks_get_branch_metadata_defaults(tmp_path, monkeypatch) -> None:
@@ -3626,6 +3701,8 @@ def _fund_wallet_from_genesis(address: str, amount: float) -> None:
     with get_connection() as connection:
         genesis = connection.execute("SELECT balance FROM balances WHERE account_id = 'genesis'").fetchone()
         genesis_after = round(float(genesis["balance"]) - amount, 8)
+        amount_units = to_units(amount)
+        genesis_after_units = to_units(genesis_after)
         connection.execute(
             "UPDATE balances SET balance = ?, updated_at = ? WHERE account_id = 'genesis'",
             (genesis_after, timestamp),
@@ -3633,29 +3710,29 @@ def _fund_wallet_from_genesis(address: str, amount: float) -> None:
         connection.execute(
             """
             INSERT INTO ledger_entries (
-                account_id, account_type, amount, balance_after, entry_type,
+                account_id, account_type, amount, amount_units, balance_after, balance_after_units, entry_type,
                 block_height, related_id, description, created_at
             )
-            VALUES ('genesis', 'genesis', ?, ?, 'test_wallet_funding', NULL, ?, 'test wallet funding debit', ?)
+            VALUES ('genesis', 'genesis', ?, ?, ?, ?, 'test_wallet_funding', NULL, ?, 'test wallet funding debit', ?)
             """,
-            (-amount, genesis_after, address, timestamp),
+            (-amount, -amount_units, genesis_after, genesis_after_units, address, timestamp),
         )
         connection.execute(
             """
-            INSERT INTO balances (account_id, account_type, balance, updated_at)
-            VALUES (?, 'wallet', ?, ?)
+            INSERT INTO balances (account_id, account_type, balance, balance_units, updated_at)
+            VALUES (?, 'wallet', ?, ?, ?)
             """,
-            (address, amount, timestamp),
+            (address, amount, amount_units, timestamp),
         )
         connection.execute(
             """
             INSERT INTO ledger_entries (
-                account_id, account_type, amount, balance_after, entry_type,
+                account_id, account_type, amount, amount_units, balance_after, balance_after_units, entry_type,
                 block_height, related_id, description, created_at
             )
-            VALUES (?, 'wallet', ?, ?, 'test_wallet_funding', NULL, 'genesis', 'test wallet funding credit', ?)
+            VALUES (?, 'wallet', ?, ?, ?, ?, 'test_wallet_funding', NULL, 'genesis', 'test wallet funding credit', ?)
             """,
-            (address, amount, amount, timestamp),
+            (address, amount, amount_units, amount, amount_units, timestamp),
         )
 
 

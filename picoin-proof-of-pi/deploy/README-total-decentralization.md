@@ -727,7 +727,8 @@ The remaining rollout slice is to keep bounded reorg application guarded while
 preparing the branch for production review:
 
 1. Persist explicit branch metadata for every canonical block.
-2. Keep orphan/reorg detection dry-run until rollback accounting is covered.
+2. Keep orphan/reorg apply guarded until rollback accounting is covered for the
+   transaction types being replayed.
 3. Add deterministic apply rules only for depth-1 reorg from a known certified
    ancestor.
 4. Prove balances, ledger entries, account nonces, mempool state, rewards,
@@ -965,3 +966,42 @@ Lab evidence:
   `faba2181e28999156df371d86d4a3a5d1ade1e79b3f985e004faa84658959c54`.
 - Final state on A/B/C: `pending=0`, replay healthy, divergent false, and no
   orphan candidates.
+
+## Phase 13.6 Slice: Guarded Reorg Apply With Safe Transaction Rollback
+
+Goal: make bounded depth-1 orphan recovery capable of handling ordinary
+transaction blocks without losing accounting correctness.
+
+Implementation work:
+
+- Keep `POST /consensus/orphans/reorg-apply` limited to a current-tip,
+  depth-1 replacement with a known certified parent and certified child.
+- Allow reorg apply only for transaction types with deterministic ledger replay:
+  `transfer` and `faucet`.
+- Continue blocking side-effect transaction types such as stake, unstake,
+  science jobs, governance actions, and treasury claims until their side tables
+  have explicit rollback support.
+- Before deleting the local orphan block, release its confirmed mempool
+  transactions back to `pending` or `expired`, depending on TTL.
+- Delete orphan rewards, finality certificates, block rows, checkpoints, and
+  ledger entries from the reorg height forward.
+- Rebuild balances from ledger and rebuild `account_nonces` from confirmed
+  canonical mempool transactions.
+- Import the selected certified replacement branch and replay its transaction
+  payloads through the same block transaction executor used by normal block
+  import.
+- Block apply if the remote certified branch is missing transaction payloads or
+  would introduce a same-sender/same-nonce transaction hash conflict.
+
+Test evidence:
+
+- `test_orphan_reorg_apply_replaces_local_tip_with_certified_branch`
+- `test_orphan_reorg_apply_rolls_back_and_replays_safe_transfer`
+- `test_mined_block_confirms_signed_transfer_with_transaction_merkle_root`
+- `test_candidate_block_replay_matches_across_nodes_with_local_mempool_drift`
+- `test_consensus_orphan_reorg_plan_endpoint_returns_dry_run_plan`
+
+The new rollback test proves that a local orphan block containing a confirmed
+transfer can be rewound, its mempool transaction released, balances and account
+nonces rebuilt, and the certified replacement branch replayed with the same
+transaction confirmed exactly once.

@@ -108,6 +108,19 @@ BLOCK_REQUIRED_FIELDS = {
     "reward",
 }
 
+REORG_SAFE_TX_TYPES = {"transfer", "faucet"}
+REORG_SAFE_LEDGER_ENTRY_TYPES = {
+    "block_reward",
+    "validator_reward",
+    "science_reserve_accrual",
+    "scientific_development_treasury_accrual",
+    "transfer_debit",
+    "transfer_credit",
+    "faucet_debit",
+    "faucet_credit",
+    "transaction_fee_reward",
+}
+
 FORK_CHOICE_RULE = (
     "same height and previous_hash compete; highest approval_weight wins; "
     "then lowest rejection_weight, highest approvals, lowest rejections, "
@@ -1698,8 +1711,8 @@ def _orphan_reorg_apply_blockers(connection: Any, selected: dict[str, Any]) -> l
     )
     if local_block is None:
         blockers.append("local_orphan_block_missing")
-    elif int(local_block.get("tx_count") or 0) > 0:
-        blockers.append("local_orphan_transactions_require_rollback")
+    else:
+        blockers.extend(_reorg_safe_local_transaction_blockers(connection, local_height))
 
     future = connection.execute(
         "SELECT COUNT(*) AS count FROM blocks WHERE height > ?",
@@ -1726,22 +1739,20 @@ def _orphan_reorg_apply_blockers(connection: Any, selected: dict[str, Any]) -> l
     if int((retarget or {})["count"] if retarget else 0) > 0:
         blockers.append("retarget_events_require_manual_reorg")
 
-    unsupported_ledger_rows = connection.execute(
+    ledger_rows = connection.execute(
         """
         SELECT DISTINCT entry_type
         FROM ledger_entries
         WHERE block_height >= ?
-          AND entry_type NOT IN (
-              'block_reward',
-              'validator_reward',
-              'science_reserve_accrual',
-              'scientific_development_treasury_accrual'
-          )
         ORDER BY entry_type
         """,
         (local_height,),
     ).fetchall()
-    unsupported_ledger = [str(row["entry_type"]) for row in unsupported_ledger_rows]
+    unsupported_ledger = [
+        str(row["entry_type"])
+        for row in ledger_rows
+        if str(row["entry_type"]) not in REORG_SAFE_LEDGER_ENTRY_TYPES
+    ]
     if unsupported_ledger:
         blockers.append(f"unsupported_ledger_entries:{','.join(unsupported_ledger)}")
 
@@ -1753,8 +1764,90 @@ def _orphan_reorg_apply_blockers(connection: Any, selected: dict[str, Any]) -> l
         missing = sorted(BLOCK_REQUIRED_FIELDS - set(block))
         if missing:
             blockers.append(f"{key}_payload_missing:{','.join(missing)}")
-        if int(block.get("tx_count") or 0) > 0:
-            blockers.append(f"{key}_transactions_require_rollback")
+        blockers.extend(_reorg_safe_remote_transaction_blockers(connection, key, block))
+    return blockers
+
+
+def _reorg_safe_local_transaction_blockers(connection: Any, local_height: int) -> list[str]:
+    tx_count_row = connection.execute(
+        """
+        SELECT COALESCE(SUM(tx_count), 0) AS tx_count
+        FROM blocks
+        WHERE height >= ?
+        """,
+        (local_height,),
+    ).fetchone()
+    tx_count = int(tx_count_row["tx_count"] if tx_count_row else 0)
+    if tx_count <= 0:
+        return []
+    rows = connection.execute(
+        """
+        SELECT tx_hash, tx_type
+        FROM mempool_transactions
+        WHERE block_height >= ?
+          AND status = 'confirmed'
+        ORDER BY block_height ASC, tx_hash ASC
+        """,
+        (local_height,),
+    ).fetchall()
+    blockers: list[str] = []
+    if len(rows) < tx_count:
+        blockers.append("local_orphan_transactions_missing")
+    for row in rows:
+        tx_type = str(row["tx_type"])
+        if tx_type not in REORG_SAFE_TX_TYPES:
+            blockers.append(f"local_orphan_unsupported_tx_type:{row['tx_hash']}:{tx_type}")
+    return blockers
+
+
+def _reorg_block_transactions(block: dict[str, Any]) -> list[dict[str, Any]]:
+    transactions = block.get("transactions") or []
+    if isinstance(transactions, str):
+        try:
+            transactions = json.loads(transactions)
+        except json.JSONDecodeError:
+            return []
+    if not isinstance(transactions, list):
+        return []
+    return [dict(tx) for tx in transactions if isinstance(tx, dict)]
+
+
+def _reorg_safe_remote_transaction_blockers(
+    connection: Any,
+    key: str,
+    block: dict[str, Any],
+) -> list[str]:
+    tx_count = int(block.get("tx_count") or 0)
+    if tx_count <= 0:
+        return []
+    transactions = _reorg_block_transactions(block)
+    blockers: list[str] = []
+    if not transactions:
+        return [f"{key}_transactions_payload_missing"]
+    if len(transactions) != tx_count:
+        blockers.append(f"{key}_transactions_payload_count_mismatch")
+    for tx in transactions:
+        tx_hash = str(tx.get("tx_hash") or "")
+        tx_type = str(tx.get("tx_type") or "")
+        if tx_type not in REORG_SAFE_TX_TYPES:
+            blockers.append(f"{key}_unsupported_tx_type:{tx_hash}:{tx_type}")
+        sender = str(tx.get("sender") or "")
+        nonce = tx.get("nonce")
+        if not sender or nonce is None:
+            blockers.append(f"{key}_transaction_identity_missing:{tx_hash}")
+            continue
+        existing = connection.execute(
+            """
+            SELECT tx_hash
+            FROM mempool_transactions
+            WHERE sender = ? AND nonce = ?
+            """,
+            (sender, int(nonce)),
+        ).fetchone()
+        if existing is not None and str(existing["tx_hash"]) != tx_hash:
+            blockers.append(
+                f"{key}_nonce_conflict:{sender}:{int(nonce)}:{existing['tx_hash']}:{tx_hash}"
+            )
     return blockers
 
 
@@ -1867,6 +1960,7 @@ def _remove_local_orphan_tip_for_reorg(connection: Any, height: int, block_hash:
     )
     ledger_summary = _ledger_summary_from_height(connection, height)
     _reverse_reorg_side_table_accruals(connection, ledger_summary, timestamp)
+    released_transactions = _release_orphaned_block_transactions(connection, height, timestamp)
 
     connection.execute(
         """
@@ -1889,6 +1983,7 @@ def _remove_local_orphan_tip_for_reorg(connection: Any, height: int, block_hash:
     connection.execute("DELETE FROM finality_certificates WHERE block_height = ? AND block_hash = ?", (height, block_hash))
     connection.execute("DELETE FROM blocks WHERE height = ? AND block_hash = ?", (height, block_hash))
     _rebuild_balances_from_ledger(connection, timestamp)
+    rebuilt_account_nonces = _rebuild_account_nonces_from_confirmed_mempool(connection, timestamp)
 
     task_id = block.get("task_id")
     if task_id:
@@ -1930,6 +2025,8 @@ def _remove_local_orphan_tip_for_reorg(connection: Any, height: int, block_hash:
         "certificate_job_id": (certificate or {}).get("job_id"),
         "deleted_rewards": int((reward_rows or {})["count"] if reward_rows else 0),
         "deleted_ledger_entries": int(ledger_cursor.rowcount),
+        "released_transactions": released_transactions,
+        "rebuilt_account_nonces": rebuilt_account_nonces,
         "reversed_ledger": ledger_summary,
     }
 
@@ -2042,6 +2139,76 @@ def _rebuild_balances_from_ledger(connection: Any, timestamp: str) -> None:
                 timestamp,
             ),
         )
+
+
+def _release_orphaned_block_transactions(connection: Any, height: int, timestamp: str) -> dict[str, Any]:
+    rows = connection.execute(
+        """
+        SELECT tx_hash, expires_at
+        FROM mempool_transactions
+        WHERE block_height >= ?
+          AND status = 'confirmed'
+        ORDER BY block_height ASC, tx_hash ASC
+        """,
+        (height,),
+    ).fetchall()
+    released = 0
+    expired = 0
+    tx_hashes: list[str] = []
+    for row in rows:
+        tx_hash = str(row["tx_hash"])
+        expires_at = str(row["expires_at"] or "")
+        status = "expired" if expires_at and expires_at < timestamp else "pending"
+        if status == "expired":
+            expired += 1
+            rejection_reason: str | None = "ttl expired"
+        else:
+            released += 1
+            rejection_reason = None
+        tx_hashes.append(tx_hash)
+        connection.execute(
+            """
+            UPDATE mempool_transactions
+            SET status = ?,
+                selected_task_id = NULL,
+                selected_block_height = NULL,
+                mempool_snapshot_id = NULL,
+                selected_at = NULL,
+                confirmed_at = NULL,
+                released_at = ?,
+                block_height = NULL,
+                rejection_reason = ?,
+                failure_reason = 'orphaned by certified branch reorg',
+                updated_at = ?
+            WHERE tx_hash = ?
+            """,
+            (status, timestamp, rejection_reason, timestamp, tx_hash),
+        )
+    return {"released": released, "expired": expired, "tx_hashes": tx_hashes}
+
+
+def _rebuild_account_nonces_from_confirmed_mempool(connection: Any, timestamp: str) -> int:
+    rows = connection.execute(
+        """
+        SELECT sender, COALESCE(MAX(nonce), 0) AS nonce
+        FROM mempool_transactions
+        WHERE status = 'confirmed'
+        GROUP BY sender
+        """
+    ).fetchall()
+    connection.execute("DELETE FROM account_nonces")
+    for row in rows:
+        nonce = int(row["nonce"] or 0)
+        if nonce <= 0:
+            continue
+        connection.execute(
+            """
+            INSERT INTO account_nonces (account_id, nonce, updated_at)
+            VALUES (?, ?, ?)
+            """,
+            (row["sender"], nonce, timestamp),
+        )
+    return len(rows)
 
 
 def _mark_reorg_source_imported(
