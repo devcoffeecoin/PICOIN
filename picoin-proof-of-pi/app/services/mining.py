@@ -2766,6 +2766,15 @@ def create_next_task(
             raise MiningError(429, f"miner is in cooldown until {miner['cooldown_until']}")
 
         params = _active_protocol_params(connection)
+        if MINING_TASK_MODE == COMPETITIVE_ROUND_ASSIGNMENT_MODE:
+            resumable_task = _resume_expired_committed_competitive_task_for_miner(
+                connection,
+                miner_id,
+                params,
+            )
+            if resumable_task is not None:
+                return _task_for_next_response(connection, resumable_task)
+
         active_task = connection.execute(
             """
             SELECT * FROM tasks
@@ -3238,21 +3247,12 @@ def _competitive_round_has_pending_validation_job(connection: Any, assignment_se
 def _reactivate_expired_competitive_task(
     connection: Any,
     task: dict[str, Any],
-    assignment: dict[str, Any],
+    assignment: dict[str, Any] | None,
     params: dict[str, Any],
 ) -> dict[str, Any] | None:
     if str(task.get("status") or "") != "expired" or not _is_competitive_task(task):
         return None
-    if str(task.get("assignment_seed") or "") != str(assignment.get("assignment_seed") or ""):
-        return None
-    if _task_competitive_round_height(task) != int(assignment.get("round_height") or 0):
-        return None
-    if str(task.get("competitive_round_previous_hash") or "") != str(assignment.get("previous_hash") or ""):
-        return None
-    if int(task.get("range_start") or 0) != int(assignment.get("range_start") or 0):
-        return None
-    if int(task.get("range_end") or 0) != int(assignment.get("range_end") or 0):
-        return None
+    assignment_matches = assignment is not None and _expired_competitive_task_matches_assignment(task, assignment)
     if _competitive_round_winner(connection, task) is not None:
         return None
     if connection.execute("SELECT 1 FROM validation_jobs WHERE task_id = ? LIMIT 1", (task["task_id"],)).fetchone():
@@ -3262,8 +3262,14 @@ def _reactivate_expired_competitive_task(
         connection.execute("SELECT 1 FROM commitments WHERE task_id = ? LIMIT 1", (task["task_id"],)).fetchone()
         is not None
     )
+    if not assignment_matches:
+        if not has_commitment:
+            return None
+        if not _expired_competitive_task_targets_current_tip(connection, task):
+            return None
+
     timestamp = utc_now()
-    expires_at = iso_at(_task_expiration_seconds_for_position(params, assignment["range_end"]))
+    expires_at = iso_at(_task_expiration_seconds_for_position(params, task.get("range_end")))
     connection.execute(
         """
         UPDATE tasks
@@ -3284,12 +3290,68 @@ def _reactivate_expired_competitive_task(
         freeze_transactions_for_competitive_round_task(
             connection,
             task_id=task["task_id"],
-            block_height=int(assignment["round_height"]),
-            assignment_seed=assignment.get("assignment_seed"),
+            block_height=int(assignment["round_height"]) if assignment is not None else int(task["competitive_round_height"]),
+            assignment_seed=assignment.get("assignment_seed") if assignment is not None else task.get("assignment_seed"),
             max_count=MAX_TRANSACTIONS_PER_BLOCK,
             timestamp=timestamp,
         )
     return row_to_dict(connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task["task_id"],)).fetchone())
+
+
+def _expired_competitive_task_matches_assignment(task: dict[str, Any], assignment: dict[str, Any]) -> bool:
+    if str(task.get("assignment_seed") or "") != str(assignment.get("assignment_seed") or ""):
+        return False
+    if _task_competitive_round_height(task) != int(assignment.get("round_height") or 0):
+        return False
+    if str(task.get("competitive_round_previous_hash") or "") != str(assignment.get("previous_hash") or ""):
+        return False
+    return (
+        int(task.get("range_start") or 0) == int(assignment.get("range_start") or 0)
+        and int(task.get("range_end") or 0) == int(assignment.get("range_end") or 0)
+    )
+
+
+def _expired_competitive_task_targets_current_tip(connection: Any, task: dict[str, Any]) -> bool:
+    round_height = _task_competitive_round_height(task)
+    if round_height is None:
+        return False
+    tip = _latest_chain_tip_in_connection(connection)
+    if round_height != int(tip["height"]) + 1:
+        return False
+    previous_hash = str(task.get("competitive_round_previous_hash") or "")
+    return not previous_hash or previous_hash == str(tip["block_hash"])
+
+
+def _resume_expired_committed_competitive_task_for_miner(
+    connection: Any,
+    miner_id: str,
+    params: dict[str, Any],
+) -> dict[str, Any] | None:
+    rows = connection.execute(
+        """
+        SELECT tasks.*
+        FROM tasks
+        JOIN commitments ON commitments.task_id = tasks.task_id
+        LEFT JOIN validation_jobs ON validation_jobs.task_id = tasks.task_id
+        WHERE tasks.miner_id = ?
+          AND tasks.status = 'expired'
+          AND tasks.assignment_mode = ?
+          AND validation_jobs.job_id IS NULL
+        ORDER BY COALESCE(tasks.competitive_round_height, 0) DESC,
+                 tasks.created_at DESC,
+                 tasks.task_id DESC
+        LIMIT 10
+        """,
+        (miner_id, COMPETITIVE_ROUND_ASSIGNMENT_MODE),
+    ).fetchall()
+    for row in rows:
+        task = row_to_dict(row)
+        if task is None:
+            continue
+        revived = _reactivate_expired_competitive_task(connection, task, None, params)
+        if revived is not None:
+            return revived
+    return None
 
 
 def _competitive_task_matches_current_round(connection: Any, task: dict[str, Any], params: dict[str, Any]) -> bool:

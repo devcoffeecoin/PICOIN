@@ -461,6 +461,79 @@ def test_expired_committed_competitive_task_resumes_reveal(tmp_path, monkeypatch
     assert job_count == 0
 
 
+def test_expired_committed_competitive_task_resumes_before_recomputing_assignment(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-expired-committed-resume-before-assignment.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr(mining_service, "MINING_TASK_MODE", "competitive_round")
+    init_db(db_path)
+
+    keypair = generate_keypair()
+    miner = register_miner("resume-before-assignment-miner", keypair["public_key"])
+    task = create_next_task(miner["miner_id"])
+    segment = calculate_pi_segment(task["range_start"], task["range_end"], task["algorithm"])
+    result_hash = hash_result(segment, task["range_start"], task["range_end"], task["algorithm"])
+    root = merkle_root(segment, task["range_start"])
+    signed_at = "2026-06-08T19:30:00+00:00"
+    signature = sign_payload(
+        keypair["private_key"],
+        build_commit_signature_payload(
+            task_id=task["task_id"],
+            miner_id=miner["miner_id"],
+            range_start=task["range_start"],
+            range_end=task["range_end"],
+            algorithm=task["algorithm"],
+            result_hash=result_hash,
+            merkle_root=root,
+            signed_at=signed_at,
+            tx_merkle_root=task.get("tx_merkle_root", ""),
+            mempool_snapshot_id=task.get("mempool_snapshot_id"),
+            selected_tx_hashes_hash=task.get("selected_tx_hashes_hash"),
+            tx_count=int(task.get("tx_count") or 0),
+            tx_fee_total_units=int(task.get("tx_fee_total_units") or 0),
+            chain_id=task.get("chain_id") or mining_service.CHAIN_ID,
+            network_id=task.get("network_id") or mining_service.NETWORK_ID,
+        ),
+    )
+    first = commit_task(
+        task_id=task["task_id"],
+        miner_id=miner["miner_id"],
+        result_hash=result_hash,
+        merkle_root=root,
+        tx_merkle_root=task.get("tx_merkle_root", ""),
+        mempool_snapshot_id=task.get("mempool_snapshot_id"),
+        selected_tx_hashes_hash=task.get("selected_tx_hashes_hash"),
+        tx_count=int(task.get("tx_count") or 0),
+        tx_fee_total_units=int(task.get("tx_fee_total_units") or 0),
+        compute_ms=1,
+        signature=signature,
+        signed_at=signed_at,
+    )
+    assert first["accepted"] is True
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE tasks
+            SET status = 'expired',
+                expires_at = '2026-06-01T00:00:00+00:00'
+            WHERE task_id = ?
+            """,
+            (task["task_id"],),
+        )
+
+    def fail_assignment(connection, params):
+        raise AssertionError("expired committed task should resume before assignment is recomputed")
+
+    monkeypatch.setattr(mining_service, "_competitive_round_assignment", fail_assignment)
+
+    resumed = create_next_task(miner["miner_id"])
+
+    assert resumed["task_id"] == task["task_id"]
+    assert resumed["status"] == "assigned"
+    assert resumed["resume_status"] == "committed"
+
+
 def test_committed_task_retry_rejects_mismatched_commitment(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "assignment-committed-mismatch.sqlite3"
     monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
