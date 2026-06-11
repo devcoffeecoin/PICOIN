@@ -288,6 +288,51 @@ def test_validation_job_is_visible_to_parallel_eligible_validators(tmp_path, mon
     assert row["assignment_failures"] == 0
 
 
+def test_validation_job_visibility_promotes_expired_task_to_revealed(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "validation-job-promotes-expired-task.sqlite3")
+    miner = register_miner("promote-expired-task-miner", generate_keypair()["public_key"])
+    validator_keys = generate_keypair()
+    validator = register_validator("promote-expired-task-validator", validator_keys["public_key"])
+    record_validator_heartbeat(_signed_validator_heartbeat(validator_keys, validator["validator_id"], node_id="node-one"))
+
+    now = datetime.now(timezone.utc).isoformat()
+    with get_connection() as connection:
+        protocol_params_id = connection.execute(
+            "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at, expires_at
+            )
+            VALUES ('task_pending_job_expired_local', ?, 1000, 1063, 'bbp_hex_v1', 'expired', ?, ?, ?)
+            """,
+            (miner["miner_id"], protocol_params_id, now, "2026-06-01T00:10:00+00:00"),
+        )
+        connection.execute(
+            """
+            INSERT INTO validation_jobs (
+                job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                samples, status, created_at, job_created_at
+            )
+            VALUES ('job_pending_with_expired_task', 'task_pending_job_expired_local', ?, ?, ?, ?, '[]', 'pending', ?, ?)
+            """,
+            (miner["miner_id"], "a" * 64, "b" * 64, "c" * 64, now, now),
+        )
+
+    job = get_validation_job(validator["validator_id"])
+
+    assert job is not None
+    assert job["job_id"] == "job_pending_with_expired_task"
+    with get_connection() as connection:
+        task = connection.execute(
+            "SELECT status, expires_at FROM tasks WHERE task_id = 'task_pending_job_expired_local'"
+        ).fetchone()
+    assert task["status"] == "revealed"
+    assert task["expires_at"] != "2026-06-01T00:10:00+00:00"
+
+
 def test_validation_jobs_health_reports_stuck_partial_quorum(tmp_path, monkeypatch) -> None:
     _use_db(tmp_path, monkeypatch, "validation-health-stuck.sqlite3")
     miner = register_miner("health-miner", generate_keypair()["public_key"])

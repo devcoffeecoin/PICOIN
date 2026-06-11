@@ -1614,6 +1614,29 @@ def _promote_task_for_pending_validation_job_gossip(
     )
 
 
+def _promote_tasks_for_pending_validation_jobs(connection: Any, limit: int = 100) -> int:
+    rows = connection.execute(
+        """
+        SELECT tasks.*
+        FROM validation_jobs
+        JOIN tasks ON tasks.task_id = validation_jobs.task_id
+        WHERE validation_jobs.status = 'pending'
+          AND tasks.status IN ('assigned', 'committed', 'expired')
+        ORDER BY validation_jobs.created_at ASC
+        LIMIT ?
+        """,
+        (max(1, min(int(limit), 500)),),
+    ).fetchall()
+    promoted = 0
+    for row in rows:
+        task = row_to_dict(row)
+        if task is None:
+            continue
+        _promote_task_for_pending_validation_job_gossip(connection, task, {}, "pending")
+        promoted += 1
+    return promoted
+
+
 def list_validation_vote_inventory(limit: int = 100) -> dict[str, Any]:
     safe_limit = max(1, min(int(limit), 500))
     with get_connection() as connection:
@@ -4538,6 +4561,7 @@ def get_validation_job(
         if str(validator.get("protocol_version") or PROTOCOL_VERSION) != PROTOCOL_VERSION:
             raise MiningError(403, "validator protocol version is incompatible")
 
+        _promote_tasks_for_pending_validation_jobs(connection)
         candidate_rows = connection.execute(
             """
             SELECT validation_jobs.*, tasks.range_start, tasks.range_end, tasks.algorithm
