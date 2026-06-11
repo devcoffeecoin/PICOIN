@@ -3255,18 +3255,19 @@ def _reactivate_expired_competitive_task(
         return None
     if _competitive_round_winner(connection, task) is not None:
         return None
-    if connection.execute("SELECT 1 FROM commitments WHERE task_id = ? LIMIT 1", (task["task_id"],)).fetchone():
-        return None
     if connection.execute("SELECT 1 FROM validation_jobs WHERE task_id = ? LIMIT 1", (task["task_id"],)).fetchone():
         return None
 
+    has_commitment = (
+        connection.execute("SELECT 1 FROM commitments WHERE task_id = ? LIMIT 1", (task["task_id"],)).fetchone()
+        is not None
+    )
     timestamp = utc_now()
     expires_at = iso_at(_task_expiration_seconds_for_position(params, assignment["range_end"]))
-    release_selected_transactions(connection, task["task_id"], "task reactivated", timestamp)
     connection.execute(
         """
         UPDATE tasks
-        SET status = 'assigned',
+        SET status = ?,
             created_at = ?,
             expires_at = ?,
             submitted_at = NULL,
@@ -3276,16 +3277,18 @@ def _reactivate_expired_competitive_task(
         WHERE task_id = ?
           AND status = 'expired'
         """,
-        (timestamp, expires_at, task["task_id"]),
+        ("committed" if has_commitment else "assigned", timestamp, expires_at, task["task_id"]),
     )
-    freeze_transactions_for_competitive_round_task(
-        connection,
-        task_id=task["task_id"],
-        block_height=int(assignment["round_height"]),
-        assignment_seed=assignment.get("assignment_seed"),
-        max_count=MAX_TRANSACTIONS_PER_BLOCK,
-        timestamp=timestamp,
-    )
+    if not has_commitment:
+        release_selected_transactions(connection, task["task_id"], "task reactivated", timestamp)
+        freeze_transactions_for_competitive_round_task(
+            connection,
+            task_id=task["task_id"],
+            block_height=int(assignment["round_height"]),
+            assignment_seed=assignment.get("assignment_seed"),
+            max_count=MAX_TRANSACTIONS_PER_BLOCK,
+            timestamp=timestamp,
+        )
     return row_to_dict(connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task["task_id"],)).fetchone())
 
 
