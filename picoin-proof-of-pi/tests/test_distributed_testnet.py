@@ -1581,6 +1581,51 @@ def test_orphan_reorg_apply_rolls_back_and_replays_safe_transfer(tmp_path, monke
     assert get_full_economic_audit()["valid"] is True
 
 
+def test_orphan_reorg_prepare_blocks_unsupported_remote_transaction_type(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "orphan-reorg-unsupported-remote-tx.sqlite3")
+    miner_key = generate_keypair()
+    miner = register_miner("orphan-reorg-unsupported-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    sender = create_wallet("reorg-staker")
+    _fund_wallet_from_genesis(sender["address"], 2.0)
+    stake_tx = sign_transaction(
+        private_key=sender["private_key"],
+        public_key=sender["public_key"],
+        tx_type="stake",
+        sender=sender["address"],
+        amount=1.0,
+        nonce=1,
+        fee=0.01,
+        timestamp="2026-06-09T17:00:00+00:00",
+    )
+
+    remote_parent = _certified_reorg_block(
+        height=1,
+        previous_hash=GENESIS_HASH,
+        task_id="task_remote_parent_stake_apply",
+        job_id="job_remote_parent_stake_apply",
+        timestamp="2026-06-09T17:30:00+00:00",
+        transactions=[stake_tx],
+    )
+    remote_child = _certified_reorg_block(
+        height=2,
+        previous_hash=remote_parent["block_hash"],
+        task_id="task_remote_child_stake_apply",
+        job_id="job_remote_child_stake_apply",
+        timestamp="2026-06-09T17:31:00+00:00",
+    )
+    _queue_reorg_block_proposal(remote_parent)
+    _queue_reorg_block_proposal(remote_child)
+
+    prepared = prepare_orphan_reorg(max_depth=1)
+
+    assert prepared["prepared"] is True
+    assert any(
+        blocker.startswith(f"remote_parent_unsupported_tx_type:{stake_tx['tx_hash']}:stake")
+        for blocker in prepared["apply_blockers"]
+    )
+
+
 def test_canonical_blocks_get_branch_metadata_defaults(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "branch-metadata-defaults.sqlite3")
     miner_key = generate_keypair()

@@ -1836,17 +1836,22 @@ def _reorg_safe_remote_transaction_blockers(
         if not sender or nonce is None:
             blockers.append(f"{key}_transaction_identity_missing:{tx_hash}")
             continue
+        try:
+            nonce_int = int(nonce)
+        except (TypeError, ValueError):
+            blockers.append(f"{key}_transaction_identity_missing:{tx_hash}")
+            continue
         existing = connection.execute(
             """
             SELECT tx_hash
             FROM mempool_transactions
             WHERE sender = ? AND nonce = ?
             """,
-            (sender, int(nonce)),
+            (sender, nonce_int),
         ).fetchone()
         if existing is not None and str(existing["tx_hash"]) != tx_hash:
             blockers.append(
-                f"{key}_nonce_conflict:{sender}:{int(nonce)}:{existing['tx_hash']}:{tx_hash}"
+                f"{key}_nonce_conflict:{sender}:{nonce_int}:{existing['tx_hash']}:{tx_hash}"
             )
     return blockers
 
