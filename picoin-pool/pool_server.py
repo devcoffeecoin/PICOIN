@@ -1655,6 +1655,14 @@ class PoolCoordinator:
         if result["submitted"] or result["errors"]:
             self.db.event("info", "auto payout run completed", result)
 
+    @staticmethod
+    def _payout_submit_error_is_ambiguous(exc: Exception) -> bool:
+        if isinstance(exc, requests.HTTPError):
+            response = exc.response
+            if response is not None and 400 <= response.status_code < 500:
+                return False
+        return True
+
     def run_payouts(self) -> dict[str, Any]:
         if self.payout_wallet is None:
             return {"enabled": False, "eligible": 0, "submitted": 0, "errors": 0}
@@ -1742,21 +1750,29 @@ class PoolCoordinator:
                 result["tx_hashes"].append(tx["tx_hash"])
                 nonce += 1
             except Exception as exc:
+                ambiguous = self._payout_submit_error_is_ambiguous(exc)
+                status = "submitted" if ambiguous else "error"
+                message = "auto payout submit status unknown" if ambiguous else "auto payout failed"
                 updated_at = utc_now()
                 with self.db._lock, self.db.connect() as connection:
                     connection.execute(
                         """
                         UPDATE pool_payouts
-                        SET status = 'error', error = ?, updated_at = ?
+                        SET status = ?, error = ?, updated_at = ?
                         WHERE payout_id = ?
                         """,
-                        (str(exc), updated_at, payout_id),
+                        (status, str(exc), updated_at, payout_id),
                     )
                 result["errors"] += 1
                 self.db.event(
-                    "error",
-                    "auto payout failed",
-                    {"worker_id": worker["worker_id"], "payout_id": payout_id, "error": str(exc)},
+                    "warning" if ambiguous else "error",
+                    message,
+                    {
+                        "worker_id": worker["worker_id"],
+                        "payout_id": payout_id,
+                        "tx_hash": tx["tx_hash"],
+                        "error": str(exc),
+                    },
                 )
                 break
         return result
