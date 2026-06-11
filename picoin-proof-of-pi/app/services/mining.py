@@ -1476,31 +1476,14 @@ def receive_validation_job_gossip(payload: dict[str, Any], source_peer: str | No
 
     with get_connection() as connection:
         existing_job = row_to_dict(connection.execute("SELECT * FROM validation_jobs WHERE job_id = ?", (job_id,)).fetchone())
-        if existing_job is not None:
-            return {"status": "duplicate", "job_id": job_id, "task_id": task_id}
-
         existing_task = row_to_dict(connection.execute("SELECT * FROM tasks WHERE task_id = ?", (task_id,)).fetchone())
         if existing_task is not None:
             for column in ("miner_id", "range_start", "range_end", "algorithm"):
                 if str(existing_task.get(column)) != str(task.get(column, existing_task.get(column))):
                     raise MiningError(409, f"validation job task mismatch: {column}")
-            if status == "pending" and str(existing_task.get("status") or "") in {"assigned", "committed", "expired"}:
-                params = _protocol_params_for_task(connection, existing_task)
-                expires_at = task.get("expires_at") or iso_at(
-                    _task_expiration_seconds_for_position(params, existing_task.get("range_end"))
-                )
-                connection.execute(
-                    """
-                    UPDATE tasks
-                    SET status = 'revealed',
-                        expires_at = ?,
-                        stale_at = NULL,
-                        stale_reason = NULL
-                    WHERE task_id = ?
-                    """,
-                    (expires_at, task_id),
-                )
-        else:
+            effective_job_status = str((existing_job or job).get("status") or status)
+            _promote_task_for_pending_validation_job_gossip(connection, existing_task, task, effective_job_status)
+        if existing_task is None:
             _insert_gossip_miner_if_missing(connection, miner, miner_id)
             protocol_params_id = task.get("protocol_params_id")
             if protocol_params_id is not None:
@@ -1552,6 +1535,8 @@ def receive_validation_job_gossip(payload: dict[str, Any], source_peer: str | No
                     task.get("selected_tx_hashes_hash") or job.get("selected_tx_hashes_hash"),
                 ),
             )
+        if existing_job is not None:
+            return {"status": "duplicate", "job_id": job_id, "task_id": task_id}
 
         created_at = str(job.get("created_at") or utc_now())
         job_created_at = str(job.get("job_created_at") or created_at)
@@ -1600,6 +1585,33 @@ def receive_validation_job_gossip(payload: dict[str, Any], source_peer: str | No
             ),
         )
     return {"status": "accepted", "job_id": job_id, "task_id": task_id, "source_peer": source_peer}
+
+
+def _promote_task_for_pending_validation_job_gossip(
+    connection: Any,
+    existing_task: dict[str, Any],
+    incoming_task: dict[str, Any],
+    job_status: str,
+) -> None:
+    if str(job_status or "") != "pending":
+        return
+    if str(existing_task.get("status") or "") not in {"assigned", "committed", "expired"}:
+        return
+    params = _protocol_params_for_task(connection, existing_task)
+    expires_at = incoming_task.get("expires_at") or iso_at(
+        _task_expiration_seconds_for_position(params, existing_task.get("range_end"))
+    )
+    connection.execute(
+        """
+        UPDATE tasks
+        SET status = 'revealed',
+            expires_at = ?,
+            stale_at = NULL,
+            stale_reason = NULL
+        WHERE task_id = ?
+        """,
+        (expires_at, existing_task["task_id"]),
+    )
 
 
 def list_validation_vote_inventory(limit: int = 100) -> dict[str, Any]:

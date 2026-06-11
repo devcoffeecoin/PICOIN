@@ -239,6 +239,61 @@ def test_validation_job_gossip_promotes_existing_expired_task_to_revealed(tmp_pa
     assert job["status"] == "pending"
 
 
+def test_duplicate_validation_job_gossip_promotes_existing_expired_task_to_revealed(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "source-duplicate-expired-task-job.sqlite3")
+    ids = _insert_revealed_validation_job()
+    envelope = list_validation_job_inventory()["jobs"][0]
+
+    _use_db(tmp_path, monkeypatch, "target-duplicate-expired-task-job.sqlite3")
+    with get_connection() as connection:
+        protocol_params_id = connection.execute(
+            "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        connection.execute(
+            """
+            INSERT INTO miners (miner_id, name, public_key, registered_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                ids["miner_id"],
+                ids["miner_id"],
+                generate_keypair()["public_key"],
+                "2026-06-01T00:00:00+00:00",
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at, expires_at
+            )
+            VALUES (?, ?, 1000, 1063, 'bbp_hex_v1', 'expired', ?, ?, ?)
+            """,
+            (
+                ids["task_id"],
+                ids["miner_id"],
+                protocol_params_id,
+                "2026-06-01T00:00:00+00:00",
+                "2026-06-01T00:10:00+00:00",
+            ),
+        )
+
+    first = receive_validation_job_gossip(envelope, source_peer="http://node-a")
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE tasks SET status = 'expired', expires_at = ? WHERE task_id = ?",
+            ("2026-06-01T00:10:00+00:00", ids["task_id"]),
+        )
+    duplicate = receive_validation_job_gossip(envelope, source_peer="http://node-a")
+
+    assert first["status"] == "accepted"
+    assert duplicate["status"] == "duplicate"
+    with get_connection() as connection:
+        task = connection.execute("SELECT status, expires_at FROM tasks WHERE task_id = ?", (ids["task_id"],)).fetchone()
+    assert task["status"] == "revealed"
+    assert task["expires_at"] != "2026-06-01T00:10:00+00:00"
+
+
 def test_task_gossip_imports_commitment_and_snapshot_for_reveal(tmp_path, monkeypatch) -> None:
     _use_db(tmp_path, monkeypatch, "source-task.sqlite3")
     miner_keys = generate_keypair()
