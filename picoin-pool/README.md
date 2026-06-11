@@ -27,11 +27,30 @@ This means the pool does not multiply mining identities. It gives a community a 
 
 ## Start A Pool Server
 
+Run the pool next to a synced Picoin full node whenever possible. The pool
+should normally talk to `http://127.0.0.1:8000`; a public bootstrap/API should
+be only a temporary fallback while the local node is being restored.
+
+Before starting the pool, the local node should report healthy replay:
+
+```bash
+curl -fsS --max-time 30 http://127.0.0.1:8000/node/sync-status -o /tmp/sync.json \
+  && python3 -c "
+import json
+d=json.load(open('/tmp/sync.json')); r=d.get('replay') or {}
+print('height=', d.get('effective_latest_block_height'))
+print('hash=', d.get('effective_latest_block_hash'))
+print('pending=', d.get('pending_replay_blocks'))
+print('replay=', r.get('sync_status'))
+print('divergent=', r.get('divergence_detected'))
+"
+```
+
 From the repository root:
 
 ```bash
 python picoin-pool/pool_server.py \
-  --server https://api.picoin.science \
+  --server http://127.0.0.1:8000 \
   --identity picoin-pool/pool_identity.json \
   --host 0.0.0.0 \
   --port 9321 \
@@ -49,6 +68,35 @@ python picoin-pool/pool_server.py \
 The first run auto-registers `pool_identity.json` as a normal miner, using the same official miner registration flow.
 If `--payout-wallet` is omitted, automatic transfers are disabled and the pool only reports pending payout balances.
 Submitted payouts remain reserved while the pool waits for mainnet confirmation. If mainnet still cannot find a payout after `--payout-confirmation-grace-seconds`, the pool marks that payout as `error` and releases the amount back to the worker's pending balance so it can be retried.
+
+### Systemd Pool Service On Mainnet
+
+For production, keep the local node and pool as separate services. The pool
+service should use the repository venv and local node:
+
+```ini
+[Service]
+WorkingDirectory=/opt/picoin/src/PICOIN
+ExecStart=
+ExecStart=/opt/picoin/src/PICOIN/.venv/bin/python /opt/picoin/src/PICOIN/picoin-pool/pool_server.py --server http://127.0.0.1:8000 --identity /var/lib/picoin-pool/pool_identity.json --db /var/lib/picoin-pool/pool.sqlite3 --host 127.0.0.1 --port 9321 --pool-name pool1 --chunk-size hybrid-race --poll-seconds 15 --public-workers --trust-workers --pool-fee-percent 1 --payout-wallet /var/lib/picoin-pool/payout_wallet.json --payout-interval-seconds 1800 --payout-min-amount 0.1 --payout-fee 0.001 --payout-confirmation-grace-seconds 600
+```
+
+Apply as an override:
+
+```bash
+sudo mkdir -p /etc/systemd/system/picoin-pool.service.d
+sudo nano /etc/systemd/system/picoin-pool.service.d/zzzz-mainnet-node.conf
+sudo systemctl daemon-reload
+sudo systemctl restart picoin-pool
+```
+
+Verify:
+
+```bash
+systemctl is-active picoin-pool
+curl -fsS --max-time 20 http://127.0.0.1:9321/health
+systemctl show picoin-pool -p ExecStart --no-pager
+```
 
 ## Pool Mining Modes
 

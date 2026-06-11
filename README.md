@@ -13,7 +13,7 @@ This README is the entry point for running Picoin infrastructure. It explains ho
 | Network ID | `picoin-mainnet-v1` |
 | Chain ID | `314159` |
 | Protocol version | `1.0` |
-| Public API | `https://api.picoin.science` |
+| Public bootstrap/API | `https://api.picoin.science` |
 | Genesis hash | `da286143167d14044c053fbb23fcf4673bb11bcd34fb1a11e5510ee8f8edb6e7` |
 | Wallet symbol | `PI` |
 | Mining algorithm | `bbp_hex_v1` |
@@ -39,6 +39,20 @@ Governance Wallet:              PI251078EE911B17EDC747DB5BDF505649ECAF60F787AA23
 ```
 
 The public testnet has been used for launch rehearsals and can still be studied from its deployment guide, but production configuration must use the mainnet values above.
+
+## Total Decentralization Mainnet
+
+Mainnet no longer depends on one central API process for mining and validation.
+The recommended production pattern is:
+
+- every miner, validator, and pool runs against a synced local full node at `http://127.0.0.1:8000`;
+- public bootstrap/API nodes are peers and recovery sources, not the normal write path for local services;
+- validators reconcile jobs, votes, heartbeats, proposals, and blocks from configured peers before polling local validation work;
+- full nodes recover from stale/divergent state with a verified canonical snapshot from any healthy peer;
+- the pool is one normal miner identity and should point to its own local node when possible.
+
+After any update, a node is usable only when `/node/sync-status` reports
+`pending=0`, `replay=healthy`, `divergent=False`, and no `last_error`.
 
 ## Repository Layout
 
@@ -78,15 +92,21 @@ PICOIN_GENESIS_ALLOCATIONS_FILE=/absolute/path/to/mainnet-genesis.allocations.fi
 PICOIN_GENESIS_HASH=da286143167d14044c053fbb23fcf4673bb11bcd34fb1a11e5510ee8f8edb6e7
 PICOIN_TREASURY_WALLET=PIE1EE818AA165EECC3F0CCF058F4FF7BC04517F8CD07385
 PICOIN_GOVERNANCE_WALLET=PI251078EE911B17EDC747DB5BDF505649ECAF60F787AA23
-PICOIN_NODE_ADDRESS=https://api.picoin.science
-PICOIN_MINER_SERVER=https://api.picoin.science
-PICOIN_VALIDATOR_SERVER=https://api.picoin.science
+PICOIN_NODE_ADDRESS=https://node.example.com
+PICOIN_SERVER=http://127.0.0.1:8000
+PICOIN_MINER_SERVER=http://127.0.0.1:8000
+PICOIN_VALIDATOR_SERVER=http://127.0.0.1:8000
+PICOIN_BOOTSTRAP_PEERS=https://api.picoin.science
+PICOIN_RECONCILE_PEERS=https://api.picoin.science
 PICOIN_SCIENCE_RESERVE_AUTHORIZED_SIGNERS=<signer-1>,<signer-2>
 ```
 
 Miner and validator signatures include `network_id` and `chain_id`. If a worker falls back to `local` or a testnet chain ID, commits will be rejected with signature errors.
 
-Use `https://api.picoin.science` for miners and validators. `http://api.picoin.science` redirects to HTTPS and can break POST requests such as `/tasks/commit`, causing `405 Method Not Allowed`.
+Use the local node (`http://127.0.0.1:8000`) for miners, validators, and pools.
+Use a public bootstrap/API only as a peer, snapshot source, or temporary fallback.
+If an operator must use the public API directly, use HTTPS; `http://api.picoin.science`
+redirects to HTTPS and can break POST requests such as `/tasks/commit`.
 
 ## Quick Start
 
@@ -163,7 +183,7 @@ PICOIN_GENESIS_HASH=da286143167d14044c053fbb23fcf4673bb11bcd34fb1a11e5510ee8f8ed
 PICOIN_TREASURY_WALLET=PIE1EE818AA165EECC3F0CCF058F4FF7BC04517F8CD07385
 PICOIN_GOVERNANCE_WALLET=PI251078EE911B17EDC747DB5BDF505649ECAF60F787AA23
 PICOIN_FAUCET_ALLOWED_NETWORKS=
-PICOIN_MINER_SERVER=https://api.picoin.science
+PICOIN_MINER_SERVER=http://127.0.0.1:8000
 PICOIN_MINER_IDENTITY=/var/lib/picoin/data/mainnet/identities/miner-mainnet.json
 PICOIN_MINER_REWARD_ADDRESS=<canonical-PI-reward-wallet>
 PICOIN_MINER_WORKERS=1
@@ -193,11 +213,14 @@ sudo journalctl -u picoin-miner -f
 Set these values in `/etc/picoin/picoin.env` on the validator machine:
 
 ```env
-PICOIN_VALIDATOR_SERVER=https://api.picoin.science
+PICOIN_VALIDATOR_SERVER=http://127.0.0.1:8000
 PICOIN_VALIDATOR_NODE_SERVER=http://127.0.0.1:8000
 PICOIN_VALIDATOR_NODE_ADDRESS=https://validator.example.com
 PICOIN_VALIDATOR_IDENTITY=/var/lib/picoin/data/mainnet/identities/validator-mainnet.json
 PICOIN_VALIDATOR_REWARD_ADDRESS=<canonical-PI-reward-wallet>
+PICOIN_VALIDATOR_RECONCILE_ENABLED=1
+PICOIN_VALIDATOR_RECONCILE_INTERVAL_SECONDS=10
+PICOIN_RECONCILE_PEERS=https://api.picoin.science
 ```
 
 Register, stake, and test:
@@ -237,7 +260,7 @@ After launch, validators stake through normal signed wallet transactions:
 
 ```bash
 
-.venv/bin/python -m picoin tx --server https://api.picoin.science send \
+.venv/bin/python -m picoin tx --server http://127.0.0.1:8000 send \
   --wallet /secure/validator-owner.json \
   --type stake \
   --stake-type validator \
@@ -393,12 +416,13 @@ PICOIN_CHAIN_ID=314159
 PICOIN_PROTOCOL_VERSION=1.0
 PICOIN_NODE_ID=<unique-node-id>
 PICOIN_NODE_TYPE=bootstrap
-PICOIN_NODE_ADDRESS=https://api.picoin.science
+PICOIN_NODE_ADDRESS=https://node.example.com
 PICOIN_HOST=0.0.0.0
 PICOIN_PORT=8000
 PICOIN_SERVER=http://127.0.0.1:8000
 PICOIN_DB_PATH=/var/lib/picoin/data/picoin.sqlite3
-PICOIN_BOOTSTRAP_PEERS=
+PICOIN_BOOTSTRAP_PEERS=https://api.picoin.science
+PICOIN_RECONCILE_PEERS=https://api.picoin.science
 ```
 
 For a non-bootstrap node, set `PICOIN_NODE_TYPE=full` or `validator`, set `PICOIN_NODE_ADDRESS` to that node's public HTTPS URL, and put the bootstrap URL in `PICOIN_BOOTSTRAP_PEERS`.
@@ -452,7 +476,7 @@ PICOIN_GENESIS_HASH=da286143167d14044c053fbb23fcf4673bb11bcd34fb1a11e5510ee8f8ed
 PICOIN_TREASURY_WALLET=PIE1EE818AA165EECC3F0CCF058F4FF7BC04517F8CD07385
 PICOIN_GOVERNANCE_WALLET=PI251078EE911B17EDC747DB5BDF505649ECAF60F787AA23
 PICOIN_FAUCET_ALLOWED_NETWORKS=
-PICOIN_MINER_SERVER=https://api.picoin.science
+PICOIN_MINER_SERVER=http://127.0.0.1:8000
 PICOIN_MINER_IDENTITY=/var/lib/picoin/data/mainnet/identities/miner-mainnet.json
 PICOIN_MINER_REWARD_ADDRESS=<canonical-PI-reward-wallet>
 PICOIN_MINER_WORKERS=1
@@ -486,14 +510,14 @@ export PICOIN_FAUCET_ALLOWED_NETWORKS=
 export PICOIN_MINER_REWARD_ADDRESS=YOUR_PI_WALLET_ADDRESS
 
 .venv/bin/python -m picoin miner \
-  --server https://api.picoin.science \
+  --server http://127.0.0.1:8000 \
   --identity ./miner-mainnet.json \
   register \
   --name miner-mainnet-1 \
   --overwrite
 
 .venv/bin/python -m picoin miner \
-  --server https://api.picoin.science \
+  --server http://127.0.0.1:8000 \
   --identity ./miner-mainnet.json \
   mine \
   --loops 999999 \
@@ -552,7 +576,7 @@ Miner troubleshooting:
 | `invalid miner signature` | `PICOIN_NETWORK`, `PICOIN_CHAIN_ID`, `PyNaCl`, identity file, and exact server URL |
 | `mainnet PICOIN_TREASURY_WALLET is required` | Export the canonical mainnet treasury and governance variables above |
 | `mainnet genesis allocations must fund wallet accounts only` | Do not provide a genesis allocations file for a normal miner; if running a node, every genesis allocation must use `account_type: wallet` |
-| `405 Method Not Allowed` on `/tasks/commit` | Use `https://api.picoin.science`, not `http://api.picoin.science` |
+| `405 Method Not Allowed` on `/tasks/commit` | Point the miner to a direct Picoin node API such as `http://127.0.0.1:8000`; if using the public API fallback, use HTTPS, not redirected HTTP |
 | No tasks | API health, miner registration, node sync status, validator availability |
 | Rewards not reaching wallet | `PICOIN_MINER_REWARD_ADDRESS` and block ledger entries |
 | Very slow pi calculation | Worker count, CPU limits, and dynamic task expiration from `/protocol` |
@@ -566,16 +590,34 @@ Required validator config:
 ```env
 PICOIN_NETWORK=picoin-mainnet-v1
 PICOIN_CHAIN_ID=314159
-PICOIN_VALIDATOR_SERVER=https://api.picoin.science
+PICOIN_VALIDATOR_SERVER=http://127.0.0.1:8000
 PICOIN_VALIDATOR_NODE_SERVER=http://127.0.0.1:8000
 PICOIN_VALIDATOR_NODE_ADDRESS=https://validator.example.com
 PICOIN_VALIDATOR_IDENTITY=/var/lib/picoin/data/mainnet/identities/validator-mainnet.json
 PICOIN_VALIDATOR_REWARD_ADDRESS=<canonical-PI-reward-wallet>
-PICOIN_VALIDATOR_LOOPS=1
-PICOIN_VALIDATOR_SLEEP=5
+PICOIN_VALIDATOR_LOOPS=12
+PICOIN_VALIDATOR_SLEEP=1
+PICOIN_VALIDATOR_POLL_SECONDS=1
+PICOIN_VALIDATOR_HEARTBEAT_INTERVAL_SECONDS=15
+PICOIN_VALIDATOR_WORKERS=4
+PICOIN_VALIDATOR_RECONCILE_ENABLED=1
+PICOIN_VALIDATOR_RECONCILE_INTERVAL_SECONDS=10
+PICOIN_VALIDATOR_RECONCILE_LIMIT=100
+PICOIN_VALIDATOR_RECONCILE_TIMEOUT_SECONDS=30
+PICOIN_RECONCILE_PEERS=https://api.picoin.science
 ```
 
 The validator machine must run a synced local node. `PICOIN_VALIDATOR_NODE_ADDRESS` must be reachable by the network if that validator advertises liveness publicly.
+`PICOIN_VALIDATOR_SERVER` should normally be the validator's own local node, not the public bootstrap API. The validator client reconciles peer jobs and votes before polling local work, using `PICOIN_RECONCILE_PEERS` or `PICOIN_VALIDATOR_RECONCILE_PEERS`.
+If the validator service uses a role-specific env file, update that file too:
+
+```bash
+systemctl show picoin-validator -p EnvironmentFiles -p ExecStart --no-pager
+```
+
+The file reported by `EnvironmentFiles` must contain the local-node and
+reconcile variables above. Otherwise the service can stay active but poll only
+its local queue, leaving peer validation jobs to arrive late.
 
 Register or refresh validator identity:
 
@@ -596,7 +638,7 @@ set +a
 Stake the validator from a wallet that owns PI:
 
 ```bash
-SERVER=https://api.picoin.science
+SERVER=http://127.0.0.1:8000
 VALIDATOR_ID=validator_xxxxxxxxxxxxxxxx
 OWNER_WALLET=/secure/offline-or-operator/validator-owner.json
 
@@ -630,7 +672,7 @@ sudo journalctl -u picoin-validator -f
 Verify validator status:
 
 ```bash
-curl -s https://api.picoin.science/validators/status | python3 -m json.tool
+curl -s http://127.0.0.1:8000/validators/status | python3 -m json.tool
 ```
 
 A mainnet validator should show:
@@ -643,19 +685,29 @@ reward_address = PI...
 wallet_stake_locked >= 31.416
 ```
 
+Validator troubleshooting:
+
+| Symptom | Check |
+| --- | --- |
+| Job waits at `1/3` or `2/3` approvals | Validator services active, fresh heartbeats, local node synced, and reconcile variables present in the service's real env file |
+| Validator is `stale` | Heartbeat loop, `/validators/status`, local node health, and firewall reachability for the advertised node address |
+| Validator says no jobs while peer has pending jobs | `PICOIN_VALIDATOR_RECONCILE_ENABLED=1` and `PICOIN_RECONCILE_PEERS` or `PICOIN_VALIDATOR_RECONCILE_PEERS` configured |
+| Eligible count drops below quorum | Stop new mining until enough validators are online/synced and wallet-backed stake is active |
+
 ## Wallet And Transaction Checks
 
 Query nonce:
 
 ```bash
 ADDRESS=PI...
-curl -s "https://api.picoin.science/wallet/$ADDRESS/nonce" | python3 -m json.tool
+SERVER=http://127.0.0.1:8000
+curl -s "$SERVER/wallet/$ADDRESS/nonce" | python3 -m json.tool
 ```
 
 Send PI:
 
 ```bash
-.venv/bin/python -m picoin tx --server https://api.picoin.science send \
+.venv/bin/python -m picoin tx --server "$SERVER" send \
   --wallet /secure/wallet.json \
   --to PI_RECIPIENT_ADDRESS \
   --amount 1.0 \
@@ -666,7 +718,7 @@ Check transaction:
 
 ```bash
 TX_HASH=<tx-hash>
-curl -s "https://api.picoin.science/tx/$TX_HASH" | python3 -m json.tool
+curl -s "$SERVER/tx/$TX_HASH" | python3 -m json.tool
 ```
 
 If a transaction fails with `invalid nonce`, query the wallet nonce and use the returned `next_nonce`.
@@ -674,7 +726,7 @@ If a transaction fails with `invalid nonce`, query the wallet nonce and use the 
 ## Routine Health Checks
 
 ```bash
-SERVER=https://api.picoin.science
+SERVER=http://127.0.0.1:8000
 
 curl -s "$SERVER/protocol" | python3 -m json.tool
 curl -s "$SERVER/node/sync-status" | python3 -m json.tool

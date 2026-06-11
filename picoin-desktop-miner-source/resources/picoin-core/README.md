@@ -4,11 +4,21 @@ Functional MVP of **Proof of Pi** with an L1 extension called **Science Compute 
 
 This project does not execute heavy AI/scientific computing. Since v0.18 it includes a Public Testnet Deployment Kit to run nodes on droplets/real servers with a public env, systemd, health checks, and backups. On L1 it coordinates stake, access, jobs, hashes, reserve, and verified payments to prepare a future evolution.
 
-## Public Testnet
+## Mainnet / Public Testnet
 
-The public testnet is live on HTTPS at `https://api.picoin.science` with `network_id=public-testnet`, `chain_id=picoin-public-testnet-v018`, and `protocol_version=0.18`. Public onboarding, systemd deployment, miner and validator templates, health checks, and troubleshooting commands live in `deploy/README-public-testnet.md`.
+Current mainnet operation uses a local full node as the normal API target for
+miners, validators, and pools. Use `http://127.0.0.1:8000` when the local node is
+synced and healthy; use `https://api.picoin.science` as a bootstrap/snapshot
+peer or temporary fallback.
 
-Use `https://api.picoin.science` directly for public miners and validators. Avoid the HTTP version of that endpoint, because redirects can break validator submissions.
+The historical public testnet used HTTPS at `https://api.picoin.science` with
+`network_id=public-testnet`, `chain_id=picoin-public-testnet-v018`, and
+`protocol_version=0.18`. Public onboarding, systemd deployment, miner and
+validator templates, health checks, and troubleshooting commands live in
+`deploy/README-public-testnet.md`.
+
+Avoid redirected `http://api.picoin.science` for signed POST flows. Redirects can
+break `/tasks/commit`, validator submissions, and wallet transactions.
 
 Mainnet readiness is tracked in `MAINNET_READINESS.md`; launch parameter decisions are tracked in `MAINNET_PARAMETERS.md`.
 

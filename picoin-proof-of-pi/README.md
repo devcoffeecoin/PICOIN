@@ -18,10 +18,16 @@ Mainnet v1 uses:
 network_id = picoin-mainnet-v1
 chain_id = 314159
 protocol_version = 1.0
-public_api = https://api.picoin.science
+bootstrap_api = https://api.picoin.science
+local_node_api = http://127.0.0.1:8000
 ```
 
-Mainnet deployment details live in `deploy/README-mainnet.md`. Historical public-testnet onboarding, miner and validator templates, health checks, and troubleshooting commands live in `deploy/README-public-testnet.md`.
+Mainnet deployment details live in `deploy/README-mainnet.md`. Current mainnet
+miners, validators, and pools should use a synced local full node as their API
+target. The public bootstrap/API is a peer and snapshot source, not the normal
+write path for production local services. Historical public-testnet onboarding,
+miner and validator templates, health checks, and troubleshooting commands live
+in `deploy/README-public-testnet.md`.
 
 ## Developer Local/Testnet Protocol Reference
 

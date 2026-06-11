@@ -16,11 +16,17 @@ The renderer never receives private keys. Validator identity and wallet signing 
 
 ## Mainnet Defaults
 
-- API: `https://api.picoin.science`
+- Local node API: `http://127.0.0.1:8131`
+- Bootstrap/snapshot peer: `https://api.picoin.science`
 - network_id: `picoin-mainnet-v1`
 - chain_id: `314159`
 - genesis_hash: `da286143167d14044c053fbb23fcf4673bb11bcd34fb1a11e5510ee8f8edb6e7`
 - minimum validator stake: `31.416 PI`
+
+Mainnet validators should vote from their own synced node. The desktop validator
+embeds a local node, restores a canonical snapshot when needed, and uses peer
+reconciliation before polling validation jobs. The public API/bootstrap is used
+as a recovery peer, not as a replacement for the local node.
 
 ## Development
 
@@ -60,3 +66,4 @@ Electron installs Python requirements using the detected Python 3.10+ runtime be
 - The default local RPC port is `8131` to avoid colliding with server-side Picoin nodes on `8000`.
 - Stake submission uses the selected wallet JSON through the Picoin CLI and does not expose the wallet private key to React.
 - If replay becomes divergent or the validator process exits with a sync error, the app attempts a snapshot restore and restarts validation.
+- Eligibility requires the local node to be synced, the validator heartbeat to be fresh, and wallet-backed stake to meet the current mainnet minimum.

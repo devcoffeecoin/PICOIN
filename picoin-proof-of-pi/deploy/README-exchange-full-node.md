@@ -2,6 +2,11 @@
 
 This runbook is Phase 7 of the decentralization roadmap. It gives exchanges, custodians, explorers, payment processors, and infrastructure operators a local Picoin full node so they do not depend on the public API server for balances, deposits, withdrawals, confirmations, block data, health, or audit checks.
 
+For current mainnet operation, treat `https://api.picoin.science` as one bootstrap
+peer, not as the only trusted source. A full node may restore from any healthy
+mainnet peer that reports the same `network_id`, `chain_id`, `genesis_hash`,
+healthy replay, and no divergence.
+
 This profile is a full node by default. It runs:
 
 - `picoin-node`
@@ -94,6 +99,43 @@ For this read-only profile, `/health` may report `status=degraded` with only `no
 ## Fast Sync From Bootstrap Snapshot
 
 For a clean exchange/full-node install, prefer canonical snapshot restore before block replay. This avoids replaying the whole historical chain and gives the node a verified local state base.
+
+The preferred current path is direct peer restore:
+
+```bash
+cd /opt/picoin/picoin-proof-of-pi
+
+set -a
+. /etc/picoin/picoin.env
+set +a
+export PICOIN_HTTP_TIMEOUT_SECONDS=300
+
+PEER=https://api.picoin.science
+
+sudo systemctl stop picoin-reconciler || true
+
+sudo -u picoin -E env \
+  PICOIN_HTTP_TIMEOUT_SECONDS=300 \
+  .venv/bin/python -m picoin node checkpoint restore-peer \
+  --peer "$PEER" \
+  --source exchange-full-node-peer-restore
+
+sudo systemctl restart picoin-node
+sleep 25
+sudo systemctl start picoin-reconciler || true
+```
+
+If the host uses the repository venv instead of the runtime tree, use:
+
+```bash
+PY=/opt/picoin/src/PICOIN/.venv/bin/python
+sudo -u picoin -E env PICOIN_HTTP_TIMEOUT_SECONDS=300 "$PY" -m picoin node checkpoint restore-peer \
+  --peer "$PEER" \
+  --source exchange-full-node-peer-restore
+```
+
+The file-based snapshot flow below is still useful when direct export times out
+or when operators want to archive the exact snapshot document before applying it.
 
 Download and validate the bootstrap snapshot:
 

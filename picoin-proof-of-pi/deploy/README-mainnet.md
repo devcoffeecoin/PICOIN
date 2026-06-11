@@ -292,7 +292,116 @@ Pool gate, if the pool is updated separately: `/stats` must show `status=ok`,
 healthy active workers, no stuck active task after reveal, and payout accounting
 must retain pending balances.
 
-### 6.5 Rollback Rule
+### 6.5 Total Decentralization Service Pattern
+
+After the Total Decentralization release, production services should use their
+own local full node as the normal API target. The public bootstrap/API is a peer,
+snapshot source, and temporary fallback, not the default write path.
+
+Use this on every full node, miner, validator, and pool host:
+
+```bash
+cd /opt/picoin/src/PICOIN || exit 1
+git fetch origin main
+git switch main
+git pull --ff-only origin main
+git rev-parse --short HEAD
+```
+
+The expected production commit for this release is the commit currently on
+`origin/main`.
+
+Verify node health before enabling local mining or validation:
+
+```bash
+curl -fsS --max-time 60 http://127.0.0.1:8000/node/sync-status -o /tmp/sync.json \
+  && python3 -c '
+import json
+d=json.load(open("/tmp/sync.json")); r=d.get("replay") or {}
+print("height=", d.get("effective_latest_block_height"))
+print("hash=", d.get("effective_latest_block_hash"))
+print("pending=", d.get("pending_replay_blocks"))
+print("replay=", r.get("sync_status"))
+print("divergent=", r.get("divergence_detected"))
+print("last_error=", r.get("last_error"))
+'
+```
+
+Do not mine or validate if the node is divergent, has replay errors, or is far
+behind the healthy peer set.
+
+If a node is healthy internally but far behind, or if replay reports an old
+divergence, restore from a healthy peer snapshot:
+
+```bash
+cd /opt/picoin/src/PICOIN/picoin-proof-of-pi || exit 1
+
+PY=/opt/picoin/picoin-proof-of-pi/.venv/bin/python
+export PYTHONPATH=/opt/picoin/src/PICOIN/picoin-proof-of-pi
+export PICOIN_HTTP_TIMEOUT_SECONDS=180
+BOOTSTRAP=https://api.picoin.science
+
+sudo systemctl stop picoin-validator || true
+
+sudo -u picoin -E env \
+  PYTHONPATH="$PYTHONPATH" \
+  PICOIN_HTTP_TIMEOUT_SECONDS=180 \
+  "$PY" -m picoin node checkpoint restore-peer \
+  --peer "$BOOTSTRAP" \
+  --source mainnet-peer-restore
+
+sudo systemctl restart picoin-node
+sleep 15
+```
+
+On hosts installed directly from the repository tree, the Python runtime may be:
+
+```bash
+PY=/opt/picoin/src/PICOIN/.venv/bin/python
+```
+
+Check `systemctl show picoin-node -p ExecStart --no-pager` before assuming the
+runtime path.
+
+Validator services should point both coordinator and node server to the local
+node:
+
+```env
+PICOIN_VALIDATOR_SERVER=http://127.0.0.1:8000
+PICOIN_VALIDATOR_NODE_SERVER=http://127.0.0.1:8000
+PICOIN_VALIDATOR_RECONCILE_ENABLED=1
+PICOIN_VALIDATOR_RECONCILE_INTERVAL_SECONDS=10
+PICOIN_VALIDATOR_RECONCILE_LIMIT=100
+PICOIN_VALIDATOR_RECONCILE_TIMEOUT_SECONDS=30
+PICOIN_RECONCILE_PEERS=https://api.picoin.science
+```
+
+Before troubleshooting validator liveness, verify which env file the service
+actually loads:
+
+```bash
+systemctl show picoin-validator -p EnvironmentFiles -p ExecStart --no-pager
+```
+
+If it reports a role-specific file instead of `/etc/picoin/picoin.env`, put the
+same local-node and reconcile variables in that file. A validator can be
+`active` while still missing peer jobs if its service env does not include the
+reconcile settings.
+
+Pool services should also point to the local node:
+
+```text
+--server http://127.0.0.1:8000
+```
+
+After a pool migration, verify both the node and pool:
+
+```bash
+curl -fsS --max-time 30 http://127.0.0.1:8000/node/sync-status -o /tmp/sync.json
+curl -fsS --max-time 20 http://127.0.0.1:9321/health
+```
+
+### 6.6 Rollback Rule
 
 If the update changed only code and not database schema, roll back to the saved
 commit and restart services:
