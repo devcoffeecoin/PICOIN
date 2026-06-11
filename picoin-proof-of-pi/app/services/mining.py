@@ -1484,6 +1484,22 @@ def receive_validation_job_gossip(payload: dict[str, Any], source_peer: str | No
             for column in ("miner_id", "range_start", "range_end", "algorithm"):
                 if str(existing_task.get(column)) != str(task.get(column, existing_task.get(column))):
                     raise MiningError(409, f"validation job task mismatch: {column}")
+            if status == "pending" and str(existing_task.get("status") or "") in {"assigned", "committed", "expired"}:
+                params = _protocol_params_for_task(connection, existing_task)
+                expires_at = task.get("expires_at") or iso_at(
+                    _task_expiration_seconds_for_position(params, existing_task.get("range_end"))
+                )
+                connection.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'revealed',
+                        expires_at = ?,
+                        stale_at = NULL,
+                        stale_reason = NULL
+                    WHERE task_id = ?
+                    """,
+                    (expires_at, task_id),
+                )
         else:
             _insert_gossip_miner_if_missing(connection, miner, miner_id)
             protocol_params_id = task.get("protocol_params_id")
