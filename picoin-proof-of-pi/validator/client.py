@@ -273,20 +273,36 @@ def _heartbeat_node_status(server_url: str, *, timeout: float) -> dict[str, Any]
     raise requests.RequestException("node status unavailable")
 
 
-def calculate_sample_digit(args: tuple[int, str]) -> tuple[int, str]:
-    position, algorithm = args
-    return position, calculate_pi_segment(position, position, algorithm)
+def validate_sample(args: tuple[dict[str, Any], str, str]) -> tuple[bool, str]:
+    sample, algorithm, merkle_root = args
+    position = sample["position"]
+    digit = str(sample["digit"]).upper()
+    expected_digit = calculate_pi_segment(position, position, algorithm)
+    if digit != expected_digit:
+        return False, f"digit mismatch at position {position}"
+    if not verify_merkle_proof(position, digit, sample["proof"], merkle_root):
+        return False, f"invalid merkle proof at position {position}"
+    return True, ""
 
 
-def expected_sample_digits(samples: list[dict[str, Any]], algorithm: str, workers: int) -> dict[int, str]:
-    positions = sorted({int(sample["position"]) for sample in samples})
-    if workers <= 1 or len(positions) <= 1:
-        return {position: calculate_pi_segment(position, position, algorithm) for position in positions}
+def validate_samples(job: dict[str, Any], workers: int) -> tuple[bool, str]:
+    samples = list(job["samples"])
+    algorithm = job["algorithm"]
+    merkle_root = job["merkle_root"]
+    if workers <= 1 or len(samples) <= 1:
+        for sample in samples:
+            ok, reason = validate_sample((sample, algorithm, merkle_root))
+            if not ok:
+                return ok, reason
+        return True, ""
 
-    worker_count = min(max(1, workers), len(positions))
+    worker_count = max(1, min(int(workers), len(samples)))
     with ProcessPoolExecutor(max_workers=worker_count) as executor:
-        results = executor.map(calculate_sample_digit, ((position, algorithm) for position in positions))
-    return {position: digit for position, digit in results}
+        results = executor.map(validate_sample, ((sample, algorithm, merkle_root) for sample in samples))
+    for ok, reason in results:
+        if not ok:
+            return ok, reason
+    return True, ""
 
 
 def validate_job(job: dict[str, Any], workers: int = 1) -> tuple[bool, str]:
@@ -331,16 +347,9 @@ def validate_job(job: dict[str, Any], workers: int = 1) -> tuple[bool, str]:
             return False, "invalid_tx_merkle_root"
         if int(commitment["tx_fee_total_units"]) != int(job.get("tx_fee_total_units") or 0):
             return False, "invalid_fee_total"
-    samples = list(job["samples"])
-    expected_digits = expected_sample_digits(samples, job["algorithm"], workers)
-    for sample in samples:
-        position = sample["position"]
-        digit = str(sample["digit"]).upper()
-        expected_digit = expected_digits[int(position)]
-        if digit != expected_digit:
-            return False, f"digit mismatch at position {position}"
-        if not verify_merkle_proof(position, digit, sample["proof"], job["merkle_root"]):
-            return False, f"invalid merkle proof at position {position}"
+    samples_valid, sample_reason = validate_samples(job, workers)
+    if not samples_valid:
+        return False, sample_reason
     return True, "external validator accepted samples"
 
 

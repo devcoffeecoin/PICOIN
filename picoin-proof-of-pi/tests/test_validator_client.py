@@ -97,7 +97,6 @@ def test_command_validate_reuses_fresh_heartbeat_for_active_polling(monkeypatch)
     assert validator_client.command_validate(_validate_args(loops=3)) == 0
     assert calls == {"heartbeats": 1, "jobs": 3}
 
-
 def test_command_validate_reconciles_configured_peers_before_poll(monkeypatch, capsys) -> None:
     identity = {
         "validator_id": "validator_test",
