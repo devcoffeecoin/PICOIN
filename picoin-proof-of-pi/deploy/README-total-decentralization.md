@@ -993,6 +993,36 @@ Lab evidence:
 - Final state on A/B/C: `pending=0`, replay healthy, divergent false, and no
   orphan candidates.
 
+## Phase 13.5f Slice: Validator Pulls Work From Peers
+
+Goal: remove manual reconcile steps from validation-job discovery.
+
+The four-validator candidate drill exposed a real automation gap: D could mine a
+job and see itself plus one remote validator vote, while A/B did not reliably
+import the pending job unless an operator manually ran `/node/reconcile` against
+D. That is not acceptable for full decentralization.
+
+Implementation work:
+
+- The validator client now reads `PICOIN_VALIDATOR_RECONCILE_PEERS`,
+  `PICOIN_RECONCILE_PEERS`, `PICOIN_BOOTSTRAP_PEERS`, or
+  `PICOIN_BOOTSTRAP_PEER` before each validation polling window.
+- Before polling `/validation/jobs`, the validator asks its local node to
+  reconcile configured peers, importing fresh heartbeats, pending validation
+  jobs, and validation votes.
+- The client skips its local coordinator/node address and deduplicates peers.
+- Peer values are normalized, including accidental trailing `=` characters from
+  shell/env edits.
+- Operators can disable the behavior with
+  `PICOIN_VALIDATOR_RECONCILE_ENABLED=0`, or tune it with
+  `PICOIN_VALIDATOR_RECONCILE_INTERVAL_SECONDS`,
+  `PICOIN_VALIDATOR_RECONCILE_LIMIT`, and
+  `PICOIN_VALIDATOR_RECONCILE_TIMEOUT_SECONDS`.
+
+This keeps `picoin-reconciler` useful as a background catch-up service, but the
+validator worker no longer depends on that separate service being perfectly
+timed before it can discover and vote on jobs created by another node.
+
 ## Phase 13.6 Slice: Guarded Reorg Apply With Safe Transaction Rollback
 
 Goal: make bounded depth-1 orphan recovery capable of handling ordinary

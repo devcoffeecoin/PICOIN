@@ -98,6 +98,60 @@ def test_command_validate_reuses_fresh_heartbeat_for_active_polling(monkeypatch)
     assert calls == {"heartbeats": 1, "jobs": 3}
 
 
+def test_command_validate_reconciles_configured_peers_before_poll(monkeypatch, capsys) -> None:
+    identity = {
+        "validator_id": "validator_test",
+        "public_key": "ed25519:test",
+        "private_key": "private-test",
+        "name": "validator-test",
+    }
+    peers_seen: list[str] = []
+
+    class Response:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    monkeypatch.setenv(
+        "PICOIN_RECONCILE_PEERS",
+        "http://coordinator.example,http://peer-a:8000,http://peer-b:8000=",
+    )
+    monkeypatch.setenv("PICOIN_VALIDATOR_RECONCILE_INTERVAL_SECONDS", "0")
+    monkeypatch.setattr(validator_client, "load_or_register_identity", lambda server_url, path: identity)
+    monkeypatch.setattr(validator_client, "send_validator_heartbeat", lambda *args, **kwargs: {"eligible": True})
+
+    def fake_post(url, params=None, timeout=0, **kwargs):
+        assert url == "http://coordinator.example/node/reconcile"
+        peers_seen.append(params["peer_address"])
+        return Response({"validation_jobs_imported": 1, "validation_votes_imported": 0, "validator_heartbeats_imported": 0})
+
+    def get_job(server_url, loaded_identity):
+        assert peers_seen == ["http://peer-a:8000", "http://peer-b:8000"]
+        return {"job_id": "job_ok", "task_id": "task_ok"}
+
+    monkeypatch.setattr(validator_client.requests, "post", fake_post)
+    monkeypatch.setattr(validator_client, "get_job", get_job)
+    monkeypatch.setattr(validator_client, "validate_job", lambda job, workers=1: (True, "ok"))
+    monkeypatch.setattr(
+        validator_client,
+        "submit_result",
+        lambda server_url, loaded_identity, job, approved, reason, timeout=90.0: {
+            "status": "approved",
+            "approvals": 1,
+            "required_approvals": 3,
+        },
+    )
+
+    assert validator_client.command_validate(_validate_args(once=True, loops=1)) == 0
+    captured = capsys.readouterr()
+    assert "Validator reconcile imported jobs=2 votes=0 heartbeats=0 peers=2" in captured.out
+
+
 def test_command_validate_once_treats_network_timeout_as_idle(monkeypatch) -> None:
     identity = {
         "validator_id": "validator_test",

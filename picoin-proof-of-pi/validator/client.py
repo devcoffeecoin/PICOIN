@@ -26,6 +26,7 @@ VALIDATOR_REWARD_ADDRESS = os.getenv("PICOIN_VALIDATOR_REWARD_ADDRESS", "").stri
 DEFAULT_NODE_SERVER = os.getenv("PICOIN_VALIDATOR_NODE_SERVER", os.getenv("PICOIN_NODE_SERVER", "http://127.0.0.1:8000"))
 VALIDATOR_NODE_ADDRESS = os.getenv("PICOIN_VALIDATOR_NODE_ADDRESS", "").strip().rstrip("/")
 DEFAULT_VALIDATOR_WORKERS = max(1, int(os.getenv("PICOIN_VALIDATOR_WORKERS", "4")))
+FALSE_VALUES = {"0", "false", "no", "off"}
 
 
 def utc_now() -> str:
@@ -34,12 +35,99 @@ def utc_now() -> str:
 
 def normalize_node_address(address: str) -> str:
     normalized = str(address or "").strip().rstrip("/")
+    normalized = normalized.rstrip("=").strip().rstrip("/")
     for duplicated in ("http://http://", "https://https://", "https://http://", "http://https://"):
         if normalized.startswith(duplicated):
             scheme, rest = duplicated.split("://", 1)
             normalized = f"{scheme}://{normalized[len(duplicated):]}"
             break
     return normalized
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int, *, minimum: int = 1, maximum: int = 100) -> int:
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        parsed = int(value)
+    except ValueError:
+        return default
+    return max(minimum, min(parsed, maximum))
+
+
+def _validator_reconcile_enabled() -> bool:
+    return os.getenv("PICOIN_VALIDATOR_RECONCILE_ENABLED", "1").strip().lower() not in FALSE_VALUES
+
+
+def configured_reconcile_peers(server_url: str) -> list[str]:
+    raw = (
+        os.getenv("PICOIN_VALIDATOR_RECONCILE_PEERS")
+        or os.getenv("PICOIN_RECONCILE_PEERS")
+        or os.getenv("PICOIN_BOOTSTRAP_PEERS")
+        or os.getenv("PICOIN_BOOTSTRAP_PEER")
+        or ""
+    )
+    local_addresses = {
+        normalize_node_address(server_url),
+        normalize_node_address(os.getenv("PICOIN_NODE_ADDRESS", "")),
+        normalize_node_address(os.getenv("PICOIN_NODE_SERVER", "")),
+        normalize_node_address(os.getenv("PICOIN_VALIDATOR_NODE_SERVER", "")),
+    }
+    local_addresses.discard("")
+    peers: list[str] = []
+    seen: set[str] = set()
+    for item in raw.split(","):
+        peer = normalize_node_address(item)
+        if not peer or peer in local_addresses or peer in seen:
+            continue
+        if not (peer.startswith("http://") or peer.startswith("https://")):
+            continue
+        peers.append(peer)
+        seen.add(peer)
+    return peers
+
+
+def reconcile_configured_peers(
+    server_url: str,
+    peers: list[str],
+    *,
+    limit: int,
+    timeout: float,
+) -> dict[str, int]:
+    summary = {
+        "attempted": 0,
+        "jobs": 0,
+        "votes": 0,
+        "heartbeats": 0,
+        "errors": 0,
+    }
+    if not peers or not _validator_reconcile_enabled():
+        return summary
+    coordinator = normalize_node_address(server_url)
+    for peer in peers:
+        response = requests.post(
+            f"{coordinator}/node/reconcile",
+            params={"limit": limit, "peer_address": peer},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        summary["attempted"] += 1
+        summary["jobs"] += int(payload.get("validation_jobs_imported") or 0)
+        summary["votes"] += int(payload.get("validation_votes_imported") or 0)
+        summary["heartbeats"] += int(payload.get("validator_heartbeats_imported") or 0)
+        summary["errors"] += int(payload.get("errors") or 0)
+    return summary
 
 
 def load_identity(path: Path) -> dict[str, Any]:
@@ -305,6 +393,11 @@ def command_validate(args: argparse.Namespace) -> int:
     poll_seconds = float(getattr(args, "poll_seconds", getattr(args, "sleep", 1.0)))
     heartbeat_interval = max(1.0, float(getattr(args, "heartbeat_interval", 30.0)))
     workers = max(1, int(getattr(args, "workers", DEFAULT_VALIDATOR_WORKERS)))
+    reconcile_peers = configured_reconcile_peers(server_url)
+    reconcile_interval = max(0.0, _env_float("PICOIN_VALIDATOR_RECONCILE_INTERVAL_SECONDS", 10.0))
+    reconcile_limit = _env_int("PICOIN_VALIDATOR_RECONCILE_LIMIT", 100, minimum=1, maximum=100)
+    reconcile_timeout = max(1.0, _env_float("PICOIN_VALIDATOR_RECONCILE_TIMEOUT_SECONDS", 30.0))
+    last_reconcile_at = 0.0
     heartbeat: dict[str, Any] | None = None
     heartbeat_at = 0.0
 
@@ -335,6 +428,30 @@ def command_validate(args: argparse.Namespace) -> int:
                 return 0
             time.sleep(poll_seconds)
             continue
+
+        should_reconcile = (
+            bool(reconcile_peers)
+            and _validator_reconcile_enabled()
+            and (last_reconcile_at <= 0.0 or (time.monotonic() - last_reconcile_at) >= reconcile_interval)
+        )
+        if should_reconcile:
+            try:
+                reconcile = reconcile_configured_peers(
+                    server_url,
+                    reconcile_peers,
+                    limit=reconcile_limit,
+                    timeout=reconcile_timeout,
+                )
+                last_reconcile_at = time.monotonic()
+                if reconcile["jobs"] or reconcile["votes"] or reconcile["heartbeats"]:
+                    print(
+                        "Validator reconcile imported "
+                        f"jobs={reconcile['jobs']} votes={reconcile['votes']} "
+                        f"heartbeats={reconcile['heartbeats']} peers={reconcile['attempted']}"
+                    )
+            except requests.RequestException as exc:
+                last_reconcile_at = time.monotonic()
+                print(f"Validator peer reconcile temporarily unavailable: {exc}", file=sys.stderr)
 
         try:
             job = get_job(server_url, identity)
