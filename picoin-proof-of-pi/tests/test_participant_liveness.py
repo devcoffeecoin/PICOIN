@@ -117,6 +117,22 @@ def test_invalid_heartbeat_signature_does_not_write_validator(tmp_path, monkeypa
     assert row is None
 
 
+def test_registered_validator_heartbeat_uses_registered_public_key_fallback(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "registered-heartbeat-key-fallback.sqlite3")
+    keys = generate_keypair()
+    wrong_keys = generate_keypair()
+    validator = register_validator("registered-validator", keys["public_key"])
+    payload = _signed_validator_heartbeat(keys, validator["validator_id"])
+    payload["public_key"] = wrong_keys["public_key"]
+    payload["signature"] = sign_payload(keys["private_key"], {key: value for key, value in payload.items() if key != "signature"})
+
+    accepted = record_validator_heartbeat(payload)
+
+    assert accepted["validator_id"] == validator["validator_id"]
+    assert accepted["public_key"] == keys["public_key"]
+    assert accepted["online_status"] == "online"
+
+
 def test_validator_heartbeat_inventory_can_seed_another_node(tmp_path, monkeypatch) -> None:
     db_a = _use_db(tmp_path, monkeypatch, "heartbeat-node-a.sqlite3")
     keys = generate_keypair()
