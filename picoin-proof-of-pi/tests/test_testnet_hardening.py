@@ -195,6 +195,30 @@ def test_full_commit_reveal_flow_accepts_block_after_three_validator_votes(tmp_p
         tx_fee_total_units=int(task["tx_fee_total_units"]),
     )
     assert reveal["status"] == "validation_pending"
+    duplicate_reveal = reveal_task(
+        task["task_id"],
+        miner["miner_id"],
+        revealed_samples,
+        reveal_signature,
+        reveal_signed_at,
+        tx_merkle_root=task["tx_merkle_root"],
+        mempool_snapshot_id=task["mempool_snapshot_id"],
+        selected_tx_hashes_hash=task["selected_tx_hashes_hash"],
+        tx_count=int(task["tx_count"]),
+        tx_fee_total_units=int(task["tx_fee_total_units"]),
+    )
+    assert duplicate_reveal["accepted"] is True
+    assert duplicate_reveal["status"] == "validation_pending"
+    assert duplicate_reveal["validation"]["job_id"] == reveal["validation"]["job_id"]
+    with get_connection() as connection:
+        duplicate_penalties = connection.execute(
+            "SELECT COUNT(*) AS count FROM penalties WHERE reason = 'task is not committed'",
+        ).fetchone()["count"]
+        duplicate_rejections = connection.execute(
+            "SELECT COUNT(*) AS count FROM rejected_submissions WHERE reason = 'task is not committed'",
+        ).fetchone()["count"]
+    assert duplicate_penalties == 0
+    assert duplicate_rejections == 0
     pending_status = get_task_status(task["task_id"])
     assert pending_status["status"] == "validation_pending"
     assert pending_status["task_status"] == "revealed"

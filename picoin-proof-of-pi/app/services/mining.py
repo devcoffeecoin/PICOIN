@@ -4472,6 +4472,35 @@ def reveal_task(
                 "",
                 task.get("stale_reason") or "competitive round closed",
             )
+        if task["status"] == "revealed":
+            existing_job = row_to_dict(
+                connection.execute(
+                    "SELECT * FROM validation_jobs WHERE task_id = ?",
+                    (task_id,),
+                ).fetchone()
+            )
+            if existing_job is not None:
+                try:
+                    existing_samples = json.loads(existing_job.get("samples") or "[]")
+                except (TypeError, json.JSONDecodeError):
+                    existing_samples = revealed_samples
+                return {
+                    "accepted": True,
+                    "status": (
+                        "validation_pending"
+                        if existing_job.get("status") == "pending"
+                        else existing_job.get("status")
+                    ),
+                    "message": "reveal already accepted; waiting for external validator",
+                    "block": None,
+                    "validation": {
+                        "job_id": existing_job["job_id"],
+                        "challenge_seed": commitment["challenge_seed"],
+                        "merkle_root": commitment["merkle_root"],
+                        "samples": existing_samples,
+                        "status": existing_job.get("status"),
+                    },
+                }
         if task["status"] != "committed":
             return _reject_in_connection(
                 connection,
