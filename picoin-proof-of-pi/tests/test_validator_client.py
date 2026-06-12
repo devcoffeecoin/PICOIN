@@ -23,6 +23,21 @@ def _validate_args(*, once: bool = False, loops: int = 2, poll_seconds: float | 
     )
 
 
+def test_request_error_summary_includes_http_response_detail() -> None:
+    class Response:
+        text = '{"detail":"validator stale"}'
+
+        def json(self):
+            return {"detail": "validator stale"}
+
+    exc = requests.HTTPError("403 Client Error: Forbidden")
+    exc.response = Response()
+
+    assert validator_client._request_error_summary(exc) == (
+        "403 Client Error: Forbidden detail=validator stale"
+    )
+
+
 def test_command_validate_continues_after_transient_job_poll_timeout(monkeypatch, capsys) -> None:
     identity = {
         "validator_id": "validator_test",

@@ -157,6 +157,25 @@ def save_identity(path: Path, identity: dict[str, Any]) -> None:
     path.write_text(json.dumps(identity, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _request_error_summary(exc: BaseException) -> str:
+    response = getattr(exc, "response", None)
+    if response is None:
+        return str(exc)
+    detail = ""
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            detail = str(payload.get("detail") or payload)
+        else:
+            detail = str(payload)
+    except ValueError:
+        detail = str(getattr(response, "text", "") or "")
+    detail = detail.strip()
+    if detail:
+        return f"{exc} detail={detail}"
+    return str(exc)
+
+
 def register(server_url: str, name: str, identity_path: Path, overwrite: bool) -> dict[str, Any]:
     if identity_path.exists() and not overwrite:
         raise FileExistsError(f"identity already exists: {identity_path}")
@@ -405,7 +424,11 @@ def command_validate(args: argparse.Namespace) -> int:
         try:
             job = get_job(server_url, identity)
         except requests.RequestException as exc:
-            print(f"Validator coordinator temporarily unavailable while polling validation job: {exc}", file=sys.stderr)
+            print(
+                "Validator coordinator temporarily unavailable while polling validation job: "
+                f"{_request_error_summary(exc)}",
+                file=sys.stderr,
+            )
             job = None
             job_poll_failed = True
         if job is not None:
@@ -413,7 +436,11 @@ def command_validate(args: argparse.Namespace) -> int:
             try:
                 result = submit_result(server_url, identity, job, approved, reason, timeout=args.submit_timeout)
             except requests.RequestException as exc:
-                print(f"Validator coordinator temporarily unavailable while submitting validation result: {exc}", file=sys.stderr)
+                print(
+                    "Validator coordinator temporarily unavailable while submitting validation result: "
+                    f"{_request_error_summary(exc)}",
+                    file=sys.stderr,
+                )
                 if args.once:
                     return 0
                 time.sleep(poll_seconds)
@@ -450,7 +477,8 @@ def command_validate(args: argparse.Namespace) -> int:
                 heartbeat_attempt_at = heartbeat_at
             except requests.RequestException as exc:
                 print(
-                    f"Validator coordinator temporarily unavailable during heartbeat: {exc}; "
+                    "Validator coordinator temporarily unavailable during heartbeat: "
+                    f"{_request_error_summary(exc)}; "
                     "continuing to poll validation jobs with previous liveness",
                     file=sys.stderr,
                 )
@@ -489,7 +517,10 @@ def command_validate(args: argparse.Namespace) -> int:
                     )
             except requests.RequestException as exc:
                 last_reconcile_at = time.monotonic()
-                print(f"Validator peer reconcile temporarily unavailable: {exc}", file=sys.stderr)
+                print(
+                    f"Validator peer reconcile temporarily unavailable: {_request_error_summary(exc)}",
+                    file=sys.stderr,
+                )
 
         if args.once:
             return 0
