@@ -3403,7 +3403,7 @@ def _competitive_round_has_earlier_pending_validation_job(connection: Any, job: 
             SELECT 1
             FROM validation_jobs AS earlier_jobs
             JOIN tasks AS earlier_tasks ON earlier_tasks.task_id = earlier_jobs.task_id
-            WHERE earlier_jobs.status = 'pending'
+            WHERE earlier_jobs.status IN ('pending', 'approved')
             AND earlier_tasks.status = 'revealed'
             AND earlier_tasks.assignment_mode = ?
             AND earlier_tasks.assignment_seed = ?
@@ -3440,7 +3440,7 @@ def _competitive_round_has_pending_validation_job(connection: Any, assignment_se
             SELECT 1
             FROM validation_jobs
             JOIN tasks ON tasks.task_id = validation_jobs.task_id
-            WHERE validation_jobs.status = 'pending'
+            WHERE validation_jobs.status IN ('pending', 'approved')
               AND tasks.status = 'revealed'
               AND tasks.assignment_mode = ?
               AND tasks.assignment_seed = ?
