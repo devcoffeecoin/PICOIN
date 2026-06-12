@@ -413,6 +413,18 @@ textarea:focus {
   color: #ffe7a8;
 }
 
+.notice a,
+.table-row a {
+  color: #60f0c9;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.notice a:hover,
+.table-row a:hover {
+  text-decoration: underline;
+}
+
 .receive-panel {
   display: grid;
   justify-items: center;

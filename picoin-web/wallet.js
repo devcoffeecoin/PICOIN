@@ -9,6 +9,9 @@ const STORE_KEY = "picoin:web-wallet";
 const PICOIN_UNIT = 1_000_000n;
 const PICOIN_DECIMALS = 6;
 const CHAIN_ID = 314159;
+const API_READ_TIMEOUT_MS = 45_000;
+const API_NONCE_TIMEOUT_MS = 90_000;
+const API_WRITE_TIMEOUT_MS = 120_000;
 const NETWORKS = {
   "picoin-mainnet-v1": mainnetApiBaseUrl,
   localhost: "http://127.0.0.1:8000",
@@ -146,7 +149,7 @@ function currentApiClient() {
       config: currentApiConfig(),
       defaultBaseUrl: base,
       storageKey: `picoin-wallet-active-bootstrap:${key}`,
-      timeoutMs: 12000,
+      timeoutMs: API_READ_TIMEOUT_MS,
     });
     walletApiClientKey = key;
   }
@@ -170,20 +173,34 @@ async function fetchJson(path, options = {}) {
     }
     return result.payload;
   }
-  const response = await fetch(api(path), {
-    ...options,
-    mode: "cors",
-    headers: { "content-type": "application/json", ...(options.headers || {}) },
-  });
-  const text = await response.text();
-  const body = text ? JSON.parse(text) : {};
-  if (!response.ok) {
-    const detail = window.PicoinApiFailover
-      ? window.PicoinApiFailover.formatErrorDetail(body.detail || body)
-      : body.detail || text || response.statusText;
-    throw new Error(detail || response.statusText);
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), Number(options.timeoutMs || API_READ_TIMEOUT_MS));
+  const fetchOptions = { ...options };
+  delete fetchOptions.timeoutMs;
+  try {
+    const response = await fetch(api(path), {
+      ...fetchOptions,
+      mode: "cors",
+      signal: controller.signal,
+      headers: { "content-type": "application/json", ...(fetchOptions.headers || {}) },
+    });
+    const text = await response.text();
+    const body = text ? JSON.parse(text) : {};
+    if (!response.ok) {
+      const detail = window.PicoinApiFailover
+        ? window.PicoinApiFailover.formatErrorDetail(body.detail || body)
+        : body.detail || text || response.statusText;
+      throw new Error(detail || response.statusText);
+    }
+    return body;
+  } catch (error) {
+    if (error.name === "AbortError") {
+      throw new Error(`Timeout after ${Number(options.timeoutMs || API_READ_TIMEOUT_MS) / 1000}s`);
+    }
+    throw error;
+  } finally {
+    window.clearTimeout(timeout);
   }
-  return body;
 }
 
 async function fetchFirst(paths, options = {}) {
@@ -271,7 +288,7 @@ async function refreshWallet() {
   try {
     const [account, nonce] = await Promise.all([
       fetchFirst([`/wallet/balance/${wallet.address}`, `/accounts/${wallet.address}`]).catch(() => ({ balance: 0 })),
-      fetchJson(`/wallet/${wallet.address}/nonce`).catch(() => ({ next_nonce: 1 })),
+      fetchJson(`/wallet/${wallet.address}/nonce`, { timeoutMs: API_NONCE_TIMEOUT_MS }).catch(() => ({ next_nonce: 1 })),
     ]);
     els.walletBalance.textContent = `${account.balance ?? 0} PI`;
     els.walletNonce.textContent = nonce.next_nonce || 1;
@@ -325,7 +342,8 @@ async function submitTransaction(event) {
   if (!wallet) throw new Error("Create or import a wallet first.");
   
   // Build transaction payload
-  const nonce = Number(els.walletNonce.textContent || 0) || (await fetchJson(`/wallet/${wallet.address}/nonce`)).next_nonce;
+  const nonce = Number(els.walletNonce.textContent || 0)
+    || (await fetchJson(`/wallet/${wallet.address}/nonce`, { timeoutMs: API_NONCE_TIMEOUT_MS })).next_nonce;
   const amountUnits = toUnits(els.txAmount.value);
   const feeUnits = toUnits(els.txFee.value || "0");
   const unsignedPayload = {
@@ -367,7 +385,7 @@ async function submitTransaction(event) {
   
   for (const endpoint of submitEndpoints) {
     try {
-      submitted = await fetchJson(endpoint, { method: "POST", body: JSON.stringify(txPayload) });
+      submitted = await fetchJson(endpoint, { method: "POST", body: JSON.stringify(txPayload), timeoutMs: API_WRITE_TIMEOUT_MS });
       console.log(`Success on ${endpoint}:`, submitted);
       break;
     } catch (error) {

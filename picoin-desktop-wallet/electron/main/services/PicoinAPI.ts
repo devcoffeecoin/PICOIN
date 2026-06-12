@@ -12,7 +12,11 @@ import type {
 const DEFAULT_READ_TIMEOUT_MS = 20_000;
 const STATUS_TIMEOUT_MS = 12_000;
 const WALLET_READ_TIMEOUT_MS = 45_000;
+const NONCE_TIMEOUT_MS = 90_000;
+const TX_SUBMIT_TIMEOUT_MS = 120_000;
+const TX_VERIFY_TIMEOUT_MS = 15_000;
 const RETRY_DELAY_MS = 750;
+const SUBMITTED_TX_STATUSES = new Set(["pending", "propagated", "selected", "released", "confirmed"]);
 
 export class PicoinAPI {
   private network: NetworkConfig;
@@ -57,7 +61,10 @@ export class PicoinAPI {
 
   async getSyncStatus(): Promise<SyncStatus> {
     try {
-      const raw = await this.request<Record<string, unknown>>("/node/sync-status", { timeoutMs: STATUS_TIMEOUT_MS });
+      const raw = await this.request<Record<string, unknown>>("/node/sync-status", {
+        timeoutMs: STATUS_TIMEOUT_MS,
+        retries: 1,
+      });
       const replay = raw.replay && typeof raw.replay === "object" ? (raw.replay as Record<string, unknown>) : {};
       const localBlockHeight = numberOrNull(raw.local_block_height);
       const latestBlockHeight = numberOrNull(raw.latest_block_height ?? raw.effective_latest_block_height);
@@ -73,7 +80,10 @@ export class PicoinAPI {
         throw error;
       }
       // TODO: replace this fallback once the public API exposes a canonical wallet status endpoint.
-      const protocol = await this.request<Record<string, unknown>>("/protocol", { timeoutMs: STATUS_TIMEOUT_MS });
+      const protocol = await this.request<Record<string, unknown>>("/protocol", {
+        timeoutMs: STATUS_TIMEOUT_MS,
+        retries: 1,
+      });
       return {
         blockHeight: numberOrNull(protocol.latest_block_height ?? protocol.block_height),
         localBlockHeight: null,
@@ -133,14 +143,45 @@ export class PicoinAPI {
   }
 
   async broadcastTransaction(rawTx: SignedTransaction): Promise<SendTransactionResult> {
-    const raw = await this.request<Record<string, unknown>>("/transactions/submit", {
-      method: "POST",
-      body: rawTx,
-    });
-    return {
-      txHash: String(raw.tx_hash || raw.txHash || rawTx.tx_hash || ""),
-      raw,
-    };
+    const endpoints = ["/tx/send", "/transactions/submit", "/tx/submit"];
+    let lastError: unknown = null;
+    for (const endpoint of endpoints) {
+      try {
+        const raw = await this.request<Record<string, unknown>>(endpoint, {
+          method: "POST",
+          body: rawTx,
+          timeoutMs: TX_SUBMIT_TIMEOUT_MS,
+          retries: 1,
+        });
+        const txHash = String(raw.tx_hash || raw.txHash || rawTx.tx_hash || "");
+        const verified = txHash ? await this.findSubmittedTransaction(txHash) : null;
+        return {
+          txHash,
+          status: String(verified?.status || raw.status || "submitted"),
+          verified: Boolean(verified),
+          raw: verified || raw,
+        };
+      } catch (error) {
+        lastError = error;
+        const recovered = await this.findSubmittedTransaction(rawTx.tx_hash);
+        if (recovered) {
+          return {
+            txHash: rawTx.tx_hash,
+            status: String(recovered.status || "submitted"),
+            verified: true,
+            raw: {
+              ...recovered,
+              recovered_after_submit_error: true,
+              submit_error: errorMessage(error),
+            },
+          };
+        }
+        if (!canTryNextEndpoint(error)) {
+          throw error;
+        }
+      }
+    }
+    throw lastError || new Error("transaction submit failed");
   }
 
   async sendTransaction(rawTx: SignedTransaction): Promise<SendTransactionResult> {
@@ -148,12 +189,36 @@ export class PicoinAPI {
   }
 
   async getNextNonce(address: string): Promise<number> {
-    const raw = await this.request<Record<string, unknown>>(`/wallet/${encodeURIComponent(address)}/nonce`);
+    const raw = await this.request<Record<string, unknown>>(`/wallet/${encodeURIComponent(address)}/nonce`, {
+      timeoutMs: NONCE_TIMEOUT_MS,
+      retries: 2,
+    });
     const nextNonce = Number(raw.next_nonce);
     if (!Number.isInteger(nextNonce) || nextNonce < 1) {
       throw new Error("API nonce endpoint returned an invalid next_nonce");
     }
     return nextNonce;
+  }
+
+  private async findSubmittedTransaction(txHash: string): Promise<Record<string, unknown> | null> {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        const raw = await this.request<Record<string, unknown>>(`/tx/${encodeURIComponent(txHash)}`, {
+          timeoutMs: TX_VERIFY_TIMEOUT_MS,
+          retries: 1,
+        });
+        const status = String(raw.status || "");
+        if (SUBMITTED_TX_STATUSES.has(status)) {
+          return raw;
+        }
+      } catch (error) {
+        if (!canTryNextEndpoint(error)) {
+          return null;
+        }
+      }
+      await delay(750 * (attempt + 1));
+    }
+    return null;
   }
 
   private async request<T>(

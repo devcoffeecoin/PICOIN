@@ -52,8 +52,13 @@ export default function App() {
   const [balance, setBalance] = useState<AccountBalance | null>(null);
   const [history, setHistory] = useState<TransactionRecord[]>([]);
   const [notice, setNotice] = useState<string>("");
+  const [noticeTxHash, setNoticeTxHash] = useState<string | null>(null);
   const refreshInFlight = useRef<Promise<void> | null>(null);
   const activeNetwork = settings?.selectedNetwork || "mainnet";
+  const showNotice = useCallback((message: string, txHash?: string | null) => {
+    setNotice(message);
+    setNoticeTxHash(txHash || null);
+  }, []);
 
   const refreshAll = useCallback(() => {
     if (refreshInFlight.current) {
@@ -80,7 +85,7 @@ export default function App() {
             setBalance(nextBalance);
             setHistory(nextHistory);
           } catch (error) {
-            setNotice(
+            showNotice(
               isTransientUiError(error)
                 ? "Wallet data refresh timed out. Showing the last loaded balance."
                 : errorMessage(error),
@@ -91,14 +96,14 @@ export default function App() {
           setHistory([]);
         }
       } catch (error) {
-        setNotice(errorMessage(error));
+        showNotice(errorMessage(error));
       }
     })();
     refreshInFlight.current = refresh.finally(() => {
       refreshInFlight.current = null;
     });
     return refreshInFlight.current;
-  }, []);
+  }, [showNotice]);
 
   useEffect(() => {
     void refreshAll();
@@ -135,8 +140,21 @@ export default function App() {
 
         {notice && (
           <div className="notice">
-            <span>{notice}</span>
-            <button onClick={() => setNotice("")}>Dismiss</button>
+            <span>
+              {notice}
+              {noticeTxHash && (
+                <>
+                  {" "}
+                  <a href={transactionExplorerUrl(noticeTxHash)} target="_blank" rel="noreferrer">
+                    {shortHash(noticeTxHash)}
+                  </a>
+                </>
+              )}
+            </span>
+            <button onClick={() => {
+              setNotice("");
+              setNoticeTxHash(null);
+            }}>Dismiss</button>
           </div>
         )}
 
@@ -149,13 +167,13 @@ export default function App() {
             activeNetwork={activeNetwork}
           />
         )}
-        {page === "send" && <SendPage wallet={wallet} onSent={(message) => {
-          setNotice(message);
+        {page === "send" && <SendPage wallet={wallet} onSent={(message, txHash) => {
+          showNotice(message, txHash);
           void refreshAll();
         }} />}
         {page === "receive" && <ReceivePage wallet={wallet} />}
         {page === "wallet" && <WalletPage wallet={wallet} onWalletChange={(message) => {
-          setNotice(message);
+          showNotice(message);
           void refreshAll();
         }} />}
         {page === "settings" && settings && networks && (
@@ -164,7 +182,7 @@ export default function App() {
             networks={networks}
             apiStatus={apiStatus}
             onChanged={(message) => {
-              setNotice(message);
+              showNotice(message);
               void refreshAll();
             }}
           />
@@ -259,7 +277,13 @@ function Dashboard({
               <span>{tx.tx_type || "tx"}</span>
               <span>{tx.amount ?? ""} PI</span>
               <span>{tx.status || "unknown"}</span>
-              <span>{tx.tx_hash ? shortHash(tx.tx_hash) : ""}</span>
+              <span>
+                {tx.tx_hash ? (
+                  <a href={transactionExplorerUrl(tx.tx_hash)} target="_blank" rel="noreferrer">
+                    {shortHash(tx.tx_hash)}
+                  </a>
+                ) : ""}
+              </span>
             </div>
           ))}
         </div>
@@ -268,7 +292,7 @@ function Dashboard({
   );
 }
 
-function SendPage({ wallet, onSent }: { wallet: WalletSummary; onSent: (message: string) => void }) {
+function SendPage({ wallet, onSent }: { wallet: WalletSummary; onSent: (message: string, txHash?: string | null) => void }) {
   const [to, setTo] = useState("");
   const [amount, setAmount] = useState("0.01");
   const [fee, setFee] = useState("0.001");
@@ -296,7 +320,9 @@ function SendPage({ wallet, onSent }: { wallet: WalletSummary; onSent: (message:
         amount: parsedAmount,
         fee: parsedFee,
       })) as SendTransactionResult;
-      onSent(`Transaction broadcast${result.txHash ? `: ${shortHash(result.txHash)}` : "."}`);
+      const status = result.status ? ` (${result.status})` : "";
+      const verified = result.verified ? " and verified" : "";
+      onSent(`Transaction submitted${verified}${status}.`, result.txHash);
       setTo("");
     } catch (error) {
       onSent(errorMessage(error));
@@ -608,6 +634,10 @@ function shortAddress(address: string): string {
 
 function shortHash(hash: string): string {
   return `${hash.slice(0, 10)}...${hash.slice(-6)}`;
+}
+
+function transactionExplorerUrl(hash: string): string {
+  return `https://www.picoin.science/transaction.html?hash=${encodeURIComponent(hash)}`;
 }
 
 function errorMessage(error: unknown): string {

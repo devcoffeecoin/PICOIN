@@ -82,6 +82,8 @@ export interface SendTransactionRequest {
 
 export interface SendTransactionResult {
   txHash: string | null;
+  status?: string;
+  verified?: boolean;
   raw: unknown;
 }
 
