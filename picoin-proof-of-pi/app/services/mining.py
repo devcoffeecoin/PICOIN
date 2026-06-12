@@ -163,16 +163,11 @@ MINER_TASK_HEARTBEAT_MIN_INTERVAL_SECONDS = int(os.getenv("PICOIN_MINER_TASK_HEA
 EXPIRED_TASK_CLEANUP_MIN_INTERVAL_SECONDS = int(os.getenv("PICOIN_EXPIRED_TASK_CLEANUP_MIN_INTERVAL_SECONDS", "5"))
 STATUS_ENDPOINT_CACHE_SECONDS = int(os.getenv("PICOIN_STATUS_ENDPOINT_CACHE_SECONDS", "10"))
 HEALTH_ENDPOINT_CACHE_SECONDS = int(os.getenv("PICOIN_HEALTH_ENDPOINT_CACHE_SECONDS", "15"))
-INVALID_VALIDATOR_HEARTBEAT_LOG_INTERVAL_SECONDS = int(
-    os.getenv("PICOIN_INVALID_VALIDATOR_HEARTBEAT_LOG_INTERVAL_SECONDS", "30")
-)
 _PARTICIPANT_LIVENESS_TASK: asyncio.Task | None = None
 _PARTICIPANT_LIVENESS_LOCK = threading.Lock()
 _PARTICIPANT_LIVENESS_LAST_RUN_MONOTONIC = 0.0
 _EXPIRED_TASK_CLEANUP_LOCK = threading.Lock()
 _EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC = 0.0
-_INVALID_VALIDATOR_HEARTBEAT_LOG_LOCK = threading.Lock()
-_INVALID_VALIDATOR_HEARTBEAT_LOG_LAST: dict[str, float] = {}
 _STATUS_ENDPOINT_CACHE_LOCK = threading.Lock()
 _STATUS_ENDPOINT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
@@ -600,68 +595,6 @@ def _validator_heartbeat_public_key_candidates(validator_id: str, payload_public
     return candidates
 
 
-def _short_debug_value(value: Any, limit: int = 36) -> str:
-    text = str(value or "")
-    if len(text) <= limit:
-        return text
-    return f"{text[:limit]}..."
-
-
-def _log_invalid_validator_heartbeat(
-    *,
-    payload: dict[str, Any],
-    client_host: str | None,
-    public_key_candidates: list[str],
-    signature_variants: list[dict[str, Any]],
-    candidate_errors: list[str],
-) -> None:
-    if INVALID_VALIDATOR_HEARTBEAT_LOG_INTERVAL_SECONDS <= 0:
-        return
-    validator_id = str(payload.get("validator_id") or "").strip()
-    signature = str(payload.get("signature") or "")
-    cache_key = sha256_text(
-        canonical_json(
-            {
-                "client_host": client_host or "",
-                "validator_id": validator_id,
-                "public_key": str(payload.get("public_key") or "")[:32],
-                "signature": signature[:32],
-            }
-        )
-    )
-    now_monotonic = time.monotonic()
-    with _INVALID_VALIDATOR_HEARTBEAT_LOG_LOCK:
-        last_logged = _INVALID_VALIDATOR_HEARTBEAT_LOG_LAST.get(cache_key, 0.0)
-        if now_monotonic - last_logged < INVALID_VALIDATOR_HEARTBEAT_LOG_INTERVAL_SECONDS:
-            return
-        _INVALID_VALIDATOR_HEARTBEAT_LOG_LAST[cache_key] = now_monotonic
-
-    payload_keys = sorted(str(key) for key in payload.keys())
-    payload_types = {key: type(payload.get(key)).__name__ for key in payload_keys}
-    variant_summaries = [
-        {
-            "keys": sorted(str(key) for key in variant.keys()),
-            "hash": sha256_text(canonical_json(variant))[:16],
-        }
-        for variant in signature_variants
-    ]
-    logger.warning(
-        "invalid validator heartbeat signature detail: validator_id=%s client_host=%s "
-        "payload_keys=%s payload_types=%s public_key=%s public_key_len=%s signature_len=%s "
-        "candidate_keys=%s variant_summaries=%s candidate_errors=%s",
-        validator_id,
-        client_host,
-        payload_keys,
-        payload_types,
-        _short_debug_value(payload.get("public_key")),
-        len(str(payload.get("public_key") or "")),
-        len(signature),
-        [_short_debug_value(candidate) for candidate in public_key_candidates],
-        variant_summaries,
-        candidate_errors,
-    )
-
-
 VALIDATOR_HEARTBEAT_FUTURE_SKEW_SECONDS = 60
 
 
@@ -908,10 +841,8 @@ def record_validator_heartbeat(
     public_key = str(payload.get("public_key") or "")
     signature = str(payload.get("signature") or "")
     signature_variants = _validator_heartbeat_signature_variants(payload)
-    public_key_candidates = _validator_heartbeat_public_key_candidates(validator_id, public_key)
-    candidate_errors: list[str] = []
     verified_public_key = ""
-    for candidate_public_key in public_key_candidates:
+    for candidate_public_key in _validator_heartbeat_public_key_candidates(validator_id, public_key):
         try:
             validate_public_key(candidate_public_key)
             if any(
@@ -920,17 +851,9 @@ def record_validator_heartbeat(
             ):
                 verified_public_key = candidate_public_key
                 break
-        except (RuntimeError, ValueError) as exc:
-            candidate_errors.append(f"{_short_debug_value(candidate_public_key, 18)}:{type(exc).__name__}:{exc}")
+        except (RuntimeError, ValueError):
             continue
     if not verified_public_key:
-        _log_invalid_validator_heartbeat(
-            payload=payload,
-            client_host=client_host,
-            public_key_candidates=public_key_candidates,
-            signature_variants=signature_variants,
-            candidate_errors=candidate_errors,
-        )
         raise MiningError(401, "invalid validator heartbeat signature")
     public_key = verified_public_key
 
