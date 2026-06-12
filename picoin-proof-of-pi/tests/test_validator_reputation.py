@@ -17,6 +17,7 @@ from app.services.mining import (
     get_ledger_entries,
     get_validator,
     get_validators,
+    _quorum_validation_ms,
     record_validator_heartbeat,
     register_miner,
     register_validator,
@@ -70,6 +71,13 @@ def test_validator_reputation_tracks_completed_approved_jobs(tmp_path, monkeypat
     assert updated["invalid_results"] == 0
     assert updated["trust_score"] == 1.0
     assert updated["avg_validation_ms"] >= 0
+
+
+def test_quorum_validation_ms_uses_job_wait_time() -> None:
+    job = {"created_at": "2026-06-12T21:00:00+00:00"}
+
+    assert _quorum_validation_ms(job, "2026-06-12T21:00:02+00:00", 5) == 2000
+    assert _quorum_validation_ms(job, "2026-06-12T20:59:59+00:00", 5) == 5
 
 
 def test_quorum_does_not_drop_when_validators_go_stale(tmp_path, monkeypatch) -> None:

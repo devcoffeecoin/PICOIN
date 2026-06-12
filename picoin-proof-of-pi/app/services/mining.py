@@ -1790,6 +1790,7 @@ def _finalize_validation_quorum_from_gossip(
         savepoint_name = "validation_gossip_block_finalization"
         connection.execute(f"SAVEPOINT {savepoint_name}")
         try:
+            quorum_validation_ms = _quorum_validation_ms(job, utc_now(), validation_ms)
             block = _accept_block_in_connection(
                 connection=connection,
                 task=task,
@@ -1799,7 +1800,7 @@ def _finalize_validation_quorum_from_gossip(
                 samples=json.loads(job.get("samples") or "[]"),
                 signature=signature,
                 submission_reason=f"external validation approved by {validator_id}",
-                validation_ms=validation_ms,
+                validation_ms=quorum_validation_ms,
                 params=params,
                 validation_job_id=job_id,
             )
@@ -4993,6 +4994,16 @@ def _refresh_validation_job_timing(
     )
 
 
+def _quorum_validation_ms(job: dict[str, Any], received_at: str, fallback_ms: int = 0) -> int:
+    created_at = job.get("job_created_at") or job.get("created_at")
+    quorum_ms = _elapsed_iso_ms(created_at, received_at)
+    try:
+        fallback = max(0, int(fallback_ms or 0))
+    except (TypeError, ValueError):
+        fallback = 0
+    return max(fallback, quorum_ms)
+
+
 def _mark_validation_job_finalized(
     connection: Any,
     *,
@@ -5244,6 +5255,7 @@ def submit_validation_result(
             savepoint_name = "validation_block_finalization"
             connection.execute(f"SAVEPOINT {savepoint_name}")
             try:
+                quorum_validation_ms = _quorum_validation_ms(job, received_at, validation_ms)
                 block = _accept_block_in_connection(
                     connection=connection,
                     task=task,
@@ -5253,7 +5265,7 @@ def submit_validation_result(
                     samples=samples,
                     signature=signature,
                     submission_reason=f"external validation approved by {validator_id}",
-                    validation_ms=validation_ms,
+                    validation_ms=quorum_validation_ms,
                     params=params,
                     validation_job_id=job_id,
                 )
