@@ -5122,11 +5122,7 @@ def submit_validation_result(
                 "required_approvals": required,
                 "required_rejections": required,
             }
-        existing_vote = connection.execute(
-            "SELECT 1 FROM validation_votes WHERE job_id = ? AND validator_id = ?",
-            (job_id, validator_id),
-        ).fetchone()
-        if existing_vote is not None:
+        def existing_vote_response() -> dict[str, Any]:
             counts = _validation_vote_counts(connection, job_id)
             params = _protocol_params_for_task(connection, job)
             required = _effective_required_validator_approvals(connection, params)
@@ -5163,6 +5159,13 @@ def submit_validation_result(
                 "required_rejections": required,
             }
 
+        existing_vote = connection.execute(
+            "SELECT 1 FROM validation_votes WHERE job_id = ? AND validator_id = ?",
+            (job_id, validator_id),
+        ).fetchone()
+        if existing_vote is not None:
+            return existing_vote_response()
+
         payload = build_validation_result_signature_payload(
             job_id=job_id,
             validator_id=validator_id,
@@ -5186,27 +5189,37 @@ def submit_validation_result(
         received_at = utc_now()
         submit_result_latency_ms = _elapsed_iso_ms(signed_at, received_at)
         params = _protocol_params_for_task(connection, task)
-        connection.execute(
-            """
-            INSERT INTO validation_votes (
-                job_id, task_id, validator_id, approved, reason, signature,
-                signed_at, validation_ms, submit_result_latency_ms, created_at
+        try:
+            connection.execute(
+                """
+                INSERT INTO validation_votes (
+                    job_id, task_id, validator_id, approved, reason, signature,
+                    signed_at, validation_ms, submit_result_latency_ms, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    job_id,
+                    job["task_id"],
+                    validator_id,
+                    int(approved),
+                    reason,
+                    signature,
+                    signed_at,
+                    validation_ms,
+                    submit_result_latency_ms,
+                    received_at,
+                ),
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (
-                job_id,
-                job["task_id"],
-                validator_id,
-                int(approved),
-                reason,
-                signature,
-                signed_at,
-                validation_ms,
-                submit_result_latency_ms,
-                received_at,
-            ),
-        )
+        except sqlite3.IntegrityError as exc:
+            if "validation_votes.job_id, validation_votes.validator_id" in str(exc):
+                logger.info(
+                    "duplicate validation vote ignored job_id=%s validator_id=%s",
+                    job_id,
+                    validator_id,
+                )
+                return existing_vote_response()
+            raise
         _record_validator_completed_vote(connection, validator_id, approved, validation_ms)
         counts = _validation_vote_counts(connection, job_id)
         required = _effective_required_validator_approvals(connection, params)
