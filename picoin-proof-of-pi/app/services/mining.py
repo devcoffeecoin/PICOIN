@@ -810,12 +810,14 @@ def record_validator_heartbeat(
     timestamp = utc_now()
     heartbeat_at = _validator_heartbeat_time(payload, observed_at, timestamp)
     heartbeat_online_status = _status_from_heartbeat(heartbeat_at)
+    effective_height = max(0, int(payload.get("effective_height") or payload.get("local_height") or 0))
     sync_lag = max(0, int(payload.get("sync_lag") or 0))
     pending_replay = max(0, int(payload.get("pending_replay_blocks") or 0))
     heartbeat_id = ""
     heartbeat_inserted = False
 
     with get_connection() as connection:
+        sync_lag = max(sync_lag, max(0, _latest_block_height(connection) - effective_height))
         heartbeat_id, heartbeat_inserted = _store_validator_heartbeat_observation(
             connection,
             payload=payload,
@@ -866,7 +868,7 @@ def record_validator_heartbeat(
                     node_id,
                     advertised_address,
                     client_host,
-                    int(payload.get("effective_height") or payload.get("local_height") or 0),
+                    effective_height,
                     sync_lag,
                     pending_replay,
                     str(payload.get("version") or PROTOCOL_VERSION),
@@ -918,7 +920,7 @@ def record_validator_heartbeat(
                     node_id,
                     advertised_address,
                     client_host,
-                    int(payload.get("effective_height") or payload.get("local_height") or 0),
+                    effective_height,
                     sync_lag,
                     pending_replay,
                     str(payload.get("version") or PROTOCOL_VERSION),

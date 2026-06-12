@@ -89,6 +89,18 @@ def test_validator_heartbeat_does_not_block_on_global_liveness_refresh(tmp_path,
     assert "eligible" in validator
 
 
+def test_validator_heartbeat_lag_is_computed_by_coordinator(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "heartbeat-sync-lag.sqlite3")
+    monkeypatch.setattr(mining_service, "_latest_block_height", lambda connection: 15)
+    keys = generate_keypair()
+    heartbeat = _signed_validator_heartbeat(keys, "validator_lag", effective_height=10, local_height=10, sync_lag=0)
+
+    validator = record_validator_heartbeat(heartbeat)
+
+    assert validator["sync_lag"] == 5
+    assert validator["sync_status"] == "syncing"
+
+
 def test_offline_validator_is_excluded_from_quorum_eligibility(tmp_path, monkeypatch) -> None:
     _use_db(tmp_path, monkeypatch, "eligibility.sqlite3")
     keys = generate_keypair()

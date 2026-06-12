@@ -291,6 +291,7 @@ def test_send_validator_heartbeat_prefers_liveness_status(monkeypatch) -> None:
 
     assert result == {"eligible": True}
     assert ("get", "http://node-a:8000/node/liveness") in calls
+    assert ("get", "http://coordinator.example/node/liveness") not in calls
     assert ("get", "http://node-a:8000/node/sync-status") not in calls
     assert ("post", "http://coordinator.example/validators/heartbeat") in calls
 
@@ -359,4 +360,6 @@ def test_send_validator_heartbeat_falls_back_to_sync_status(monkeypatch) -> None
     assert result == {"eligible": True}
     assert ("get", "http://node-a:8000/node/liveness") in calls
     assert ("get", "http://node-a:8000/node/sync-status") in calls
+    assert ("get", "http://coordinator.example/node/liveness") not in calls
+    assert ("get", "http://coordinator.example/node/sync-status") not in calls
     assert ("post", "http://coordinator.example/validators/heartbeat") in calls
