@@ -538,41 +538,6 @@ def _heartbeat_signature_payload(payload: dict[str, Any]) -> dict[str, Any]:
     return {key: value for key, value in payload.items() if key != "signature"}
 
 
-def _validator_heartbeat_signature_variants(payload: dict[str, Any]) -> list[dict[str, Any]]:
-    variants: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    def add(candidate: dict[str, Any]) -> None:
-        marker = canonical_json(candidate)
-        if marker not in seen:
-            variants.append(candidate)
-            seen.add(marker)
-
-    add(_heartbeat_signature_payload(payload))
-
-    current_keys = (
-        "validator_id",
-        "node_id",
-        "public_key",
-        "address",
-        "local_height",
-        "effective_height",
-        "latest_block_hash",
-        "pending_replay_blocks",
-        "sync_lag",
-        "version",
-        "heartbeat_at",
-    )
-    legacy_key_sets = (
-        current_keys,
-        tuple(key for key in current_keys if key != "heartbeat_at"),
-        tuple(key for key in current_keys if key not in {"heartbeat_at", "latest_block_hash"}),
-    )
-    for keys in legacy_key_sets:
-        add({key: payload[key] for key in keys if key in payload and payload.get(key) is not None})
-    return variants
-
-
 VALIDATOR_HEARTBEAT_FUTURE_SKEW_SECONDS = 60
 
 
@@ -813,14 +778,11 @@ def record_validator_heartbeat(
     source_peer: str | None = None,
     observed_at: str | None = None,
 ) -> dict[str, Any]:
+    signed_payload = _heartbeat_signature_payload(payload)
     public_key = str(payload.get("public_key") or "")
     try:
         validate_public_key(public_key)
-        signature = str(payload.get("signature") or "")
-        signature_valid = any(
-            verify_payload_signature(public_key, signed_payload, signature)
-            for signed_payload in _validator_heartbeat_signature_variants(payload)
-        )
+        signature_valid = verify_payload_signature(public_key, signed_payload, str(payload.get("signature") or ""))
     except (RuntimeError, ValueError):
         signature_valid = False
     if not signature_valid:
