@@ -762,7 +762,7 @@ def network_config() -> dict:
 @router.post("/tx/submit", response_model=MempoolTransactionResponse, status_code=201)
 def tx_submit(payload: SignedTransactionRequest) -> dict:
     try:
-        return submit_transaction(payload.model_dump(mode="json"), propagated=False, inline_gossip=False)
+        return submit_transaction(payload.model_dump(mode="json"), propagated=False)
     except NetworkError as exc:
         raise _network_error(exc) from exc
 
