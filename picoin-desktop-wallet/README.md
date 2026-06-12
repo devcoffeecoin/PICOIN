@@ -11,6 +11,7 @@ Included:
 - create/import/export/lock/unlock wallet
 - BIP39 seed phrase support
 - encrypted local keystore
+- import from plain web wallet JSON or encrypted keystore JSON
 - local transaction signing
 - configurable mainnet/testnet API URLs
 - balance lookup via API
@@ -97,6 +98,21 @@ V1 uses:
 TODO: confirm final mainnet wallet derivation path before public release. The
 current `KeyProvider` is isolated so it can be swapped without changing the UI.
 
+## Import Formats
+
+The Wallet screen accepts these import formats:
+
+- BIP39 seed phrase.
+- Raw Ed25519 private key encoded as `ed25519:<base64url>`.
+- Plain web wallet JSON, including wallets created locally on testnet. Supported
+  fields include `address`, `public_key` or `publicKey`, `private_key` or
+  `privateKey`, `seedPhrase` or `seed_phrase`, `network_id`, and `chain_id`.
+- Encrypted Picoin keystore JSON using AES-256-GCM and PBKDF2-SHA256.
+
+When importing JSON, the desktop wallet verifies that the supplied address and
+public key match the private key or seed before saving the local encrypted
+keystore.
+
 ## API Adapters
 
 Implemented adapter methods:
@@ -114,11 +130,16 @@ Current endpoint mapping:
 - `/node/sync-status`
 - `/node/peers`
 - `/protocol` fallback for API availability
-- `/accounts/:address`
-- `/accounts/:address/history?limit=50`
+- `/wallet/balance/:address`
+- `/accounts/:address` fallback for balance
+- `/transactions/:address`
+- `/accounts/:address/history?limit=50` fallback for history
 - `/transactions/recent?limit=50` fallback for history
 - `/wallet/:address/nonce`
 - `/transactions/submit`
+
+Read requests use longer timeouts and the renderer avoids overlapping refreshes,
+so slow public nodes should not cause repeated abort errors in the wallet UI.
 
 The wallet profile names the selected profile field as `network`. Signed
 transactions still use `network_id` in the payload because the current Picoin API

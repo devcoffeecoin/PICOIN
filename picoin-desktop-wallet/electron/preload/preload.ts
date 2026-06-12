@@ -31,6 +31,8 @@ const api = {
       ipcRenderer.invoke("wallet:import-seed", seedPhrase, password) as Promise<WalletSummary>,
     importPrivateKey: (privateKey: string, password: string) =>
       ipcRenderer.invoke("wallet:import-private-key", privateKey, password) as Promise<WalletSummary>,
+    importJson: (walletJson: string, password: string) =>
+      ipcRenderer.invoke("wallet:import-json", walletJson, password) as Promise<WalletSummary>,
     exportKeystore: (password: string) => ipcRenderer.invoke("wallet:export-keystore", password),
     unlock: (password: string) => ipcRenderer.invoke("wallet:unlock", password) as Promise<WalletSummary>,
     lock: () => ipcRenderer.invoke("wallet:lock") as Promise<WalletSummary>,

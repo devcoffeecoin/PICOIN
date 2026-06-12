@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent } from "react";
 import {
   Copy,
   Gauge,
@@ -52,41 +52,51 @@ export default function App() {
   const [balance, setBalance] = useState<AccountBalance | null>(null);
   const [history, setHistory] = useState<TransactionRecord[]>([]);
   const [notice, setNotice] = useState<string>("");
+  const refreshInFlight = useRef<Promise<void> | null>(null);
   const activeNetwork = settings?.selectedNetwork || "mainnet";
 
-  const refreshAll = async () => {
-    try {
-      const [nextSettings, nextNetworks, nextApiStatus, nextWallet] = await Promise.all([
-        window.picoin.settings.get(),
-        window.picoin.settings.networks(),
-        window.picoin.api.status(),
-        window.picoin.wallet.summary(),
-      ]);
-      setSettings(nextSettings);
-      setNetworks(nextNetworks);
-      setApiStatus(nextApiStatus);
-      setWallet(nextWallet);
-      if (nextWallet.address) {
-        const [nextBalance, nextHistory] = await Promise.all([
-          window.picoin.api.getBalance(nextWallet.address),
-          window.picoin.api.getHistory(nextWallet.address),
-        ]);
-        setBalance(nextBalance);
-        setHistory(nextHistory);
-      } else {
-        setBalance(null);
-        setHistory([]);
-      }
-    } catch (error) {
-      setNotice(errorMessage(error));
+  const refreshAll = useCallback(() => {
+    if (refreshInFlight.current) {
+      return refreshInFlight.current;
     }
-  };
+    const refresh = (async () => {
+      try {
+        const [nextSettings, nextNetworks, nextApiStatus, nextWallet] = await Promise.all([
+          window.picoin.settings.get(),
+          window.picoin.settings.networks(),
+          window.picoin.api.status(),
+          window.picoin.wallet.summary(),
+        ]);
+        setSettings(nextSettings);
+        setNetworks(nextNetworks);
+        setApiStatus(nextApiStatus);
+        setWallet(nextWallet);
+        if (nextWallet.address) {
+          const [nextBalance, nextHistory] = await Promise.all([
+            window.picoin.api.getBalance(nextWallet.address),
+            window.picoin.api.getHistory(nextWallet.address),
+          ]);
+          setBalance(nextBalance);
+          setHistory(nextHistory);
+        } else {
+          setBalance(null);
+          setHistory([]);
+        }
+      } catch (error) {
+        setNotice(errorMessage(error));
+      }
+    })();
+    refreshInFlight.current = refresh.finally(() => {
+      refreshInFlight.current = null;
+    });
+    return refreshInFlight.current;
+  }, []);
 
   useEffect(() => {
     void refreshAll();
-    const timer = window.setInterval(() => void refreshAll(), 5000);
+    const timer = window.setInterval(() => void refreshAll(), 10_000);
     return () => window.clearInterval(timer);
-  }, []);
+  }, [refreshAll]);
 
   const pageTitle = useMemo(() => {
     return {
@@ -344,6 +354,7 @@ function WalletPage({ wallet, onWalletChange }: { wallet: WalletSummary; onWalle
   const [password, setPassword] = useState("");
   const [seedPhrase, setSeedPhrase] = useState("");
   const [privateKey, setPrivateKey] = useState("");
+  const [walletJson, setWalletJson] = useState("");
   const [createdSeed, setCreatedSeed] = useState("");
 
   const withPassword = async (operation: () => Promise<unknown>, success: string) => {
@@ -375,6 +386,21 @@ function WalletPage({ wallet, onWalletChange }: { wallet: WalletSummary; onWalle
       onWalletChange("Encrypted keystore exported.");
     } catch (error) {
       onWalletChange(errorMessage(error));
+    }
+  };
+
+  const importJsonFile = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) {
+      return;
+    }
+    try {
+      setWalletJson(await file.text());
+      onWalletChange("Wallet JSON loaded. Enter the password and import it.");
+    } catch (error) {
+      onWalletChange(errorMessage(error));
+    } finally {
+      event.target.value = "";
     }
   };
 
@@ -425,6 +451,22 @@ function WalletPage({ wallet, onWalletChange }: { wallet: WalletSummary; onWalle
         <textarea value={privateKey} onChange={(event) => setPrivateKey(event.target.value)} placeholder="ed25519:..." />
         <button className="secondary-button" onClick={() => void withPassword(() => window.picoin.wallet.importPrivateKey(privateKey, password), "Wallet imported from private key.")}>
           Import private key
+        </button>
+      </Panel>
+
+      <Panel className="wide-panel">
+        <h2>Import JSON</h2>
+        <input type="file" accept="application/json,.json" onChange={(event) => void importJsonFile(event)} />
+        <textarea
+          value={walletJson}
+          onChange={(event) => setWalletJson(event.target.value)}
+          placeholder="Paste web wallet JSON or encrypted keystore JSON"
+        />
+        <button
+          className="secondary-button"
+          onClick={() => void withPassword(() => window.picoin.wallet.importJson(walletJson, password), "Wallet imported from JSON.")}
+        >
+          Import JSON
         </button>
       </Panel>
 

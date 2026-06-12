@@ -9,6 +9,9 @@ import type {
   TransactionRecord,
 } from "../../../shared/types";
 
+const DEFAULT_READ_TIMEOUT_MS = 20_000;
+const STATUS_TIMEOUT_MS = 10_000;
+
 export class PicoinAPI {
   private network: NetworkConfig;
 
@@ -52,7 +55,7 @@ export class PicoinAPI {
 
   async getSyncStatus(): Promise<SyncStatus> {
     try {
-      const raw = await this.request<Record<string, unknown>>("/node/sync-status", { timeoutMs: 5000 });
+      const raw = await this.request<Record<string, unknown>>("/node/sync-status", { timeoutMs: STATUS_TIMEOUT_MS });
       const replay = raw.replay && typeof raw.replay === "object" ? (raw.replay as Record<string, unknown>) : {};
       const localBlockHeight = numberOrNull(raw.local_block_height);
       const latestBlockHeight = numberOrNull(raw.latest_block_height ?? raw.effective_latest_block_height);
@@ -68,7 +71,7 @@ export class PicoinAPI {
         throw error;
       }
       // TODO: replace this fallback once the public API exposes a canonical wallet status endpoint.
-      const protocol = await this.request<Record<string, unknown>>("/protocol", { timeoutMs: 5000 });
+      const protocol = await this.request<Record<string, unknown>>("/protocol", { timeoutMs: STATUS_TIMEOUT_MS });
       return {
         blockHeight: numberOrNull(protocol.latest_block_height ?? protocol.block_height),
         localBlockHeight: null,
@@ -99,7 +102,11 @@ export class PicoinAPI {
   }
 
   async getBalance(address: string): Promise<AccountBalance> {
-    const raw = await this.request<Record<string, unknown>>(`/accounts/${encodeURIComponent(address)}`);
+    const encodedAddress = encodeURIComponent(address);
+    const raw = await this.requestFirst<Record<string, unknown>>([
+      `/wallet/balance/${encodedAddress}`,
+      `/accounts/${encodedAddress}`,
+    ]);
     return {
       address,
       balance: Number(raw.balance ?? 0),
@@ -109,17 +116,18 @@ export class PicoinAPI {
   }
 
   async getTransactionHistory(address: string): Promise<TransactionRecord[]> {
-    try {
-      const raw = await this.request<unknown>(`/accounts/${encodeURIComponent(address)}/history?limit=50`);
-      return normalizeTransactions(raw);
-    } catch (error) {
-      if (!isHttpStatus(error, 404)) {
-        throw error;
+    const encodedAddress = encodeURIComponent(address);
+    const raw = await this.requestFirst<unknown>([
+      `/transactions/${encodedAddress}`,
+      `/accounts/${encodedAddress}/history?limit=50`,
+      "/transactions/recent?limit=50",
+    ]);
+    return normalizeTransactions(raw).filter((tx) => {
+      if (tx.sender === address || tx.recipient === address) {
+        return true;
       }
-      // TODO: switch to the canonical account history endpoint once it is frozen.
-      const recent = await this.request<unknown>("/transactions/recent?limit=50");
-      return normalizeTransactions(recent).filter((tx) => tx.sender === address || tx.recipient === address);
-    }
+      return !tx.sender && !tx.recipient;
+    });
   }
 
   async broadcastTransaction(rawTx: SignedTransaction): Promise<SendTransactionResult> {
@@ -155,7 +163,7 @@ export class PicoinAPI {
     } = {},
   ): Promise<T> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? 8000);
+    const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_READ_TIMEOUT_MS);
     try {
       const response = await fetch(`${this.network.apiUrl}${pathname}`, {
         method: options.method ?? "GET",
@@ -171,6 +179,28 @@ export class PicoinAPI {
     } finally {
       clearTimeout(timer);
     }
+  }
+
+  private async requestFirst<T>(
+    pathnames: string[],
+    options: {
+      timeoutMs?: number;
+    } = {},
+  ): Promise<T> {
+    let lastError: unknown = null;
+    for (const pathname of pathnames) {
+      try {
+        return await this.request<T>(pathname, {
+          timeoutMs: options.timeoutMs ?? DEFAULT_READ_TIMEOUT_MS,
+        });
+      } catch (error) {
+        lastError = error;
+        if (!isHttpStatus(error, 404)) {
+          throw error;
+        }
+      }
+    }
+    throw lastError || new Error("API endpoint unavailable");
   }
 }
 
@@ -204,6 +234,9 @@ function numberOrNull(value: unknown): number | null {
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) {
+    if (error.name === "AbortError") {
+      return "API request timed out";
+    }
     return error.message;
   }
   return String(error || "Unknown error");

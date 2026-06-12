@@ -86,6 +86,9 @@ function registerIpc(): void {
   ipcMain.handle("wallet:import-private-key", (_event, privateKey: string, password: string) =>
     walletService.importFromPrivateKey(privateKey, password, selectedNetworkConfig()),
   );
+  ipcMain.handle("wallet:import-json", (_event, walletJson: string, password: string) =>
+    walletService.importFromJson(walletJson, password, selectedNetworkConfig()),
+  );
   ipcMain.handle("wallet:export-keystore", (_event, password: string) => walletService.exportKeystore(password));
   ipcMain.handle("wallet:unlock", (_event, password: string) => walletService.unlockWallet(password));
   ipcMain.handle("wallet:lock", () => walletService.lockWallet());
