@@ -419,6 +419,35 @@ def command_validate(args: argparse.Namespace) -> int:
     heartbeat_at = 0.0
     heartbeat_attempt_at = 0.0
 
+    def heartbeat_is_due() -> bool:
+        last_heartbeat_check_at = max(heartbeat_at, heartbeat_attempt_at)
+        return (
+            last_heartbeat_check_at <= 0.0
+            or (time.monotonic() - last_heartbeat_check_at) >= heartbeat_interval
+        )
+
+    def refresh_heartbeat_if_due() -> None:
+        nonlocal heartbeat, heartbeat_at, heartbeat_attempt_at
+        if not heartbeat_is_due():
+            return
+        heartbeat_attempt_at = time.monotonic()
+        try:
+            heartbeat = send_validator_heartbeat(
+                server_url,
+                identity,
+                node_server_url=args.node_server.rstrip("/"),
+                timeout=args.node_timeout,
+            )
+            heartbeat_at = time.monotonic()
+            heartbeat_attempt_at = heartbeat_at
+        except requests.RequestException as exc:
+            print(
+                "Validator coordinator temporarily unavailable during heartbeat: "
+                f"{_request_error_summary(exc)}; "
+                "continuing to poll validation jobs with previous liveness",
+                file=sys.stderr,
+            )
+
     for index in range(args.loops):
         job_poll_failed = False
         try:
@@ -452,36 +481,15 @@ def command_validate(args: argparse.Namespace) -> int:
             )
             completed += 1
 
+            if not args.once:
+                refresh_heartbeat_if_due()
             if args.once:
                 break
             if index + 1 < args.loops:
                 time.sleep(poll_seconds)
             continue
 
-        now = time.monotonic()
-        last_heartbeat_check_at = max(heartbeat_at, heartbeat_attempt_at)
-        should_send_heartbeat = (
-            last_heartbeat_check_at <= 0.0
-            or (now - last_heartbeat_check_at) >= heartbeat_interval
-        )
-        if should_send_heartbeat:
-            heartbeat_attempt_at = time.monotonic()
-            try:
-                heartbeat = send_validator_heartbeat(
-                    server_url,
-                    identity,
-                    node_server_url=args.node_server.rstrip("/"),
-                    timeout=args.node_timeout,
-                )
-                heartbeat_at = time.monotonic()
-                heartbeat_attempt_at = heartbeat_at
-            except requests.RequestException as exc:
-                print(
-                    "Validator coordinator temporarily unavailable during heartbeat: "
-                    f"{_request_error_summary(exc)}; "
-                    "continuing to poll validation jobs with previous liveness",
-                    file=sys.stderr,
-                )
+        refresh_heartbeat_if_due()
         if heartbeat is not None and heartbeat.get("eligible") is False:
             print(
                 f"Validator node heartbeat accepted but not eligible: "
