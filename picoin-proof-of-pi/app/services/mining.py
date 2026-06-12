@@ -4472,7 +4472,7 @@ def reveal_task(
                 "",
                 task.get("stale_reason") or "competitive round closed",
             )
-        if task["status"] == "revealed":
+        if task["status"] in {"revealed", "accepted", "rejected"}:
             existing_job = row_to_dict(
                 connection.execute(
                     "SELECT * FROM validation_jobs WHERE task_id = ?",
@@ -4484,21 +4484,19 @@ def reveal_task(
                     existing_samples = json.loads(existing_job.get("samples") or "[]")
                 except (TypeError, json.JSONDecodeError):
                     existing_samples = revealed_samples
+                existing_status = existing_job.get("status")
+                response_status = "validation_pending" if existing_status == "pending" else existing_status
                 return {
-                    "accepted": True,
-                    "status": (
-                        "validation_pending"
-                        if existing_job.get("status") == "pending"
-                        else existing_job.get("status")
-                    ),
-                    "message": "reveal already accepted; waiting for external validator",
+                    "accepted": response_status != "rejected",
+                    "status": response_status,
+                    "message": "reveal already processed",
                     "block": None,
                     "validation": {
                         "job_id": existing_job["job_id"],
                         "challenge_seed": commitment["challenge_seed"],
                         "merkle_root": commitment["merkle_root"],
                         "samples": existing_samples,
-                        "status": existing_job.get("status"),
+                        "status": existing_status,
                     },
                 }
         if task["status"] != "committed":
@@ -7118,13 +7116,26 @@ def _reject_in_connection(
     segment: str,
 ) -> dict[str, Any]:
     release_selected_transactions(connection, task_id, reason)
-    connection.execute(
+    existing_rejection = connection.execute(
         """
-        INSERT INTO rejected_submissions (task_id, miner_id, result_hash, reason, created_at)
-        VALUES (?, ?, ?, ?, ?)
+        SELECT 1
+        FROM rejected_submissions
+        WHERE task_id = ?
+          AND miner_id = ?
+          AND result_hash = ?
+          AND reason = ?
+        LIMIT 1
         """,
-        (task_id, miner_id, result_hash, reason, utc_now()),
-    )
+        (task_id, miner_id, result_hash, reason),
+    ).fetchone()
+    if existing_rejection is None:
+        connection.execute(
+            """
+            INSERT INTO rejected_submissions (task_id, miner_id, result_hash, reason, created_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (task_id, miner_id, result_hash, reason, utc_now()),
+        )
     if _miner_exists(connection, miner_id):
         _record_submission(connection, task_id, miner_id, result_hash, segment, signature, False, reason)
         _apply_penalty(connection, miner_id, task_id, penalty_points, reason)
@@ -7993,6 +8004,25 @@ def _apply_penalty(
     reason: str,
     force_cooldown_seconds: int | None = None,
 ) -> None:
+    existing_penalty = connection.execute(
+        """
+        SELECT 1
+        FROM penalties
+        WHERE miner_id = ?
+          AND task_id = ?
+          AND reason = ?
+        LIMIT 1
+        """,
+        (miner_id, task_id, reason),
+    ).fetchone()
+    if existing_penalty is not None:
+        if force_cooldown_seconds is not None:
+            connection.execute(
+                "UPDATE miners SET cooldown_until = ? WHERE miner_id = ?",
+                (iso_at(force_cooldown_seconds), miner_id),
+            )
+        _refresh_trust_score(connection, miner_id)
+        return
     connection.execute(
         """
         INSERT INTO penalties (miner_id, task_id, points, reason, created_at)

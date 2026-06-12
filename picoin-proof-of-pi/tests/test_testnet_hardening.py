@@ -23,6 +23,7 @@ from app.db.database import get_connection, init_db
 from app.services import mining
 from app.services.mining import (
     MiningError,
+    _reject_in_connection,
     cleanup_expired_tasks,
     commit_task,
     create_next_task,
@@ -82,6 +83,48 @@ def test_task_assignment_rate_limit_rejects_assignment_spam(tmp_path, monkeypatc
     with pytest.raises(MiningError) as exc:
         create_next_task(miner["miner_id"])
     assert exc.value.status_code == 429
+
+
+def test_duplicate_rejection_does_not_repeat_penalty(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "duplicate-rejection.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    miner, _ = _register_miner_with_keys("duplicate-rejection-miner")
+    task_id = "task_duplicate_rejection"
+    reason = "digit mismatch at position 123"
+    result_hash = "a" * 64
+
+    with get_connection() as connection:
+        first = _reject_in_connection(
+            connection, reason, task_id, miner["miner_id"], result_hash, {}, 1, "sig", ""
+        )
+        second = _reject_in_connection(
+            connection, reason, task_id, miner["miner_id"], result_hash, {}, 1, "sig", ""
+        )
+        penalties = connection.execute(
+            """
+            SELECT COUNT(*) AS count, COALESCE(SUM(points), 0) AS points
+            FROM penalties
+            WHERE task_id = ? AND miner_id = ? AND reason = ?
+            """,
+            (task_id, miner["miner_id"], reason),
+        ).fetchone()
+        rejections = connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM rejected_submissions
+            WHERE task_id = ? AND miner_id = ? AND reason = ?
+            """,
+            (task_id, miner["miner_id"], reason),
+        ).fetchone()
+
+    assert first["status"] == "rejected"
+    assert second["status"] == "rejected"
+    assert penalties["count"] == 1
+    assert penalties["points"] == 1
+    assert rejections["count"] == 1
 
 
 def test_cleanup_expires_stale_tasks_and_validation_jobs(tmp_path, monkeypatch) -> None:
