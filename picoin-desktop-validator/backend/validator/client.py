@@ -197,7 +197,6 @@ def send_validator_heartbeat(
         "pending_replay_blocks": int(local_status.get("pending_replay_blocks") or 0),
         "sync_lag": max(0, int(local_status.get("sync_lag") or 0)),
         "version": local_status.get("protocol_version") or "0.18",
-        "heartbeat_at": utc_now(),
     }
     payload["signature"] = sign_payload(identity["private_key"], payload)
     response = requests.post(f"{coordinator}/validators/heartbeat", json=payload, timeout=timeout)
