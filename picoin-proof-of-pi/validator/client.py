@@ -385,7 +385,10 @@ def command_validate(args: argparse.Namespace) -> int:
     server_url = args.server.rstrip("/")
     identity = load_or_register_identity(server_url, args.identity)
     completed = 0
-    poll_seconds = float(getattr(args, "poll_seconds", getattr(args, "sleep", 1.0)))
+    configured_poll_seconds = getattr(args, "poll_seconds", None)
+    if configured_poll_seconds is None:
+        configured_poll_seconds = getattr(args, "sleep", 1.0)
+    poll_seconds = max(0.0, float(configured_poll_seconds))
     heartbeat_interval = max(1.0, float(getattr(args, "heartbeat_interval", 30.0)))
     workers = max(1, int(getattr(args, "workers", DEFAULT_VALIDATOR_WORKERS)))
     reconcile_peers = configured_reconcile_peers(server_url)
@@ -395,6 +398,7 @@ def command_validate(args: argparse.Namespace) -> int:
     last_reconcile_at = 0.0
     heartbeat: dict[str, Any] | None = None
     heartbeat_at = 0.0
+    heartbeat_attempt_at = 0.0
 
     for index in range(args.loops):
         job_poll_failed = False
@@ -427,8 +431,14 @@ def command_validate(args: argparse.Namespace) -> int:
                 time.sleep(poll_seconds)
             continue
 
-        should_send_heartbeat = heartbeat_at <= 0.0 or (time.monotonic() - heartbeat_at) >= heartbeat_interval
+        now = time.monotonic()
+        last_heartbeat_check_at = max(heartbeat_at, heartbeat_attempt_at)
+        should_send_heartbeat = (
+            last_heartbeat_check_at <= 0.0
+            or (now - last_heartbeat_check_at) >= heartbeat_interval
+        )
         if should_send_heartbeat:
+            heartbeat_attempt_at = time.monotonic()
             try:
                 heartbeat = send_validator_heartbeat(
                     server_url,
@@ -437,13 +447,13 @@ def command_validate(args: argparse.Namespace) -> int:
                     timeout=args.node_timeout,
                 )
                 heartbeat_at = time.monotonic()
+                heartbeat_attempt_at = heartbeat_at
             except requests.RequestException as exc:
                 print(
                     f"Validator coordinator temporarily unavailable during heartbeat: {exc}; "
                     "continuing to poll validation jobs with previous liveness",
                     file=sys.stderr,
                 )
-                heartbeat_at = 0.0
         if heartbeat is not None and heartbeat.get("eligible") is False:
             print(
                 f"Validator node heartbeat accepted but not eligible: "
@@ -508,7 +518,11 @@ def parse_args() -> argparse.Namespace:
     validate_parser.add_argument(
         "--poll-seconds",
         type=float,
-        default=float(os.getenv("PICOIN_VALIDATOR_POLL_SECONDS", "1")),
+        default=(
+            float(os.environ["PICOIN_VALIDATOR_POLL_SECONDS"])
+            if "PICOIN_VALIDATOR_POLL_SECONDS" in os.environ
+            else None
+        ),
         help="Seconds between validation job polls while the heartbeat remains fresh",
     )
     validate_parser.add_argument(

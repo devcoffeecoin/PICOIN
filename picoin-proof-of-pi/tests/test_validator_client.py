@@ -7,7 +7,7 @@ from app.core.signatures import generate_keypair
 from validator import client as validator_client
 
 
-def _validate_args(*, once: bool = False, loops: int = 2) -> SimpleNamespace:
+def _validate_args(*, once: bool = False, loops: int = 2, poll_seconds: float | None = 0.0) -> SimpleNamespace:
     return SimpleNamespace(
         server="http://coordinator.example",
         identity=Path("validator.json"),
@@ -16,7 +16,7 @@ def _validate_args(*, once: bool = False, loops: int = 2) -> SimpleNamespace:
         submit_timeout=90.0,
         loops=loops,
         sleep=0.0,
-        poll_seconds=0.0,
+        poll_seconds=poll_seconds,
         heartbeat_interval=30.0,
         workers=1,
         once=once,
@@ -206,7 +206,7 @@ def test_command_validate_once_treats_network_timeout_as_idle(monkeypatch) -> No
     assert validator_client.command_validate(_validate_args(once=True, loops=1)) == 0
 
 
-def test_command_validate_retries_heartbeat_after_transient_failure(monkeypatch) -> None:
+def test_command_validate_backs_off_failed_heartbeat_while_polling(monkeypatch) -> None:
     identity = {
         "validator_id": "validator_test",
         "public_key": "ed25519:test",
@@ -231,7 +231,28 @@ def test_command_validate_retries_heartbeat_after_transient_failure(monkeypatch)
     monkeypatch.setattr(validator_client, "get_job", get_job)
 
     assert validator_client.command_validate(_validate_args(loops=2)) == 0
-    assert calls == {"heartbeats": 2, "jobs": 2}
+    assert calls == {"heartbeats": 1, "jobs": 2}
+
+
+def test_command_validate_uses_sleep_when_poll_seconds_unset(monkeypatch) -> None:
+    identity = {
+        "validator_id": "validator_test",
+        "public_key": "ed25519:test",
+        "private_key": "private-test",
+        "name": "validator-test",
+    }
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(validator_client, "load_or_register_identity", lambda server_url, path: identity)
+    monkeypatch.setattr(validator_client, "send_validator_heartbeat", lambda *args, **kwargs: {"eligible": True})
+    monkeypatch.setattr(validator_client, "get_job", lambda *args, **kwargs: None)
+    monkeypatch.setattr(validator_client.time, "sleep", sleeps.append)
+
+    args = _validate_args(loops=2, poll_seconds=None)
+    args.sleep = 0.2
+
+    assert validator_client.command_validate(args) == 0
+    assert sleeps == [0.2]
 
 
 def test_send_validator_heartbeat_prefers_liveness_status(monkeypatch) -> None:
