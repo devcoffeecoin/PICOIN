@@ -58,3 +58,43 @@ def test_mine_once_treats_429_as_idle_without_crashing(monkeypatch, capsys):
     assert "No mining task available yet" in captured.out
     assert "miner has too many active tasks" in captured.out
     assert captured.err == ""
+
+
+def test_mine_once_treats_competitive_round_waiting_as_idle(monkeypatch, capsys):
+    task = {
+        "task_id": "task_late",
+        "status": "assigned",
+        "range_start": 10,
+        "range_end": 11,
+        "algorithm": "bbp_hex_v1",
+    }
+    challenge = {"accepted": True, "samples": [{"position": 10}]}
+    waiting_response = {
+        "accepted": False,
+        "status": "competitive_round_waiting",
+        "message": "competitive round already has pending candidate task_first",
+        "block": None,
+        "validation": {
+            "pending_task_id": "task_first",
+            "pending_job_id": "job_first",
+        },
+    }
+
+    monkeypatch.setattr(client, "get_task_for_identity", lambda server, identity: task)
+    monkeypatch.setattr(client, "calculate_segment_with_workers", lambda start, end, algorithm, workers: "ab")
+    monkeypatch.setattr(client, "hash_result", lambda segment, start, end, algorithm: "result_hash")
+    monkeypatch.setattr(client, "merkle_root", lambda segment, start: "root")
+    monkeypatch.setattr(client, "commit_result", lambda server, task_arg, identity, result_hash, root, compute_ms: challenge)
+    monkeypatch.setattr(client, "reveal_samples", lambda server, task_arg, identity, segment, root, challenge_arg: waiting_response)
+
+    mined = client.mine_once(
+        "http://node",
+        {"miner_id": "miner_1", "private_key": "unused"},
+        workers=1,
+    )
+
+    captured = capsys.readouterr()
+    assert mined is False
+    assert "Competitive round already has pending candidate: task_first" in captured.out
+    assert "Rejected:" not in captured.out
+    assert captured.err == ""

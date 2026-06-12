@@ -1654,7 +1654,7 @@ def _promote_tasks_for_pending_validation_jobs(connection: Any, limit: int = 100
         SELECT tasks.*
         FROM validation_jobs
         JOIN tasks ON tasks.task_id = validation_jobs.task_id
-        WHERE validation_jobs.status = 'pending'
+        WHERE validation_jobs.status IN ('pending', 'approved')
           AND tasks.status IN ('assigned', 'committed', 'expired')
         ORDER BY validation_jobs.created_at ASC
         LIMIT ?
@@ -3670,6 +3670,30 @@ def _close_obsolete_competitive_validation_jobs(connection: Any) -> int:
     return closed_jobs
 
 
+def _competitive_round_pending_candidate(connection: Any, task: dict[str, Any]) -> dict[str, Any] | None:
+    if not _is_competitive_task(task):
+        return None
+    assignment_seed = str(task.get("assignment_seed") or "").strip()
+    if not assignment_seed:
+        return None
+    row = connection.execute(
+        """
+        SELECT validation_jobs.job_id, validation_jobs.task_id, validation_jobs.created_at
+        FROM validation_jobs
+        JOIN tasks ON tasks.task_id = validation_jobs.task_id
+        WHERE validation_jobs.status = 'pending'
+          AND tasks.status = 'revealed'
+          AND tasks.assignment_mode = ?
+          AND tasks.assignment_seed = ?
+          AND validation_jobs.task_id != ?
+        ORDER BY validation_jobs.created_at ASC, validation_jobs.job_id ASC
+        LIMIT 1
+        """,
+        (COMPETITIVE_ROUND_ASSIGNMENT_MODE, assignment_seed, task["task_id"]),
+    ).fetchone()
+    return row_to_dict(row)
+
+
 def _expire_stale_competitive_task(
     connection: Any,
     task: dict[str, Any],
@@ -4526,6 +4550,19 @@ def reveal_task(
                 "",
                 "competitive round closed",
             )
+        if MINING_TASK_MODE == COMPETITIVE_ROUND_ASSIGNMENT_MODE:
+            pending_candidate = _competitive_round_pending_candidate(connection, task)
+            if pending_candidate is not None:
+                return {
+                    "accepted": False,
+                    "status": "competitive_round_waiting",
+                    "message": f"competitive round already has pending candidate {pending_candidate['task_id']}",
+                    "block": None,
+                    "validation": {
+                        "pending_task_id": pending_candidate["task_id"],
+                        "pending_job_id": pending_candidate["job_id"],
+                    },
+                }
         snapshot = get_task_tx_snapshot(connection, task_id)
         if snapshot is None:
             return _reject_in_connection(
@@ -7230,12 +7267,19 @@ def _maybe_expire_assigned_tasks(connection: Any) -> dict[str, Any]:
     min_interval = max(0, int(EXPIRED_TASK_CLEANUP_MIN_INTERVAL_SECONDS))
     monotonic_now = time.monotonic()
     if monotonic_now - _EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC < min_interval:
-        return {"expired_tasks": 0, "expired_validation_jobs": 0, "released_validation_assignments": 0, "skipped": "recent"}
+        return {
+            "expired_tasks": 0,
+            "expired_validation_jobs": 0,
+            "released_validation_assignments": 0,
+            "closed_competitive_validation_jobs": 0,
+            "skipped": "recent",
+        }
     if not _EXPIRED_TASK_CLEANUP_LOCK.acquire(blocking=False):
         return {
             "expired_tasks": 0,
             "expired_validation_jobs": 0,
             "released_validation_assignments": 0,
+            "closed_competitive_validation_jobs": 0,
             "skipped": "already_running",
         }
     try:
@@ -7245,6 +7289,7 @@ def _maybe_expire_assigned_tasks(connection: Any) -> dict[str, Any]:
                 "expired_tasks": 0,
                 "expired_validation_jobs": 0,
                 "released_validation_assignments": 0,
+                "closed_competitive_validation_jobs": 0,
                 "skipped": "recent",
             }
         result = _expire_assigned_tasks(connection)

@@ -364,6 +364,12 @@ def mine_once(server_url: str, identity: dict[str, Any], workers: int) -> bool:
         print(f"Reveal accepted. Validation job: {submission['validation']['job_id']}")
         print("Waiting for an external validator to approve the block.")
         return True
+    if submission["status"] == "competitive_round_waiting":
+        validation = submission.get("validation") or {}
+        pending_task = validation.get("pending_task_id", "unknown")
+        print(f"Competitive round already has pending candidate: {pending_task}")
+        print("Waiting for the round to finish before retrying this task.")
+        return False
 
     if submission["accepted"]:
         block = submission["block"]

@@ -3,9 +3,15 @@ import sqlite3
 import pytest
 
 from app.core.crypto import hash_result
-from app.core.merkle import merkle_root
+from app.core.merkle import merkle_proof, merkle_root
 from app.core.pi import calculate_pi_segment
-from app.core.signatures import build_commit_signature_payload, build_submission_signature_payload, generate_keypair, sign_payload
+from app.core.signatures import (
+    build_commit_signature_payload,
+    build_reveal_signature_payload,
+    build_submission_signature_payload,
+    generate_keypair,
+    sign_payload,
+)
 from app.db.database import _ensure_tasks_range_constraints
 from app.db.database import get_connection
 from app.db.database import init_db
@@ -20,6 +26,7 @@ from app.services.mining import (
     record_validator_heartbeat,
     register_miner,
     commit_task,
+    reveal_task,
     submit_task,
 )
 from app.services.wallet import create_wallet
@@ -63,6 +70,92 @@ def _submit_legacy_task(task: dict, miner_id: str, private_key: str) -> dict:
     )
     signature = sign_payload(private_key, payload)
     return submit_task(task["task_id"], miner_id, result_hash, segment, signature, signed_at)
+
+
+def _commit_task_for_reveal(task: dict, miner_id: str, private_key: str) -> dict:
+    segment = calculate_pi_segment(task["range_start"], task["range_end"], task["algorithm"])
+    result_hash = hash_result(segment, task["range_start"], task["range_end"], task["algorithm"])
+    root = merkle_root(segment, task["range_start"])
+    signed_at = "2026-06-07T20:45:00+00:00"
+    signature = sign_payload(
+        private_key,
+        build_commit_signature_payload(
+            task_id=task["task_id"],
+            miner_id=miner_id,
+            range_start=task["range_start"],
+            range_end=task["range_end"],
+            algorithm=task["algorithm"],
+            result_hash=result_hash,
+            merkle_root=root,
+            signed_at=signed_at,
+            tx_merkle_root=task.get("tx_merkle_root", ""),
+            mempool_snapshot_id=task.get("mempool_snapshot_id"),
+            selected_tx_hashes_hash=task.get("selected_tx_hashes_hash"),
+            tx_count=int(task.get("tx_count") or 0),
+            tx_fee_total_units=int(task.get("tx_fee_total_units") or 0),
+            chain_id=task.get("chain_id"),
+            network_id=task.get("network_id"),
+        ),
+    )
+    return commit_task(
+        task_id=task["task_id"],
+        miner_id=miner_id,
+        result_hash=result_hash,
+        merkle_root=root,
+        tx_merkle_root=task.get("tx_merkle_root", ""),
+        mempool_snapshot_id=task.get("mempool_snapshot_id"),
+        selected_tx_hashes_hash=task.get("selected_tx_hashes_hash"),
+        tx_count=int(task.get("tx_count") or 0),
+        tx_fee_total_units=int(task.get("tx_fee_total_units") or 0),
+        compute_ms=1,
+        signature=signature,
+        signed_at=signed_at,
+    )
+
+
+def _reveal_committed_task(task: dict, miner_id: str, private_key: str, challenge: dict) -> dict:
+    segment = calculate_pi_segment(task["range_start"], task["range_end"], task["algorithm"])
+    root = merkle_root(segment, task["range_start"])
+    revealed_samples = [
+        {
+            "position": sample["position"],
+            "digit": segment[sample["position"] - task["range_start"]],
+            "proof": merkle_proof(segment, task["range_start"], sample["position"]),
+        }
+        for sample in challenge["samples"]
+    ]
+    signed_at = "2026-06-07T20:45:01+00:00"
+    signature = sign_payload(
+        private_key,
+        build_reveal_signature_payload(
+            task_id=task["task_id"],
+            miner_id=miner_id,
+            merkle_root=root,
+            challenge_seed=challenge["challenge_seed"],
+            signed_at=signed_at,
+            tx_merkle_root=task.get("tx_merkle_root", ""),
+            mempool_snapshot_id=task.get("mempool_snapshot_id"),
+            selected_tx_hashes_hash=task.get("selected_tx_hashes_hash"),
+        ),
+    )
+    return reveal_task(
+        task_id=task["task_id"],
+        miner_id=miner_id,
+        revealed_samples=revealed_samples,
+        signature=signature,
+        signed_at=signed_at,
+        tx_merkle_root=task.get("tx_merkle_root", ""),
+        mempool_snapshot_id=task.get("mempool_snapshot_id"),
+        selected_tx_hashes_hash=task.get("selected_tx_hashes_hash"),
+        tx_count=int(task.get("tx_count") or 0),
+        tx_fee_total_units=int(task.get("tx_fee_total_units") or 0),
+    )
+
+
+def _commit_and_reveal_task(task: dict, miner_id: str, private_key: str) -> dict:
+    challenge = _commit_task_for_reveal(task, miner_id, private_key)
+    assert challenge["accepted"] is True
+    return _reveal_committed_task(task, miner_id, private_key, challenge)
 
 
 def test_tasks_range_constraint_migration_adds_competitive_columns_first(tmp_path) -> None:
@@ -771,6 +864,78 @@ def test_competitive_round_stops_new_assignments_while_reveal_is_pending(tmp_pat
     second_task = create_next_task(second_miner["miner_id"])
     assert second_task["assignment_mode"] == "competitive_round"
     assert second_task["assignment_seed"] == first_task["assignment_seed"]
+
+
+def test_competitive_round_late_reveal_does_not_queue_validation_job(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-competitive-late-reveal.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr(mining_service, "MINING_TASK_MODE", "competitive_round")
+    init_db(db_path)
+
+    first_keys = generate_keypair()
+    second_keys = generate_keypair()
+    first_miner = register_miner("competitive-late-reveal-a", first_keys["public_key"])
+    second_miner = register_miner("competitive-late-reveal-b", second_keys["public_key"])
+    first_task = create_next_task(first_miner["miner_id"])
+    second_task = create_next_task(second_miner["miner_id"])
+
+    assert second_task["assignment_seed"] == first_task["assignment_seed"]
+
+    first_reveal = _commit_and_reveal_task(first_task, first_miner["miner_id"], first_keys["private_key"])
+    assert first_reveal["status"] == "validation_pending"
+
+    second_commit = _commit_task_for_reveal(second_task, second_miner["miner_id"], second_keys["private_key"])
+    second_reveal = _reveal_committed_task(
+        second_task,
+        second_miner["miner_id"],
+        second_keys["private_key"],
+        second_commit,
+    )
+
+    assert second_reveal["status"] == "competitive_round_waiting"
+    assert "pending candidate" in second_reveal["message"]
+    with get_connection() as connection:
+        pending_jobs = connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM validation_jobs
+            WHERE status = 'pending'
+            """,
+        ).fetchone()["count"]
+        second_status = connection.execute(
+            "SELECT status, stale_reason FROM tasks WHERE task_id = ?",
+            (second_task["task_id"],),
+        ).fetchone()
+    assert pending_jobs == 1
+    assert second_status["status"] == "committed"
+    assert second_status["stale_reason"] is None
+
+    with get_connection() as connection:
+        connection.execute(
+            "UPDATE validation_jobs SET status = 'rejected', completed_at = ? WHERE task_id = ?",
+            ("2026-06-07T20:45:02+00:00", first_task["task_id"]),
+        )
+        connection.execute("UPDATE tasks SET status = 'rejected' WHERE task_id = ?", (first_task["task_id"],))
+
+    second_retry = _reveal_committed_task(
+        second_task,
+        second_miner["miner_id"],
+        second_keys["private_key"],
+        second_commit,
+    )
+    assert second_retry["status"] == "validation_pending"
+    with get_connection() as connection:
+        pending_jobs = connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM validation_jobs
+            WHERE status = 'pending'
+              AND task_id = ?
+            """,
+            (second_task["task_id"],),
+        ).fetchone()["count"]
+    assert pending_jobs == 1
 
 
 def test_competitive_round_reactivates_expired_uncommitted_task(tmp_path, monkeypatch) -> None:
