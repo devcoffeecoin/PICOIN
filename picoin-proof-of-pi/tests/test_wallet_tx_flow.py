@@ -1,6 +1,7 @@
 """Tests for wallet transaction submission flow (web3 → mempool)."""
 
 import json
+import time
 from datetime import datetime, timezone
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -356,7 +357,7 @@ def test_recent_transactions_endpoint_returns_recent_activity(tmp_path, monkeypa
 
 
 def test_transaction_submit_marks_origin_tx_propagated_after_peer_accept(tmp_path, monkeypatch) -> None:
-    """Origin node should persist propagated=1 after at least one peer accepts the transaction."""
+    """Origin node should persist propagated=1 after background gossip reaches a peer."""
     client = _build_test_client(tmp_path, monkeypatch)
 
     # Register a peer so gossip_json has a target to send to.
@@ -415,11 +416,17 @@ def test_transaction_submit_marks_origin_tx_propagated_after_peer_accept(tmp_pat
     assert response.status_code == 201
     assert response.json()["tx_hash"] == tx_hash
 
-    with get_connection() as connection:
-        row = connection.execute(
-            "SELECT propagated, status FROM mempool_transactions WHERE tx_hash = ?",
-            (tx_hash,),
-        ).fetchone()
+    deadline = time.monotonic() + 2.0
+    row = None
+    while time.monotonic() < deadline:
+        with get_connection() as connection:
+            row = connection.execute(
+                "SELECT propagated, status FROM mempool_transactions WHERE tx_hash = ?",
+                (tx_hash,),
+            ).fetchone()
+        if row is not None and int(row["propagated"]) == 1:
+            break
+        time.sleep(0.01)
     assert row is not None
     assert int(row["propagated"]) == 1
     assert row["status"] == "pending"

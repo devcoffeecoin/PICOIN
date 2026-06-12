@@ -924,7 +924,7 @@ def receive_block_header(block: dict[str, Any], source_peer_id: str | None = Non
     return {"accepted": True, "status": status, "reason": reason, "block_hash": block["block_hash"]}
 
 
-def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str, Any]:
+def submit_transaction(tx: dict[str, Any], propagated: bool = False, inline_gossip: bool = True) -> dict[str, Any]:
     tx_hash = tx.get("tx_hash", "unknown")
     sender = tx.get("sender", "unknown")
     nonce = tx.get("nonce", "unknown")
@@ -1011,29 +1011,45 @@ def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str
     
     accepted = get_transaction(tx["tx_hash"]) or {}
     if inserted and not propagated:
-        logger.debug(f"[TX_SUBMIT] Gossiping transaction {tx_hash} to peers")
-        gossip_result = gossip_json("/tx/receive", _public_transaction_payload(tx), "tx_gossip")
-        try:
-            succeeded = int(gossip_result.get("succeeded", 0))
-        except Exception:
-            succeeded = 0
-        if succeeded > 0:
-            try:
-                with get_connection() as conn2:
-                    result = conn2.execute(
-                        "UPDATE mempool_transactions SET propagated = 1, updated_at = ? WHERE tx_hash = ?",
-                        (timestamp, tx_hash),
-                    )
-                    if result.rowcount:
-                        logger.info(f"[TX_PROPAGATED_DB_UPDATED] Marked transaction {tx_hash} propagated after gossip to {succeeded} peers")
-                    else:
-                        logger.warning(f"[TX_PROPAGATED_DB_FAILED] No matching mempool row found for {tx_hash} while marking propagated")
-            except Exception as exc:
-                logger.error(f"[TX_PROPAGATED_COMMIT_FAILED] Failed to persist propagated flag for {tx_hash}: {exc}")
+        if inline_gossip:
+            _gossip_submitted_transaction(tx_hash, tx, timestamp)
         else:
-            logger.debug(f"[TX_PROPAGATED] Transaction {tx_hash} gossip sent but no peers accepted it yet")
+            threading.Thread(
+                target=_gossip_submitted_transaction,
+                args=(tx_hash, dict(tx), timestamp),
+                name=f"picoin-tx-gossip-{tx_hash[:12]}",
+                daemon=True,
+            ).start()
 
     return accepted
+
+
+def _gossip_submitted_transaction(tx_hash: str, tx: dict[str, Any], timestamp: str) -> None:
+    logger.debug(f"[TX_SUBMIT] Gossiping transaction {tx_hash} to peers")
+    try:
+        gossip_result = gossip_json("/tx/receive", _public_transaction_payload(tx), "tx_gossip")
+    except Exception as exc:
+        logger.warning(f"[TX_PROPAGATED] Transaction {tx_hash} background gossip failed: {exc}")
+        return
+    try:
+        succeeded = int(gossip_result.get("succeeded", 0))
+    except Exception:
+        succeeded = 0
+    if succeeded > 0:
+        try:
+            with get_connection() as conn2:
+                result = conn2.execute(
+                    "UPDATE mempool_transactions SET propagated = 1, updated_at = ? WHERE tx_hash = ?",
+                    (timestamp, tx_hash),
+                )
+                if result.rowcount:
+                    logger.info(f"[TX_PROPAGATED_DB_UPDATED] Marked transaction {tx_hash} propagated after gossip to {succeeded} peers")
+                else:
+                    logger.warning(f"[TX_PROPAGATED_DB_FAILED] No matching mempool row found for {tx_hash} while marking propagated")
+        except Exception as exc:
+            logger.error(f"[TX_PROPAGATED_COMMIT_FAILED] Failed to persist propagated flag for {tx_hash}: {exc}")
+    else:
+        logger.debug(f"[TX_PROPAGATED] Transaction {tx_hash} gossip sent but no peers accepted it yet")
 
 
 def gossip_json(
