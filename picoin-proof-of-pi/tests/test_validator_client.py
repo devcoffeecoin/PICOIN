@@ -97,7 +97,37 @@ def test_command_validate_reuses_fresh_heartbeat_for_active_polling(monkeypatch)
     assert validator_client.command_validate(_validate_args(loops=3)) == 0
     assert calls == {"heartbeats": 1, "jobs": 3}
 
-def test_command_validate_reconciles_configured_peers_before_poll(monkeypatch, capsys) -> None:
+
+def test_command_validate_polls_job_before_heartbeat(monkeypatch) -> None:
+    identity = {
+        "validator_id": "validator_test",
+        "public_key": "ed25519:test",
+        "private_key": "private-test",
+        "name": "validator-test",
+    }
+
+    monkeypatch.setattr(validator_client, "load_or_register_identity", lambda server_url, path: identity)
+    monkeypatch.setattr(
+        validator_client,
+        "send_validator_heartbeat",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("heartbeat should not block an available job")),
+    )
+    monkeypatch.setattr(validator_client, "get_job", lambda *args, **kwargs: {"job_id": "job_ok", "task_id": "task_ok"})
+    monkeypatch.setattr(validator_client, "validate_job", lambda job, workers=1: (True, "ok"))
+    monkeypatch.setattr(
+        validator_client,
+        "submit_result",
+        lambda server_url, loaded_identity, job, approved, reason, timeout=90.0: {
+            "status": "approved",
+            "approvals": 1,
+            "required_approvals": 3,
+        },
+    )
+
+    assert validator_client.command_validate(_validate_args(once=True, loops=1)) == 0
+
+
+def test_command_validate_reconciles_configured_peers_after_empty_poll(monkeypatch, capsys) -> None:
     identity = {
         "validator_id": "validator_test",
         "public_key": "ed25519:test",
@@ -129,7 +159,13 @@ def test_command_validate_reconciles_configured_peers_before_poll(monkeypatch, c
         peers_seen.append(params["peer_address"])
         return Response({"validation_jobs_imported": 1, "validation_votes_imported": 0, "validator_heartbeats_imported": 0})
 
+    job_polls = {"count": 0}
+
     def get_job(server_url, loaded_identity):
+        job_polls["count"] += 1
+        if job_polls["count"] == 1:
+            assert peers_seen == []
+            return None
         assert peers_seen == ["http://peer-a:8000", "http://peer-b:8000"]
         return {"job_id": "job_ok", "task_id": "task_ok"}
 
@@ -146,7 +182,7 @@ def test_command_validate_reconciles_configured_peers_before_poll(monkeypatch, c
         },
     )
 
-    assert validator_client.command_validate(_validate_args(once=True, loops=1)) == 0
+    assert validator_client.command_validate(_validate_args(loops=2)) == 0
     captured = capsys.readouterr()
     assert "Validator reconcile imported jobs=2 votes=0 heartbeats=0 peers=2" in captured.out
 

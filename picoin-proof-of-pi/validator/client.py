@@ -411,6 +411,36 @@ def command_validate(args: argparse.Namespace) -> int:
     heartbeat_at = 0.0
 
     for index in range(args.loops):
+        job_poll_failed = False
+        try:
+            job = get_job(server_url, identity)
+        except requests.RequestException as exc:
+            print(f"Validator coordinator temporarily unavailable while polling validation job: {exc}", file=sys.stderr)
+            job = None
+            job_poll_failed = True
+        if job is not None:
+            approved, reason = validate_job(job, workers=workers)
+            try:
+                result = submit_result(server_url, identity, job, approved, reason, timeout=args.submit_timeout)
+            except requests.RequestException as exc:
+                print(f"Validator coordinator temporarily unavailable while submitting validation result: {exc}", file=sys.stderr)
+                if args.once:
+                    return 0
+                time.sleep(poll_seconds)
+                continue
+            print(
+                f"Validated {job['job_id']}: approved={approved} "
+                f"status={result['status']} approvals={result.get('approvals', 0)}/"
+                f"{result.get('required_approvals', 1)}"
+            )
+            completed += 1
+
+            if args.once:
+                break
+            if index + 1 < args.loops:
+                time.sleep(poll_seconds)
+            continue
+
         should_send_heartbeat = heartbeat_at <= 0.0 or (time.monotonic() - heartbeat_at) >= heartbeat_interval
         if should_send_heartbeat:
             try:
@@ -438,6 +468,9 @@ def command_validate(args: argparse.Namespace) -> int:
             time.sleep(poll_seconds)
             continue
 
+        if not job_poll_failed:
+            print("No validation jobs available.")
+
         should_reconcile = (
             bool(reconcile_peers)
             and _validator_reconcile_enabled()
@@ -462,39 +495,8 @@ def command_validate(args: argparse.Namespace) -> int:
                 last_reconcile_at = time.monotonic()
                 print(f"Validator peer reconcile temporarily unavailable: {exc}", file=sys.stderr)
 
-        try:
-            job = get_job(server_url, identity)
-        except requests.RequestException as exc:
-            print(f"Validator coordinator temporarily unavailable while polling validation job: {exc}", file=sys.stderr)
-            if args.once:
-                return 0
-            time.sleep(poll_seconds)
-            continue
-        if job is None:
-            print("No validation jobs available.")
-            if args.once:
-                return 0
-            time.sleep(poll_seconds)
-            continue
-
-        approved, reason = validate_job(job, workers=workers)
-        try:
-            result = submit_result(server_url, identity, job, approved, reason, timeout=args.submit_timeout)
-        except requests.RequestException as exc:
-            print(f"Validator coordinator temporarily unavailable while submitting validation result: {exc}", file=sys.stderr)
-            if args.once:
-                return 0
-            time.sleep(poll_seconds)
-            continue
-        print(
-            f"Validated {job['job_id']}: approved={approved} "
-            f"status={result['status']} approvals={result.get('approvals', 0)}/"
-            f"{result.get('required_approvals', 1)}"
-        )
-        completed += 1
-
         if args.once:
-            break
+            return 0
         if index + 1 < args.loops:
             time.sleep(poll_seconds)
 
