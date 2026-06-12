@@ -71,6 +71,24 @@ def test_validator_liveness_transitions_online_stale_offline(tmp_path, monkeypat
     assert row["online_status"] == "offline"
 
 
+def test_validator_heartbeat_does_not_block_on_global_liveness_refresh(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "heartbeat-fast.sqlite3")
+    keys = generate_keypair()
+    heartbeat = _signed_validator_heartbeat(keys, "validator_fast")
+
+    def fail_refresh(*args, **kwargs):
+        raise AssertionError("heartbeat must not run global liveness refresh")
+
+    monkeypatch.setattr(mining_service, "refresh_participant_liveness", fail_refresh)
+
+    validator = record_validator_heartbeat(heartbeat)
+
+    assert validator["validator_id"] == "validator_fast"
+    assert validator["online_status"] == "online"
+    assert validator["heartbeat_inserted"] is True
+    assert "eligible" in validator
+
+
 def test_offline_validator_is_excluded_from_quorum_eligibility(tmp_path, monkeypatch) -> None:
     _use_db(tmp_path, monkeypatch, "eligibility.sqlite3")
     keys = generate_keypair()

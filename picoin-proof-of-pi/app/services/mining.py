@@ -678,6 +678,29 @@ def _validator_row_is_eligible(validator: dict[str, Any]) -> bool:
     )
 
 
+def _validator_reason_if_not_eligible(validator: dict[str, Any]) -> str | None:
+    cooldown_until = parse_iso(validator.get("cooldown_until"))
+    if cooldown_until is not None and cooldown_until > utc_now_dt():
+        return f"validator is in cooldown until {validator.get('cooldown_until')}"
+    if not bool(validator.get("enabled", 1)):
+        return validator.get("reason_if_not_eligible") or "validator disabled"
+    if bool(validator.get("is_banned")):
+        return "validator banned"
+    if str(validator.get("online_status") or "") != "online":
+        return f"validator {validator.get('online_status') or 'offline'}"
+    if not str(validator.get("node_id") or "").strip() or not str(validator.get("advertised_address") or "").strip():
+        return "validator node heartbeat required"
+    if str(validator.get("sync_status") or "unknown") == "out_of_sync":
+        return "validator out of sync"
+    if str(validator.get("protocol_version") or PROTOCOL_VERSION) != PROTOCOL_VERSION:
+        return "protocol version mismatch"
+    if _validator_eligibility_stake(validator) < MIN_VALIDATOR_STAKE:
+        return _validator_min_stake_reason()
+    if float(validator.get("trust_score") or 0) < VALIDATOR_MIN_TRUST_SCORE:
+        return "validator trust score is below the minimum required"
+    return None
+
+
 def _validator_eligibility_stake(validator: dict[str, Any]) -> float:
     return float(validator.get(VALIDATOR_ELIGIBILITY_STAKE_FIELD) or 0)
 
@@ -723,21 +746,10 @@ def refresh_participant_liveness(now: datetime | None = None, *, force: bool = F
                     out_of_sync_since=validator.get("out_of_sync_since"),
                     now=now_dt,
                 )
-                reason = None
-                if not bool(validator.get("enabled", 1)):
-                    reason = validator.get("reason_if_not_eligible") or "validator disabled"
-                elif bool(validator.get("is_banned")):
-                    reason = "validator banned"
-                elif online_status != "online":
-                    reason = f"validator {online_status}"
-                elif not str(validator.get("node_id") or "").strip() or not str(validator.get("advertised_address") or "").strip():
-                    reason = "validator node heartbeat required"
-                elif sync_status == "out_of_sync":
-                    reason = "validator out of sync"
-                elif str(validator.get("protocol_version") or PROTOCOL_VERSION) != PROTOCOL_VERSION:
-                    reason = "protocol version mismatch"
-                elif _validator_eligibility_stake(validator) < MIN_VALIDATOR_STAKE:
-                    reason = _validator_min_stake_reason()
+                validator["online_status"] = online_status
+                validator["sync_status"] = sync_status
+                validator["out_of_sync_since"] = out_of_sync_since
+                reason = _validator_reason_if_not_eligible(validator)
                 connection.execute(
                     """
                     UPDATE validators
@@ -915,6 +927,14 @@ def record_validator_heartbeat(
             )
             _ensure_balance_account(connection, validator_id, "validator")
         row = connection.execute("SELECT * FROM validators WHERE validator_id = ?", (validator_id,)).fetchone()
+        validator = row_to_dict(row)
+        if validator is not None:
+            reason = _validator_reason_if_not_eligible(validator)
+            connection.execute(
+                "UPDATE validators SET reason_if_not_eligible = ? WHERE validator_id = ?",
+                (reason, validator_id),
+            )
+            validator["reason_if_not_eligible"] = reason
     try:
         from app.core.settings import GENESIS_HASH as SETTINGS_GENESIS_HASH
         from app.services.network import register_peer
@@ -931,8 +951,16 @@ def record_validator_heartbeat(
         )
     except Exception as exc:
         logger.warning("validator heartbeat peer registration failed validator_id=%s error=%s", validator_id, exc)
-    refresh_participant_liveness()
-    validator = enrich_validator(row_to_dict(row))
+    if validator is None:
+        validator = {"validator_id": validator_id, "eligible": False, "reason_if_not_eligible": "validator not found"}
+    else:
+        validator["is_banned"] = bool(validator.get("is_banned"))
+        validator["enabled"] = bool(validator.get("enabled", 1))
+        validator["online_status"] = validator.get("online_status") or "offline"
+        validator["sync_status"] = validator.get("sync_status") or "unknown"
+        validator["eligibility_stake"] = round(_validator_eligibility_stake(validator), 8)
+        validator["eligibility_stake_source"] = VALIDATOR_ELIGIBILITY_STAKE_SOURCE
+        validator["eligible"] = _validator_row_is_eligible(validator)
     validator["heartbeat_id"] = heartbeat_id
     validator["heartbeat_inserted"] = heartbeat_inserted
     return validator
