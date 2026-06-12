@@ -158,9 +158,16 @@ def save_identity(path: Path, identity: dict[str, Any]) -> None:
 
 
 def _request_error_summary(exc: BaseException) -> str:
+    detail = _request_error_detail(exc)
+    if detail:
+        return f"{exc} detail={detail}"
+    return str(exc)
+
+
+def _request_error_detail(exc: BaseException) -> str:
     response = getattr(exc, "response", None)
     if response is None:
-        return str(exc)
+        return ""
     detail = ""
     try:
         payload = response.json()
@@ -170,10 +177,19 @@ def _request_error_summary(exc: BaseException) -> str:
             detail = str(payload)
     except ValueError:
         detail = str(getattr(response, "text", "") or "")
-    detail = detail.strip()
-    if detail:
-        return f"{exc} detail={detail}"
-    return str(exc)
+    return detail.strip()
+
+
+def _poll_error_needs_heartbeat(exc: BaseException) -> bool:
+    response = getattr(exc, "response", None)
+    if int(getattr(response, "status_code", 0) or 0) != 403:
+        return False
+    detail = _request_error_detail(exc).lower()
+    return (
+        "validator offline" in detail
+        or "validator stale" in detail
+        or "heartbeat required" in detail
+    )
 
 
 def register(server_url: str, name: str, identity_path: Path, overwrite: bool) -> dict[str, Any]:
@@ -426,10 +442,10 @@ def command_validate(args: argparse.Namespace) -> int:
             or (time.monotonic() - last_heartbeat_check_at) >= heartbeat_interval
         )
 
-    def refresh_heartbeat_if_due() -> None:
+    def refresh_heartbeat_if_due(*, force: bool = False) -> bool:
         nonlocal heartbeat, heartbeat_at, heartbeat_attempt_at
-        if not heartbeat_is_due():
-            return
+        if not force and not heartbeat_is_due():
+            return False
         heartbeat_attempt_at = time.monotonic()
         try:
             heartbeat = send_validator_heartbeat(
@@ -440,6 +456,7 @@ def command_validate(args: argparse.Namespace) -> int:
             )
             heartbeat_at = time.monotonic()
             heartbeat_attempt_at = heartbeat_at
+            return True
         except requests.RequestException as exc:
             print(
                 "Validator coordinator temporarily unavailable during heartbeat: "
@@ -447,19 +464,41 @@ def command_validate(args: argparse.Namespace) -> int:
                 "continuing to poll validation jobs with previous liveness",
                 file=sys.stderr,
             )
+            return False
 
     for index in range(args.loops):
         job_poll_failed = False
         try:
             job = get_job(server_url, identity)
         except requests.RequestException as exc:
-            print(
-                "Validator coordinator temporarily unavailable while polling validation job: "
-                f"{_request_error_summary(exc)}",
-                file=sys.stderr,
-            )
             job = None
-            job_poll_failed = True
+            if _poll_error_needs_heartbeat(exc):
+                print(
+                    "Validator liveness rejected while polling validation job: "
+                    f"{_request_error_summary(exc)}; refreshing heartbeat and retrying",
+                    file=sys.stderr,
+                )
+                if refresh_heartbeat_if_due(force=True) and (
+                    heartbeat is None or heartbeat.get("eligible") is not False
+                ):
+                    try:
+                        job = get_job(server_url, identity)
+                    except requests.RequestException as retry_exc:
+                        print(
+                            "Validator coordinator temporarily unavailable while polling validation job "
+                            f"after heartbeat retry: {_request_error_summary(retry_exc)}",
+                            file=sys.stderr,
+                        )
+                        job_poll_failed = True
+                else:
+                    job_poll_failed = True
+            else:
+                print(
+                    "Validator coordinator temporarily unavailable while polling validation job: "
+                    f"{_request_error_summary(exc)}",
+                    file=sys.stderr,
+                )
+                job_poll_failed = True
         if job is not None:
             approved, reason = validate_job(job, workers=workers)
             try:

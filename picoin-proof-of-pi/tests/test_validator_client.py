@@ -142,6 +142,58 @@ def test_command_validate_polls_job_before_heartbeat(monkeypatch) -> None:
     assert validator_client.command_validate(_validate_args(once=True, loops=1)) == 0
 
 
+def test_command_validate_refreshes_heartbeat_and_retries_after_offline_poll(monkeypatch, capsys) -> None:
+    identity = {
+        "validator_id": "validator_test",
+        "public_key": "ed25519:test",
+        "private_key": "private-test",
+        "name": "validator-test",
+    }
+    calls = {"heartbeats": 0, "jobs": 0}
+
+    class Response:
+        status_code = 403
+        text = '{"detail":"validator offline"}'
+
+        def json(self):
+            return {"detail": "validator offline"}
+
+    def offline_error() -> requests.HTTPError:
+        exc = requests.HTTPError("403 Client Error: Forbidden")
+        exc.response = Response()
+        return exc
+
+    def get_job(server_url, loaded_identity):
+        calls["jobs"] += 1
+        if calls["jobs"] == 1:
+            raise offline_error()
+        return {"job_id": "job_ok", "task_id": "task_ok"}
+
+    def heartbeat(*args, **kwargs):
+        calls["heartbeats"] += 1
+        return {"eligible": True}
+
+    monkeypatch.setattr(validator_client, "load_or_register_identity", lambda server_url, path: identity)
+    monkeypatch.setattr(validator_client, "get_job", get_job)
+    monkeypatch.setattr(validator_client, "send_validator_heartbeat", heartbeat)
+    monkeypatch.setattr(validator_client, "validate_job", lambda job, workers=1: (True, "ok"))
+    monkeypatch.setattr(
+        validator_client,
+        "submit_result",
+        lambda server_url, loaded_identity, job, approved, reason, timeout=90.0: {
+            "status": "approved",
+            "approvals": 1,
+            "required_approvals": 3,
+        },
+    )
+
+    assert validator_client.command_validate(_validate_args(once=True, loops=1)) == 0
+    assert calls == {"heartbeats": 1, "jobs": 2}
+    captured = capsys.readouterr()
+    assert "detail=validator offline" in captured.err
+    assert "Validated job_ok" in captured.out
+
+
 def test_command_validate_refreshes_heartbeat_after_successful_job(monkeypatch) -> None:
     identity = {
         "validator_id": "validator_test",
