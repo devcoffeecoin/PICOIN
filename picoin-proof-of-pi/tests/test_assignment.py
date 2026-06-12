@@ -990,6 +990,102 @@ def test_competitive_round_reactivates_expired_uncommitted_task(tmp_path, monkey
     assert job_count == 0
 
 
+def test_competitive_round_reveal_reactivates_expired_committed_task(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-competitive-expired-committed-reveal.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr(mining_service, "MINING_TASK_MODE", "competitive_round")
+    init_db(db_path)
+
+    keys = generate_keypair()
+    miner = register_miner("competitive-expired-committed-reveal", keys["public_key"])
+    task = create_next_task(miner["miner_id"])
+    challenge = _commit_task_for_reveal(task, miner["miner_id"], keys["private_key"])
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE tasks
+            SET status = 'expired',
+                expires_at = '2026-06-01T00:00:00+00:00'
+            WHERE task_id = ?
+            """,
+            (task["task_id"],),
+        )
+
+    response = _reveal_committed_task(task, miner["miner_id"], keys["private_key"], challenge)
+
+    assert response["status"] == "validation_pending"
+    with get_connection() as connection:
+        task_row = connection.execute(
+            "SELECT status FROM tasks WHERE task_id = ?",
+            (task["task_id"],),
+        ).fetchone()
+        not_committed_penalties = connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM penalties
+            WHERE task_id = ?
+              AND reason = 'task is not committed'
+            """,
+            (task["task_id"],),
+        ).fetchone()["count"]
+    assert task_row["status"] == "revealed"
+    assert not_committed_penalties == 0
+
+
+def test_expired_committed_reveal_is_not_penalized_when_round_moved(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-expired-committed-no-penalty.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr(mining_service, "MINING_TASK_MODE", "competitive_round")
+    init_db(db_path)
+
+    keys = generate_keypair()
+    miner = register_miner("competitive-expired-no-penalty", keys["public_key"])
+    task = create_next_task(miner["miner_id"])
+    challenge = _commit_task_for_reveal(task, miner["miner_id"], keys["private_key"])
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE tasks
+            SET status = 'expired',
+                competitive_round_height = 99,
+                competitive_round_previous_hash = ?
+            WHERE task_id = ?
+            """,
+            ("f" * 64, task["task_id"]),
+        )
+
+    response = _reveal_committed_task(task, miner["miner_id"], keys["private_key"], challenge)
+
+    assert response["status"] == "expired"
+    with get_connection() as connection:
+        not_committed_penalties = connection.execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM penalties
+            WHERE task_id = ?
+              AND reason = 'task is not committed'
+            """,
+            (task["task_id"],),
+        ).fetchone()["count"]
+        submission = connection.execute(
+            """
+            SELECT accepted, reason
+            FROM submissions
+            WHERE task_id = ?
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (task["task_id"],),
+        ).fetchone()
+    assert not_committed_penalties == 0
+    assert submission["accepted"] == 0
+    assert submission["reason"] == "task expired"
+
+
 def test_competitive_round_accepts_one_winner_and_marks_late_task_stale(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "assignment-competitive-winner.sqlite3"
     monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)

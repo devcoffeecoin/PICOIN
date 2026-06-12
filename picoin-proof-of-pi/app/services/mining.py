@@ -3805,6 +3805,25 @@ def _stale_competitive_response(
     }
 
 
+def _expired_reveal_response(
+    connection: Any,
+    task_id: str,
+    miner_id: str,
+    result_hash: str,
+    signature: str | None,
+    reason: str = "task expired",
+) -> dict[str, Any]:
+    if _miner_exists(connection, miner_id):
+        _record_submission(connection, task_id, miner_id, result_hash, "", signature, False, reason)
+    return {
+        "accepted": False,
+        "status": "expired",
+        "message": reason,
+        "block": None,
+        "validation": {"reason": reason},
+    }
+
+
 def submit_task(
     task_id: str,
     miner_id: str,
@@ -4497,6 +4516,24 @@ def reveal_task(
                 "",
                 task.get("stale_reason") or "competitive round closed",
             )
+        if task["status"] == "expired":
+            if MINING_TASK_MODE == COMPETITIVE_ROUND_ASSIGNMENT_MODE:
+                revived_task = _reactivate_expired_competitive_task(
+                    connection,
+                    task,
+                    None,
+                    _protocol_params_for_task(connection, task),
+                )
+                if revived_task is not None:
+                    task = revived_task
+            if task["status"] == "expired":
+                return _expired_reveal_response(
+                    connection,
+                    task_id,
+                    miner_id,
+                    commitment["result_hash"],
+                    signature,
+                )
         if task["status"] in {"revealed", "accepted", "rejected"}:
             existing_job = row_to_dict(
                 connection.execute(
