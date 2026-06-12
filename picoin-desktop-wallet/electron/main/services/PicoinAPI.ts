@@ -10,7 +10,9 @@ import type {
 } from "../../../shared/types";
 
 const DEFAULT_READ_TIMEOUT_MS = 20_000;
-const STATUS_TIMEOUT_MS = 10_000;
+const STATUS_TIMEOUT_MS = 12_000;
+const WALLET_READ_TIMEOUT_MS = 45_000;
+const RETRY_DELAY_MS = 750;
 
 export class PicoinAPI {
   private network: NetworkConfig;
@@ -106,7 +108,7 @@ export class PicoinAPI {
     const raw = await this.requestFirst<Record<string, unknown>>([
       `/wallet/balance/${encodedAddress}`,
       `/accounts/${encodedAddress}`,
-    ]);
+    ], { timeoutMs: WALLET_READ_TIMEOUT_MS, retries: 1 });
     return {
       address,
       balance: Number(raw.balance ?? 0),
@@ -121,7 +123,7 @@ export class PicoinAPI {
       `/transactions/${encodedAddress}`,
       `/accounts/${encodedAddress}/history?limit=50`,
       "/transactions/recent?limit=50",
-    ]);
+    ], { timeoutMs: WALLET_READ_TIMEOUT_MS, retries: 1 });
     return normalizeTransactions(raw).filter((tx) => {
       if (tx.sender === address || tx.recipient === address) {
         return true;
@@ -160,31 +162,44 @@ export class PicoinAPI {
       method?: "GET" | "POST";
       body?: unknown;
       timeoutMs?: number;
+      retries?: number;
     } = {},
   ): Promise<T> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_READ_TIMEOUT_MS);
-    try {
-      const response = await fetch(`${this.network.apiUrl}${pathname}`, {
-        method: options.method ?? "GET",
-        headers: options.body ? { "content-type": "application/json" } : undefined,
-        body: options.body ? JSON.stringify(options.body) : undefined,
-        signal: controller.signal,
-      });
-      if (!response.ok) {
-        const message = await response.text().catch(() => "");
-        throw new HttpError(response.status, message || response.statusText);
+    let lastError: unknown = null;
+    const attempts = Math.max(1, (options.retries ?? 0) + 1);
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), options.timeoutMs ?? DEFAULT_READ_TIMEOUT_MS);
+      try {
+        const response = await fetch(`${this.network.apiUrl}${pathname}`, {
+          method: options.method ?? "GET",
+          headers: options.body ? { "content-type": "application/json" } : undefined,
+          body: options.body ? JSON.stringify(options.body) : undefined,
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          const message = await response.text().catch(() => "");
+          throw new HttpError(response.status, message || response.statusText);
+        }
+        return (await response.json()) as T;
+      } catch (error) {
+        lastError = error;
+        if (attempt >= attempts - 1 || !isTransientError(error)) {
+          throw error;
+        }
+        await delay(RETRY_DELAY_MS * (attempt + 1));
+      } finally {
+        clearTimeout(timer);
       }
-      return (await response.json()) as T;
-    } finally {
-      clearTimeout(timer);
     }
+    throw lastError || new Error("API request failed");
   }
 
   private async requestFirst<T>(
     pathnames: string[],
     options: {
       timeoutMs?: number;
+      retries?: number;
     } = {},
   ): Promise<T> {
     let lastError: unknown = null;
@@ -192,10 +207,11 @@ export class PicoinAPI {
       try {
         return await this.request<T>(pathname, {
           timeoutMs: options.timeoutMs ?? DEFAULT_READ_TIMEOUT_MS,
+          retries: options.retries,
         });
       } catch (error) {
         lastError = error;
-        if (!isHttpStatus(error, 404)) {
+        if (!canTryNextEndpoint(error)) {
           throw error;
         }
       }
@@ -227,6 +243,28 @@ function isHttpStatus(error: unknown, status: number): boolean {
   return error instanceof HttpError && error.status === status;
 }
 
+function canTryNextEndpoint(error: unknown): boolean {
+  if (isHttpStatus(error, 404)) {
+    return true;
+  }
+  if (error instanceof HttpError) {
+    return error.status === 408 || error.status === 429 || error.status >= 500;
+  }
+  return isTransientError(error);
+}
+
+function isTransientError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return error.name === "AbortError" || message.includes("aborted") || message.includes("timeout") || message.includes("fetch failed");
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 function numberOrNull(value: unknown): number | null {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
@@ -234,7 +272,7 @@ function numberOrNull(value: unknown): number | null {
 
 function errorMessage(error: unknown): string {
   if (error instanceof Error) {
-    if (error.name === "AbortError") {
+    if (isTransientError(error)) {
       return "API request timed out";
     }
     return error.message;

@@ -72,12 +72,20 @@ export default function App() {
         setApiStatus(nextApiStatus);
         setWallet(nextWallet);
         if (nextWallet.address) {
-          const [nextBalance, nextHistory] = await Promise.all([
-            window.picoin.api.getBalance(nextWallet.address),
-            window.picoin.api.getHistory(nextWallet.address),
-          ]);
-          setBalance(nextBalance);
-          setHistory(nextHistory);
+          try {
+            const [nextBalance, nextHistory] = await Promise.all([
+              window.picoin.api.getBalance(nextWallet.address),
+              window.picoin.api.getHistory(nextWallet.address),
+            ]);
+            setBalance(nextBalance);
+            setHistory(nextHistory);
+          } catch (error) {
+            setNotice(
+              isTransientUiError(error)
+                ? "Wallet data refresh timed out. Showing the last loaded balance."
+                : errorMessage(error),
+            );
+          }
         } else {
           setBalance(null);
           setHistory([]);
@@ -94,7 +102,7 @@ export default function App() {
 
   useEffect(() => {
     void refreshAll();
-    const timer = window.setInterval(() => void refreshAll(), 10_000);
+    const timer = window.setInterval(() => void refreshAll(), 30_000);
     return () => window.clearInterval(timer);
   }, [refreshAll]);
 
@@ -607,4 +615,12 @@ function errorMessage(error: unknown): string {
     return error.message;
   }
   return String(error || "Unknown error");
+}
+
+function isTransientUiError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const message = error.message.toLowerCase();
+  return error.name === "AbortError" || message.includes("abort") || message.includes("timeout") || message.includes("timed out");
 }
