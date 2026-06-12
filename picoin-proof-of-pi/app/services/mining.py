@@ -573,28 +573,6 @@ def _validator_heartbeat_signature_variants(payload: dict[str, Any]) -> list[dic
     return variants
 
 
-def _validator_heartbeat_public_key_candidates(validator_id: str, payload_public_key: str) -> list[str]:
-    candidates: list[str] = []
-    seen: set[str] = set()
-
-    def add(public_key: str) -> None:
-        key = str(public_key or "").strip()
-        if key and key not in seen:
-            candidates.append(key)
-            seen.add(key)
-
-    add(payload_public_key)
-    if validator_id:
-        with get_connection() as connection:
-            row = connection.execute(
-                "SELECT public_key FROM validators WHERE validator_id = ?",
-                (validator_id,),
-            ).fetchone()
-        if row is not None:
-            add(str(row["public_key"] or ""))
-    return candidates
-
-
 VALIDATOR_HEARTBEAT_FUTURE_SKEW_SECONDS = 60
 
 
@@ -835,28 +813,22 @@ def record_validator_heartbeat(
     source_peer: str | None = None,
     observed_at: str | None = None,
 ) -> dict[str, Any]:
+    public_key = str(payload.get("public_key") or "")
+    try:
+        validate_public_key(public_key)
+        signature = str(payload.get("signature") or "")
+        signature_valid = any(
+            verify_payload_signature(public_key, signed_payload, signature)
+            for signed_payload in _validator_heartbeat_signature_variants(payload)
+        )
+    except (RuntimeError, ValueError):
+        signature_valid = False
+    if not signature_valid:
+        raise MiningError(401, "invalid validator heartbeat signature")
+
     validator_id = str(payload.get("validator_id") or "").strip()
     if not validator_id:
         raise MiningError(400, "validator_id is required")
-    public_key = str(payload.get("public_key") or "")
-    signature = str(payload.get("signature") or "")
-    signature_variants = _validator_heartbeat_signature_variants(payload)
-    verified_public_key = ""
-    for candidate_public_key in _validator_heartbeat_public_key_candidates(validator_id, public_key):
-        try:
-            validate_public_key(candidate_public_key)
-            if any(
-                verify_payload_signature(candidate_public_key, signed_payload, signature)
-                for signed_payload in signature_variants
-            ):
-                verified_public_key = candidate_public_key
-                break
-        except (RuntimeError, ValueError):
-            continue
-    if not verified_public_key:
-        raise MiningError(401, "invalid validator heartbeat signature")
-    public_key = verified_public_key
-
     node_id = str(payload.get("node_id") or "").strip()
     advertised_address = str(payload.get("address") or "").strip().rstrip("/")
     if not node_id or not advertised_address:
