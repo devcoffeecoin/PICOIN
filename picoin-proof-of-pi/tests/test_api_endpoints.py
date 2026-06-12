@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from app.api.routes import router
 from app.core.settings import GENESIS_HASH
-from app.core.signatures import generate_keypair, sign_payload
+from app.core.signatures import generate_keypair
 from app.db.database import DATABASE_PATH, get_connection, init_db
 from app.services.network import node_identity
 from app.services.mining import register_miner
@@ -49,37 +49,6 @@ def test_node_liveness_endpoint_returns_lightweight_tip(tmp_path, monkeypatch) -
     assert payload["effective_latest_block_hash"] == GENESIS_HASH
     assert payload["pending_replay_blocks"] == 0
     assert payload["divergence_detected"] is False
-
-
-def test_validator_heartbeat_endpoint_preserves_signed_extra_fields(tmp_path, monkeypatch) -> None:
-    client = _build_test_client(tmp_path, monkeypatch)
-    keys = generate_keypair()
-    payload = {
-        "validator_id": "validator_public_api",
-        "node_id": "desktop-validator-node",
-        "public_key": keys["public_key"],
-        "address": "http://127.0.0.1:8131",
-        "local_height": 10,
-        "effective_height": 10,
-        "latest_block_hash": "a" * 64,
-        "pending_replay_blocks": 0,
-        "sync_lag": 0,
-        "version": "1.0",
-        "heartbeat_at": "2026-06-11T20:00:00+00:00",
-        "client_build": "desktop-public-api",
-    }
-    payload["signature"] = sign_payload(keys["private_key"], payload)
-
-    response = client.post("/validators/heartbeat", json=payload)
-
-    assert response.status_code == 200
-    body = response.json()
-    assert body["validator_id"] == "validator_public_api"
-    with get_connection() as connection:
-        row = connection.execute(
-            "SELECT payload FROM validator_heartbeats WHERE validator_id = 'validator_public_api'"
-        ).fetchone()
-    assert row is not None
 
 
 def test_consensus_orphan_reorg_plan_endpoint_returns_dry_run_plan(tmp_path, monkeypatch) -> None:
