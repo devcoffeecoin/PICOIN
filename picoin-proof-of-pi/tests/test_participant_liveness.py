@@ -409,6 +409,55 @@ def test_validation_jobs_health_reports_stuck_partial_quorum(tmp_path, monkeypat
     assert health["jobs"][0]["missing_eligible_validators"][0]["node_id"] == "node-two"
 
 
+def test_validation_jobs_health_treats_active_assignment_as_waiting(tmp_path, monkeypatch) -> None:
+    _use_db(tmp_path, monkeypatch, "validation-health-active-assignment.sqlite3")
+    miner = register_miner("health-active-miner", generate_keypair()["public_key"])
+    first_keys = generate_keypair()
+    second_keys = generate_keypair()
+    first = register_validator("health-active-validator-one", first_keys["public_key"])
+    second = register_validator("health-active-validator-two", second_keys["public_key"])
+    record_validator_heartbeat(_signed_validator_heartbeat(first_keys, first["validator_id"], node_id="node-one"))
+    record_validator_heartbeat(_signed_validator_heartbeat(second_keys, second["validator_id"], node_id="node-two"))
+
+    old_time = (datetime.now(timezone.utc) - timedelta(seconds=300)).isoformat()
+    assigned_at = (datetime.now(timezone.utc) - timedelta(seconds=30)).isoformat()
+    with get_connection() as connection:
+        protocol_params_id = connection.execute(
+            "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()["id"]
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at
+            )
+            VALUES ('task_health_active_assignment', ?, 1000, 1063, 'bbp_hex_v1', 'revealed', ?, ?)
+            """,
+            (miner["miner_id"], protocol_params_id, old_time),
+        )
+        connection.execute(
+            """
+            INSERT INTO validation_jobs (
+                job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                samples, status, assigned_validator_id, assigned_at, created_at, job_created_at
+            )
+            VALUES (
+                'job_health_active_assignment', 'task_health_active_assignment',
+                ?, ?, ?, ?, '[]', 'pending', ?, ?, ?, ?
+            )
+            """,
+            (miner["miner_id"], "a" * 64, "b" * 64, "c" * 64, first["validator_id"], assigned_at, old_time, old_time),
+        )
+
+    health = get_validation_jobs_health(stale_after_seconds=120)
+
+    assert health["healthy"] is True
+    assert health["stuck_count"] == 0
+    assert health["counts"]["waiting_for_assigned_validator"] == 1
+    assert health["jobs"][0]["health"] == "waiting_for_assigned_validator"
+    assert health["jobs"][0]["assigned_validator_id"] == first["validator_id"]
+
+
 def test_validation_jobs_health_releases_timed_out_assignment_without_validator_poll(tmp_path, monkeypatch) -> None:
     _use_db(tmp_path, monkeypatch, "validation-health-release-assignment.sqlite3")
     monkeypatch.setattr("app.services.mining._EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC", 0.0)

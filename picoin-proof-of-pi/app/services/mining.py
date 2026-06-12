@@ -2257,6 +2257,7 @@ def _get_validation_jobs_health_uncached(
             "stuck_no_votes": 0,
             "stuck_waiting_for_quorum": 0,
             "assignment_timeout_pending_release": 0,
+            "waiting_for_assigned_validator": 0,
             "quorum_reached_waiting_finalization": 0,
             "competitive_round_waiting": 0,
         }
@@ -2296,6 +2297,11 @@ def _get_validation_jobs_health_uncached(
                 and assigned_age_seconds >= VALIDATION_JOB_ASSIGNMENT_TIMEOUT_SECONDS
                 and bool(job.get("assigned_validator_id"))
             )
+            assigned_active = (
+                assigned_age_seconds is not None
+                and assigned_age_seconds < VALIDATION_JOB_ASSIGNMENT_TIMEOUT_SECONDS
+                and bool(job.get("assigned_validator_id"))
+            )
             competitive_round_waiting = _competitive_round_has_earlier_pending_validation_job(connection, job)
             stale = job_age_seconds is not None and job_age_seconds >= stale_after_seconds
 
@@ -2305,6 +2311,8 @@ def _get_validation_jobs_health_uncached(
                 health = "competitive_round_waiting"
             elif assigned_timeout:
                 health = "assignment_timeout_pending_release"
+            elif assigned_active:
+                health = "waiting_for_assigned_validator"
             elif stale and total_votes == 0:
                 health = "stuck_no_votes"
             elif stale and total_votes > 0:
