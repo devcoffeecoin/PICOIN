@@ -3,7 +3,6 @@ import logging
 import os
 import random
 import sqlite3
-import sys
 import threading
 import time
 import uuid
@@ -646,21 +645,21 @@ def _log_invalid_validator_heartbeat(
         }
         for variant in signature_variants
     ]
-    detail = {
-        "validator_id": validator_id,
-        "client_host": client_host,
-        "payload_keys": payload_keys,
-        "payload_types": payload_types,
-        "public_key": _short_debug_value(payload.get("public_key")),
-        "public_key_len": len(str(payload.get("public_key") or "")),
-        "signature_len": len(signature),
-        "candidate_keys": [_short_debug_value(candidate) for candidate in public_key_candidates],
-        "variant_summaries": variant_summaries,
-        "candidate_errors": candidate_errors,
-    }
-    message = f"invalid validator heartbeat signature detail: {canonical_json(detail)}"
-    logger.warning(message)
-    print(message, file=sys.stderr, flush=True)
+    logger.warning(
+        "invalid validator heartbeat signature detail: validator_id=%s client_host=%s "
+        "payload_keys=%s payload_types=%s public_key=%s public_key_len=%s signature_len=%s "
+        "candidate_keys=%s variant_summaries=%s candidate_errors=%s",
+        validator_id,
+        client_host,
+        payload_keys,
+        payload_types,
+        _short_debug_value(payload.get("public_key")),
+        len(str(payload.get("public_key") or "")),
+        len(signature),
+        [_short_debug_value(candidate) for candidate in public_key_candidates],
+        variant_summaries,
+        candidate_errors,
+    )
 
 
 VALIDATOR_HEARTBEAT_FUTURE_SKEW_SECONDS = 60
