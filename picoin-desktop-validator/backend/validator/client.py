@@ -25,6 +25,26 @@ DEFAULT_NODE_SERVER = os.getenv("PICOIN_VALIDATOR_NODE_SERVER", os.getenv("PICOI
 VALIDATOR_NODE_ADDRESS = os.getenv("PICOIN_VALIDATOR_NODE_ADDRESS", "").strip().rstrip("/")
 
 
+def _env_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    if not value:
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
+
+
+DEFAULT_JOB_TIMEOUT_SECONDS = max(5.0, _env_float("PICOIN_VALIDATOR_JOB_TIMEOUT_SECONDS", 30.0))
+DEFAULT_SUBMIT_TIMEOUT_SECONDS = max(
+    30.0,
+    _env_float(
+        "PICOIN_VALIDATOR_SUBMIT_TIMEOUT_SECONDS",
+        _env_float("PICOIN_WORKER_HTTP_TIMEOUT_SECONDS", 120.0),
+    ),
+)
+
+
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -66,6 +86,41 @@ def save_identity(path: Path, identity: dict[str, Any]) -> None:
     path.write_text(json.dumps(identity, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _request_error_detail(exc: BaseException) -> str:
+    response = getattr(exc, "response", None)
+    if response is None:
+        return ""
+    detail = ""
+    try:
+        payload = response.json()
+        if isinstance(payload, dict):
+            detail = str(payload.get("detail") or payload)
+        else:
+            detail = str(payload)
+    except ValueError:
+        detail = str(getattr(response, "text", "") or "")
+    return detail.strip()
+
+
+def _request_error_summary(exc: BaseException) -> str:
+    detail = _request_error_detail(exc)
+    if detail:
+        return f"{exc} detail={detail}"
+    return str(exc)
+
+
+def _poll_error_needs_heartbeat(exc: BaseException) -> bool:
+    response = getattr(exc, "response", None)
+    if int(getattr(response, "status_code", 0) or 0) != 403:
+        return False
+    detail = _request_error_detail(exc).lower()
+    return (
+        "validator offline" in detail
+        or "validator stale" in detail
+        or "heartbeat required" in detail
+    )
+
+
 def register(server_url: str, name: str, identity_path: Path, overwrite: bool) -> dict[str, Any]:
     if identity_path.exists() and not overwrite:
         raise FileExistsError(f"identity already exists: {identity_path}")
@@ -74,7 +129,7 @@ def register(server_url: str, name: str, identity_path: Path, overwrite: bool) -
     response = requests.post(
         f"{server_url}/validators/register",
         json={"name": name, "public_key": keypair["public_key"], "reward_address": VALIDATOR_REWARD_ADDRESS or None},
-        timeout=20,
+        timeout=DEFAULT_JOB_TIMEOUT_SECONDS,
     )
     response.raise_for_status()
     validator = response.json()
@@ -102,7 +157,7 @@ def get_job(server_url: str, identity: dict[str, Any] | str) -> dict[str, Any] |
             "reward_address": identity.get("reward_address"),
         }
         params = {key: value for key, value in params.items() if value}
-    response = requests.get(f"{server_url}/validation/jobs", params=params, timeout=20)
+    response = requests.get(f"{server_url}/validation/jobs", params=params, timeout=DEFAULT_JOB_TIMEOUT_SECONDS)
     response.raise_for_status()
     if not response.content or response.text == "null":
         return None
@@ -118,25 +173,7 @@ def send_validator_heartbeat(
 ) -> dict[str, Any]:
     node_server = node_server_url.rstrip("/")
     coordinator = server_url.rstrip("/")
-    local_response = requests.get(f"{node_server}/node/sync-status", timeout=timeout)
-    local_response.raise_for_status()
-    local_status = local_response.json()
-
-    try:
-        remote_response = requests.get(f"{coordinator}/node/sync-status", timeout=timeout)
-        remote_response.raise_for_status()
-        remote_status = remote_response.json()
-        remote_height = int(
-            remote_status.get("effective_latest_block_height")
-            or remote_status.get("latest_block_height")
-            or 0
-        )
-    except requests.RequestException:
-        remote_height = int(
-            local_status.get("effective_latest_block_height")
-            or local_status.get("latest_block_height")
-            or 0
-        )
+    local_status = _heartbeat_node_status(node_server, timeout=timeout)
 
     effective_height = int(
         local_status.get("effective_latest_block_height")
@@ -158,13 +195,28 @@ def send_validator_heartbeat(
         "effective_height": effective_height,
         "latest_block_hash": local_status.get("effective_latest_block_hash") or local_status.get("latest_block_hash"),
         "pending_replay_blocks": int(local_status.get("pending_replay_blocks") or 0),
-        "sync_lag": max(0, remote_height - effective_height),
+        "sync_lag": max(0, int(local_status.get("sync_lag") or 0)),
         "version": local_status.get("protocol_version") or "0.18",
+        "heartbeat_at": utc_now(),
     }
     payload["signature"] = sign_payload(identity["private_key"], payload)
     response = requests.post(f"{coordinator}/validators/heartbeat", json=payload, timeout=timeout)
     response.raise_for_status()
     return response.json()
+
+
+def _heartbeat_node_status(server_url: str, *, timeout: float) -> dict[str, Any]:
+    last_error: requests.RequestException | None = None
+    for path in ("/node/liveness", "/node/sync-status"):
+        try:
+            response = requests.get(f"{server_url.rstrip('/')}{path}", timeout=timeout)
+            response.raise_for_status()
+            return response.json()
+        except requests.RequestException as exc:
+            last_error = exc
+    if last_error is not None:
+        raise last_error
+    raise requests.RequestException("node status unavailable")
 
 
 def validate_job(job: dict[str, Any]) -> tuple[bool, str]:
@@ -220,7 +272,15 @@ def validate_job(job: dict[str, Any]) -> tuple[bool, str]:
     return True, "external validator accepted samples"
 
 
-def submit_result(server_url: str, identity: dict[str, Any], job: dict[str, Any], approved: bool, reason: str) -> dict[str, Any]:
+def submit_result(
+    server_url: str,
+    identity: dict[str, Any],
+    job: dict[str, Any],
+    approved: bool,
+    reason: str,
+    *,
+    timeout: float = DEFAULT_SUBMIT_TIMEOUT_SECONDS,
+) -> dict[str, Any]:
     signed_at = utc_now()
     payload = build_validation_result_signature_payload(
         job_id=job["job_id"],
@@ -241,7 +301,7 @@ def submit_result(server_url: str, identity: dict[str, Any], job: dict[str, Any]
             "signature": signature,
             "signed_at": signed_at,
         },
-        timeout=20,
+        timeout=timeout,
     )
     response.raise_for_status()
     return response.json()
@@ -258,8 +318,24 @@ def command_validate(args: argparse.Namespace) -> int:
     server_url = args.server.rstrip("/")
     identity = load_or_register_identity(server_url, args.identity)
     completed = 0
+    poll_seconds = max(0.0, float(getattr(args, "sleep", 1.0)))
+    heartbeat_interval = max(1.0, float(getattr(args, "heartbeat_interval", 30.0)))
+    heartbeat: dict[str, Any] | None = None
+    heartbeat_at = 0.0
+    heartbeat_attempt_at = 0.0
 
-    for index in range(args.loops):
+    def heartbeat_is_due() -> bool:
+        last_heartbeat_check_at = max(heartbeat_at, heartbeat_attempt_at)
+        return (
+            last_heartbeat_check_at <= 0.0
+            or (time.monotonic() - last_heartbeat_check_at) >= heartbeat_interval
+        )
+
+    def refresh_heartbeat_if_due(*, force: bool = False) -> bool:
+        nonlocal heartbeat, heartbeat_at, heartbeat_attempt_at
+        if not force and not heartbeat_is_due():
+            return False
+        heartbeat_attempt_at = time.monotonic()
         try:
             heartbeat = send_validator_heartbeat(
                 server_url,
@@ -267,57 +343,98 @@ def command_validate(args: argparse.Namespace) -> int:
                 node_server_url=args.node_server.rstrip("/"),
                 timeout=args.node_timeout,
             )
+            heartbeat_at = time.monotonic()
+            heartbeat_attempt_at = heartbeat_at
+            return True
         except requests.RequestException as exc:
-            print(f"Validator coordinator temporarily unavailable during heartbeat: {exc}", file=sys.stderr)
+            print(
+                "Validator coordinator temporarily unavailable during heartbeat: "
+                f"{_request_error_summary(exc)}; continuing to poll validation jobs with previous liveness",
+                file=sys.stderr,
+            )
+            return False
+
+    for index in range(args.loops):
+        job_poll_failed = False
+        try:
+            job = get_job(server_url, identity)
+        except requests.RequestException as exc:
+            job = None
+            if _poll_error_needs_heartbeat(exc):
+                print(
+                    "Validator liveness rejected while polling validation job: "
+                    f"{_request_error_summary(exc)}; refreshing heartbeat and retrying",
+                    file=sys.stderr,
+                )
+                if refresh_heartbeat_if_due(force=True) and (
+                    heartbeat is None or heartbeat.get("eligible") is not False
+                ):
+                    try:
+                        job = get_job(server_url, identity)
+                    except requests.RequestException as retry_exc:
+                        print(
+                            "Validator coordinator temporarily unavailable while polling validation job "
+                            f"after heartbeat retry: {_request_error_summary(retry_exc)}",
+                            file=sys.stderr,
+                        )
+                        job_poll_failed = True
+                else:
+                    job_poll_failed = True
+            else:
+                print(
+                    "Validator coordinator temporarily unavailable while polling validation job: "
+                    f"{_request_error_summary(exc)}",
+                    file=sys.stderr,
+                )
+                job_poll_failed = True
+
+        if job is not None:
+            approved, reason = validate_job(job)
+            try:
+                result = submit_result(server_url, identity, job, approved, reason, timeout=args.submit_timeout)
+            except requests.RequestException as exc:
+                print(
+                    "Validator coordinator temporarily unavailable while submitting validation result: "
+                    f"{_request_error_summary(exc)}",
+                    file=sys.stderr,
+                )
+                if args.once:
+                    return 0
+                time.sleep(poll_seconds)
+                continue
+            print(
+                f"Validated {job['job_id']}: approved={approved} "
+                f"status={result['status']} approvals={result.get('approvals', 0)}/"
+                f"{result.get('required_approvals', 1)}"
+            )
+            completed += 1
+
+            if not args.once:
+                refresh_heartbeat_if_due()
             if args.once:
-                return 0
-            time.sleep(args.sleep)
+                break
+            if index + 1 < args.loops:
+                time.sleep(poll_seconds)
             continue
-        if heartbeat.get("eligible") is False:
+
+        refresh_heartbeat_if_due()
+        if heartbeat is not None and heartbeat.get("eligible") is False:
             print(
                 f"Validator node heartbeat accepted but not eligible: "
                 f"{heartbeat.get('reason_if_not_eligible') or heartbeat.get('sync_status') or heartbeat.get('online_status')}"
             )
             if args.once:
                 return 0
-            time.sleep(args.sleep)
+            time.sleep(poll_seconds)
             continue
 
-        try:
-            job = get_job(server_url, identity)
-        except requests.RequestException as exc:
-            print(f"Validator coordinator temporarily unavailable while polling validation job: {exc}", file=sys.stderr)
-            if args.once:
-                return 0
-            time.sleep(args.sleep)
-            continue
-        if job is None:
+        if not job_poll_failed:
             print("No validation jobs available.")
-            if args.once:
-                return 0
-            time.sleep(args.sleep)
-            continue
-
-        approved, reason = validate_job(job)
-        try:
-            result = submit_result(server_url, identity, job, approved, reason)
-        except requests.RequestException as exc:
-            print(f"Validator coordinator temporarily unavailable while submitting validation result: {exc}", file=sys.stderr)
-            if args.once:
-                return 0
-            time.sleep(args.sleep)
-            continue
-        print(
-            f"Validated {job['job_id']}: approved={approved} "
-            f"status={result['status']} approvals={result.get('approvals', 0)}/"
-            f"{result.get('required_approvals', 1)}"
-        )
-        completed += 1
 
         if args.once:
-            break
+            return 0
         if index + 1 < args.loops:
-            time.sleep(args.sleep)
+            time.sleep(poll_seconds)
 
     print(f"Done. validation_jobs_completed={completed}")
     return 0
@@ -340,6 +457,18 @@ def parse_args() -> argparse.Namespace:
     validate_parser.add_argument("--sleep", type=float, default=1.0, help="Seconds between polls")
     validate_parser.add_argument("--node-server", default=DEFAULT_NODE_SERVER, help="Local Picoin node API used for signed validator liveness")
     validate_parser.add_argument("--node-timeout", type=float, default=10.0, help="Seconds to wait for the local node heartbeat probe")
+    validate_parser.add_argument(
+        "--heartbeat-interval",
+        type=float,
+        default=float(os.getenv("PICOIN_VALIDATOR_HEARTBEAT_INTERVAL_SECONDS", "30")),
+        help="Seconds between signed validator heartbeat refreshes",
+    )
+    validate_parser.add_argument(
+        "--submit-timeout",
+        type=float,
+        default=DEFAULT_SUBMIT_TIMEOUT_SECONDS,
+        help="Seconds to wait when submitting validation results",
+    )
     validate_parser.set_defaults(func=command_validate)
 
     return parser.parse_args()
