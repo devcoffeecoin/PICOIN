@@ -276,6 +276,27 @@ def test_retarget_decreases_sample_count_when_validation_dominates(tmp_path, mon
     assert after["segment_size"] == before["segment_size"]
 
 
+def test_retarget_counts_validation_time_when_stored_total_omits_it(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "retarget-validation-total-repair.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    init_db(db_path)
+
+    keypair = generate_keypair()
+    miner = register_miner("validation-total-repair-miner", keypair["public_key"])
+    _insert_epoch_blocks(miner["miner_id"], total_task_ms=10_000, validation_ms=85_000, total_block_ms=10_000, count=20)
+
+    before = get_protocol()
+    result = run_retarget()
+    after = get_protocol()
+
+    assert result["retargeted"] is True
+    assert "validation bottleneck" in result["event"]["reason"]
+    assert after["sample_count"] < before["sample_count"]
+    assert after["difficulty"] == before["difficulty"]
+    assert after["segment_size"] == before["segment_size"]
+
+
 def test_retarget_increases_sample_count_when_blocks_fast_and_validation_cheap(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "retarget-validation-cheap.sqlite3"
     monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)

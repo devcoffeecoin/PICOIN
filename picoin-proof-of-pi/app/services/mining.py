@@ -8980,20 +8980,27 @@ def _retarget_epoch_rows(connection: Any, last_height: int) -> list[Any]:
             blocks.range_end,
             COALESCE(blocks.total_task_ms, blocks.total_block_ms, ?) AS total_task_ms,
             COALESCE(blocks.validation_ms, 0) AS validation_ms,
-            COALESCE(blocks.total_block_ms, blocks.total_task_ms, ?) AS total_block_ms,
+            MAX(
+                COALESCE(blocks.total_block_ms, blocks.total_task_ms, ?),
+                COALESCE(blocks.total_task_ms, blocks.total_block_ms, ?) + COALESCE(blocks.validation_ms, 0)
+            ) AS total_block_ms,
             COALESCE(blocks.difficulty, protocol_params.difficulty, 0) AS difficulty,
             COALESCE(protocol_params.segment_size, blocks.range_end - blocks.range_start + 1) AS segment_size,
             COALESCE(protocol_params.sample_count, 8) AS sample_count
         FROM blocks
         LEFT JOIN protocol_params ON protocol_params.id = blocks.protocol_params_id
         WHERE blocks.height > ?
-          AND COALESCE(blocks.total_block_ms, blocks.total_task_ms, 0) > 0
+          AND MAX(
+                COALESCE(blocks.total_block_ms, blocks.total_task_ms, 0),
+                COALESCE(blocks.total_task_ms, blocks.total_block_ms, 0) + COALESCE(blocks.validation_ms, 0)
+              ) > 0
         ORDER BY blocks.height DESC
         LIMIT ?
         )
         ORDER BY height ASC
         """,
         (
+            RETARGET_TARGET_BLOCK_MS,
             RETARGET_TARGET_BLOCK_MS,
             RETARGET_TARGET_BLOCK_MS,
             last_height,
