@@ -113,21 +113,27 @@ def test_command_validate_reuses_fresh_heartbeat_for_active_polling(monkeypatch)
     assert calls == {"heartbeats": 1, "jobs": 3}
 
 
-def test_command_validate_polls_job_before_heartbeat(monkeypatch) -> None:
+def test_command_validate_refreshes_heartbeat_before_polling(monkeypatch) -> None:
     identity = {
         "validator_id": "validator_test",
         "public_key": "ed25519:test",
         "private_key": "private-test",
         "name": "validator-test",
     }
+    events = []
 
     monkeypatch.setattr(validator_client, "load_or_register_identity", lambda server_url, path: identity)
-    monkeypatch.setattr(
-        validator_client,
-        "send_validator_heartbeat",
-        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("heartbeat should not block an available job")),
-    )
-    monkeypatch.setattr(validator_client, "get_job", lambda *args, **kwargs: {"job_id": "job_ok", "task_id": "task_ok"})
+
+    def heartbeat(*args, **kwargs):
+        events.append(("heartbeat", kwargs["timeout"]))
+        return {"eligible": True}
+
+    def get_job(*args, **kwargs):
+        events.append(("job", None))
+        return {"job_id": "job_ok", "task_id": "task_ok"}
+
+    monkeypatch.setattr(validator_client, "send_validator_heartbeat", heartbeat)
+    monkeypatch.setattr(validator_client, "get_job", get_job)
     monkeypatch.setattr(validator_client, "validate_job", lambda job, workers=1: (True, "ok"))
     monkeypatch.setattr(
         validator_client,
@@ -140,6 +146,7 @@ def test_command_validate_polls_job_before_heartbeat(monkeypatch) -> None:
     )
 
     assert validator_client.command_validate(_validate_args(once=True, loops=1)) == 0
+    assert events == [("heartbeat", 30.0), ("job", None)]
 
 
 def test_command_validate_refreshes_heartbeat_and_retries_after_offline_poll(monkeypatch, capsys) -> None:
@@ -188,7 +195,7 @@ def test_command_validate_refreshes_heartbeat_and_retries_after_offline_poll(mon
     )
 
     assert validator_client.command_validate(_validate_args(once=True, loops=1)) == 0
-    assert calls == {"heartbeats": 1, "jobs": 2}
+    assert calls == {"heartbeats": 2, "jobs": 2}
     captured = capsys.readouterr()
     assert "detail=validator offline" in captured.err
     assert "Validated job_ok" in captured.out

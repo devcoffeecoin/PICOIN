@@ -58,13 +58,13 @@ def test_validator_liveness_transitions_online_stale_offline(tmp_path, monkeypat
     validator = record_validator_heartbeat(heartbeat)
     assert validator["online_status"] == "online"
 
-    stale_time = datetime.now(timezone.utc) + timedelta(seconds=121)
+    stale_time = datetime.now(timezone.utc) + timedelta(seconds=mining_service.PARTICIPANT_ONLINE_SECONDS + 1)
     refresh_participant_liveness(stale_time, force=True)
     with get_connection() as connection:
         row = connection.execute("SELECT online_status FROM validators WHERE validator_id = 'validator_live'").fetchone()
     assert row["online_status"] == "stale"
 
-    offline_time = datetime.now(timezone.utc) + timedelta(seconds=301)
+    offline_time = datetime.now(timezone.utc) + timedelta(seconds=mining_service.PARTICIPANT_OFFLINE_SECONDS + 1)
     refresh_participant_liveness(offline_time, force=True)
     with get_connection() as connection:
         row = connection.execute("SELECT online_status FROM validators WHERE validator_id = 'validator_live'").fetchone()
@@ -200,7 +200,9 @@ def test_invalid_gossiped_validator_heartbeat_is_rejected(tmp_path, monkeypatch)
 def test_stale_gossiped_validator_heartbeat_is_not_eligible(tmp_path, monkeypatch) -> None:
     _use_db(tmp_path, monkeypatch, "stale-gossip-heartbeat.sqlite3")
     keys = generate_keypair()
-    old_time = (datetime.now(timezone.utc) - timedelta(seconds=600)).isoformat()
+    old_time = (
+        datetime.now(timezone.utc) - timedelta(seconds=mining_service.PARTICIPANT_OFFLINE_SECONDS + 60)
+    ).isoformat()
     payload = _signed_validator_heartbeat(keys, "validator_stale_gossip", heartbeat_at=old_time)
 
     received = receive_validator_heartbeat_gossip(

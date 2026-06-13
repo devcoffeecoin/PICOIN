@@ -425,6 +425,10 @@ def command_validate(args: argparse.Namespace) -> int:
         configured_poll_seconds = getattr(args, "sleep", 1.0)
     poll_seconds = max(0.0, float(configured_poll_seconds))
     heartbeat_interval = max(1.0, float(getattr(args, "heartbeat_interval", 30.0)))
+    heartbeat_timeout = max(
+        float(args.node_timeout),
+        _env_float("PICOIN_VALIDATOR_HEARTBEAT_TIMEOUT_SECONDS", 30.0),
+    )
     workers = max(1, int(getattr(args, "workers", DEFAULT_VALIDATOR_WORKERS)))
     reconcile_peers = configured_reconcile_peers(server_url)
     reconcile_interval = max(0.0, _env_float("PICOIN_VALIDATOR_RECONCILE_INTERVAL_SECONDS", 10.0))
@@ -452,7 +456,7 @@ def command_validate(args: argparse.Namespace) -> int:
                 server_url,
                 identity,
                 node_server_url=args.node_server.rstrip("/"),
-                timeout=args.node_timeout,
+                timeout=heartbeat_timeout,
             )
             heartbeat_at = time.monotonic()
             heartbeat_attempt_at = heartbeat_at
@@ -467,6 +471,7 @@ def command_validate(args: argparse.Namespace) -> int:
             return False
 
     for index in range(args.loops):
+        refresh_heartbeat_if_due()
         job_poll_failed = False
         try:
             job = get_job(server_url, identity)
@@ -500,6 +505,7 @@ def command_validate(args: argparse.Namespace) -> int:
                 )
                 job_poll_failed = True
         if job is not None:
+            refresh_heartbeat_if_due()
             approved, reason = validate_job(job, workers=workers)
             try:
                 result = submit_result(server_url, identity, job, approved, reason, timeout=args.submit_timeout)
