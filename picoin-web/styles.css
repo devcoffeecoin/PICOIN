@@ -856,6 +856,11 @@ h3 {
   fill: url(#rateFill);
 }
 
+.raw-rate-dots circle {
+  fill: var(--cyan);
+  opacity: 0.38;
+}
+
 .rate-line,
 .difficulty-line {
   fill: none;
@@ -900,6 +905,10 @@ h3 {
 
 .legend-rate {
   background: var(--cyan);
+}
+
+.legend-raw {
+  background: rgba(33, 199, 255, 0.38);
 }
 
 .legend-difficulty {

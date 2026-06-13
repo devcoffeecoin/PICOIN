@@ -16,6 +16,8 @@ const apiBaseUrl = cleanUrl(explorerConfig.apiBaseUrl || nodes[0]?.url || fallba
 const refreshMs = Number(explorerConfig.refreshMs || 30000);
 const transactionLimit = 20;
 const defaultFetchTimeoutMs = 12000;
+const participationGraceMs = Number(explorerConfig.participationGraceMs || 180000);
+const chartSmoothingWindow = Number(explorerConfig.chartSmoothingWindow || 5);
 const apiClient = window.PicoinApiFailover
   ? window.PicoinApiFailover.createClient({
       config: explorerConfig,
@@ -228,19 +230,94 @@ function fmtRate(value) {
   return `${fmt(rate, 2)} H/s`;
 }
 
+function rollingMedian(values, windowSize = 5) {
+  const radius = Math.max(1, Math.floor(Number(windowSize || 5) / 2));
+  return values.map((_value, index) => {
+    const slice = values
+      .slice(Math.max(0, index - radius), Math.min(values.length, index + radius + 1))
+      .map(Number)
+      .filter((value) => !Number.isNaN(value))
+      .sort((a, b) => a - b);
+    if (!slice.length) return 0;
+    return slice[Math.floor(slice.length / 2)];
+  });
+}
+
 function minerComputeRate(miner, segmentSize = 64) {
   const computeMs = Number(miner?.last_compute_ms ?? miner?.avg_compute_ms ?? 0);
   return computeMs > 0 ? Number(segmentSize || 64) / (computeMs / 1000) : 0;
 }
 
+function timestampMs(...values) {
+  for (const value of values) {
+    if (!value) continue;
+    const time = new Date(value).getTime();
+    if (!Number.isNaN(time)) return time;
+  }
+  return 0;
+}
+
+function participantLastSeen(participant) {
+  return timestampMs(
+    participant?.last_heartbeat_at,
+    participant?.heartbeat_at,
+    participant?.last_seen_at,
+    participant?.updated_at,
+    participant?.registered_at
+  );
+}
+
+function isVisiblyOnline(participant, now = Date.now()) {
+  const status = String(participant?.online_status || "").toLowerCase();
+  if (status === "online") return true;
+  if (status !== "stale") return false;
+  const lastSeen = participantLastSeen(participant);
+  return lastSeen > 0 && now - lastSeen <= participationGraceMs;
+}
+
+function visibleParticipantCounts(payload, keys = []) {
+  const counts = payload?.counts || {};
+  const rows = asArray(payload?.miners ?? payload?.validators ?? payload, keys);
+  const total = Number(counts.total ?? rows.length ?? 0);
+  const rawOnline = Number(
+    counts.online ??
+      rows.filter((row) => String(row?.online_status || "").toLowerCase() === "online").length
+  );
+  const rawStale = Number(
+    counts.stale ??
+      rows.filter((row) => String(row?.online_status || "").toLowerCase() === "stale").length
+  );
+  const visibleOnline = rows.length ? rows.filter((row) => isVisiblyOnline(row)).length : rawOnline;
+  const visibleStale = rows.length
+    ? rows.filter(
+        (row) =>
+          String(row?.online_status || "").toLowerCase() === "stale" &&
+          isVisiblyOnline(row)
+      ).length
+    : 0;
+  return {
+    ...counts,
+    total,
+    online: rawOnline,
+    stale: rawStale,
+    visible_online: Math.max(rawOnline, visibleOnline),
+    visible_stale: visibleStale,
+  };
+}
+
 function activeNetworkCompute(segmentSize = 64) {
   const miners = asArray(state.minersStatus?.miners, ["miners", "items", "results"]);
   const onlineRates = miners
+    .filter((miner) => isVisiblyOnline(miner))
+    .map((miner) => minerComputeRate(miner, segmentSize))
+    .filter((rate) => rate > 0);
+  const rawOnlineRates = miners
     .filter((miner) => miner.online_status === "online")
     .map((miner) => minerComputeRate(miner, segmentSize))
     .filter((rate) => rate > 0);
   return {
     online_compute_miners: onlineRates.length,
+    raw_online_compute_miners: rawOnlineRates.length,
     network_compute_rate_hps: onlineRates.reduce((total, rate) => total + rate, 0),
   };
 }
@@ -648,15 +725,17 @@ function renderStatus() {
   if (chainEl) chainEl.textContent = state.sync?.network_id || state.health?.network_id || "-";
   
   setMetric("metricSupply", state.audit?.supply?.actual_total_balances ?? state.stats?.circulating_supply, 5);
-  setMetric("metricValidators", state.validatorsStatus?.counts?.total ?? state.health?.database?.validators, 0);
-  setMetric("metricActiveMiners", state.minersStatus?.counts?.online ?? state.health?.database?.miners, 0);
+  const minerCounts = visibleParticipantCounts(state.minersStatus, ["miners", "items", "results"]);
+  const validatorCounts = visibleParticipantCounts(state.validatorsStatus, ["validators", "items", "results"]);
+  setMetric("metricValidators", state.validatorsStatus ? validatorCounts.total : state.health?.database?.validators, 0);
+  setMetric("metricActiveMiners", state.minersStatus ? minerCounts.visible_online : state.health?.database?.miners, 0);
   const hashRateEl = $("metricHashRate");
   if (hashRateEl) {
     const miningSummary = (state.miningMetrics || deriveMiningMetrics()).summary || {};
     hashRateEl.textContent = fmtRate(miningSummary.network_compute_rate_hps ?? miningSummary.avg_work_rate_hps);
   }
   setMetric("metricDifficulty", state.miningMetrics?.summary?.latest_difficulty ?? state.difficultyStatus?.active_difficulty ?? state.protocol?.difficulty, 4);
-  setMetric("metricActiveValidators", state.validatorsStatus?.counts?.online, 0);
+  setMetric("metricActiveValidators", state.validatorsStatus ? validatorCounts.visible_online : state.health?.database?.eligible_validators, 0);
   setMetric("metricEligibleValidators", state.validatorsStatus?.eligible_validators ?? state.health?.database?.eligible_validators, 0);
   
   const resEl = $("metricReserve");
@@ -739,7 +818,7 @@ function renderMining() {
   const rateDetail =
     rateSource === "accepted_block_estimate"
       ? `${fmt(summary.active_miners, 0)} active miners est.`
-      : `${fmt(summary.online_compute_miners ?? summary.active_miners, 0)} live samples`;
+      : `${fmt(summary.online_compute_miners ?? summary.active_miners, 0)} compute samples`;
   const blocks = asArray(metrics.blocks, ["blocks", "items", "results"]);
   const summaryEl = $("miningChartSummary");
   if (summaryEl) {
@@ -900,7 +979,8 @@ function deriveMiningMetrics() {
     .sort((a, b) => Number(b.avg_work_rate_hps || 0) - Number(a.avg_work_rate_hps || 0))
     .slice(0, 12);
   const avgBlockComputeRate = workRates.length ? workRates.reduce((a, b) => a + b, 0) / workRates.length : 0;
-  const activeMiners = Number(state.minersStatus?.counts?.online || 0);
+  const minerCounts = visibleParticipantCounts(state.minersStatus, ["miners", "items", "results"]);
+  const activeMiners = Number(minerCounts.visible_online || 0);
   const networkRate =
     networkCompute.network_compute_rate_hps ||
     (avgBlockComputeRate > 0 && activeMiners > 0 ? avgBlockComputeRate * activeMiners : 0);
@@ -925,7 +1005,9 @@ function deriveMiningMetrics() {
 }
 
 function renderMiningChart(blocks) {
-  const rows = blocks.filter((block) => Number(block.height) > 0);
+  const rows = blocks
+    .filter((block) => Number(block.height) > 0)
+    .sort((a, b) => Number(a.height || 0) - Number(b.height || 0));
   if (!rows.length) {
     return `<div class="empty">Waiting for accepted blocks</div>`;
   }
@@ -935,25 +1017,39 @@ function renderMiningChart(blocks) {
   const innerWidth = width - pad.left - pad.right;
   const innerHeight = height - pad.top - pad.bottom;
   const xFor = (index) => pad.left + (rows.length === 1 ? innerWidth / 2 : (index / (rows.length - 1)) * innerWidth);
-  const rateValues = rows.map((block) => Number(block.work_rate_hps || block.hashrate_hps || 0));
+  const rawRateValues = rows.map((block) => Number(block.work_rate_hps || block.hashrate_hps || 0));
+  const positiveRates = rawRateValues.filter((value) => value > 0).sort((a, b) => a - b);
+  const p90Index = Math.max(0, Math.ceil(positiveRates.length * 0.9) - 1);
+  const visualRateCap = positiveRates.length ? Math.max(positiveRates[p90Index] * 1.35, positiveRates[0], 1) : 1;
+  const cappedRateValues = rawRateValues.map((value) => Math.min(Number(value || 0), visualRateCap));
+  const rateValues = rollingMedian(cappedRateValues, chartSmoothingWindow);
   const difficultyValues = rows.map((block) => Number(block.difficulty || 0));
   const maxRate = Math.max(...rateValues, 1);
   const maxDifficulty = Math.max(...difficultyValues, 1);
   const yRate = (value) => pad.top + innerHeight - (Number(value || 0) / maxRate) * innerHeight;
   const yDifficulty = (value) => pad.top + innerHeight - (Number(value || 0) / maxDifficulty) * innerHeight;
-  const ratePoints = rows.map((block, index) => `${xFor(index)},${yRate(block.work_rate_hps || block.hashrate_hps)}`).join(" ");
+  const ratePoints = rateValues.map((rate, index) => `${xFor(index)},${yRate(rate)}`).join(" ");
   const difficultyPoints = rows.map((block, index) => `${xFor(index)},${yDifficulty(block.difficulty)}`).join(" ");
   const bars = rows
     .map((block, index) => {
       const x = xFor(index);
-      const y = yRate(block.work_rate_hps || block.hashrate_hps);
+      const y = yRate(cappedRateValues[index]);
       const barWidth = Math.max(3, Math.min(12, innerWidth / Math.max(rows.length, 1) - 3));
       return `<rect x="${x - barWidth / 2}" y="${y}" width="${barWidth}" height="${pad.top + innerHeight - y}" rx="2" />`;
     })
     .join("");
+  const rawDots = rows
+    .map((block, index) => {
+      const x = xFor(index);
+      const rate = rawRateValues[index];
+      const y = yRate(Math.min(rate, visualRateCap));
+      return `<circle cx="${x}" cy="${y}" r="3"><title>#${fmt(block.height, 0)} raw ${escapeHtml(fmtRate(rate))}</title></circle>`;
+    })
+    .join("");
   const first = rows[0];
   const last = rows[rows.length - 1];
-  const latestRate = last.work_rate_hps || last.hashrate_hps;
+  const latestRate = rateValues[rateValues.length - 1];
+  const latestRawRate = rawRateValues[rawRateValues.length - 1];
   return `
     <svg class="mining-chart-svg" viewBox="0 0 ${width} ${height}" role="img" aria-label="Accepted block compute rate and difficulty">
       <defs>
@@ -969,18 +1065,20 @@ function renderMiningChart(blocks) {
         <line x1="${pad.left}" y1="${pad.top + innerHeight * 0.33}" x2="${pad.left + innerWidth}" y2="${pad.top + innerHeight * 0.33}" />
       </g>
       <g class="rate-bars">${bars}</g>
+      <g class="raw-rate-dots">${rawDots}</g>
       <polyline class="rate-line" points="${ratePoints}" />
       <polyline class="difficulty-line" points="${difficultyPoints}" />
       <g class="chart-labels">
         <text x="${pad.left}" y="${height - 16}">#${fmt(first.height, 0)}</text>
         <text x="${pad.left + innerWidth}" y="${height - 16}" text-anchor="end">#${fmt(last.height, 0)}</text>
-        <text x="${pad.left}" y="18">Block compute max ${escapeHtml(fmtRate(maxRate))}</text>
+        <text x="${pad.left}" y="18">Smoothed compute max ${escapeHtml(fmtRate(maxRate))}</text>
         <text x="${pad.left + innerWidth}" y="18" text-anchor="end">Difficulty max ${fmt(maxDifficulty, 4)}</text>
-        <text x="${pad.left + innerWidth}" y="${pad.top + innerHeight - 8}" text-anchor="end">Latest ${escapeHtml(fmtRate(latestRate))}</text>
+        <text x="${pad.left + innerWidth}" y="${pad.top + innerHeight - 8}" text-anchor="end">Latest ${escapeHtml(fmtRate(latestRate))} / raw ${escapeHtml(fmtRate(latestRawRate))}</text>
       </g>
     </svg>
     <div class="chart-legend">
-      <span><i class="legend-rate"></i>Block compute rate</span>
+      <span><i class="legend-rate"></i>Smoothed compute rate</span>
+      <span><i class="legend-raw"></i>Raw block samples</span>
       <span><i class="legend-difficulty"></i>Difficulty</span>
     </div>
   `;
@@ -1046,8 +1144,8 @@ function renderTransactions() {
 function renderValidators() {
   const grid = $("validatorsGrid");
   if (!grid) return;
-  const validatorCounts = state.validatorsStatus?.counts || {};
-  const minerCounts = state.minersStatus?.counts || {};
+  const validatorCounts = visibleParticipantCounts(state.validatorsStatus, ["validators", "items", "results"]);
+  const minerCounts = visibleParticipantCounts(state.minersStatus, ["miners", "items", "results"]);
   if (!state.validatorsStatus && !state.minersStatus) {
     grid.innerHTML = `<div class="empty">Waiting for validators</div>`;
     return;
@@ -1055,21 +1153,21 @@ function renderValidators() {
   const required = state.validatorsStatus?.required_validator_approvals ?? state.consensus?.required_validator_approvals;
   grid.innerHTML = `
     <article class="validator-card summary-card">
-      <header><strong>Miners</strong><span>live</span></header>
+      <header><strong>Miners</strong><span>participation</span></header>
       <dl>
-        <div><dt>Active</dt><dd>${fmt(minerCounts.online, 0)}</dd></div>
+        <div><dt>Visible</dt><dd>${fmt(minerCounts.visible_online, 0)}</dd></div>
+        <div><dt>Online</dt><dd>${fmt(minerCounts.online, 0)}</dd></div>
         <div><dt>Stale</dt><dd>${fmt(minerCounts.stale, 0)}</dd></div>
-        <div><dt>Offline</dt><dd>${fmt(minerCounts.offline, 0)}</dd></div>
         <div><dt>Total</dt><dd>${fmt(minerCounts.total, 0)}</dd></div>
       </dl>
     </article>
     <article class="validator-card summary-card">
-      <header><strong>Validators</strong><span>live</span></header>
+      <header><strong>Validators</strong><span>participation</span></header>
       <dl>
-        <div><dt>Active</dt><dd>${fmt(validatorCounts.online, 0)}</dd></div>
+        <div><dt>Visible</dt><dd>${fmt(validatorCounts.visible_online, 0)}</dd></div>
         <div><dt>Eligible</dt><dd>${fmt(state.validatorsStatus?.eligible_validators, 0)}</dd></div>
+        <div><dt>Online</dt><dd>${fmt(validatorCounts.online, 0)}</dd></div>
         <div><dt>Stale</dt><dd>${fmt(validatorCounts.stale, 0)}</dd></div>
-        <div><dt>Offline</dt><dd>${fmt(validatorCounts.offline, 0)}</dd></div>
       </dl>
     </article>
     <article class="validator-card summary-card">
@@ -1077,7 +1175,7 @@ function renderValidators() {
       <dl>
         <div><dt>Required</dt><dd>${fmt(required, 0)}</dd></div>
         <div><dt>Out of sync</dt><dd>${fmt(validatorCounts.out_of_sync, 0)}</dd></div>
-        <div><dt>Disabled</dt><dd>${fmt(validatorCounts.disabled, 0)}</dd></div>
+        <div><dt>Offline</dt><dd>${fmt(validatorCounts.offline, 0)}</dd></div>
         <div><dt>Total</dt><dd>${fmt(validatorCounts.total, 0)}</dd></div>
       </dl>
     </article>
