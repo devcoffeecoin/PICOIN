@@ -2002,6 +2002,12 @@ def add_validator_parser(subparsers: argparse._SubParsersAction) -> None:
         default=10.0,
         help="Seconds to wait for the local node heartbeat probe",
     )
+    validate_parser.add_argument(
+        "--submit-timeout",
+        type=float,
+        default=90.0,
+        help="Seconds to wait while submitting a validation vote",
+    )
     validate_parser.set_defaults(func=command_validate)
 
 
