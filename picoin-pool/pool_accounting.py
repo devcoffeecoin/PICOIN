@@ -196,12 +196,14 @@ def summarize_payouts(
             total_pending += pending
 
     total_paid = Decimal("0")
+    total_payout_fee = Decimal("0")
     for row in payout_rows or []:
         worker_id = str(row.get("worker_id") or "")
         if not worker_id:
             continue
         try:
             amount = Decimal(str(row.get("amount") or "0"))
+            payout_fee = Decimal(str(row.get("fee") or "0"))
         except Exception:
             continue
         if amount <= 0:
@@ -224,6 +226,7 @@ def summarize_payouts(
         worker["paid_amount"] = Decimal(worker["paid_amount"]) + amount
         worker["pending_amount"] = max(Decimal("0"), Decimal(worker["pending_amount"]) - amount)
         total_paid += amount
+        total_payout_fee += max(Decimal("0"), payout_fee)
 
     total_pending = sum((Decimal(worker["pending_amount"]) for worker in workers.values()), Decimal("0"))
     min_payout = Decimal(str(max(0.0, float(min_payout_amount or 0.0))))
@@ -247,6 +250,8 @@ def summarize_payouts(
         "gross_total": _decimal_to_float(total_gross),
         "pool_fee_total": _decimal_to_float(total_fee),
         "paid_total": _decimal_to_float(total_paid),
+        "payout_fee_total": _decimal_to_float(total_payout_fee),
+        "payout_spend_total": _decimal_to_float(total_paid + total_payout_fee),
         "pending_total": _decimal_to_float(total_pending),
         "workers": payout_workers,
     }
@@ -370,12 +375,14 @@ def summarize_round_window_payouts(
         previous_completed_ts = completed_ts
 
     total_paid = Decimal("0")
+    total_payout_fee = Decimal("0")
     for row in payout_rows or []:
         worker_id = str(row.get("worker_id") or "")
         if not worker_id:
             continue
         try:
             amount = Decimal(str(row.get("amount") or "0"))
+            payout_fee = Decimal(str(row.get("fee") or "0"))
         except Exception:
             continue
         if amount <= 0:
@@ -398,6 +405,7 @@ def summarize_round_window_payouts(
         worker["paid_amount"] = Decimal(worker["paid_amount"]) + amount
         worker["pending_amount"] = max(Decimal("0"), Decimal(worker["pending_amount"]) - amount)
         total_paid += amount
+        total_payout_fee += max(Decimal("0"), payout_fee)
 
     total_pending = sum((Decimal(worker["pending_amount"]) for worker in workers.values()), Decimal("0"))
     min_payout = Decimal(str(max(0.0, float(min_payout_amount or 0.0))))
@@ -416,7 +424,8 @@ def summarize_round_window_payouts(
     payout_workers.sort(key=lambda item: (-float(item["pending_amount"]), str(item["worker_id"])))
 
     net_total = total_gross - total_fee
-    top_up = max(Decimal("0"), total_paid + total_pending - net_total)
+    worker_top_up = max(Decimal("0"), total_paid + total_pending - net_total)
+    top_up = max(Decimal("0"), total_paid + total_payout_fee + total_pending - total_gross)
     return {
         "accounting_mode": "round_window",
         "pool_fee_percent": float(pool_fee_percent),
@@ -425,6 +434,10 @@ def summarize_round_window_payouts(
         "pool_fee_total": _decimal_to_float(total_fee),
         "net_total": _decimal_to_float(net_total),
         "paid_total": _decimal_to_float(total_paid),
+        "payout_fee_total": _decimal_to_float(total_payout_fee),
+        "payout_spend_total": _decimal_to_float(total_paid + total_payout_fee),
+        "operator_fee_after_payout_fees": _decimal_to_float(total_fee - total_payout_fee),
+        "worker_overpayment_top_up_total": _decimal_to_float(worker_top_up),
         "pending_total": _decimal_to_float(total_pending),
         "operator_top_up_total": _decimal_to_float(top_up),
         "rounds": rounds[-20:][::-1],

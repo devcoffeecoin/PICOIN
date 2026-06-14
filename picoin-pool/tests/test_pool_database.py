@@ -1346,6 +1346,7 @@ def test_auto_payout_submits_transfer_once_and_subtracts_pending(tmp_path, monke
 
     stats = coordinator.stats()
     assert stats["payouts"]["paid_total"] == pytest.approx(0.99)
+    assert stats["payouts"]["payout_fee_total"] == pytest.approx(0.0)
     assert stats["payouts"]["pending_total"] == pytest.approx(0.0)
     assert stats["payouts"]["workers"] == []
 
@@ -1512,6 +1513,9 @@ def test_auto_payout_skips_workers_that_exceed_confirmed_wallet_balance(tmp_path
     assert [row["message"] for row in events] == [
         "auto payout skipped: insufficient confirmed payout wallet balance"
     ]
+    stats = coordinator.stats()
+    assert stats["payouts"]["payout_fee_total"] == pytest.approx(0.001)
+    assert stats["payouts"]["operator_fee_after_payout_fees"] == pytest.approx(-0.001)
 
 
 def test_auto_payout_timeout_keeps_payment_reserved(tmp_path, monkeypatch):

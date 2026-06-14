@@ -1612,7 +1612,7 @@ class PoolCoordinator:
             dict(row)
             for row in connection.execute(
                 """
-                SELECT worker_id, payout_address, amount
+                SELECT worker_id, payout_address, amount, fee
                 FROM pool_payouts
                 WHERE status IN ('submitting', 'submitted', 'confirmed')
                 """

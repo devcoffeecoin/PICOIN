@@ -217,6 +217,61 @@ def test_summarize_round_window_payouts_reopens_underpaid_historical_shares():
     assert "bob" not in by_worker
 
 
+def test_summarize_round_window_payouts_counts_transaction_fees_as_operator_cost():
+    payouts = summarize_round_window_payouts(
+        task_rewards=[
+            {
+                "pool_task_id": "pooltask_win",
+                "mainnet_task_id": "task_win",
+                "reward": 1.0,
+                "completed_at": "2026-06-05T00:10:00+00:00",
+            }
+        ],
+        share_rows=[
+            {"pool_task_id": "pooltask_win", "worker_id": "alice", "units": 1, "created_at": "2026-06-05T00:09:00+00:00"},
+        ],
+        worker_rows=[
+            {"worker_id": "alice", "name": "Alice", "payout_address": "PIA"},
+        ],
+        payout_rows=[{"worker_id": "alice", "payout_address": "PIA", "amount": 0.99, "fee": 0.001}],
+        pool_fee_percent=1,
+        min_payout_amount=0.1,
+    )
+
+    assert payouts["pool_fee_total"] == pytest.approx(0.01)
+    assert payouts["paid_total"] == pytest.approx(0.99)
+    assert payouts["payout_fee_total"] == pytest.approx(0.001)
+    assert payouts["payout_spend_total"] == pytest.approx(0.991)
+    assert payouts["operator_fee_after_payout_fees"] == pytest.approx(0.009)
+    assert payouts["operator_top_up_total"] == pytest.approx(0.0)
+
+
+def test_summarize_round_window_payouts_reports_top_up_when_payout_fees_exceed_pool_fee():
+    payouts = summarize_round_window_payouts(
+        task_rewards=[
+            {
+                "pool_task_id": "pooltask_win",
+                "mainnet_task_id": "task_win",
+                "reward": 1.0,
+                "completed_at": "2026-06-05T00:10:00+00:00",
+            }
+        ],
+        share_rows=[
+            {"pool_task_id": "pooltask_win", "worker_id": "alice", "units": 1, "created_at": "2026-06-05T00:09:00+00:00"},
+        ],
+        worker_rows=[
+            {"worker_id": "alice", "name": "Alice", "payout_address": "PIA"},
+        ],
+        payout_rows=[{"worker_id": "alice", "payout_address": "PIA", "amount": 0.99, "fee": 0.02}],
+        pool_fee_percent=1,
+        min_payout_amount=0.1,
+    )
+
+    assert payouts["operator_fee_after_payout_fees"] == pytest.approx(-0.01)
+    assert payouts["operator_top_up_total"] == pytest.approx(0.01)
+    assert payouts["worker_overpayment_top_up_total"] == pytest.approx(0.0)
+
+
 def test_filter_shares_by_window_returns_current_round_only():
     rows = [
         {"worker_id": "old", "units": 1, "created_at": "2026-06-05T00:01:00+00:00"},
