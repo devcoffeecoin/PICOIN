@@ -11,6 +11,7 @@ from app.core.money import canonical_amount, to_units
 from app.core.settings import NETWORK_ID, CHAIN_ID, MIN_TX_FEE_UNITS
 from app.core.signatures import generate_keypair
 from app.db.database import get_connection, init_db
+from app.services.mining import register_miner
 from app.services.network import register_peer
 from app.services.wallet import (
     address_from_public_key,
@@ -353,6 +354,167 @@ def test_recent_transactions_endpoint_returns_recent_activity(tmp_path, monkeypa
     assert status_response.status_code == 200
     status_list = status_response.json()
     assert all(tx["status"] == "pending" for tx in status_list)
+
+
+def test_address_transaction_history_returns_confirmed_transfer(tmp_path, monkeypatch) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+
+    sender_keypair = generate_keypair()
+    sender = address_from_public_key(sender_keypair["public_key"])
+    recipient = address_from_public_key(generate_keypair()["public_key"])
+    amount_units = to_units("0.25")
+    fee_units = to_units("0.001")
+    timestamp = "2026-06-14T17:30:00+00:00"
+    unsigned_payload = unsigned_transaction_payload(
+        tx_type="transfer",
+        sender=sender,
+        recipient=recipient,
+        amount=canonical_amount(amount_units),
+        nonce=1,
+        fee=canonical_amount(fee_units),
+        payload={},
+        timestamp=timestamp,
+        network_id=NETWORK_ID,
+        chain_id=CHAIN_ID,
+    )
+    tx_hash = transaction_hash(unsigned_payload, sender_keypair["public_key"])
+    signature = sign_payload(sender_keypair["private_key"], unsigned_payload)
+    miner = register_miner("history-miner", generate_keypair()["public_key"])
+
+    with get_connection() as connection:
+        protocol_params_id = connection.execute("SELECT id FROM protocol_params WHERE active = 1").fetchone()["id"]
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status,
+                protocol_params_id, created_at
+            )
+            VALUES ('task_tx_history', ?, 1, 64, 'bbp_hex_v1', 'accepted', ?, ?)
+            """,
+            (miner["miner_id"], protocol_params_id, timestamp),
+        )
+        connection.execute(
+            """
+            INSERT INTO blocks (
+                height, previous_hash, miner_id, range_start, range_end, algorithm,
+                result_hash, samples, timestamp, block_hash, reward, reward_units,
+                difficulty, task_id, protocol_params_id, protocol_version, validation_mode
+            )
+            VALUES (7, ?, ?, 1, 64, 'bbp_hex_v1', ?, '[]', ?, ?, 0, 0, 1.0,
+                    'task_tx_history', ?, '1.0', 'external_commit_reveal')
+            """,
+            ("0" * 64, miner["miner_id"], "a" * 64, timestamp, "b" * 64, protocol_params_id),
+        )
+        connection.execute(
+            """
+            INSERT INTO mempool_transactions (
+                tx_hash, tx_type, sender, recipient, amount, amount_units, nonce, fee, fee_units,
+                payload, public_key, signature, status, propagated, block_height,
+                confirmed_at, expires_at, created_at, updated_at
+            )
+            VALUES (?, 'transfer', ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, 'confirmed', 0, 7, ?, ?, ?, ?)
+            """,
+            (
+                tx_hash,
+                sender,
+                recipient,
+                canonical_amount(amount_units),
+                amount_units,
+                canonical_amount(fee_units),
+                fee_units,
+                json.dumps(unsigned_payload, sort_keys=True, separators=(",", ":")),
+                sender_keypair["public_key"],
+                signature,
+                timestamp,
+                "2026-06-14T18:30:00+00:00",
+                timestamp,
+                timestamp,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO ledger_entries (
+                account_id, account_type, amount, amount_units, balance_after, balance_after_units,
+                entry_type, block_height, related_id, description, created_at
+            )
+            VALUES (?, 'wallet', ?, ?, 9.749, ?, 'transfer_debit', 7, ?, ?, ?)
+            """,
+            (
+                sender,
+                canonical_amount(-(amount_units + fee_units)),
+                -(amount_units + fee_units),
+                to_units("9.749"),
+                tx_hash,
+                f"transfer debit to {recipient}",
+                timestamp,
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO ledger_entries (
+                account_id, account_type, amount, amount_units, balance_after, balance_after_units,
+                entry_type, block_height, related_id, description, created_at
+            )
+            VALUES (?, 'wallet', ?, ?, 0.25, ?, 'transfer_credit', 7, ?, ?, ?)
+            """,
+            (
+                recipient,
+                canonical_amount(amount_units),
+                amount_units,
+                amount_units,
+                tx_hash,
+                f"transfer credit from {sender}",
+                timestamp,
+            ),
+        )
+
+    response = client.get(f"/transactions/history?address={recipient}&limit=5")
+    assert response.status_code == 200
+    history = response.json()
+    assert history[0]["tx_hash"] == tx_hash
+    assert history[0]["tx_type"] == "transfer"
+    assert history[0]["direction"] == "in"
+    assert history[0]["sender"] == sender
+    assert history[0]["recipient"] == recipient
+    assert history[0]["amount"] == "0.250000"
+    assert history[0]["fee"] == "0.001000"
+    assert history[0]["status"] == "confirmed"
+    assert history[0]["block_height"] == 7
+    assert history[0]["confirmations"] == 1
+
+    alias_response = client.get(f"/wallet/{recipient}/transactions?limit=5")
+    assert alias_response.status_code == 200
+    assert alias_response.json()[0]["tx_hash"] == tx_hash
+
+
+def test_address_transaction_history_returns_snapshot_import_event(tmp_path, monkeypatch) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+
+    address = address_from_public_key(generate_keypair()["public_key"])
+    snapshot_hash = "c" * 64
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO ledger_entries (
+                account_id, account_type, amount, amount_units, balance_after, balance_after_units,
+                entry_type, block_height, related_id, description, created_at
+            )
+            VALUES (?, 'wallet', 0.25, 250000, 0.25, 250000, 'snapshot_state_import',
+                    16414, ?, 'canonical snapshot state import', '2026-06-14T17:28:10+00:00')
+            """,
+            (address, snapshot_hash),
+        )
+
+    response = client.get(f"/transactions/history?address={address}&limit=5")
+    assert response.status_code == 200
+    history = response.json()
+    assert history[0]["tx_hash"] is None
+    assert history[0]["related_id"] == snapshot_hash
+    assert history[0]["tx_type"] == "snapshot_state_import"
+    assert history[0]["status"] == "confirmed"
+    assert history[0]["direction"] == "in"
+    assert history[0]["amount"] == "0.250000"
+    assert "snapshot" in history[0]["note"]
 
 
 def test_transaction_submit_marks_origin_tx_propagated_after_peer_accept(tmp_path, monkeypatch) -> None:

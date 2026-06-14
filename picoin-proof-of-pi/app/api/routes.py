@@ -106,6 +106,7 @@ from app.services.network import (
     get_sync_status,
     heartbeat_peer,
     discover_peers,
+    list_address_transaction_history,
     list_mempool,
     list_mempool_inventory,
     list_peers,
@@ -656,6 +657,20 @@ def recent_transactions(
     return list_recent_transactions(status=status, address=address, limit=limit)
 
 
+@router.get("/transactions/history")
+def transaction_history(
+    address: str = Query(...),
+    limit: int = Query(50, ge=1, le=500),
+    response: Response = None,
+) -> list[dict]:
+    if response is not None:
+        response.headers["Cache-Control"] = "no-store"
+    try:
+        return list_address_transaction_history(address=address, limit=limit)
+    except NetworkError as exc:
+        raise _network_error(exc) from exc
+
+
 @router.get("/mempool/status")
 def mempool_status(response: Response = None) -> dict:
     if response is not None:
@@ -795,6 +810,20 @@ def tx_receive(payload: SignedTransactionRequest) -> dict:
 @router.post("/wallet/create", response_model=WalletCreateResponse, status_code=201)
 def wallet_create(payload: WalletCreateRequest) -> dict:
     return create_wallet(payload.name)
+
+
+@router.get("/wallet/{address}/transactions")
+def wallet_transactions(
+    address: str,
+    limit: int = Query(50, ge=1, le=500),
+    response: Response = None,
+) -> list[dict]:
+    if response is not None:
+        response.headers["Cache-Control"] = "no-store"
+    try:
+        return list_address_transaction_history(address=address, limit=limit)
+    except NetworkError as exc:
+        raise _network_error(exc) from exc
 
 
 @router.get("/wallet/{address}/nonce", response_model=WalletNonceResponse)

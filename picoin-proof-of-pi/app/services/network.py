@@ -1743,6 +1743,207 @@ def list_recent_transactions(status: str | None = None, address: str | None = No
         return [_decode_tx(row_to_dict(row)) for row in connection.execute(query, tuple(params)).fetchall()]
 
 
+def list_address_transaction_history(address: str, limit: int = 50) -> list[dict[str, Any]]:
+    if not is_valid_address(address):
+        raise NetworkError(422, "invalid address")
+    expire_mempool_transactions()
+    with get_connection() as connection:
+        latest_height = _local_effective_block_height()
+        ledger_rows = [
+            row_to_dict(row)
+            for row in connection.execute(
+                """
+                SELECT
+                    ledger_entries.id AS ledger_entry_id,
+                    ledger_entries.account_id,
+                    ledger_entries.account_type,
+                    ledger_entries.amount AS ledger_amount,
+                    ledger_entries.amount_units AS ledger_amount_units,
+                    ledger_entries.balance_after,
+                    ledger_entries.balance_after_units,
+                    ledger_entries.entry_type,
+                    ledger_entries.block_height AS ledger_block_height,
+                    ledger_entries.related_id,
+                    ledger_entries.description,
+                    ledger_entries.created_at AS ledger_created_at,
+                    mempool_transactions.tx_hash,
+                    mempool_transactions.tx_type,
+                    mempool_transactions.sender,
+                    mempool_transactions.recipient,
+                    mempool_transactions.amount AS tx_amount,
+                    mempool_transactions.amount_units AS tx_amount_units,
+                    mempool_transactions.nonce,
+                    mempool_transactions.fee,
+                    mempool_transactions.fee_units,
+                    mempool_transactions.status AS tx_status,
+                    mempool_transactions.block_height AS tx_block_height,
+                    mempool_transactions.selected_at,
+                    mempool_transactions.confirmed_at,
+                    mempool_transactions.failure_reason,
+                    mempool_transactions.rejection_reason,
+                    mempool_transactions.expires_at,
+                    mempool_transactions.created_at AS tx_created_at,
+                    mempool_transactions.updated_at AS tx_updated_at
+                FROM ledger_entries
+                LEFT JOIN mempool_transactions
+                    ON mempool_transactions.tx_hash = ledger_entries.related_id
+                WHERE ledger_entries.account_id = ?
+                ORDER BY ledger_entries.id DESC
+                LIMIT ?
+                """,
+                (address, limit),
+            ).fetchall()
+        ]
+        tx_rows = [
+            row_to_dict(row)
+            for row in connection.execute(
+                """
+                SELECT *
+                FROM mempool_transactions
+                WHERE sender = ? OR recipient = ?
+                ORDER BY COALESCE(confirmed_at, selected_at, updated_at, created_at) DESC
+                LIMIT ?
+                """,
+                (address, address, limit),
+            ).fetchall()
+        ]
+
+    history: list[dict[str, Any]] = []
+    seen_tx_hashes: set[str] = set()
+    for row in ledger_rows:
+        item = _address_history_from_ledger_row(row, address, latest_height)
+        tx_hash = item.get("tx_hash")
+        if tx_hash:
+            seen_tx_hashes.add(str(tx_hash))
+        history.append(item)
+
+    for row in tx_rows:
+        tx_hash = str(row.get("tx_hash") or "")
+        if tx_hash and tx_hash in seen_tx_hashes:
+            continue
+        history.append(_address_history_from_tx_row(row, address, latest_height))
+
+    history.sort(
+        key=lambda item: (
+            str(item.get("timestamp") or ""),
+            int(item.get("block_height") or 0),
+            int(item.get("entry_id") or 0),
+        ),
+        reverse=True,
+    )
+    return history[:limit]
+
+
+def _address_history_from_ledger_row(row: dict[str, Any], address: str, latest_height: int) -> dict[str, Any]:
+    ledger_units = int(row.get("ledger_amount_units") or to_units(row.get("ledger_amount") or 0))
+    balance_after_units = int(row.get("balance_after_units") or to_units(row.get("balance_after") or 0))
+    tx_hash = row.get("tx_hash")
+    block_height = row.get("tx_block_height") or row.get("ledger_block_height")
+    tx_amount_units = int(row.get("tx_amount_units") or 0)
+    amount_units = tx_amount_units if tx_amount_units else abs(ledger_units)
+    fee_units = int(row.get("fee_units") or 0)
+    timestamp = row.get("confirmed_at") or row.get("ledger_created_at")
+    item = {
+        "source": "ledger",
+        "entry_id": row.get("ledger_entry_id"),
+        "entry_type": row.get("entry_type"),
+        "tx_hash": tx_hash,
+        "related_id": row.get("related_id"),
+        "tx_type": row.get("tx_type") or row.get("entry_type"),
+        "direction": _address_history_direction(
+            address,
+            row.get("sender"),
+            row.get("recipient"),
+            ledger_units,
+        ),
+        "sender": row.get("sender"),
+        "recipient": row.get("recipient"),
+        "amount": canonical_amount(abs(amount_units)),
+        "amount_units": abs(amount_units),
+        "fee": canonical_amount(fee_units),
+        "fee_units": fee_units,
+        "ledger_delta": canonical_amount(ledger_units),
+        "ledger_delta_units": ledger_units,
+        "balance_after": canonical_amount(balance_after_units),
+        "balance_after_units": balance_after_units,
+        "status": row.get("tx_status") or ("confirmed" if block_height else "ledger"),
+        "nonce": row.get("nonce"),
+        "block_height": int(block_height) if block_height else None,
+        "confirmations": _address_history_confirmations(block_height, latest_height),
+        "timestamp": timestamp,
+        "confirmed_at": row.get("confirmed_at"),
+        "created_at": row.get("tx_created_at") or row.get("ledger_created_at"),
+        "updated_at": row.get("tx_updated_at") or row.get("ledger_created_at"),
+        "expires_at": row.get("expires_at"),
+        "failure_reason": row.get("failure_reason"),
+        "rejection_reason": row.get("rejection_reason"),
+        "description": row.get("description"),
+    }
+    if item["entry_type"] == "snapshot_state_import":
+        item["note"] = "historical transaction details are unavailable because this balance was imported from a canonical state snapshot"
+    return item
+
+
+def _address_history_from_tx_row(row: dict[str, Any], address: str, latest_height: int) -> dict[str, Any]:
+    tx = _decode_tx(row)
+    amount_units = _tx_amount_units(tx)
+    fee_units = _tx_fee_units(tx)
+    block_height = tx.get("block_height")
+    timestamp = tx.get("confirmed_at") or tx.get("selected_at") or tx.get("created_at")
+    return {
+        "source": "mempool",
+        "entry_id": None,
+        "entry_type": None,
+        "tx_hash": tx.get("tx_hash"),
+        "related_id": tx.get("tx_hash"),
+        "tx_type": tx.get("tx_type"),
+        "direction": _address_history_direction(
+            address,
+            tx.get("sender"),
+            tx.get("recipient"),
+            amount_units,
+        ),
+        "sender": tx.get("sender"),
+        "recipient": tx.get("recipient"),
+        "amount": canonical_amount(abs(amount_units)),
+        "amount_units": abs(amount_units),
+        "fee": canonical_amount(fee_units),
+        "fee_units": fee_units,
+        "ledger_delta": None,
+        "ledger_delta_units": None,
+        "balance_after": None,
+        "balance_after_units": None,
+        "status": tx.get("status"),
+        "nonce": tx.get("nonce"),
+        "block_height": int(block_height) if block_height else None,
+        "confirmations": _address_history_confirmations(block_height, latest_height),
+        "timestamp": timestamp,
+        "confirmed_at": tx.get("confirmed_at"),
+        "created_at": tx.get("created_at"),
+        "updated_at": tx.get("updated_at"),
+        "expires_at": tx.get("expires_at"),
+        "failure_reason": tx.get("failure_reason"),
+        "rejection_reason": tx.get("rejection_reason"),
+        "description": None,
+    }
+
+
+def _address_history_direction(address: str, sender: Any, recipient: Any, ledger_units: int) -> str:
+    if sender == address and recipient == address:
+        return "self"
+    if recipient == address:
+        return "in"
+    if sender == address:
+        return "out"
+    return "in" if ledger_units >= 0 else "out"
+
+
+def _address_history_confirmations(block_height: Any, latest_height: int) -> int:
+    if not block_height:
+        return 0
+    return max(int(latest_height) - int(block_height) + 1, 0)
+
+
 def expire_mempool_transactions() -> int:
     timestamp = _now()
     with get_connection() as connection:
