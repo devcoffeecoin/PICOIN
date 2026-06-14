@@ -1652,7 +1652,7 @@ class PoolCoordinator:
             return
         self._last_payout_attempt = current
         result = self.run_payouts()
-        if result["submitted"] or result["errors"]:
+        if result["submitted"] or result["errors"] or result.get("skipped_insufficient_balance"):
             self.db.event("info", "auto payout run completed", result)
 
     @staticmethod
@@ -1687,10 +1687,45 @@ class PoolCoordinator:
         nonce = self._fetch_wallet_nonce()
         min_units = to_units(self.payout_min_amount)
         fee_units = to_units(self.payout_fee)
+        try:
+            balance_units = self._fetch_payout_wallet_balance_units()
+        except requests.RequestException as exc:
+            result["errors"] += 1
+            self.db.event(
+                "error",
+                "auto payout skipped: payout wallet balance lookup failed",
+                {"wallet_address": self.payout_wallet["address"], "error": str(exc)},
+            )
+            return result
+        reserved_units = self._submitted_payout_reserved_units()
+        remaining_units = max(0, balance_units - reserved_units)
+        skipped_insufficient_balance: list[dict[str, Any]] = []
+        result.update(
+            {
+                "wallet_balance": units_to_float(balance_units),
+                "reserved_submitted": units_to_float(reserved_units),
+                "spendable_balance": units_to_float(remaining_units),
+                "skipped_insufficient_balance": 0,
+            }
+        )
         for worker in workers:
             payout_address = self._normalize_payout_address(worker.get("payout_address"))
             amount_units = floor_picoin_units(worker.get("pending_amount") or 0)
             if amount_units < min_units:
+                continue
+            total_units = amount_units + fee_units
+            if total_units > remaining_units:
+                result["skipped_insufficient_balance"] += 1
+                skipped_insufficient_balance.append(
+                    {
+                        "worker_id": worker["worker_id"],
+                        "payout_address": payout_address,
+                        "amount": units_to_float(amount_units),
+                        "fee": units_to_float(fee_units),
+                        "required": units_to_float(total_units),
+                        "remaining": units_to_float(remaining_units),
+                    }
+                )
                 continue
             payout_id = f"payout_{uuid.uuid4().hex[:16]}"
             amount = units_to_float(amount_units)
@@ -1749,6 +1784,8 @@ class PoolCoordinator:
                 result["submitted"] += 1
                 result["tx_hashes"].append(tx["tx_hash"])
                 nonce += 1
+                remaining_units = max(0, remaining_units - total_units)
+                result["spendable_balance"] = units_to_float(remaining_units)
             except Exception as exc:
                 ambiguous = self._payout_submit_error_is_ambiguous(exc)
                 status = "submitted" if ambiguous else "error"
@@ -1775,6 +1812,19 @@ class PoolCoordinator:
                     },
                 )
                 break
+        if skipped_insufficient_balance:
+            self.db.event(
+                "warning",
+                "auto payout skipped: insufficient confirmed payout wallet balance",
+                {
+                    "wallet_address": self.payout_wallet["address"],
+                    "wallet_balance": units_to_float(balance_units),
+                    "reserved_submitted": units_to_float(reserved_units),
+                    "spendable_balance": units_to_float(remaining_units),
+                    "skipped_count": len(skipped_insufficient_balance),
+                    "skipped": skipped_insufficient_balance[:10],
+                },
+            )
         return result
 
     def reconcile_payout_statuses(self, limit: int = 100) -> dict[str, Any]:
@@ -1793,7 +1843,8 @@ class PoolCoordinator:
                 ).fetchall()
             ]
 
-        result = {"checked": len(rows), "confirmed": 0, "pending": 0, "expired": 0, "errors": 0}
+        result = {"checked": len(rows), "confirmed": 0, "pending": 0, "expired": 0, "errors": 0, "deferred": 0}
+        status_source_healthy: bool | None = None
         for row in rows:
             tx_hash = str(row.get("tx_hash") or "").strip()
             if not tx_hash:
@@ -1847,6 +1898,22 @@ class PoolCoordinator:
             else:
                 continue
 
+            if status_source_healthy is None:
+                status_source_healthy = self._payout_status_source_healthy()
+            if not status_source_healthy:
+                result["pending"] += 1
+                result["deferred"] += 1
+                self.db.event(
+                    "warning",
+                    "payout transaction release deferred until node replay is healthy",
+                    {
+                        "payout_id": row.get("payout_id"),
+                        "tx_hash": tx_hash,
+                        "candidate_error": error,
+                    },
+                )
+                continue
+
             self._update_payout_status(
                 str(row["payout_id"]),
                 "error",
@@ -1892,6 +1959,28 @@ class PoolCoordinator:
         payload = response.json()
         return int(payload.get("next_nonce") or payload.get("nonce") or 1)
 
+    def _fetch_payout_wallet_balance_units(self) -> int:
+        response = requests.get(
+            f"{self.server_url}/wallet/balance/{self.payout_wallet['address']}",
+            timeout=30,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise requests.RequestException("wallet balance response was not an object")
+        return to_units(payload.get("balance") or 0)
+
+    def _submitted_payout_reserved_units(self) -> int:
+        with self.db._lock, self.db.connect() as connection:
+            row = connection.execute(
+                """
+                SELECT COALESCE(SUM(amount_units + fee_units), 0) AS reserved_units
+                FROM pool_payouts
+                WHERE status IN ('submitting', 'submitted')
+                """
+            ).fetchone()
+        return int(row["reserved_units"] or 0)
+
     def _submit_payout_transaction(self, tx: dict[str, Any]) -> dict[str, Any]:
         last_error: Exception | None = None
         for path in ("/tx/submit", "/transactions/submit"):
@@ -1914,6 +2003,30 @@ class PoolCoordinator:
         if not isinstance(payload, dict):
             raise requests.RequestException("transaction status response was not an object")
         return payload
+
+    def _payout_status_source_healthy(self) -> bool:
+        try:
+            response = requests.get(f"{self.server_url}/node/sync-status", timeout=20)
+            response.raise_for_status()
+            payload = response.json()
+        except requests.RequestException as exc:
+            self.db.event(
+                "warning",
+                "payout status release deferred: node sync status unavailable",
+                {"error": str(exc)},
+            )
+            return False
+
+        if not isinstance(payload, dict):
+            return False
+        replay = payload.get("replay") if isinstance(payload.get("replay"), dict) else {}
+        sync_status = str(replay.get("sync_status") or payload.get("sync_status") or "").strip().lower()
+        divergent = bool(replay.get("divergence_detected") or payload.get("divergence_detected"))
+        try:
+            pending_replay = int(payload.get("pending_replay_blocks") or 0)
+        except (TypeError, ValueError):
+            pending_replay = 0
+        return sync_status == "healthy" and not divergent and pending_replay == 0
 
 
 class PoolHandler(BaseHTTPRequestHandler):

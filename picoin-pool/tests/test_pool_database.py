@@ -1326,6 +1326,7 @@ def test_auto_payout_submits_transfer_once_and_subtracts_pending(tmp_path, monke
 
     submitted = []
     monkeypatch.setattr(coordinator, "_fetch_wallet_nonce", lambda: 12)
+    monkeypatch.setattr(coordinator, "_fetch_payout_wallet_balance_units", lambda: 1_000_000)
 
     def fake_submit(tx):
         submitted.append(tx)
@@ -1410,6 +1411,7 @@ def test_auto_payout_submits_multiple_worker_transfers_with_incrementing_nonces(
 
     submitted = []
     monkeypatch.setattr(coordinator, "_fetch_wallet_nonce", lambda: 12)
+    monkeypatch.setattr(coordinator, "_fetch_payout_wallet_balance_units", lambda: 2_000_000)
     monkeypatch.setattr(
         coordinator,
         "_submit_payout_transaction",
@@ -1426,6 +1428,90 @@ def test_auto_payout_submits_multiple_worker_transfers_with_incrementing_nonces(
     stats = coordinator.stats()
     assert stats["payouts"]["paid_total"] == pytest.approx(1.98)
     assert stats["payouts"]["pending_total"] == pytest.approx(0.0)
+
+
+def test_auto_payout_skips_workers_that_exceed_confirmed_wallet_balance(tmp_path, monkeypatch):
+    wallet = create_wallet("pool-payout")
+    alice_wallet = create_wallet("alice")
+    bob_wallet = create_wallet("bob")
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    with db.connect() as connection:
+        connection.executemany(
+            """
+            INSERT INTO pool_workers (worker_id, name, payout_address, registered_at, last_seen_at)
+            VALUES (?, ?, ?, '2026-06-05T00:00:00+00:00', '2026-06-05T00:00:00+00:00')
+            """,
+            [
+                ("alice", "Alice", alice_wallet["address"]),
+                ("bob", "Bob", bob_wallet["address"]),
+            ],
+        )
+        connection.execute(
+            """
+            INSERT INTO pool_tasks (
+                pool_task_id, mainnet_task_id, status, range_start, range_end,
+                algorithm, raw_task_json, raw_reveal_json, created_at, completed_at
+            )
+            VALUES (
+                'pooltask_1', 'task_1', 'accepted', 1, 11,
+                'bbp_hex_v1', '{}', ?, '2026-06-05T00:00:00+00:00', '2026-06-05T00:01:00+00:00'
+            )
+            """,
+            ('{"block":{"reward":1.1}}',),
+        )
+        connection.executemany(
+            """
+            INSERT INTO pool_shares (share_id, worker_id, pool_task_id, chunk_id, units, credited, created_at)
+            VALUES (?, ?, 'pooltask_1', ?, ?, 1, ?)
+            """,
+            [
+                ("share_alice", "alice", "chunk_alice", 9, "2026-06-05T00:00:20+00:00"),
+                ("share_bob", "bob", "chunk_bob", 2, "2026-06-05T00:00:30+00:00"),
+            ],
+        )
+
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size=1,
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=True,
+        pool_fee_percent=0,
+        payout_wallet=wallet,
+        payout_interval_seconds=7200,
+        payout_min_amount=0.1,
+        payout_fee=0.001,
+    )
+
+    submitted = []
+    monkeypatch.setattr(coordinator, "_fetch_wallet_nonce", lambda: 12)
+    monkeypatch.setattr(coordinator, "_fetch_payout_wallet_balance_units", lambda: 201_000)
+    monkeypatch.setattr(
+        coordinator,
+        "_submit_payout_transaction",
+        lambda tx: submitted.append(tx) or {"tx_hash": tx["tx_hash"], "status": "pending"},
+    )
+
+    result = coordinator.run_payouts()
+
+    assert result["submitted"] == 1
+    assert result["skipped_insufficient_balance"] == 1
+    assert submitted[0]["recipient"] == bob_wallet["address"]
+    assert submitted[0]["amount"] == "0.200000"
+    with db.connect() as connection:
+        rows = connection.execute("SELECT worker_id, amount, status FROM pool_payouts").fetchall()
+        events = connection.execute(
+            "SELECT message FROM pool_events WHERE message LIKE 'auto payout skipped:%'"
+        ).fetchall()
+    assert [(row["worker_id"], row["amount"], row["status"]) for row in rows] == [
+        ("bob", pytest.approx(0.2), "submitted")
+    ]
+    assert [row["message"] for row in events] == [
+        "auto payout skipped: insufficient confirmed payout wallet balance"
+    ]
 
 
 def test_auto_payout_timeout_keeps_payment_reserved(tmp_path, monkeypatch):
@@ -1478,6 +1564,7 @@ def test_auto_payout_timeout_keeps_payment_reserved(tmp_path, monkeypatch):
 
     submitted = []
     monkeypatch.setattr(coordinator, "_fetch_wallet_nonce", lambda: 12)
+    monkeypatch.setattr(coordinator, "_fetch_payout_wallet_balance_units", lambda: 1_000_000)
 
     def timeout_submit(tx):
         submitted.append(tx)
@@ -1665,6 +1752,7 @@ def test_reconcile_payout_releases_not_found_submitted_payment(tmp_path, monkeyp
         payout_confirmation_grace_seconds=1,
     )
     monkeypatch.setattr(coordinator, "_fetch_payout_transaction", lambda _tx_hash: {"detail": "transaction not found"})
+    monkeypatch.setattr(coordinator, "_payout_status_source_healthy", lambda: True)
 
     result = coordinator.reconcile_payout_statuses()
 
@@ -1676,6 +1764,58 @@ def test_reconcile_payout_releases_not_found_submitted_payment(tmp_path, monkeyp
     stats = coordinator.stats()
     assert stats["payouts"]["paid_total"] == pytest.approx(0.0)
     assert stats["payouts"]["pending_total"] == pytest.approx(0.99)
+
+
+def test_reconcile_payout_keeps_missing_payment_reserved_when_node_unhealthy(tmp_path, monkeypatch):
+    wallet = create_wallet("pool-payout")
+    worker_wallet = create_wallet("worker")
+    db = PoolDatabase(tmp_path / "pool.sqlite3")
+    with db.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO pool_payouts (
+                payout_id, worker_id, payout_address, amount, amount_units,
+                fee, fee_units, tx_hash, status, raw_tx_json, created_at, updated_at
+            )
+            VALUES (
+                'payout_missing', 'worker-1', ?, 0.99, 990000,
+                0, 0, 'missing_tx', 'submitted', '{}',
+                '2026-06-05T00:00:00+00:00', '2026-06-05T00:00:00+00:00'
+            )
+            """,
+            (worker_wallet["address"],),
+        )
+
+    coordinator = PoolCoordinator(
+        db=db,
+        server_url="https://api.picoin.science",
+        identity={"miner_id": "miner_pool"},
+        chunk_size=1,
+        poll_seconds=1,
+        chunk_timeout_seconds=30,
+        verify_chunks=False,
+        require_worker_payout=True,
+        pool_fee_percent=1,
+        payout_wallet=wallet,
+        payout_interval_seconds=7200,
+        payout_min_amount=0.1,
+        payout_confirmation_grace_seconds=1,
+    )
+    monkeypatch.setattr(coordinator, "_fetch_payout_transaction", lambda _tx_hash: {"detail": "transaction not found"})
+    monkeypatch.setattr(coordinator, "_payout_status_source_healthy", lambda: False)
+
+    result = coordinator.reconcile_payout_statuses()
+
+    assert result["deferred"] == 1
+    assert result["expired"] == 0
+    with db.connect() as connection:
+        row = connection.execute("SELECT status, error FROM pool_payouts WHERE payout_id = 'payout_missing'").fetchone()
+        event = connection.execute(
+            "SELECT message FROM pool_events WHERE message = 'payout transaction release deferred until node replay is healthy'"
+        ).fetchone()
+    assert row["status"] == "submitted"
+    assert row["error"] is None
+    assert event is not None
 
 
 def test_reconcile_payout_marks_confirmed_payment(tmp_path, monkeypatch):
@@ -1717,6 +1857,7 @@ def test_reconcile_payout_marks_confirmed_payment(tmp_path, monkeypatch):
         "_fetch_payout_transaction",
         lambda _tx_hash: {"status": "confirmed", "block_height": 123},
     )
+    monkeypatch.setattr(coordinator, "_payout_status_source_healthy", lambda: True)
 
     result = coordinator.reconcile_payout_statuses()
 
@@ -1774,6 +1915,7 @@ def test_reconcile_payout_releases_empty_transaction_lookup_after_grace(tmp_path
             "fee": None,
         },
     )
+    monkeypatch.setattr(coordinator, "_payout_status_source_healthy", lambda: True)
 
     result = coordinator.reconcile_payout_statuses()
 
