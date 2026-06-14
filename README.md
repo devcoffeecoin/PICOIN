@@ -6,6 +6,8 @@ Picoin is a useful-compute blockchain protocol based on Proof of Pi. Miners comp
 
 This README is the entry point for running Picoin infrastructure. It explains how to configure a node, miner, validator, wallets, genesis, and the environment files used by the repository.
 
+For the initial Layer 2 product concept, see `picoin-proof-of-pi/PICOIN_COMPUTE_MVP.md`.
+
 ## Mainnet Profile
 
 | Parameter | Mainnet value |
