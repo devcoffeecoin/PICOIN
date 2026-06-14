@@ -284,6 +284,8 @@ GET /node/sync-status
 GET /blocks?limit=10
 GET /blocks/{height}/finality
 GET /tx/{tx_hash}
+GET /transactions/history?address={address}&limit=100
+GET /wallet/{address}/transactions?limit=100
 GET /accounts/{address}
 GET /accounts/{address}/history?limit=100
 GET /wallet/{address}/nonce
@@ -292,6 +294,49 @@ GET /mempool/inventory?status=pending&limit=100
 ```
 
 For public exposure, put nginx or another reverse proxy in front of the node. Do not expose wallet private keys or identity JSON files through web roots.
+
+### Address Transaction History
+
+For exchange deposit and withdrawal history, use the exchange-style history endpoint:
+
+```bash
+ADDRESS="PI..."
+curl -sS "http://127.0.0.1:8000/transactions/history?address=$ADDRESS&limit=50" \
+  | python3 -m json.tool
+```
+
+Equivalent wallet-scoped alias:
+
+```bash
+curl -sS "http://127.0.0.1:8000/wallet/$ADDRESS/transactions?limit=50" \
+  | python3 -m json.tool
+```
+
+Each returned item includes the fields exchanges normally need:
+
+```text
+tx_hash
+tx_type
+sender
+recipient
+direction
+amount
+fee
+status
+block_height
+confirmations
+timestamp
+```
+
+Use `status=confirmed` plus the exchange's required confirmation count before crediting a customer deposit.
+
+Do not use these older endpoints as the primary exchange transaction history:
+
+- `/transactions/recent` is a mempool/recent-activity endpoint. It may be empty for an address even when the address has ledger state.
+- `/transactions/{address}` returns raw ledger entries for backward compatibility. It is useful for audit detail, but it is not the exchange-style transaction-history format.
+- `/accounts/{address}/history` also returns raw ledger entries.
+
+If a node was restored from a canonical snapshot, historical per-transaction rows before the snapshot may not exist locally. In that case the history endpoint returns a `snapshot_state_import` item with `tx_hash=null` and `related_id` set to the snapshot/state reference. This proves the imported balance at the snapshot height, but it is not an original deposit transaction. Post-snapshot transfers confirmed by the local node include the normal transaction hash and confirmation count.
 
 ## Wallet Manager Commands
 
