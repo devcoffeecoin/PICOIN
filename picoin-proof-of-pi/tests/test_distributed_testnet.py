@@ -1477,13 +1477,18 @@ def test_receive_block_header_queues_certified_competing_tip_for_orphan_reorg(
         task_id="task_remote_child_receive",
         job_id="job_remote_child_receive",
     )
+    stale_remote_child = dict(remote_child)
+    stale_remote_child.pop("finality_certificate")
+    receive_block_header(stale_remote_child, source_peer_id="peer-reorg")
+    _queue_reorg_block_proposal(stale_remote_child)
 
     parent_received = receive_block_header(remote_parent, source_peer_id="peer-reorg")
     child_received = receive_block_header(remote_child, source_peer_id="peer-reorg")
 
     assert parent_received["status"] == "pending_missing_ancestors"
     assert "competing tip" in parent_received["reason"]
-    assert child_received["status"] == "pending_missing_ancestors"
+    assert child_received["status"] == "known"
+    assert child_received["reason"] == "block header already queued"
 
     plan = plan_orphan_reorg(max_depth=1)
 
@@ -1495,6 +1500,16 @@ def test_receive_block_header_queues_certified_competing_tip_for_orphan_reorg(
     assert plan["selected"]["remote_child"]["source"] == "header"
     assert plan["selected"]["remote_child"]["block_hash"] == remote_child["block_hash"]
     assert plan["selected"]["remote_child"]["certificate"]["quorum_met"] is True
+    with get_connection() as connection:
+        stale_proposal = connection.execute(
+            """
+            SELECT payload
+            FROM consensus_block_proposals
+            WHERE block_hash = ?
+            """,
+            (remote_child["block_hash"],),
+        ).fetchone()
+    assert "finality_certificate" not in json.loads(stale_proposal["payload"])
 
 
 def test_orphan_reorg_apply_replaces_local_tip_with_certified_branch(tmp_path, monkeypatch) -> None:

@@ -820,6 +820,8 @@ def receive_block_header(block: dict[str, Any], source_peer_id: str | None = Non
 
     status = "pending_replay"
     reason = "accepted for distributed replay queue"
+    response_status: str | None = None
+    response_reason: str | None = None
     with get_connection() as connection:
         local = connection.execute("SELECT block_hash FROM blocks WHERE height = ?", (int(block["height"]),)).fetchone()
         queued = connection.execute(
@@ -837,25 +839,10 @@ def receive_block_header(block: dict[str, Any], source_peer_id: str | None = Non
             status = "known"
             reason = "block already known locally"
         elif queued is not None:
-            _record_sync_event(
-                connection,
-                source_peer_id,
-                "block_received",
-                "inbound",
-                "known",
-                {
-                    "height": int(block["height"]),
-                    "block_hash": block["block_hash"],
-                    "reason": "block header already queued",
-                    "queued_status": queued["status"],
-                },
-            )
-            return {
-                "accepted": True,
-                "status": "known",
-                "reason": "block header already queued",
-                "block_hash": block["block_hash"],
-            }
+            status = queued["status"] or status
+            reason = queued["reason"] or "block header already queued"
+            response_status = "known"
+            response_reason = "block header already queued"
         elif local is not None and local["block_hash"] != block["block_hash"]:
             previous_height = int(block["height"]) - 1
             previous_block = None
@@ -937,7 +924,12 @@ def receive_block_header(block: dict[str, Any], source_peer_id: str | None = Non
             status,
             {"height": int(block["height"]), "block_hash": block["block_hash"], "reason": reason},
         )
-    return {"accepted": True, "status": status, "reason": reason, "block_hash": block["block_hash"]}
+    return {
+        "accepted": True,
+        "status": response_status or status,
+        "reason": response_reason or reason,
+        "block_hash": block["block_hash"],
+    }
 
 
 def submit_transaction(tx: dict[str, Any], propagated: bool = False) -> dict[str, Any]:

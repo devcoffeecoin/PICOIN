@@ -2504,11 +2504,19 @@ def _queued_block_candidates(connection: Any, limit: int) -> list[dict[str, Any]
                 "block": block,
             }
         )
-    rows.sort(key=lambda item: (int(item.get("height") or 0), str(item.get("seen_at") or ""), str(item["source"])))
+    rows.sort(
+        key=lambda item: (
+            int(item.get("height") or 0),
+            0 if _block_finality_certificate_summary(item.get("block") or {}).get("quorum_met") else 1,
+            str(item.get("seen_at") or ""),
+            str(item["source"]),
+        )
+    )
     return rows[:limit]
 
 
 def _find_queued_block_by_hash(connection: Any, block_hash: str) -> dict[str, Any] | None:
+    candidates: list[dict[str, Any]] = []
     row = connection.execute(
         """
         SELECT proposal_id AS id, block_hash, height, previous_hash, status,
@@ -2521,17 +2529,19 @@ def _find_queued_block_by_hash(connection: Any, block_hash: str) -> dict[str, An
         (block_hash,),
     ).fetchone()
     if row is not None:
-        return {
-            "source": "proposal",
-            "id": row["id"],
-            "block_hash": row["block_hash"],
-            "height": int(row["height"]),
-            "previous_hash": row["previous_hash"],
-            "status": row["status"],
-            "reason": row["reason"],
-            "seen_at": row["seen_at"],
-            "block": _json_block_payload(row["payload"]),
-        }
+        candidates.append(
+            {
+                "source": "proposal",
+                "id": row["id"],
+                "block_hash": row["block_hash"],
+                "height": int(row["height"]),
+                "previous_hash": row["previous_hash"],
+                "status": row["status"],
+                "reason": row["reason"],
+                "seen_at": row["seen_at"],
+                "block": _json_block_payload(row["payload"]),
+            }
+        )
     row = connection.execute(
         """
         SELECT block_hash AS id, block_hash, height, previous_hash, status,
@@ -2543,19 +2553,30 @@ def _find_queued_block_by_hash(connection: Any, block_hash: str) -> dict[str, An
         """,
         (block_hash,),
     ).fetchone()
-    if row is None:
+    if row is not None:
+        candidates.append(
+            {
+                "source": "header",
+                "id": row["id"],
+                "block_hash": row["block_hash"],
+                "height": int(row["height"]),
+                "previous_hash": row["previous_hash"],
+                "status": row["status"],
+                "reason": row["reason"],
+                "seen_at": row["seen_at"],
+                "block": _json_block_payload(row["payload"]),
+            }
+        )
+    if not candidates:
         return None
-    return {
-        "source": "header",
-        "id": row["id"],
-        "block_hash": row["block_hash"],
-        "height": int(row["height"]),
-        "previous_hash": row["previous_hash"],
-        "status": row["status"],
-        "reason": row["reason"],
-        "seen_at": row["seen_at"],
-        "block": _json_block_payload(row["payload"]),
-    }
+    candidates.sort(
+        key=lambda item: (
+            0 if _block_finality_certificate_summary(item.get("block") or {}).get("quorum_met") else 1,
+            0 if item["source"] == "proposal" else 1,
+            str(item.get("seen_at") or ""),
+        )
+    )
+    return candidates[0]
 
 
 def _json_block_payload(payload: Any) -> dict[str, Any]:
