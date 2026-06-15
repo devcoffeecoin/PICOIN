@@ -78,6 +78,82 @@ The installer creates or refreshes:
 
 For code refreshes on an existing full node, prefer rerunning the installer or `deploy/scripts/refresh-code.sh`. Do not run a raw `rsync --delete` into `/opt/picoin/picoin-proof-of-pi` unless `data/`, `backups/`, `test-output/`, and `.venv/` are excluded or recreated before restarting systemd. The service sandbox declares those paths in `ReadWritePaths`, and systemd fails with `status=226/NAMESPACE` if any declared writable path is missing.
 
+## Update An Existing Exchange Node
+
+If an exchange or infrastructure node was installed before the current exchange-history cache, update the source tree and verify that systemd is running the updated code path. A common failure mode is that `/opt/picoin/src/PICOIN` is updated, but `picoin-node` still runs an older copy from `/opt/picoin/picoin-proof-of-pi`.
+
+Run this on the exchange node:
+
+```bash
+cd /opt/picoin/src/PICOIN || exit 1
+
+git fetch origin
+git reset --hard origin/main
+
+echo "===== VERSION ====="
+git rev-parse --short HEAD
+git log --oneline -3
+```
+
+For peer-backed exchange transaction history, the node must be at commit `7fb3cb2` or newer:
+
+```text
+7fb3cb2 Allow peer-backed exchange history cache
+```
+
+Point `picoin-node` at the updated source tree while keeping the existing runtime virtualenv and existing `/etc/picoin/picoin.env` data paths:
+
+```bash
+sudo mkdir -p /etc/systemd/system/picoin-node.service.d
+
+sudo tee /etc/systemd/system/picoin-node.service.d/zzzz-use-src-main.conf >/dev/null <<'EOF'
+[Service]
+WorkingDirectory=/opt/picoin/src/PICOIN/picoin-proof-of-pi
+Environment=PYTHONPATH=/opt/picoin/src/PICOIN/picoin-proof-of-pi
+ExecStart=
+ExecStart=/opt/picoin/picoin-proof-of-pi/.venv/bin/python -m picoin node start --host 0.0.0.0 --port 8000
+EOF
+
+sudo systemctl daemon-reload
+sudo systemctl restart picoin-node
+sleep 60
+```
+
+Verify that the running service uses the updated working directory:
+
+```bash
+systemctl show picoin-node \
+  -p WorkingDirectory \
+  -p ExecStart \
+  -p EnvironmentFiles \
+  --no-pager
+```
+
+Expected:
+
+```text
+WorkingDirectory=/opt/picoin/src/PICOIN/picoin-proof-of-pi
+```
+
+If `/transactions/history` returns `404`, the node is still running old code. Recheck `WorkingDirectory`, `ExecStart`, restart `picoin-node`, and confirm the source commit again.
+
+If the node returns `500` after changing the working directory, confirm that the data directory and database are still loaded from `/etc/picoin/picoin.env` and not from the repository directory:
+
+```bash
+ENV=$(systemctl show picoin-node -p EnvironmentFiles --value | awk '{print $1}')
+[ -f "$ENV" ] || ENV=/etc/picoin/picoin.env
+
+sudo grep -E '^(PICOIN_DATA_DIR|PICOIN_DB_PATH)=' "$ENV" || true
+sudo find /var/lib/picoin /opt/picoin -name "picoin.sqlite3" -printf "%s %p\n" 2>/dev/null | sort -nr | head -10
+```
+
+The node should use the production database path from the env file, for example:
+
+```text
+PICOIN_DATA_DIR=/var/lib/picoin/data
+PICOIN_DB_PATH=/var/lib/picoin/data/picoin.sqlite3
+```
+
 ## Verify Sync
 
 ```bash
@@ -316,15 +392,46 @@ curl -sS "http://127.0.0.1:8000/wallet/$ADDRESS/transactions?limit=50&confirmed_
 Local exchange nodes can answer this endpoint even when they were restored from a canonical snapshot:
 
 - Post-snapshot transactions are accepted into the local history cache only when the local canonical block contains the transaction hash.
-- Pre-snapshot transactions can be imported from configured peers as read-only archival history and are returned with `archival_peer_backfill=true`.
+- Historical confirmed transactions that are not present in the local detailed ledger can be imported from configured peers as read-only history and are returned with `archival_peer_backfill=true`.
 - This cache is not part of consensus. It never changes blocks, balances, nonces, replay, state roots, mining, or validator decisions.
 - Peer backfill is off by default so normal exchange polling stays fast and local. To fetch archival peer rows for one request, add `backfill=true`.
 - Add `confirmed_only=true` for deposit processing so pending, failed, expired, or unconfirmed transactions without `block_height` are not returned.
+
+For an address whose older transaction rows are missing locally, run a one-time peer backfill:
 
 ```bash
 curl -sS "http://127.0.0.1:8000/transactions/history?address=$ADDRESS&limit=50&confirmed_only=true&backfill=true" \
   | python3 -m json.tool
 ```
+
+After a successful backfill, use the local-only call for normal polling:
+
+```bash
+curl -sS "http://127.0.0.1:8000/transactions/history?address=$ADDRESS&limit=50&confirmed_only=true" \
+  | python3 -m json.tool
+```
+
+Rows imported from a peer are marked like this:
+
+```json
+{
+  "source": "history_cache",
+  "status": "confirmed",
+  "block_height": 16464,
+  "confirmations": 1001,
+  "verified_local_inclusion": false,
+  "archival_peer_backfill": true,
+  "history_cache_source_peer": "https://api.picoin.science",
+  "note": "archival transaction details were imported from a peer as read-only history; local consensus state and balances are not changed by this cache row"
+}
+```
+
+For customer deposit crediting, require:
+
+- `status=confirmed`
+- `block_height` present
+- `confirmations` at or above the exchange policy
+- `tx_hash`, `sender`, `recipient`, and `amount` present
 
 The PHP exchange helper exposes the same read:
 
@@ -386,7 +493,7 @@ Do not use these older endpoints as the primary exchange transaction history:
 
 If a node was restored from a canonical snapshot, historical per-transaction rows before the snapshot may not exist locally. In that case the history endpoint returns a `snapshot_state_import` item with `tx_hash=null` and `related_id` set to the snapshot/state reference. This proves the imported balance at the snapshot height, but it is not an original deposit transaction. Post-snapshot transfers confirmed by the local node include the normal transaction hash and confirmation count.
 
-When peer backfill is enabled, the node may replace that snapshot placeholder with the original pre-snapshot transfer rows fetched from a trusted peer. Those rows are marked as archival history, while local consensus validation remains unchanged.
+When peer backfill is enabled, the node may replace that snapshot placeholder or empty local history with confirmed transfer rows fetched from a trusted peer. Those rows are marked as read-only archival history, while local consensus validation remains unchanged.
 
 Optional history backfill environment variables:
 
