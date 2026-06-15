@@ -86,6 +86,7 @@ from app.services.treasury import (
 )
 from app.services.transactions import (
     apply_block_transactions,
+    ensure_block_transactions_in_mempool,
     get_wallet_nonce_status,
     select_block_transactions,
     transaction_commitment,
@@ -2097,6 +2098,50 @@ def test_failed_nonce_can_be_replaced_by_new_transaction(tmp_path, monkeypatch) 
     assert first_row is None
     assert replacement["tx_hash"] == second["tx_hash"]
     assert replacement["status"] == "pending"
+
+
+def test_canonical_block_transaction_replaces_unconfirmed_nonce_conflict(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "canonical-nonce-conflict.sqlite3")
+
+    wallet = create_wallet("alice")
+    local_recipient = create_wallet("bob")
+    canonical_recipient = create_wallet("carol")
+    local_tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="transfer",
+        sender=wallet["address"],
+        recipient=local_recipient["address"],
+        amount=1,
+        nonce=3,
+    )
+    canonical_tx = sign_transaction(
+        private_key=wallet["private_key"],
+        public_key=wallet["public_key"],
+        tx_type="transfer",
+        sender=wallet["address"],
+        recipient=canonical_recipient["address"],
+        amount=2,
+        nonce=3,
+    )
+    submit_transaction(local_tx)
+
+    with get_connection() as connection:
+        ensure_block_transactions_in_mempool(connection, [canonical_tx], "2026-06-15T15:51:00+00:00")
+        local_row = connection.execute(
+            "SELECT tx_hash FROM mempool_transactions WHERE tx_hash = ?",
+            (local_tx["tx_hash"],),
+        ).fetchone()
+        canonical_row = connection.execute(
+            "SELECT tx_hash, sender, nonce, status FROM mempool_transactions WHERE tx_hash = ?",
+            (canonical_tx["tx_hash"],),
+        ).fetchone()
+
+    assert local_row is None
+    assert canonical_row is not None
+    assert canonical_row["sender"] == wallet["address"]
+    assert canonical_row["nonce"] == 3
+    assert canonical_row["status"] == "pending"
 
 
 def test_invalid_signature_is_rejected(tmp_path, monkeypatch) -> None:

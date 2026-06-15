@@ -559,6 +559,23 @@ def ensure_block_transactions_in_mempool(connection: Any, transactions: list[dic
         ).fetchone()
         if existing is not None:
             continue
+        nonce_conflict = connection.execute(
+            """
+            SELECT tx_hash, status, block_height
+            FROM mempool_transactions
+            WHERE sender = ? AND nonce = ?
+            """,
+            (tx["sender"], int(tx["nonce"])),
+        ).fetchone()
+        if nonce_conflict is not None:
+            if nonce_conflict["status"] == "confirmed" and nonce_conflict["block_height"] is not None:
+                raise TransactionExecutionError(
+                    "canonical block transaction conflicts with confirmed sender nonce"
+                )
+            connection.execute(
+                "DELETE FROM mempool_transactions WHERE tx_hash = ?",
+                (nonce_conflict["tx_hash"],),
+            )
         unsigned_payload = _unsigned_from_tx(tx)
         connection.execute(
             """
