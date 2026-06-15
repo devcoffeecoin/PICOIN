@@ -67,6 +67,10 @@ PEER_REGISTER_MIN_INTERVAL_SECONDS = int(os.getenv("PICOIN_PEER_REGISTER_MIN_INT
 RECONCILE_FETCH_TIMEOUT_SECONDS = float(
     os.getenv("PICOIN_RECONCILE_FETCH_TIMEOUT_SECONDS", str(max(30.0, float(GOSSIP_TIMEOUT_SECONDS) * 3)))
 )
+HISTORY_BACKFILL_ENABLED = os.getenv("PICOIN_HISTORY_BACKFILL_ENABLED", "1").lower() not in {"0", "false", "no"}
+HISTORY_BACKFILL_TIMEOUT_SECONDS = float(os.getenv("PICOIN_HISTORY_BACKFILL_TIMEOUT_SECONDS", "8"))
+HISTORY_BACKFILL_MAX_PEERS = int(os.getenv("PICOIN_HISTORY_BACKFILL_MAX_PEERS", "2"))
+HISTORY_BACKFILL_MIN_INTERVAL_SECONDS = int(os.getenv("PICOIN_HISTORY_BACKFILL_MIN_INTERVAL_SECONDS", "300"))
 _PEER_STALE_MARK_LOCK = threading.Lock()
 _PEER_STALE_MARK_LAST_RUN_MONOTONIC = 0.0
 _PEER_REGISTER_LOCK = threading.Lock()
@@ -1752,10 +1756,19 @@ def list_recent_transactions(status: str | None = None, address: str | None = No
         return [_decode_tx(row_to_dict(row)) for row in connection.execute(query, tuple(params)).fetchall()]
 
 
-def list_address_transaction_history(address: str, limit: int = 50) -> list[dict[str, Any]]:
+def list_address_transaction_history(address: str, limit: int = 50, *, backfill: bool = True) -> list[dict[str, Any]]:
+    address = str(address or "").strip().upper()
     if not is_valid_address(address):
         raise NetworkError(422, "invalid address")
     expire_mempool_transactions()
+    history = _list_local_address_transaction_history(address, limit)
+    if backfill and _address_history_needs_backfill(history):
+        _backfill_address_transaction_history(address, limit)
+        history = _list_local_address_transaction_history(address, limit)
+    return history
+
+
+def _list_local_address_transaction_history(address: str, limit: int = 50) -> list[dict[str, Any]]:
     with get_connection() as connection:
         latest_height = _local_effective_block_height()
         ledger_rows = [
@@ -1816,6 +1829,19 @@ def list_address_transaction_history(address: str, limit: int = 50) -> list[dict
                 (address, address, limit),
             ).fetchall()
         ]
+        cache_rows = [
+            row_to_dict(row)
+            for row in connection.execute(
+                """
+                SELECT *
+                FROM address_transaction_history_cache
+                WHERE address = ?
+                ORDER BY COALESCE(block_height, 0) DESC, updated_at DESC
+                LIMIT ?
+                """,
+                (address, limit),
+            ).fetchall()
+        ]
 
     history: list[dict[str, Any]] = []
     seen_tx_hashes: set[str] = set()
@@ -1831,6 +1857,22 @@ def list_address_transaction_history(address: str, limit: int = 50) -> list[dict
         if tx_hash and tx_hash in seen_tx_hashes:
             continue
         history.append(_address_history_from_tx_row(row, address, latest_height))
+        if tx_hash:
+            seen_tx_hashes.add(tx_hash)
+
+    has_archival_cache = False
+    for row in cache_rows:
+        tx_hash = str(row.get("tx_hash") or "")
+        if tx_hash and tx_hash in seen_tx_hashes:
+            continue
+        item = _address_history_from_cache_row(row, address, latest_height)
+        has_archival_cache = has_archival_cache or bool(item.get("archival_peer_backfill"))
+        if tx_hash:
+            seen_tx_hashes.add(tx_hash)
+        history.append(item)
+
+    if has_archival_cache:
+        history = [item for item in history if item.get("entry_type") != "snapshot_state_import"]
 
     history.sort(
         key=lambda item: (
@@ -1935,6 +1977,303 @@ def _address_history_from_tx_row(row: dict[str, Any], address: str, latest_heigh
         "rejection_reason": tx.get("rejection_reason"),
         "description": None,
     }
+
+
+def _address_history_needs_backfill(history: list[dict[str, Any]]) -> bool:
+    return not any(item.get("tx_hash") for item in history)
+
+
+def _address_history_from_cache_row(row: dict[str, Any], address: str, latest_height: int) -> dict[str, Any]:
+    item = _decode_json(row.get("payload"), {})
+    if not isinstance(item, dict):
+        item = {}
+    block_height = item.get("block_height") or row.get("block_height")
+    amount_units = int(item.get("amount_units") or to_units(item.get("amount") or 0))
+    fee_units = int(item.get("fee_units") or to_units(item.get("fee") or 0))
+    item["source"] = "history_cache"
+    item["tx_hash"] = item.get("tx_hash") or row.get("tx_hash")
+    item["related_id"] = item.get("related_id") or item.get("tx_hash")
+    item["direction"] = item.get("direction") or _address_history_direction(
+        address,
+        item.get("sender"),
+        item.get("recipient"),
+        amount_units,
+    )
+    item["amount"] = canonical_amount(abs(amount_units))
+    item["amount_units"] = abs(amount_units)
+    item["fee"] = canonical_amount(fee_units)
+    item["fee_units"] = fee_units
+    item["block_height"] = int(block_height) if block_height else None
+    item["confirmations"] = _address_history_confirmations(block_height, latest_height)
+    item["verified_local_inclusion"] = bool(row.get("local_verified"))
+    item["archival_peer_backfill"] = bool(row.get("archival"))
+    item["history_cache_source_peer"] = row.get("source_peer")
+    if item["archival_peer_backfill"] and not item["verified_local_inclusion"]:
+        item["note"] = (
+            "archival transaction details were imported from a peer; the local snapshot proves the "
+            "post-snapshot balance, while this pre-snapshot transaction row is read-only history"
+        )
+    return item
+
+
+def _backfill_address_transaction_history(address: str, limit: int) -> int:
+    if not HISTORY_BACKFILL_ENABLED:
+        return 0
+    with get_connection() as connection:
+        if not _should_attempt_address_history_backfill(connection, address):
+            return 0
+        peers = _history_backfill_peer_addresses(connection)
+    if not peers:
+        _record_address_history_backfill(address, item_count=0, last_error="no history backfill peers available")
+        return 0
+
+    imported_total = 0
+    last_error = ""
+    for peer in peers[: max(HISTORY_BACKFILL_MAX_PEERS, 1)]:
+        try:
+            response = requests.get(
+                f"{peer}/transactions/history",
+                params={"address": address, "limit": limit},
+                timeout=max(1.0, HISTORY_BACKFILL_TIMEOUT_SECONDS),
+            )
+            response.raise_for_status()
+            payload = response.json()
+            if not isinstance(payload, list):
+                raise ValueError("history endpoint did not return a list")
+            with get_connection() as connection:
+                imported = _store_peer_address_history(connection, address, peer, payload, limit)
+            imported_total += imported
+            _record_address_history_backfill(
+                address,
+                item_count=imported_total,
+                source_peer=peer,
+                last_error=None if imported else "peer returned no locally usable history items",
+            )
+            if imported:
+                return imported_total
+        except Exception as exc:  # pragma: no cover - exercised through endpoint behavior, not exception type
+            last_error = str(exc)
+            logger.debug("address history backfill failed for %s from %s: %s", address, peer, exc)
+    _record_address_history_backfill(address, item_count=imported_total, last_error=last_error or "no history items")
+    return imported_total
+
+
+def _should_attempt_address_history_backfill(connection: Any, address: str) -> bool:
+    row = connection.execute(
+        "SELECT last_checked_at FROM address_history_backfill_state WHERE address = ?",
+        (address,),
+    ).fetchone()
+    if row is None:
+        return True
+    last_checked = _parse_history_time(row["last_checked_at"])
+    if last_checked is None:
+        return True
+    age = datetime.now(timezone.utc) - last_checked
+    return age.total_seconds() >= max(HISTORY_BACKFILL_MIN_INTERVAL_SECONDS, 0)
+
+
+def _history_backfill_peer_addresses(connection: Any) -> list[str]:
+    candidates = [_normalize_peer_address(peer) for peer in BOOTSTRAP_PEERS]
+    candidates.extend(
+        _normalize_peer_address(row["peer_address"])
+        for row in connection.execute(
+            """
+            SELECT peer_address
+            FROM network_peers
+            WHERE status = 'connected'
+            ORDER BY last_seen DESC
+            LIMIT 20
+            """
+        ).fetchall()
+    )
+    seen: set[str] = set()
+    peers: list[str] = []
+    for peer in candidates:
+        if not peer or peer in seen:
+            continue
+        if not _is_reconcile_peer_address_allowed(peer):
+            continue
+        seen.add(peer)
+        peers.append(peer)
+    return peers
+
+
+def _store_peer_address_history(
+    connection: Any,
+    address: str,
+    source_peer: str,
+    items: list[Any],
+    limit: int,
+) -> int:
+    imported = 0
+    now = _now()
+    for item in items[:limit]:
+        prepared = _prepare_peer_history_cache_item(connection, address, source_peer, item)
+        if prepared is None:
+            continue
+        connection.execute(
+            """
+            INSERT INTO address_transaction_history_cache (
+                history_id, address, tx_hash, block_height, status, source_peer,
+                local_verified, archival, payload, created_at, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(history_id) DO UPDATE SET
+                status = excluded.status,
+                source_peer = excluded.source_peer,
+                local_verified = excluded.local_verified,
+                archival = excluded.archival,
+                payload = excluded.payload,
+                updated_at = excluded.updated_at
+            """,
+            (
+                prepared["history_id"],
+                address,
+                prepared["tx_hash"],
+                prepared["block_height"],
+                prepared["status"],
+                source_peer,
+                1 if prepared["local_verified"] else 0,
+                1 if prepared["archival"] else 0,
+                json.dumps(prepared["payload"], sort_keys=True, separators=(",", ":")),
+                now,
+                now,
+            ),
+        )
+        imported += 1
+    return imported
+
+
+def _prepare_peer_history_cache_item(
+    connection: Any,
+    address: str,
+    source_peer: str,
+    item: Any,
+) -> dict[str, Any] | None:
+    if not isinstance(item, dict):
+        return None
+    tx_hash = str(item.get("tx_hash") or "").strip()
+    if not tx_hash:
+        return None
+    sender = str(item.get("sender") or "").strip().upper() or None
+    recipient = str(item.get("recipient") or "").strip().upper() or None
+    if address not in {sender, recipient}:
+        return None
+    status = str(item.get("status") or "").strip().lower()
+    block_height_value = item.get("block_height")
+    block_height = int(block_height_value) if block_height_value not in {None, ""} else None
+    local_verified = False
+    archival = False
+    if status == "confirmed":
+        if block_height is None:
+            return None
+        local_verified = _local_block_contains_tx_hash(connection, block_height, tx_hash)
+        if not local_verified:
+            snapshot = active_snapshot_base_in_connection(connection)
+            snapshot_height = int(snapshot["height"]) if snapshot else None
+            if snapshot_height is None or block_height > snapshot_height:
+                return None
+            archival = True
+    elif not _local_mempool_has_tx(connection, tx_hash):
+        return None
+
+    amount_units = int(item.get("amount_units") or to_units(item.get("amount") or 0))
+    fee_units = int(item.get("fee_units") or to_units(item.get("fee") or 0))
+    payload = dict(item)
+    payload.update(
+        {
+            "tx_hash": tx_hash,
+            "sender": sender,
+            "recipient": recipient,
+            "status": status,
+            "block_height": block_height,
+            "amount": canonical_amount(abs(amount_units)),
+            "amount_units": abs(amount_units),
+            "fee": canonical_amount(fee_units),
+            "fee_units": fee_units,
+        }
+    )
+    history_id = sha256_text(
+        json.dumps(
+            {
+                "address": address,
+                "tx_hash": tx_hash,
+                "block_height": block_height,
+                "source_peer": source_peer,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+    )
+    return {
+        "history_id": history_id,
+        "tx_hash": tx_hash,
+        "block_height": block_height,
+        "status": status,
+        "local_verified": local_verified,
+        "archival": archival,
+        "payload": payload,
+    }
+
+
+def _local_block_contains_tx_hash(connection: Any, block_height: int, tx_hash: str) -> bool:
+    row = connection.execute("SELECT tx_hashes FROM blocks WHERE height = ?", (block_height,)).fetchone()
+    if row is None:
+        return False
+    tx_hashes = _decode_json(row["tx_hashes"], [])
+    return isinstance(tx_hashes, list) and tx_hash in {str(value) for value in tx_hashes}
+
+
+def _local_mempool_has_tx(connection: Any, tx_hash: str) -> bool:
+    row = connection.execute("SELECT 1 FROM mempool_transactions WHERE tx_hash = ? LIMIT 1", (tx_hash,)).fetchone()
+    return row is not None
+
+
+def _record_address_history_backfill(
+    address: str,
+    *,
+    item_count: int,
+    source_peer: str | None = None,
+    last_error: str | None = None,
+) -> None:
+    now = _now()
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO address_history_backfill_state (
+                address, last_checked_at, last_success_at, last_error, item_count, source_peer, updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(address) DO UPDATE SET
+                last_checked_at = excluded.last_checked_at,
+                last_success_at = COALESCE(excluded.last_success_at, address_history_backfill_state.last_success_at),
+                last_error = excluded.last_error,
+                item_count = excluded.item_count,
+                source_peer = COALESCE(excluded.source_peer, address_history_backfill_state.source_peer),
+                updated_at = excluded.updated_at
+            """,
+            (
+                address,
+                now,
+                now if item_count > 0 and last_error is None else None,
+                last_error,
+                item_count,
+                source_peer,
+                now,
+            ),
+        )
+
+
+def _parse_history_time(value: Any) -> datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
 
 
 def _address_history_direction(address: str, sender: Any, recipient: Any, ledger_units: int) -> str:

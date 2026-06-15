@@ -313,6 +313,30 @@ curl -sS "http://127.0.0.1:8000/wallet/$ADDRESS/transactions?limit=50" \
   | python3 -m json.tool
 ```
 
+Local exchange nodes can answer this endpoint even when they were restored from a canonical snapshot:
+
+- Post-snapshot transactions are accepted into the local history cache only when the local canonical block contains the transaction hash.
+- Pre-snapshot transactions can be imported from configured peers as read-only archival history and are returned with `archival_peer_backfill=true`.
+- This cache is not part of consensus. It never changes blocks, balances, nonces, replay, state roots, mining, or validator decisions.
+- To disable peer backfill for one request and return only rows already stored locally, add `backfill=false`.
+
+```bash
+curl -sS "http://127.0.0.1:8000/transactions/history?address=$ADDRESS&limit=50&backfill=false" \
+  | python3 -m json.tool
+```
+
+The PHP exchange helper exposes the same read:
+
+```php
+$history = get_picoin_transactions('PI...', 'http://127.0.0.1:8000', 50);
+if (!$history['success']) {
+    throw new RuntimeException($history['error']);
+}
+foreach ($history['transactions'] as $tx) {
+    // Use status=confirmed and confirmations >= your policy before crediting.
+}
+```
+
 Each returned item includes the fields exchanges normally need:
 
 ```text
@@ -360,6 +384,17 @@ Do not use these older endpoints as the primary exchange transaction history:
 - `/accounts/{address}/history` also returns raw ledger entries.
 
 If a node was restored from a canonical snapshot, historical per-transaction rows before the snapshot may not exist locally. In that case the history endpoint returns a `snapshot_state_import` item with `tx_hash=null` and `related_id` set to the snapshot/state reference. This proves the imported balance at the snapshot height, but it is not an original deposit transaction. Post-snapshot transfers confirmed by the local node include the normal transaction hash and confirmation count.
+
+When peer backfill is enabled, the node may replace that snapshot placeholder with the original pre-snapshot transfer rows fetched from a trusted peer. Those rows are marked as archival history, while local consensus validation remains unchanged.
+
+Optional history backfill environment variables:
+
+```text
+PICOIN_HISTORY_BACKFILL_ENABLED=1
+PICOIN_HISTORY_BACKFILL_TIMEOUT_SECONDS=8
+PICOIN_HISTORY_BACKFILL_MAX_PEERS=2
+PICOIN_HISTORY_BACKFILL_MIN_INTERVAL_SECONDS=300
+```
 
 ## Wallet Manager Commands
 

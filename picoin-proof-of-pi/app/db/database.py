@@ -739,6 +739,30 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
                 UNIQUE(sender, nonce)
             );
 
+            CREATE TABLE IF NOT EXISTS address_transaction_history_cache (
+                history_id TEXT PRIMARY KEY,
+                address TEXT NOT NULL,
+                tx_hash TEXT,
+                block_height INTEGER,
+                status TEXT,
+                source_peer TEXT NOT NULL,
+                local_verified INTEGER NOT NULL DEFAULT 0,
+                archival INTEGER NOT NULL DEFAULT 0,
+                payload TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            );
+
+            CREATE TABLE IF NOT EXISTS address_history_backfill_state (
+                address TEXT PRIMARY KEY,
+                last_checked_at TEXT NOT NULL,
+                last_success_at TEXT,
+                last_error TEXT,
+                item_count INTEGER NOT NULL DEFAULT 0,
+                source_peer TEXT,
+                updated_at TEXT NOT NULL
+            );
+
             CREATE TABLE IF NOT EXISTS task_tx_snapshots (
                 snapshot_id TEXT PRIMARY KEY,
                 task_id TEXT NOT NULL UNIQUE,
@@ -899,6 +923,9 @@ def init_db(db_path: Path = DATABASE_PATH) -> None:
             CREATE INDEX IF NOT EXISTS idx_mempool_status ON mempool_transactions(status);
             CREATE INDEX IF NOT EXISTS idx_mempool_sender_nonce ON mempool_transactions(sender, nonce);
             CREATE INDEX IF NOT EXISTS idx_mempool_selected_task ON mempool_transactions(selected_task_id);
+            CREATE INDEX IF NOT EXISTS idx_address_history_cache_address ON address_transaction_history_cache(address);
+            CREATE INDEX IF NOT EXISTS idx_address_history_cache_tx ON address_transaction_history_cache(tx_hash);
+            CREATE INDEX IF NOT EXISTS idx_address_history_cache_height ON address_transaction_history_cache(block_height);
             CREATE INDEX IF NOT EXISTS idx_task_tx_snapshots_task ON task_tx_snapshots(task_id);
             CREATE INDEX IF NOT EXISTS idx_task_tx_snapshots_block ON task_tx_snapshots(block_height);
             CREATE INDEX IF NOT EXISTS idx_network_block_headers_height ON network_block_headers(height);

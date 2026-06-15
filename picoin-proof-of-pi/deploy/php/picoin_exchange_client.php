@@ -281,6 +281,35 @@ function get_picoin_balance(
     }
 }
 
+function get_picoin_transactions(
+    string $address,
+    string $nodeUrl = 'http://127.0.0.1:8000',
+    int $limit = 50,
+    bool $backfill = true
+): array {
+    try {
+        $nodeUrl = rtrim($nodeUrl, '/');
+        $query = http_build_query([
+            'address' => $address,
+            'limit' => max(1, min($limit, 500)),
+            'backfill' => $backfill ? 'true' : 'false',
+        ]);
+        $transactions = picoin_http_json('GET', $nodeUrl . '/transactions/history?' . $query);
+
+        return [
+            'success' => true,
+            'transactions' => $transactions,
+            'error' => null,
+        ];
+    } catch (Throwable $exception) {
+        return [
+            'success' => false,
+            'transactions' => [],
+            'error' => $exception->getMessage(),
+        ];
+    }
+}
+
 function send_picoin(
     string $senderAddress,
     string $senderPrivateKey,

@@ -60,5 +60,7 @@ def test_exchange_php_reference_exposes_balance_helper() -> None:
     )
 
     assert "function get_picoin_balance(" in source
+    assert "function get_picoin_transactions(" in source
     assert "'http://127.0.0.1:8000'" in source
     assert "'/wallet/balance/'" in source
+    assert "'/transactions/history?'" in source

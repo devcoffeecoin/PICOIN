@@ -661,12 +661,13 @@ def recent_transactions(
 def transaction_history(
     address: str = Query(...),
     limit: int = Query(50, ge=1, le=500),
+    backfill: bool = Query(True),
     response: Response = None,
 ) -> list[dict]:
     if response is not None:
         response.headers["Cache-Control"] = "no-store"
     try:
-        return list_address_transaction_history(address=address, limit=limit)
+        return list_address_transaction_history(address=address, limit=limit, backfill=backfill)
     except NetworkError as exc:
         raise _network_error(exc) from exc
 
@@ -816,12 +817,13 @@ def wallet_create(payload: WalletCreateRequest) -> dict:
 def wallet_transactions(
     address: str,
     limit: int = Query(50, ge=1, le=500),
+    backfill: bool = Query(True),
     response: Response = None,
 ) -> list[dict]:
     if response is not None:
         response.headers["Cache-Control"] = "no-store"
     try:
-        return list_address_transaction_history(address=address, limit=limit)
+        return list_address_transaction_history(address=address, limit=limit, backfill=backfill)
     except NetworkError as exc:
         raise _network_error(exc) from exc
 

@@ -517,6 +517,208 @@ def test_address_transaction_history_returns_snapshot_import_event(tmp_path, mon
     assert "snapshot" in history[0]["note"]
 
 
+def test_address_transaction_history_backfills_verified_peer_history(tmp_path, monkeypatch) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+
+    recipient = address_from_public_key(generate_keypair()["public_key"])
+    sender = address_from_public_key(generate_keypair()["public_key"])
+    tx_hash = "a" * 64
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO miners (miner_id, name, public_key, registered_at)
+            VALUES ('miner-history', 'miner-history', 'ed25519:test-history', '2026-06-14T16:30:00+00:00')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status, created_at
+            )
+            VALUES ('task-history', 'miner-history', 1, 2, 'bbp_hex_v1', 'accepted',
+                    '2026-06-14T16:30:00+00:00')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO blocks (
+                height, previous_hash, miner_id, range_start, range_end, algorithm,
+                result_hash, samples, timestamp, block_hash, reward, task_id, tx_hashes, tx_count
+            )
+            VALUES (10, ?, 'miner-history', 1, 2, 'bbp_hex_v1',
+                    ?, '[]', '2026-06-14T16:37:39+00:00', ?, 3.1416, 'task-history', ?, 1)
+            """,
+            ("0" * 64, "b" * 64, "c" * 64, json.dumps([tx_hash])),
+        )
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> list[dict]:
+            return [
+                {
+                    "tx_hash": tx_hash,
+                    "tx_type": "transfer",
+                    "sender": sender,
+                    "recipient": recipient,
+                    "amount": 0.15,
+                    "amount_units": 150000,
+                    "fee": 0.001,
+                    "fee_units": 1000,
+                    "status": "confirmed",
+                    "nonce": 2,
+                    "block_height": 10,
+                    "timestamp": "2026-06-14T16:35:19Z",
+                    "confirmed_at": "2026-06-14T16:37:39Z",
+                    "created_at": "2026-06-14T16:35:19Z",
+                    "updated_at": "2026-06-14T16:37:39Z",
+                }
+            ]
+
+    requested: list[tuple[str, dict]] = []
+
+    def fake_get(url: str, *, params: dict, timeout: float) -> FakeResponse:
+        requested.append((url, params))
+        return FakeResponse()
+
+    monkeypatch.setattr("app.services.network.BOOTSTRAP_PEERS", ["https://api.picoin.science"])
+    monkeypatch.setattr("app.services.network.HISTORY_BACKFILL_MIN_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr("app.services.network.requests.get", fake_get)
+
+    response = client.get(f"/transactions/history?address={recipient}&limit=5")
+    assert response.status_code == 200
+    history = response.json()
+    assert requested
+    assert history[0]["tx_hash"] == tx_hash
+    assert history[0]["source"] == "history_cache"
+    assert history[0]["direction"] == "in"
+    assert history[0]["amount"] == "0.150000"
+    assert history[0]["block_height"] == 10
+    assert history[0]["confirmations"] == 1
+    assert history[0]["verified_local_inclusion"] is True
+    assert history[0]["archival_peer_backfill"] is False
+
+
+def test_address_transaction_history_ignores_incompatible_history_peer(tmp_path, monkeypatch) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+
+    address = address_from_public_key(generate_keypair()["public_key"])
+
+    def fake_get(url: str, *, params: dict, timeout: float) -> object:
+        raise RuntimeError("old peer does not support transaction history")
+
+    monkeypatch.setattr("app.services.network.BOOTSTRAP_PEERS", ["https://old-node.example"])
+    monkeypatch.setattr("app.services.network.HISTORY_BACKFILL_MIN_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr("app.services.network.requests.get", fake_get)
+
+    response = client.get(f"/transactions/history?address={address}&limit=5")
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_address_transaction_history_backfills_pre_snapshot_archival_history(tmp_path, monkeypatch) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+
+    recipient = address_from_public_key(generate_keypair()["public_key"])
+    sender = address_from_public_key(generate_keypair()["public_key"])
+    tx_hash = "d" * 64
+    snapshot_hash = "e" * 64
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO miners (miner_id, name, public_key, registered_at)
+            VALUES ('miner-snapshot', 'miner-snapshot', 'ed25519:test-snapshot', '2026-06-14T17:00:00+00:00')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status, created_at
+            )
+            VALUES ('task-snapshot', 'miner-snapshot', 1, 2, 'bbp_hex_v1', 'accepted',
+                    '2026-06-14T17:00:00+00:00')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO blocks (
+                height, previous_hash, miner_id, range_start, range_end, algorithm,
+                result_hash, samples, timestamp, block_hash, reward, task_id, tx_hashes, tx_count
+            )
+            VALUES (10, ?, 'miner-snapshot', 1, 2, 'bbp_hex_v1',
+                    ?, '[]', '2026-06-14T17:00:00+00:00', ?, 3.1416, 'task-snapshot', '[]', 0)
+            """,
+            ("0" * 64, "f" * 64, "1" * 64),
+        )
+        connection.execute(
+            """
+            INSERT INTO canonical_snapshot_imports (
+                import_id, height, block_hash, previous_hash, state_root, balances_hash,
+                snapshot_hash, balances_count, total_balance, total_balance_units,
+                source, active, activated_at, state_applied, state_applied_at,
+                imported_at, verified_at, payload
+            )
+            VALUES ('snapshot-import', 10, ?, ?, ?, ?, ?, 1, 0.25, 250000,
+                    'test', 1, '2026-06-14T17:00:00+00:00', 1,
+                    '2026-06-14T17:00:00+00:00', '2026-06-14T17:00:00+00:00',
+                    '2026-06-14T17:00:00+00:00', '{}')
+            """,
+            ("1" * 64, "0" * 64, "2" * 64, "3" * 64, snapshot_hash),
+        )
+        connection.execute(
+            """
+            INSERT INTO ledger_entries (
+                account_id, account_type, amount, amount_units, balance_after, balance_after_units,
+                entry_type, block_height, related_id, description, created_at
+            )
+            VALUES (?, 'wallet', 0.25, 250000, 0.25, 250000, 'snapshot_state_import',
+                    10, ?, 'canonical snapshot state import', '2026-06-14T17:00:00+00:00')
+            """,
+            (recipient, snapshot_hash),
+        )
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> list[dict]:
+            return [
+                {
+                    "tx_hash": tx_hash,
+                    "tx_type": "transfer",
+                    "sender": sender,
+                    "recipient": recipient,
+                    "amount": 0.25,
+                    "amount_units": 250000,
+                    "fee": 0.001,
+                    "fee_units": 1000,
+                    "status": "confirmed",
+                    "nonce": 1,
+                    "block_height": 8,
+                    "timestamp": "2026-06-14T16:33:09Z",
+                    "confirmed_at": "2026-06-14T16:33:39Z",
+                    "created_at": "2026-06-14T16:33:09Z",
+                    "updated_at": "2026-06-14T16:33:39Z",
+                }
+            ]
+
+    monkeypatch.setattr("app.services.network.BOOTSTRAP_PEERS", ["https://api.picoin.science"])
+    monkeypatch.setattr("app.services.network.HISTORY_BACKFILL_MIN_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr("app.services.network.requests.get", lambda *args, **kwargs: FakeResponse())
+
+    response = client.get(f"/transactions/history?address={recipient}&limit=5")
+    assert response.status_code == 200
+    history = response.json()
+    assert len(history) == 1
+    assert history[0]["tx_hash"] == tx_hash
+    assert history[0]["source"] == "history_cache"
+    assert history[0]["verified_local_inclusion"] is False
+    assert history[0]["archival_peer_backfill"] is True
+    assert history[0]["confirmations"] == 3
+    assert "pre-snapshot" in history[0]["note"]
+
+
 def test_wallet_balance_returns_zero_for_unused_valid_address(tmp_path, monkeypatch) -> None:
     client = _build_test_client(tmp_path, monkeypatch)
 
