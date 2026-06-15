@@ -1570,6 +1570,61 @@ def test_orphan_reorg_apply_replaces_local_tip_with_certified_branch(tmp_path, m
     assert statuses[remote_child["block_hash"]] == "canonical_after_reorg"
 
 
+def test_orphan_reorg_apply_rolls_back_tip_retarget_event(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "orphan-reorg-apply-retarget.sqlite3")
+    miner_key = generate_keypair()
+    miner = register_miner("orphan-reorg-apply-retarget-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    local_block = get_block(1)
+    assert local_block is not None
+    new_params_id = _retarget_active_protocol_for_test(segment_size=12, difficulty=0.25)
+    with get_connection() as connection:
+        event = connection.execute(
+            "SELECT previous_protocol_params_id FROM retarget_events WHERE new_protocol_params_id = ?",
+            (new_params_id,),
+        ).fetchone()
+    previous_params_id = int(event["previous_protocol_params_id"])
+
+    remote_parent = _certified_reorg_block(
+        height=1,
+        previous_hash=GENESIS_HASH,
+        task_id="task_remote_parent_retarget_apply",
+        job_id="job_remote_parent_retarget_apply",
+    )
+    remote_child = _certified_reorg_block(
+        height=2,
+        previous_hash=remote_parent["block_hash"],
+        task_id="task_remote_child_retarget_apply",
+        job_id="job_remote_child_retarget_apply",
+    )
+    _queue_reorg_block_proposal(remote_parent)
+    _queue_reorg_block_proposal(remote_child)
+
+    prepared = prepare_orphan_reorg(max_depth=1)
+    assert prepared["prepared"] is True
+    assert prepared["apply_blockers"] == []
+
+    result = apply_orphan_reorg(max_depth=1)
+
+    assert result["applied"] is True
+    assert result["removed"]["retarget_rollback"]["deleted_events"] == 1
+    assert result["removed"]["retarget_rollback"]["deactivated_protocol_params"] == [new_params_id]
+    assert result["removed"]["retarget_rollback"]["reactivated_protocol_params_id"] == previous_params_id
+    with get_connection() as connection:
+        active = connection.execute(
+            "SELECT id FROM protocol_params WHERE active = 1 ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        event_count = connection.execute("SELECT COUNT(*) AS count FROM retarget_events").fetchone()
+        new_params = connection.execute(
+            "SELECT active FROM protocol_params WHERE id = ?",
+            (new_params_id,),
+        ).fetchone()
+    assert int(active["id"]) == previous_params_id
+    assert int(event_count["count"]) == 0
+    assert int(new_params["active"]) == 0
+    assert get_full_economic_audit()["valid"] is True
+
+
 def test_orphan_reorg_apply_rolls_back_and_replays_safe_transfer(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "orphan-reorg-apply-transfer.sqlite3")
     miner_key = generate_keypair()

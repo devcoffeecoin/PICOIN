@@ -1736,13 +1736,6 @@ def _orphan_reorg_apply_blockers(connection: Any, selected: dict[str, Any]) -> l
     ):
         blockers.append("retroactive_audit_trigger_height_requires_manual_reorg")
 
-    retarget = connection.execute(
-        "SELECT COUNT(*) AS count FROM retarget_events WHERE epoch_end_height >= ?",
-        (local_height,),
-    ).fetchone()
-    if int((retarget or {})["count"] if retarget else 0) > 0:
-        blockers.append("retarget_events_require_manual_reorg")
-
     ledger_rows = connection.execute(
         """
         SELECT DISTINCT entry_type
@@ -1991,6 +1984,7 @@ def _remove_local_orphan_tip_for_reorg(connection: Any, height: int, block_hash:
     connection.execute("DELETE FROM canonical_checkpoints WHERE height >= ?", (height,))
     connection.execute("DELETE FROM finality_certificates WHERE block_height = ? AND block_hash = ?", (height, block_hash))
     connection.execute("DELETE FROM blocks WHERE height = ? AND block_hash = ?", (height, block_hash))
+    retarget_rollback = _rollback_reorg_retarget_events(connection, height, timestamp)
     _rebuild_balances_from_ledger(connection, timestamp)
     rebuilt_account_nonces = _rebuild_account_nonces_from_confirmed_mempool(connection, timestamp)
 
@@ -2037,6 +2031,65 @@ def _remove_local_orphan_tip_for_reorg(connection: Any, height: int, block_hash:
         "released_transactions": released_transactions,
         "rebuilt_account_nonces": rebuilt_account_nonces,
         "reversed_ledger": ledger_summary,
+        "retarget_rollback": retarget_rollback,
+    }
+
+
+def _rollback_reorg_retarget_events(connection: Any, height: int, timestamp: str) -> dict[str, Any]:
+    rows = [
+        row_to_dict(row)
+        for row in connection.execute(
+            """
+            SELECT id, previous_protocol_params_id, new_protocol_params_id,
+                   epoch_start_height, epoch_end_height
+            FROM retarget_events
+            WHERE epoch_end_height >= ?
+            ORDER BY epoch_end_height ASC, id ASC
+            """,
+            (height,),
+        ).fetchall()
+    ]
+    if not rows:
+        return {
+            "deleted_events": 0,
+            "deactivated_protocol_params": [],
+            "reactivated_protocol_params_id": None,
+        }
+
+    event_ids = [int(row["id"]) for row in rows if row.get("id") is not None]
+    new_param_ids = [
+        int(row["new_protocol_params_id"])
+        for row in rows
+        if row.get("new_protocol_params_id") is not None
+    ]
+    previous_protocol_params_id = rows[0].get("previous_protocol_params_id")
+    previous_protocol_params_id = (
+        int(previous_protocol_params_id)
+        if previous_protocol_params_id is not None
+        else None
+    )
+
+    if event_ids:
+        connection.execute(
+            f"DELETE FROM retarget_events WHERE id IN ({','.join('?' for _ in event_ids)})",
+            tuple(event_ids),
+        )
+    if new_param_ids:
+        connection.execute(
+            f"UPDATE protocol_params SET active = 0 WHERE id IN ({','.join('?' for _ in new_param_ids)})",
+            tuple(new_param_ids),
+        )
+    if previous_protocol_params_id is not None:
+        connection.execute("UPDATE protocol_params SET active = 0 WHERE active = 1")
+        connection.execute(
+            "UPDATE protocol_params SET active = 1 WHERE id = ?",
+            (previous_protocol_params_id,),
+        )
+    return {
+        "deleted_events": len(event_ids),
+        "deactivated_protocol_params": new_param_ids,
+        "reactivated_protocol_params_id": previous_protocol_params_id,
+        "updated_at": timestamp,
     }
 
 
