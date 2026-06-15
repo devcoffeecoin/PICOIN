@@ -59,6 +59,7 @@ from app.services.network import (
     receive_block_header,
     reconcile_connected_peers,
     reconcile_peer,
+    reconcile_validator_heartbeats,
     register_peer,
     select_reconcile_peers,
     submit_transaction,
@@ -850,6 +851,60 @@ def test_reconcile_peer_imports_validator_heartbeat_inventory(tmp_path, monkeypa
         validator = connection.execute(
             "SELECT online_status, node_id, advertised_address FROM validators WHERE validator_id = ?",
             ("validator_peer_gossip",),
+        ).fetchone()
+    assert validator["online_status"] == "online"
+    assert validator["node_id"] == "validator-peer-node"
+    assert validator["advertised_address"] == "http://validator-peer:8000"
+
+
+def test_reconcile_validator_heartbeats_imports_only_liveness(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "peer-reconcile-validator-heartbeats-only.sqlite3")
+    keys = generate_keypair()
+    heartbeat = {
+        "validator_id": "validator_peer_liveness_only",
+        "node_id": "validator-peer-node",
+        "public_key": keys["public_key"],
+        "address": "http://validator-peer:8000",
+        "local_height": 100,
+        "effective_height": 100,
+        "latest_block_hash": "a" * 64,
+        "pending_replay_blocks": 0,
+        "sync_lag": 0,
+        "version": PROTOCOL_VERSION,
+        "heartbeat_at": datetime.now(timezone.utc).isoformat(),
+    }
+    heartbeat["signature"] = sign_payload(keys["private_key"], heartbeat)
+
+    class Response:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self._payload
+
+    requested_urls: list[str] = []
+
+    def fake_get(url, timeout=0):
+        requested_urls.append(url)
+        if url == "http://peer-a:8000/validators/heartbeat/inventory?limit=100":
+            return Response({"heartbeats": [{"heartbeat": heartbeat, "observed_at": heartbeat["heartbeat_at"]}]})
+        raise AssertionError(url)
+
+    monkeypatch.setattr("app.services.network.requests.get", fake_get)
+
+    result = reconcile_validator_heartbeats("http://peer-a:8000", limit=100)
+
+    assert requested_urls == ["http://peer-a:8000/validators/heartbeat/inventory?limit=100"]
+    assert result["validator_heartbeat_inventory_seen"] == 1
+    assert result["validator_heartbeats_imported"] == 1
+    assert result["errors"] == []
+    with get_connection() as connection:
+        validator = connection.execute(
+            "SELECT online_status, node_id, advertised_address FROM validators WHERE validator_id = ?",
+            ("validator_peer_liveness_only",),
         ).fetchone()
     assert validator["online_status"] == "online"
     assert validator["node_id"] == "validator-peer-node"

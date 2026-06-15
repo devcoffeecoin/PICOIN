@@ -6,6 +6,7 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import quote
 
 import requests
 import uvicorn
@@ -243,10 +244,31 @@ def command_node_reconcile(args: argparse.Namespace) -> int:
     return 0
 
 
+def command_node_reconcile_validator_heartbeats(args: argparse.Namespace) -> int:
+    peer_url = normalize_server_url(args.peer)
+    path = f"/node/reconcile/validator-heartbeats?limit={args.limit}&peer_address={quote(peer_url, safe='')}"
+    print_json(post_json(args.server, path))
+    return 0
+
+
 def command_node_catch_up(args: argparse.Namespace) -> int:
     server_url = normalize_server_url(args.server)
     peer_url = normalize_server_url(args.peer) if args.peer else None
     rounds: list[dict[str, Any]] = []
+    heartbeat_sync: dict[str, Any] | None = None
+    if peer_url:
+        try:
+            heartbeat_sync = post_json(
+                server_url,
+                f"/node/reconcile/validator-heartbeats?limit={args.reconcile_limit}&peer_address={quote(peer_url, safe='')}",
+            )
+        except requests.RequestException as exc:
+            heartbeat_sync = {
+                "peer_address": peer_url,
+                "validator_heartbeat_inventory_seen": 0,
+                "validator_heartbeats_imported": 0,
+                "errors": [str(exc)],
+            }
     initial_sync = get_json(server_url, "/node/sync-status")
     final_sync = initial_sync
     final_audit: dict[str, Any] = {}
@@ -385,6 +407,7 @@ def command_node_catch_up(args: argparse.Namespace) -> int:
     output = {
         "server": server_url,
         "peer": peer_url,
+        "heartbeat_sync": heartbeat_sync,
         "status": "ok" if healthy else "needs_attention",
         "initial_height": initial_sync.get("effective_latest_block_height", initial_sync.get("latest_block_height", 0)),
         "initial_local_block_height": initial_sync.get("local_block_height", initial_sync.get("latest_block_height", 0)),
@@ -1709,6 +1732,15 @@ def add_node_parser(subparsers: argparse._SubParsersAction) -> None:
     reconcile_parser.add_argument("--peer", help="Optional peer base URL")
     reconcile_parser.add_argument("--limit", type=int, default=16)
     reconcile_parser.set_defaults(func=command_node_reconcile)
+
+    reconcile_heartbeats_parser = node_subparsers.add_parser(
+        "reconcile-validator-heartbeats",
+        help="Import only signed validator heartbeat liveness from one peer",
+    )
+    reconcile_heartbeats_parser.add_argument("--server", default=DEFAULT_SERVER_URL)
+    reconcile_heartbeats_parser.add_argument("--peer", required=True, help="Peer base URL")
+    reconcile_heartbeats_parser.add_argument("--limit", type=int, default=100)
+    reconcile_heartbeats_parser.set_defaults(func=command_node_reconcile_validator_heartbeats)
 
     catch_up_parser = node_subparsers.add_parser("catch-up", help="Reconcile, replay and audit until the node is caught up")
     catch_up_parser.add_argument("--server", default=DEFAULT_SERVER_URL)

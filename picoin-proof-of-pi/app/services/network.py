@@ -1324,6 +1324,40 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
     return result
 
 
+def reconcile_validator_heartbeats(peer_address: str, limit: int = 100) -> dict[str, Any]:
+    peer_address = peer_address.rstrip("/")
+    result: dict[str, Any] = {
+        "peer_address": peer_address,
+        "validator_heartbeat_inventory_seen": 0,
+        "validator_heartbeats_imported": 0,
+        "errors": [],
+    }
+    try:
+        heartbeat_rows = _fetch_peer_validator_heartbeats(peer_address, result, limit=limit)
+        from app.services.mining import receive_validator_heartbeat_gossip
+
+        for heartbeat in heartbeat_rows:
+            try:
+                imported = receive_validator_heartbeat_gossip(heartbeat, source_peer=peer_address)
+                if imported.get("status") == "accepted":
+                    result["validator_heartbeats_imported"] += 1
+            except Exception as exc:
+                result["errors"].append(f"validator heartbeat {heartbeat.get('validator_id')}: {exc}")
+    except Exception as exc:
+        result["errors"].append(f"validator heartbeats: {exc}")
+
+    with get_connection() as connection:
+        _record_sync_event(
+            connection,
+            None,
+            "validator_heartbeat_reconcile",
+            "outbound",
+            "completed" if not result["errors"] else "partial",
+            result,
+        )
+    return result
+
+
 def _fetch_peer_mempool_transactions(
     peer_address: str,
     result: dict[str, Any],

@@ -115,6 +115,7 @@ from app.services.network import (
     receive_block_header,
     reconcile_connected_peers,
     reconcile_peer,
+    reconcile_validator_heartbeats,
     register_peer,
     gossip_json,
     submit_transaction,
@@ -452,6 +453,14 @@ def node_reconcile(
             "results": [result],
         }
     return reconcile_connected_peers(limit)
+
+
+@router.post("/node/reconcile/validator-heartbeats")
+def node_reconcile_validator_heartbeats(
+    peer_address: str = Query(...),
+    limit: int = Query(100, ge=1, le=500),
+) -> dict:
+    return reconcile_validator_heartbeats(peer_address, limit=limit)
 
 
 @router.get("/consensus/status", response_model=ConsensusStatusResponse)

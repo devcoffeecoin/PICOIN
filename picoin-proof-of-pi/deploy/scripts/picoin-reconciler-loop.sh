@@ -88,9 +88,24 @@ run_reconcile() {
   fi
 }
 
+run_heartbeat_sync() {
+  local peer="$1"
+  if [ -z "$peer" ]; then
+    echo "heartbeat reconcile requires a peer" >&2
+    return 2
+  fi
+  "$PICOIN_PYTHON" -m picoin node reconcile-validator-heartbeats \
+    --server "$PICOIN_SERVER" \
+    --peer "$peer" \
+    --limit "$PICOIN_RECONCILER_LIMIT"
+}
+
 run_peer_sync() {
   local peer="$1"
   case "$PICOIN_RECONCILER_MODE" in
+    heartbeats)
+      run_heartbeat_sync "$peer"
+      ;;
     reconcile)
       run_reconcile "$peer"
       ;;
