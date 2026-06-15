@@ -2024,7 +2024,7 @@ def _address_history_from_tx_row(row: dict[str, Any], address: str, latest_heigh
 def _address_history_needs_backfill(history: list[dict[str, Any]], *, confirmed_only: bool = False) -> bool:
     if confirmed_only:
         return not any(
-            item.get("tx_hash") and item.get("status") == "confirmed" and item.get("block_height") is not None
+            item.get("tx_hash") and item.get("status") == "confirmed" and _address_history_has_positive_block(item)
             for item in history
         )
     return not any(item.get("tx_hash") for item in history)
@@ -2034,8 +2034,15 @@ def _confirmed_address_history(history: list[dict[str, Any]]) -> list[dict[str, 
     return [
         item
         for item in history
-        if item.get("status") == "confirmed" and item.get("tx_hash") and item.get("block_height") is not None
+        if item.get("status") == "confirmed" and item.get("tx_hash") and _address_history_has_positive_block(item)
     ]
+
+
+def _address_history_has_positive_block(item: dict[str, Any]) -> bool:
+    try:
+        return int(item.get("block_height") or 0) > 0
+    except (TypeError, ValueError):
+        return False
 
 
 def _address_history_from_cache_row(row: dict[str, Any], address: str, latest_height: int) -> dict[str, Any]:
@@ -2220,7 +2227,7 @@ def _prepare_peer_history_cache_item(
     local_verified = False
     archival = False
     if status == "confirmed":
-        if block_height is None:
+        if block_height is None or block_height <= 0:
             return None
         local_verified = _local_block_contains_tx_hash(connection, block_height, tx_hash)
         if not local_verified:

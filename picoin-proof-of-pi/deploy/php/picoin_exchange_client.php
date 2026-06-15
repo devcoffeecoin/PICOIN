@@ -285,7 +285,7 @@ function get_picoin_transactions(
     string $address,
     string $nodeUrl = 'http://127.0.0.1:8000',
     int $limit = 50,
-    bool $backfill = false,
+    bool $backfill = true,
     bool $confirmedOnly = true
 ): array {
     try {

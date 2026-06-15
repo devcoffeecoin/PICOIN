@@ -65,3 +65,4 @@ def test_exchange_php_reference_exposes_balance_helper() -> None:
     assert "'/wallet/balance/'" in source
     assert "'/transactions/history?'" in source
     assert "'confirmed_only'" in source
+    assert "bool $backfill = true" in source

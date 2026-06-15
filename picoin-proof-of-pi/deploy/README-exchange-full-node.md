@@ -394,20 +394,20 @@ Local exchange nodes can answer this endpoint even when they were restored from 
 - Post-snapshot transactions are accepted into the local history cache only when the local canonical block contains the transaction hash.
 - Historical confirmed transactions that are not present in the local detailed ledger can be imported from configured peers as read-only history and are returned with `archival_peer_backfill=true`.
 - This cache is not part of consensus. It never changes blocks, balances, nonces, replay, state roots, mining, or validator decisions.
-- Peer backfill is off by default so normal exchange polling stays fast and local. To fetch archival peer rows for one request, add `backfill=true`.
+- Peer backfill is enabled by default and protected by a short timeout plus a per-address retry interval. To force a local-only read, add `backfill=false`.
 - Add `confirmed_only=true` for deposit processing so pending, failed, expired, or unconfirmed transactions without `block_height` are not returned.
 
-For an address whose older transaction rows are missing locally, run a one-time peer backfill:
-
-```bash
-curl -sS "http://127.0.0.1:8000/transactions/history?address=$ADDRESS&limit=50&confirmed_only=true&backfill=true" \
-  | python3 -m json.tool
-```
-
-After a successful backfill, use the local-only call for normal polling:
+For an address whose older transaction rows are missing locally, this normal exchange call attempts peer backfill automatically:
 
 ```bash
 curl -sS "http://127.0.0.1:8000/transactions/history?address=$ADDRESS&limit=50&confirmed_only=true" \
+  | python3 -m json.tool
+```
+
+After a successful backfill, the same call is served from the local cache. For strict local-only polling:
+
+```bash
+curl -sS "http://127.0.0.1:8000/transactions/history?address=$ADDRESS&limit=50&confirmed_only=true&backfill=false" \
   | python3 -m json.tool
 ```
 
@@ -429,7 +429,7 @@ Rows imported from a peer are marked like this:
 For customer deposit crediting, require:
 
 - `status=confirmed`
-- `block_height` present
+- `block_height` present and greater than `0`
 - `confirmations` at or above the exchange policy
 - `tx_hash`, `sender`, `recipient`, and `amount` present
 
@@ -441,7 +441,7 @@ if (!$history['success']) {
     throw new RuntimeException($history['error']);
 }
 foreach ($history['transactions'] as $tx) {
-    // Use status=confirmed and confirmations >= your policy before crediting.
+    // Credit only status=confirmed, block_height > 0, and confirmations >= your policy.
 }
 ```
 
@@ -461,7 +461,7 @@ confirmations
 timestamp
 ```
 
-Use `status=confirmed` plus the exchange's required confirmation count before crediting a customer deposit.
+Use `status=confirmed`, `block_height > 0`, and the exchange's required confirmation count before crediting a customer deposit. Never credit rows with `block_height` equal to `0`, `null`, or missing.
 
 ### Balance Reads
 

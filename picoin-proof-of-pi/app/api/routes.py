@@ -670,7 +670,7 @@ def recent_transactions(
 def transaction_history(
     address: str = Query(...),
     limit: int = Query(50, ge=1, le=500),
-    backfill: bool = Query(False),
+    backfill: bool = Query(True),
     confirmed_only: bool = Query(False),
     response: Response = None,
 ) -> list[dict]:
