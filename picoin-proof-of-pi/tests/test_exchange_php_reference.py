@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from app.core.crypto import canonical_json
 from app.core.signatures import verify_payload_signature
 from app.services.wallet import (
@@ -50,3 +52,13 @@ def test_exchange_php_reference_must_sign_empty_payload_as_object() -> None:
     assert canonical_json(wrong_payload) != CANONICAL_UNSIGNED_TRANSFER
     assert transaction_hash(wrong_payload, PUBLIC_KEY) != TX_HASH
     assert not verify_payload_signature(PUBLIC_KEY, wrong_payload, SIGNATURE)
+
+
+def test_exchange_php_reference_exposes_balance_helper() -> None:
+    source = (Path(__file__).resolve().parents[1] / "deploy/php/picoin_exchange_client.php").read_text(
+        encoding="utf-8"
+    )
+
+    assert "function get_picoin_balance(" in source
+    assert "'http://127.0.0.1:8000'" in source
+    assert "'/wallet/balance/'" in source

@@ -141,7 +141,7 @@ from app.services.state import (
     validate_snapshot_document,
     verify_checkpoint,
 )
-from app.services.wallet import create_wallet
+from app.services.wallet import create_wallet, is_valid_address
 from app.services.science import (
     ScienceError,
     approve_science_reserve_activation,
@@ -1455,14 +1455,34 @@ def balance_by_account(account_id: str) -> dict:
 
 @router.get("/accounts/{address}")
 def account_by_address(address: str) -> dict:
-    balance = get_balance(address)
+    normalized = address.strip().upper()
+    balance = get_balance(normalized)
     if balance is None:
+        if is_valid_address(normalized):
+            return {
+                "address": normalized,
+                "account_id": normalized,
+                "balance": 0.0,
+                "balance_units": 0,
+                "account_type": "wallet",
+                "available_balance": 0.0,
+                "immature_rewards": 0.0,
+                "immature_reward_count": 0,
+                "total_balance": 0.0,
+                "last_updated": None,
+                "updated_at": None,
+            }
         raise HTTPException(status_code=404, detail="account not found")
     return {
         "address": balance["account_id"],
         "account_id": balance["account_id"],
         "balance": balance["balance"],
+        "balance_units": balance.get("balance_units"),
         "account_type": balance["account_type"],
+        "available_balance": balance.get("available_balance", balance["balance"]),
+        "immature_rewards": balance.get("immature_rewards", 0.0),
+        "immature_reward_count": balance.get("immature_reward_count", 0),
+        "total_balance": balance.get("total_balance", balance["balance"]),
         "last_updated": balance["updated_at"],
         "updated_at": balance["updated_at"],
     }

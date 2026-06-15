@@ -246,12 +246,47 @@ function picoin_next_nonce(string $nodeUrl, string $senderAddress): int
     return (int)$response['next_nonce'];
 }
 
+function get_picoin_balance(
+    string $address,
+    string $nodeUrl = 'http://127.0.0.1:8000'
+): array {
+    try {
+        $nodeUrl = rtrim($nodeUrl, '/');
+        $response = picoin_http_json('GET', $nodeUrl . '/wallet/balance/' . rawurlencode($address));
+        $balanceUnits = isset($response['balance_units'])
+            ? (int)$response['balance_units']
+            : picoin_to_units((string)($response['balance'] ?? '0'));
+
+        return [
+            'success' => true,
+            'address' => $response['address'] ?? $address,
+            'balance' => picoin_units_to_amount($balanceUnits),
+            'balance_units' => $balanceUnits,
+            'available_balance' => sprintf('%.6f', (float)($response['available_balance'] ?? $response['balance'] ?? 0)),
+            'total_balance' => sprintf('%.6f', (float)($response['total_balance'] ?? $response['balance'] ?? 0)),
+            'updated_at' => $response['updated_at'] ?? null,
+            'error' => null,
+        ];
+    } catch (Throwable $exception) {
+        return [
+            'success' => false,
+            'address' => $address,
+            'balance' => null,
+            'balance_units' => null,
+            'available_balance' => null,
+            'total_balance' => null,
+            'updated_at' => null,
+            'error' => $exception->getMessage(),
+        ];
+    }
+}
+
 function send_picoin(
     string $senderAddress,
     string $senderPrivateKey,
     string $recipientAddress,
     $amount,
-    string $nodeUrl = 'https://api.picoin.science',
+    string $nodeUrl = 'http://127.0.0.1:8000',
     $fee = '0.001000'
 ): array {
     try {

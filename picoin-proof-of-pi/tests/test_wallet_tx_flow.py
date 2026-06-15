@@ -517,6 +517,24 @@ def test_address_transaction_history_returns_snapshot_import_event(tmp_path, mon
     assert "snapshot" in history[0]["note"]
 
 
+def test_wallet_balance_returns_zero_for_unused_valid_address(tmp_path, monkeypatch) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+
+    address = address_from_public_key(generate_keypair()["public_key"])
+
+    response = client.get(f"/wallet/balance/{address.lower()}")
+    assert response.status_code == 200
+    balance = response.json()
+    assert balance["address"] == address
+    assert balance["account_id"] == address
+    assert balance["account_type"] == "wallet"
+    assert balance["balance"] == 0.0
+    assert balance["balance_units"] == 0
+    assert balance["available_balance"] == 0.0
+    assert balance["total_balance"] == 0.0
+    assert balance["updated_at"] is None
+
+
 def test_transaction_submit_marks_origin_tx_propagated_after_peer_accept(tmp_path, monkeypatch) -> None:
     """Origin node should persist propagated=1 after at least one peer accepts the transaction."""
     client = _build_test_client(tmp_path, monkeypatch)

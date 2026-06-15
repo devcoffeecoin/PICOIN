@@ -286,6 +286,7 @@ GET /blocks/{height}/finality
 GET /tx/{tx_hash}
 GET /transactions/history?address={address}&limit=100
 GET /wallet/{address}/transactions?limit=100
+GET /wallet/balance/{address}
 GET /accounts/{address}
 GET /accounts/{address}/history?limit=100
 GET /wallet/{address}/nonce
@@ -329,6 +330,28 @@ timestamp
 ```
 
 Use `status=confirmed` plus the exchange's required confirmation count before crediting a customer deposit.
+
+### Balance Reads
+
+Use the local node for balance reads after `/node/sync-status` reports `replay.sync_status=healthy`, `divergence_detected=false`, and `readiness.tx_submit_ready=true`:
+
+```bash
+ADDRESS="PI..."
+curl -sS "http://127.0.0.1:8000/wallet/balance/$ADDRESS" \
+  | python3 -m json.tool
+```
+
+For a valid PI wallet address with no local balance row yet, the endpoint returns `balance=0.0` and `balance_units=0` instead of a 404. This is intentional for exchange deposit wallets: a newly generated address is valid even before it receives its first transaction.
+
+The PHP exchange helper includes the same call:
+
+```php
+$balance = get_picoin_balance('PI...', 'http://127.0.0.1:8000');
+if (!$balance['success']) {
+    throw new RuntimeException($balance['error']);
+}
+echo $balance['balance'];
+```
 
 Do not use these older endpoints as the primary exchange transaction history:
 
