@@ -258,9 +258,7 @@ def command_node_catch_up(args: argparse.Namespace) -> int:
         queue_size = int(replay_status.get("queue_size") or sync_before.get("pending_replay_blocks") or 0)
         replay_active = bool(replay_status.get("active"))
         replay_stalled = bool(replay_status.get("replay_stalled")) or replay_status.get("sync_status") == "stalled"
-        skip_reconcile = (replay_active and not replay_stalled) or (
-            queue_size > args.replay_backlog_threshold and not replay_stalled
-        )
+        skip_reconcile = (replay_active and not replay_stalled) or queue_size > args.replay_backlog_threshold
         if skip_reconcile:
             reconcile = {
                 "attempted": 0,
@@ -276,7 +274,20 @@ def command_node_catch_up(args: argparse.Namespace) -> int:
             path = f"/node/reconcile?limit={args.reconcile_limit}"
             if peer_url:
                 path = f"{path}&peer_address={peer_url}"
-            reconcile = post_json(server_url, path)
+            try:
+                reconcile = post_json(server_url, path)
+            except requests.RequestException as exc:
+                reconcile = {
+                    "attempted": 0,
+                    "blocks_imported": 0,
+                    "proposals_imported": 0,
+                    "transactions_imported": 0,
+                    "errors": 1,
+                    "results": [],
+                    "skipped": False,
+                    "reason": "reconcile request failed; continuing to replay",
+                    "error": str(exc),
+                }
         if replay_active and not replay_stalled:
             replay = {"status": "active", "imported": 0, "headers_imported": 0, "headers_skipped": 0, "errors": []}
         else:

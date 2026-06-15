@@ -326,7 +326,7 @@ def test_node_catch_up_reconciles_when_replay_active_but_stalled(monkeypatch, ca
         if path == "/replay/status":
             return {
                 "active": True,
-                "queue_size": 5,
+                "queue_size": 1,
                 "sync_status": "stalled",
                 "replay_stalled": True,
                 "divergence_detected": False,
@@ -368,13 +368,81 @@ def test_node_catch_up_reconciles_when_replay_active_but_stalled(monkeypatch, ca
         reconcile_limit=10,
         replay_limit=10,
         replay_batch_size=10,
-        replay_backlog_threshold=1,
+        replay_backlog_threshold=10,
     )
 
     assert command_node_catch_up(args) == 0
     output = json.loads(capsys.readouterr().out)
     assert output["status"] == "ok"
     assert any(path.startswith("/node/reconcile") for path in post_paths)
+    assert any(path.startswith("/consensus/replay") for path in post_paths)
+
+
+def test_node_catch_up_prioritizes_replay_when_stalled_backlog_is_high(monkeypatch, capsys) -> None:
+    post_paths: list[str] = []
+
+    def fake_get_json(server_url: str, path: str) -> dict:
+        assert server_url in {"http://node", "https://api.picoin.science"}
+        if path == "/node/sync-status":
+            replay_ran = any(item.startswith("/consensus/replay") for item in post_paths)
+            return {
+                "pending_replay_blocks": 0 if replay_ran else 50,
+                "effective_latest_block_height": 10,
+                "effective_latest_block_hash": "a" * 64,
+                "latest_block_height": 10,
+                "latest_block_hash": "a" * 64,
+                "local_block_height": 10,
+                "snapshot_height": 0,
+                "catch_up_start_height": 10,
+                "network_id": "picoin-mainnet-v1",
+                "chain_id": 314159,
+                "genesis_hash": "b" * 64,
+            }
+        if path == "/replay/status":
+            return {
+                "active": False,
+                "queue_size": 50,
+                "sync_status": "stalled",
+                "replay_stalled": True,
+                "divergence_detected": False,
+            }
+        if path == "/audit/full":
+            return {"valid": True, "issues": []}
+        raise AssertionError(path)
+
+    def fake_post_json(server_url: str, path: str) -> dict:
+        assert server_url == "http://node"
+        post_paths.append(path)
+        if path.startswith("/node/reconcile"):
+            raise AssertionError("high replay backlog should be drained before reconcile")
+        if path.startswith("/consensus/replay"):
+            return {
+                "status": "ok",
+                "imported": 1,
+                "headers_imported": 50,
+                "headers_skipped": 0,
+                "errors": [],
+                "queue_size": 0,
+                "active": False,
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr("picoin.cli.get_json", fake_get_json)
+    monkeypatch.setattr("picoin.cli.post_json", fake_post_json)
+    args = argparse.Namespace(
+        server="http://node",
+        peer="https://api.picoin.science",
+        max_rounds=1,
+        reconcile_limit=10,
+        replay_limit=50,
+        replay_batch_size=50,
+        replay_backlog_threshold=25,
+    )
+
+    assert command_node_catch_up(args) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "ok"
+    assert all(not path.startswith("/node/reconcile") for path in post_paths)
     assert any(path.startswith("/consensus/replay") for path in post_paths)
 
 
