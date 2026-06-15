@@ -302,14 +302,14 @@ For exchange deposit and withdrawal history, use the exchange-style history endp
 
 ```bash
 ADDRESS="PI..."
-curl -sS "http://127.0.0.1:8000/transactions/history?address=$ADDRESS&limit=50" \
+curl -sS "http://127.0.0.1:8000/transactions/history?address=$ADDRESS&limit=50&confirmed_only=true" \
   | python3 -m json.tool
 ```
 
 Equivalent wallet-scoped alias:
 
 ```bash
-curl -sS "http://127.0.0.1:8000/wallet/$ADDRESS/transactions?limit=50" \
+curl -sS "http://127.0.0.1:8000/wallet/$ADDRESS/transactions?limit=50&confirmed_only=true" \
   | python3 -m json.tool
 ```
 
@@ -318,10 +318,11 @@ Local exchange nodes can answer this endpoint even when they were restored from 
 - Post-snapshot transactions are accepted into the local history cache only when the local canonical block contains the transaction hash.
 - Pre-snapshot transactions can be imported from configured peers as read-only archival history and are returned with `archival_peer_backfill=true`.
 - This cache is not part of consensus. It never changes blocks, balances, nonces, replay, state roots, mining, or validator decisions.
-- To disable peer backfill for one request and return only rows already stored locally, add `backfill=false`.
+- Peer backfill is off by default so normal exchange polling stays fast and local. To fetch archival peer rows for one request, add `backfill=true`.
+- Add `confirmed_only=true` for deposit processing so pending, failed, expired, or unconfirmed transactions without `block_height` are not returned.
 
 ```bash
-curl -sS "http://127.0.0.1:8000/transactions/history?address=$ADDRESS&limit=50&backfill=false" \
+curl -sS "http://127.0.0.1:8000/transactions/history?address=$ADDRESS&limit=50&confirmed_only=true&backfill=true" \
   | python3 -m json.tool
 ```
 
@@ -391,7 +392,7 @@ Optional history backfill environment variables:
 
 ```text
 PICOIN_HISTORY_BACKFILL_ENABLED=1
-PICOIN_HISTORY_BACKFILL_TIMEOUT_SECONDS=8
+PICOIN_HISTORY_BACKFILL_TIMEOUT_SECONDS=2
 PICOIN_HISTORY_BACKFILL_MAX_PEERS=2
 PICOIN_HISTORY_BACKFILL_MIN_INTERVAL_SECONDS=300
 ```

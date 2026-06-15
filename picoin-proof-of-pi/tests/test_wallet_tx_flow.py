@@ -468,7 +468,7 @@ def test_address_transaction_history_returns_confirmed_transfer(tmp_path, monkey
             ),
         )
 
-    response = client.get(f"/transactions/history?address={recipient}&limit=5")
+    response = client.get(f"/transactions/history?address={recipient}&limit=5&backfill=true")
     assert response.status_code == 200
     history = response.json()
     assert history[0]["tx_hash"] == tx_hash
@@ -505,7 +505,7 @@ def test_address_transaction_history_returns_snapshot_import_event(tmp_path, mon
             (address, snapshot_hash),
         )
 
-    response = client.get(f"/transactions/history?address={address}&limit=5")
+    response = client.get(f"/transactions/history?address={address}&limit=5&backfill=true")
     assert response.status_code == 200
     history = response.json()
     assert history[0]["tx_hash"] is None
@@ -586,7 +586,7 @@ def test_address_transaction_history_backfills_verified_peer_history(tmp_path, m
     monkeypatch.setattr("app.services.network.HISTORY_BACKFILL_MIN_INTERVAL_SECONDS", 0)
     monkeypatch.setattr("app.services.network.requests.get", fake_get)
 
-    response = client.get(f"/transactions/history?address={recipient}&limit=5")
+    response = client.get(f"/transactions/history?address={recipient}&limit=5&backfill=true")
     assert response.status_code == 200
     history = response.json()
     assert requested
@@ -707,7 +707,7 @@ def test_address_transaction_history_backfills_pre_snapshot_archival_history(tmp
     monkeypatch.setattr("app.services.network.HISTORY_BACKFILL_MIN_INTERVAL_SECONDS", 0)
     monkeypatch.setattr("app.services.network.requests.get", lambda *args, **kwargs: FakeResponse())
 
-    response = client.get(f"/transactions/history?address={recipient}&limit=5")
+    response = client.get(f"/transactions/history?address={recipient}&limit=5&backfill=true")
     assert response.status_code == 200
     history = response.json()
     assert len(history) == 1
@@ -717,6 +717,39 @@ def test_address_transaction_history_backfills_pre_snapshot_archival_history(tmp
     assert history[0]["archival_peer_backfill"] is True
     assert history[0]["confirmations"] == 3
     assert "pre-snapshot" in history[0]["note"]
+
+
+def test_address_transaction_history_confirmed_only_hides_unconfirmed_without_block_height(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+
+    sender = address_from_public_key(generate_keypair()["public_key"])
+    recipient = address_from_public_key(generate_keypair()["public_key"])
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO mempool_transactions (
+                tx_hash, tx_type, sender, recipient, amount, amount_units, nonce, fee, fee_units,
+                payload, public_key, signature, status, expires_at, created_at, updated_at
+            )
+            VALUES (?, 'transfer', ?, ?, 0.25, 250000, 1, 0.001, 1000,
+                    '{}', 'ed25519:test', 'sig', 'pending',
+                    '2099-06-14T17:33:09+00:00', '2026-06-14T16:33:09+00:00',
+                    '2026-06-14T16:33:09+00:00')
+            """,
+            ("f" * 64, sender, recipient),
+        )
+
+    unfiltered = client.get(f"/transactions/history?address={recipient}&limit=5")
+    assert unfiltered.status_code == 200
+    assert unfiltered.json()[0]["status"] == "pending"
+    assert unfiltered.json()[0]["block_height"] is None
+
+    confirmed_only = client.get(f"/transactions/history?address={recipient}&limit=5&confirmed_only=true")
+    assert confirmed_only.status_code == 200
+    assert confirmed_only.json() == []
 
 
 def test_wallet_balance_returns_zero_for_unused_valid_address(tmp_path, monkeypatch) -> None:

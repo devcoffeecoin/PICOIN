@@ -68,7 +68,7 @@ RECONCILE_FETCH_TIMEOUT_SECONDS = float(
     os.getenv("PICOIN_RECONCILE_FETCH_TIMEOUT_SECONDS", str(max(30.0, float(GOSSIP_TIMEOUT_SECONDS) * 3)))
 )
 HISTORY_BACKFILL_ENABLED = os.getenv("PICOIN_HISTORY_BACKFILL_ENABLED", "1").lower() not in {"0", "false", "no"}
-HISTORY_BACKFILL_TIMEOUT_SECONDS = float(os.getenv("PICOIN_HISTORY_BACKFILL_TIMEOUT_SECONDS", "8"))
+HISTORY_BACKFILL_TIMEOUT_SECONDS = float(os.getenv("PICOIN_HISTORY_BACKFILL_TIMEOUT_SECONDS", "2"))
 HISTORY_BACKFILL_MAX_PEERS = int(os.getenv("PICOIN_HISTORY_BACKFILL_MAX_PEERS", "2"))
 HISTORY_BACKFILL_MIN_INTERVAL_SECONDS = int(os.getenv("PICOIN_HISTORY_BACKFILL_MIN_INTERVAL_SECONDS", "300"))
 _PEER_STALE_MARK_LOCK = threading.Lock()
@@ -1756,15 +1756,23 @@ def list_recent_transactions(status: str | None = None, address: str | None = No
         return [_decode_tx(row_to_dict(row)) for row in connection.execute(query, tuple(params)).fetchall()]
 
 
-def list_address_transaction_history(address: str, limit: int = 50, *, backfill: bool = True) -> list[dict[str, Any]]:
+def list_address_transaction_history(
+    address: str,
+    limit: int = 50,
+    *,
+    backfill: bool = False,
+    confirmed_only: bool = False,
+) -> list[dict[str, Any]]:
     address = str(address or "").strip().upper()
     if not is_valid_address(address):
         raise NetworkError(422, "invalid address")
     expire_mempool_transactions()
     history = _list_local_address_transaction_history(address, limit)
-    if backfill and _address_history_needs_backfill(history):
+    if backfill and _address_history_needs_backfill(history, confirmed_only=confirmed_only):
         _backfill_address_transaction_history(address, limit)
         history = _list_local_address_transaction_history(address, limit)
+    if confirmed_only:
+        history = _confirmed_address_history(history)
     return history
 
 
@@ -1979,8 +1987,21 @@ def _address_history_from_tx_row(row: dict[str, Any], address: str, latest_heigh
     }
 
 
-def _address_history_needs_backfill(history: list[dict[str, Any]]) -> bool:
+def _address_history_needs_backfill(history: list[dict[str, Any]], *, confirmed_only: bool = False) -> bool:
+    if confirmed_only:
+        return not any(
+            item.get("tx_hash") and item.get("status") == "confirmed" and item.get("block_height") is not None
+            for item in history
+        )
     return not any(item.get("tx_hash") for item in history)
+
+
+def _confirmed_address_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        item
+        for item in history
+        if item.get("status") == "confirmed" and item.get("tx_hash") and item.get("block_height") is not None
+    ]
 
 
 def _address_history_from_cache_row(row: dict[str, Any], address: str, latest_height: int) -> dict[str, Any]:
