@@ -378,7 +378,7 @@ def test_node_catch_up_reconciles_when_replay_active_but_stalled(monkeypatch, ca
     assert any(path.startswith("/consensus/replay") for path in post_paths)
 
 
-def test_node_catch_up_prioritizes_replay_when_stalled_backlog_is_high(monkeypatch, capsys) -> None:
+def test_node_catch_up_continues_to_replay_when_stalled_reconcile_times_out(monkeypatch, capsys) -> None:
     post_paths: list[str] = []
 
     def fake_get_json(server_url: str, path: str) -> dict:
@@ -414,7 +414,9 @@ def test_node_catch_up_prioritizes_replay_when_stalled_backlog_is_high(monkeypat
         assert server_url == "http://node"
         post_paths.append(path)
         if path.startswith("/node/reconcile"):
-            raise AssertionError("high replay backlog should be drained before reconcile")
+            import requests
+
+            raise requests.Timeout("local reconcile timed out")
         if path.startswith("/consensus/replay"):
             return {
                 "status": "ok",
@@ -442,7 +444,7 @@ def test_node_catch_up_prioritizes_replay_when_stalled_backlog_is_high(monkeypat
     assert command_node_catch_up(args) == 0
     output = json.loads(capsys.readouterr().out)
     assert output["status"] == "ok"
-    assert all(not path.startswith("/node/reconcile") for path in post_paths)
+    assert any(path.startswith("/node/reconcile") for path in post_paths)
     assert any(path.startswith("/consensus/replay") for path in post_paths)
 
 

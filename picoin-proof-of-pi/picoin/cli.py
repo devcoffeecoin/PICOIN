@@ -258,7 +258,9 @@ def command_node_catch_up(args: argparse.Namespace) -> int:
         queue_size = int(replay_status.get("queue_size") or sync_before.get("pending_replay_blocks") or 0)
         replay_active = bool(replay_status.get("active"))
         replay_stalled = bool(replay_status.get("replay_stalled")) or replay_status.get("sync_status") == "stalled"
-        skip_reconcile = (replay_active and not replay_stalled) or queue_size > args.replay_backlog_threshold
+        skip_reconcile = (replay_active and not replay_stalled) or (
+            queue_size > args.replay_backlog_threshold and not replay_stalled
+        )
         if skip_reconcile:
             reconcile = {
                 "attempted": 0,
