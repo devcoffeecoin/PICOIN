@@ -1453,6 +1453,50 @@ def test_orphan_detector_flags_local_parent_when_remote_certified_child_continue
     } == {"reorg_candidate"}
 
 
+def test_receive_block_header_queues_certified_competing_tip_for_orphan_reorg(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    _init_network_db(tmp_path, monkeypatch, "competing-tip-reorg-header.sqlite3")
+    miner_key = generate_keypair()
+    miner = register_miner("competing-tip-local-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    local_block = get_block(1)
+    assert local_block is not None
+
+    remote_parent = _certified_reorg_block(
+        height=1,
+        previous_hash=GENESIS_HASH,
+        task_id="task_remote_parent_receive",
+        job_id="job_remote_parent_receive",
+    )
+    assert remote_parent["block_hash"] != local_block["block_hash"]
+    remote_child = _certified_reorg_block(
+        height=2,
+        previous_hash=remote_parent["block_hash"],
+        task_id="task_remote_child_receive",
+        job_id="job_remote_child_receive",
+    )
+
+    parent_received = receive_block_header(remote_parent, source_peer_id="peer-reorg")
+    child_received = receive_block_header(remote_child, source_peer_id="peer-reorg")
+
+    assert parent_received["status"] == "pending_missing_ancestors"
+    assert "competing tip" in parent_received["reason"]
+    assert child_received["status"] == "pending_missing_ancestors"
+
+    plan = plan_orphan_reorg(max_depth=1)
+
+    assert plan["can_apply"] is True
+    assert plan["reason"] == "ready"
+    assert plan["selected"]["remote_parent"]["source"] == "header"
+    assert plan["selected"]["remote_parent"]["block_hash"] == remote_parent["block_hash"]
+    assert plan["selected"]["remote_parent"]["certificate"]["quorum_met"] is True
+    assert plan["selected"]["remote_child"]["source"] == "header"
+    assert plan["selected"]["remote_child"]["block_hash"] == remote_child["block_hash"]
+    assert plan["selected"]["remote_child"]["certificate"]["quorum_met"] is True
+
+
 def test_orphan_reorg_apply_replaces_local_tip_with_certified_branch(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "orphan-reorg-apply.sqlite3")
     miner_key = generate_keypair()

@@ -857,7 +857,23 @@ def receive_block_header(block: dict[str, Any], source_peer_id: str | None = Non
                 "block_hash": block["block_hash"],
             }
         elif local is not None and local["block_hash"] != block["block_hash"]:
-            raise NetworkError(409, "conflicting block at height")
+            previous_height = int(block["height"]) - 1
+            previous_block = None
+            if previous_height > 0:
+                previous_block = connection.execute(
+                    "SELECT block_hash FROM blocks WHERE height = ?",
+                    (previous_height,),
+                ).fetchone()
+            expected_previous_hash = (
+                previous_block["block_hash"]
+                if previous_block is not None
+                else GENESIS_HASH if previous_height == 0 else None
+            )
+            if int(block["height"]) == latest_height and block["previous_hash"] == expected_previous_hash:
+                status = "pending_missing_ancestors"
+                reason = "accepted competing tip block for orphan reorg candidate"
+            else:
+                raise NetworkError(409, "conflicting block at height")
         elif active_base is not None and int(block["height"]) <= active_base_height:
             status = "skipped_pre_snapshot"
             reason = "block covered by active snapshot base"
