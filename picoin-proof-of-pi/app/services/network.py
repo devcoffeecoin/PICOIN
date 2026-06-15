@@ -1627,7 +1627,8 @@ def sync_blocks_until(
         from app.services.consensus import get_replay_status, replay_finalized_blocks
 
         replay_status = get_replay_status()
-        if bool(replay_status.get("active")):
+        replay_stalled = bool(replay_status.get("replay_stalled")) or replay_status.get("sync_status") == "stalled"
+        if bool(replay_status.get("active")) and not replay_stalled:
             result["replay"] = {"status": "skipped", "reason": "replay already active", **replay_status}
         elif replay_status.get("sync_status") == "divergent":
             result["replay"] = {"status": "skipped", "reason": "replay divergent; restore required", **replay_status}

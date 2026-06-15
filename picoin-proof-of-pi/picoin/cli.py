@@ -257,7 +257,10 @@ def command_node_catch_up(args: argparse.Namespace) -> int:
         replay_status = get_json(server_url, "/replay/status")
         queue_size = int(replay_status.get("queue_size") or sync_before.get("pending_replay_blocks") or 0)
         replay_active = bool(replay_status.get("active"))
-        skip_reconcile = replay_active or queue_size > args.replay_backlog_threshold
+        replay_stalled = bool(replay_status.get("replay_stalled")) or replay_status.get("sync_status") == "stalled"
+        skip_reconcile = (replay_active and not replay_stalled) or (
+            queue_size > args.replay_backlog_threshold and not replay_stalled
+        )
         if skip_reconcile:
             reconcile = {
                 "attempted": 0,
@@ -274,7 +277,7 @@ def command_node_catch_up(args: argparse.Namespace) -> int:
             if peer_url:
                 path = f"{path}&peer_address={peer_url}"
             reconcile = post_json(server_url, path)
-        if replay_active:
+        if replay_active and not replay_stalled:
             replay = {"status": "active", "imported": 0, "headers_imported": 0, "headers_skipped": 0, "errors": []}
         else:
             replay_limit = min(args.replay_limit, args.replay_batch_size)

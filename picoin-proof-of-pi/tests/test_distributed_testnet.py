@@ -1695,6 +1695,47 @@ def test_sync_blocks_drains_replay_backlog_with_bounded_batch(tmp_path, monkeypa
     assert result["replay"]["replay_stalled"] is False
 
 
+def test_sync_blocks_retries_replay_when_active_status_is_stalled(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "sync-replay-active-stalled.sqlite3")
+    replay_calls: list[int] = []
+
+    class EmptyBlocksResponse:
+        def json(self) -> dict:
+            return {"blocks": []}
+
+    def fake_replay_status() -> dict:
+        return {
+            "active": True,
+            "queue_size": 3,
+            "sync_status": "stalled",
+            "replay_stalled": True,
+            "divergence_detected": False,
+        }
+
+    def fake_replay_finalized_blocks(limit: int = 100) -> dict:
+        replay_calls.append(limit)
+        return {
+            "status": "ok",
+            "imported": 1,
+            "headers_imported": 1,
+            "headers_skipped": 0,
+            "errors": [],
+            "queue_size": 0,
+            "sync_status": "healthy",
+            "replay_stalled": False,
+        }
+
+    monkeypatch.setattr("app.services.consensus.get_replay_status", fake_replay_status)
+    monkeypatch.setattr("app.services.consensus.replay_finalized_blocks", fake_replay_finalized_blocks)
+    monkeypatch.setattr("app.services.network.requests.get", lambda *args, **kwargs: EmptyBlocksResponse())
+
+    result = sync_blocks_until("http://peer-a:8000", limit=10)
+
+    assert replay_calls == [10]
+    assert result["replay"]["status"] == "ok"
+    assert result["replay"]["sync_status"] == "healthy"
+
+
 def test_sync_blocks_uses_reconcile_fetch_timeout(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "sync-blocks-reconcile-timeout.sqlite3")
     timeouts: list[float] = []

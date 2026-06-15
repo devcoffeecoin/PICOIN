@@ -910,7 +910,11 @@ async def _replay_worker_loop() -> None:
             status = await asyncio.to_thread(get_replay_status)
             if (
                 int(status.get("queue_size") or 0) > 0
-                and not bool(status.get("active"))
+                and (
+                    not bool(status.get("active"))
+                    or bool(status.get("replay_stalled"))
+                    or status.get("sync_status") == "stalled"
+                )
                 and status.get("sync_status") != "divergent"
             ):
                 await asyncio.to_thread(replay_finalized_blocks, REPLAY_BATCH_SIZE)
