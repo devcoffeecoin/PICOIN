@@ -2031,8 +2031,8 @@ def _address_history_from_cache_row(row: dict[str, Any], address: str, latest_he
     item["history_cache_source_peer"] = row.get("source_peer")
     if item["archival_peer_backfill"] and not item["verified_local_inclusion"]:
         item["note"] = (
-            "archival transaction details were imported from a peer; the local snapshot proves the "
-            "post-snapshot balance, while this pre-snapshot transaction row is read-only history"
+            "archival transaction details were imported from a peer as read-only history; local "
+            "consensus state and balances are not changed by this cache row"
         )
     return item
 
@@ -2054,7 +2054,7 @@ def _backfill_address_transaction_history(address: str, limit: int) -> int:
         try:
             response = requests.get(
                 f"{peer}/transactions/history",
-                params={"address": address, "limit": limit},
+                params={"address": address, "limit": limit, "confirmed_only": "true", "backfill": "false"},
                 timeout=max(1.0, HISTORY_BACKFILL_TIMEOUT_SECONDS),
             )
             response.raise_for_status()
@@ -2192,7 +2192,8 @@ def _prepare_peer_history_cache_item(
         if not local_verified:
             snapshot = active_snapshot_base_in_connection(connection)
             snapshot_height = int(snapshot["height"]) if snapshot else None
-            if snapshot_height is None or block_height > snapshot_height:
+            local_height = _local_effective_block_height_in_connection(connection)
+            if (snapshot_height is None or block_height > snapshot_height) and block_height > local_height:
                 return None
             archival = True
     elif not _local_mempool_has_tx(connection, tx_hash):
@@ -2243,6 +2244,14 @@ def _local_block_contains_tx_hash(connection: Any, block_height: int, tx_hash: s
         return False
     tx_hashes = _decode_json(row["tx_hashes"], [])
     return isinstance(tx_hashes, list) and tx_hash in {str(value) for value in tx_hashes}
+
+
+def _local_effective_block_height_in_connection(connection: Any) -> int:
+    latest = connection.execute("SELECT COALESCE(MAX(height), 0) AS height FROM blocks").fetchone()
+    active_base = active_snapshot_base_in_connection(connection)
+    latest_height = int(latest["height"] if latest else 0)
+    snapshot_height = int(active_base["height"]) if active_base is not None else 0
+    return max(latest_height, snapshot_height)
 
 
 def _local_mempool_has_tx(connection: Any, tx_hash: str) -> bool:

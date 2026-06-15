@@ -590,6 +590,8 @@ def test_address_transaction_history_backfills_verified_peer_history(tmp_path, m
     assert response.status_code == 200
     history = response.json()
     assert requested
+    assert requested[0][1]["confirmed_only"] == "true"
+    assert requested[0][1]["backfill"] == "false"
     assert history[0]["tx_hash"] == tx_hash
     assert history[0]["source"] == "history_cache"
     assert history[0]["direction"] == "in"
@@ -598,6 +600,84 @@ def test_address_transaction_history_backfills_verified_peer_history(tmp_path, m
     assert history[0]["confirmations"] == 1
     assert history[0]["verified_local_inclusion"] is True
     assert history[0]["archival_peer_backfill"] is False
+
+
+def test_address_transaction_history_backfills_peer_history_when_local_block_lacks_tx_hashes(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+
+    recipient = address_from_public_key(generate_keypair()["public_key"])
+    sender = address_from_public_key(generate_keypair()["public_key"])
+    tx_hash = "9" * 64
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO miners (miner_id, name, public_key, registered_at)
+            VALUES ('miner-legacy-history', 'miner-legacy-history', 'ed25519:test-legacy-history',
+                    '2026-06-14T16:30:00+00:00')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status, created_at
+            )
+            VALUES ('task-legacy-history', 'miner-legacy-history', 1, 2, 'bbp_hex_v1', 'accepted',
+                    '2026-06-14T16:30:00+00:00')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO blocks (
+                height, previous_hash, miner_id, range_start, range_end, algorithm,
+                result_hash, samples, timestamp, block_hash, reward, task_id, tx_hashes, tx_count
+            )
+            VALUES (10, ?, 'miner-legacy-history', 1, 2, 'bbp_hex_v1',
+                    ?, '[]', '2026-06-14T16:37:39+00:00', ?, 3.1416,
+                    'task-legacy-history', '[]', 1)
+            """,
+            ("0" * 64, "8" * 64, "7" * 64),
+        )
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> list[dict]:
+            return [
+                {
+                    "tx_hash": tx_hash,
+                    "tx_type": "transfer",
+                    "sender": sender,
+                    "recipient": recipient,
+                    "amount": 0.15,
+                    "amount_units": 150000,
+                    "fee": 0.001,
+                    "fee_units": 1000,
+                    "status": "confirmed",
+                    "nonce": 2,
+                    "block_height": 10,
+                    "timestamp": "2026-06-14T16:35:19Z",
+                    "confirmed_at": "2026-06-14T16:37:39Z",
+                    "created_at": "2026-06-14T16:35:19Z",
+                    "updated_at": "2026-06-14T16:37:39Z",
+                }
+            ]
+
+    monkeypatch.setattr("app.services.network.BOOTSTRAP_PEERS", ["https://api.picoin.science"])
+    monkeypatch.setattr("app.services.network.HISTORY_BACKFILL_MIN_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr("app.services.network.requests.get", lambda *args, **kwargs: FakeResponse())
+
+    response = client.get(f"/transactions/history?address={recipient}&limit=5&confirmed_only=true&backfill=true")
+    assert response.status_code == 200
+    history = response.json()
+    assert len(history) == 1
+    assert history[0]["tx_hash"] == tx_hash
+    assert history[0]["verified_local_inclusion"] is False
+    assert history[0]["archival_peer_backfill"] is True
+    assert "read-only history" in history[0]["note"]
 
 
 def test_address_transaction_history_ignores_incompatible_history_peer(tmp_path, monkeypatch) -> None:
@@ -716,7 +796,7 @@ def test_address_transaction_history_backfills_pre_snapshot_archival_history(tmp
     assert history[0]["verified_local_inclusion"] is False
     assert history[0]["archival_peer_backfill"] is True
     assert history[0]["confirmations"] == 3
-    assert "pre-snapshot" in history[0]["note"]
+    assert "read-only history" in history[0]["note"]
 
 
 def test_address_transaction_history_confirmed_only_hides_unconfirmed_without_block_height(
