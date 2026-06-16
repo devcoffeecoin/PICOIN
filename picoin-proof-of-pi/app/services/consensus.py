@@ -3065,6 +3065,7 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
             block_height=block["height"],
             transactions=transactions,
             timestamp=timestamp,
+            canonical_replay=True,
         )
     total_block_reward_units = total_units_from_miner_reward_units(to_units(block["reward"]))
     total_block_reward = reward_units_to_float(total_block_reward_units)

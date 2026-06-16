@@ -494,6 +494,7 @@ def apply_block_transactions(
     block_height: int,
     transactions: list[dict[str, Any]],
     timestamp: str | None = None,
+    canonical_replay: bool = False,
 ) -> dict[str, Any]:
     timestamp = timestamp or utc_now()
     applied: list[str] = []
@@ -501,7 +502,12 @@ def apply_block_transactions(
     expected_nonce_by_sender: dict[str, int] = {}
 
     for tx in transactions:
-        reason = _transaction_rejection_reason(connection, tx, expected_nonce_by_sender)
+        reason = _transaction_rejection_reason(
+            connection,
+            tx,
+            expected_nonce_by_sender,
+            allow_nonce_gap=canonical_replay,
+        )
         if reason:
             raise TransactionExecutionError(f"block transaction {tx['tx_hash']} is invalid: {reason}")
 
@@ -796,6 +802,8 @@ def _transaction_rejection_reason(
     tx: dict[str, Any],
     expected_nonce_by_sender: dict[str, int],
     reserved_faucet_timestamps_by_sender: dict[str, list[datetime]] | None = None,
+    *,
+    allow_nonce_gap: bool = False,
 ) -> str | None:
     if tx["tx_type"] not in SUPPORTED_BLOCK_TX_TYPES:
         return "unsupported transaction type for block execution"
@@ -807,8 +815,12 @@ def _transaction_rejection_reason(
     expected_nonce = expected_nonce_by_sender.get(sender)
     if expected_nonce is None:
         expected_nonce = _next_selectable_nonce(connection, sender)
-    if int(tx["nonce"]) != expected_nonce:
-        return f"invalid nonce, expected {expected_nonce}"
+    tx_nonce = int(tx["nonce"])
+    if tx_nonce != expected_nonce:
+        if allow_nonce_gap and tx_nonce > expected_nonce:
+            expected_nonce_by_sender[sender] = tx_nonce
+        else:
+            return f"invalid nonce, expected {expected_nonce}"
     balance = _balance(connection, sender)
     total_debit = _total_debit(tx)
     if balance < total_debit:

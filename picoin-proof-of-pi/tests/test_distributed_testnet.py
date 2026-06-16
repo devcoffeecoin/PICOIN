@@ -86,6 +86,7 @@ from app.services.treasury import (
     get_scientific_development_treasury,
 )
 from app.services.transactions import (
+    TransactionExecutionError,
     apply_block_transactions,
     ensure_block_transactions_in_mempool,
     get_wallet_nonce_status,
@@ -2521,6 +2522,52 @@ def test_candidate_block_replay_matches_across_nodes_with_local_mempool_drift(tm
     assert node_a["commitment"] == node_b["commitment"]
     assert node_a["applied"] == node_b["applied"]
     assert node_a["state_root"] == node_b["state_root"]
+
+
+def test_canonical_replay_allows_forward_nonce_when_snapshot_nonce_is_stale(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "canonical-replay-forward-nonce.sqlite3")
+
+    sender = create_wallet("stale-nonce-sender")
+    recipient = create_wallet("stale-nonce-recipient")
+    _fund_wallet_from_genesis(sender["address"], 5.0)
+    tx = sign_transaction(
+        private_key=sender["private_key"],
+        public_key=sender["public_key"],
+        tx_type="transfer",
+        sender=sender["address"],
+        recipient=recipient["address"],
+        amount=1.0,
+        nonce=3,
+        fee=0.01,
+        timestamp="2026-05-14T12:00:00+00:00",
+    )
+    with get_connection() as connection:
+        ensure_block_transactions_in_mempool(connection, [tx], "2026-05-14T12:01:00+00:00")
+        with pytest.raises(TransactionExecutionError, match="invalid nonce, expected 1"):
+            apply_block_transactions(
+                connection,
+                miner_id="strict-miner",
+                block_height=1,
+                transactions=[tx],
+                timestamp="2026-05-14T12:01:00+00:00",
+            )
+        applied = apply_block_transactions(
+            connection,
+            miner_id="canonical-miner",
+            block_height=1,
+            transactions=[tx],
+            timestamp="2026-05-14T12:01:00+00:00",
+            canonical_replay=True,
+        )
+        nonce = connection.execute(
+            "SELECT nonce FROM account_nonces WHERE account_id = ?",
+            (sender["address"],),
+        ).fetchone()
+
+    assert applied["applied"] == [tx["tx_hash"]]
+    assert int(nonce["nonce"]) == 3
+    assert get_balance_amount(sender["address"]) == pytest.approx(3.99)
+    assert get_balance_amount(recipient["address"]) == pytest.approx(1.0)
 
 
 def test_wallet_nonce_status_tracks_pending_and_confirmed_transactions(tmp_path, monkeypatch) -> None:
