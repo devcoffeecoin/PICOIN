@@ -30,6 +30,9 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
     sync = parser.parse_args(["node", "sync-status"])
     validation_health = parser.parse_args(["node", "validation-health", "--stale-after-seconds", "90", "--limit", "5"])
     reconcile = parser.parse_args(["node", "reconcile", "--peer", "http://peer:8000"])
+    heartbeat_reconcile = parser.parse_args(
+        ["node", "reconcile-validator-heartbeats", "--peer", "http://peer:8000", "--limit", "9"]
+    )
     checkpoint = parser.parse_args(["node", "checkpoint", "verify", "--height", "10"])
     snapshot_export = parser.parse_args(["node", "checkpoint", "export", "--height", "10", "--output", "snap.json"])
     snapshot_import = parser.parse_args(["node", "checkpoint", "import", "--file", "snap.json", "--source", "peer"])
@@ -92,6 +95,9 @@ def test_picoin_cli_parses_distributed_node_commands() -> None:
     assert validation_health.limit == 5
     assert reconcile.node_command == "reconcile"
     assert reconcile.peer == "http://peer:8000"
+    assert heartbeat_reconcile.node_command == "reconcile-validator-heartbeats"
+    assert heartbeat_reconcile.peer == "http://peer:8000"
+    assert heartbeat_reconcile.limit == 9
     assert checkpoint.node_command == "checkpoint"
     assert checkpoint.checkpoint_command == "verify"
     assert checkpoint.height == 10
@@ -374,6 +380,7 @@ def test_node_catch_up_reconciles_when_replay_active_but_stalled(monkeypatch, ca
     assert command_node_catch_up(args) == 0
     output = json.loads(capsys.readouterr().out)
     assert output["status"] == "ok"
+    assert sum(path.startswith("/node/reconcile/validator-heartbeats") for path in post_paths) == 0
     assert any(path.startswith("/node/reconcile") for path in post_paths)
     assert any(path.startswith("/consensus/replay") for path in post_paths)
 
@@ -444,6 +451,7 @@ def test_node_catch_up_continues_to_replay_when_stalled_reconcile_times_out(monk
     assert command_node_catch_up(args) == 0
     output = json.loads(capsys.readouterr().out)
     assert output["status"] == "ok"
+    assert sum(path.startswith("/node/reconcile/validator-heartbeats") for path in post_paths) == 2
     assert any(path.startswith("/node/reconcile") for path in post_paths)
     assert any(path.startswith("/consensus/replay") for path in post_paths)
 

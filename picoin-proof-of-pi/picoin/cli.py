@@ -251,30 +251,53 @@ def command_node_reconcile_validator_heartbeats(args: argparse.Namespace) -> int
     return 0
 
 
+def _reconcile_validator_heartbeats_for_catch_up(
+    server_url: str,
+    peer_url: str | None,
+    *,
+    limit: int,
+) -> dict[str, Any] | None:
+    if not peer_url:
+        return None
+    try:
+        return post_json(
+            server_url,
+            f"/node/reconcile/validator-heartbeats?limit={limit}&peer_address={quote(peer_url, safe='')}",
+        )
+    except requests.RequestException as exc:
+        return {
+            "peer_address": peer_url,
+            "validator_heartbeat_inventory_seen": 0,
+            "validator_heartbeats_imported": 0,
+            "errors": [str(exc)],
+        }
+
+
 def command_node_catch_up(args: argparse.Namespace) -> int:
     server_url = normalize_server_url(args.server)
     peer_url = normalize_server_url(args.peer) if args.peer else None
     rounds: list[dict[str, Any]] = []
-    heartbeat_sync: dict[str, Any] | None = None
-    if peer_url:
-        try:
-            heartbeat_sync = post_json(
-                server_url,
-                f"/node/reconcile/validator-heartbeats?limit={args.reconcile_limit}&peer_address={quote(peer_url, safe='')}",
-            )
-        except requests.RequestException as exc:
-            heartbeat_sync = {
-                "peer_address": peer_url,
-                "validator_heartbeat_inventory_seen": 0,
-                "validator_heartbeats_imported": 0,
-                "errors": [str(exc)],
-            }
+    heartbeat_syncs: list[dict[str, Any]] = []
+    heartbeat_sync = _reconcile_validator_heartbeats_for_catch_up(
+        server_url,
+        peer_url,
+        limit=args.reconcile_limit,
+    )
+    if heartbeat_sync is not None:
+        heartbeat_syncs.append(heartbeat_sync)
     initial_sync = get_json(server_url, "/node/sync-status")
     final_sync = initial_sync
     final_audit: dict[str, Any] = {}
     peer_sync: dict[str, Any] | None = None
 
     for round_number in range(1, args.max_rounds + 1):
+        round_heartbeat_sync = _reconcile_validator_heartbeats_for_catch_up(
+            server_url,
+            peer_url,
+            limit=args.reconcile_limit,
+        )
+        if round_heartbeat_sync is not None:
+            heartbeat_syncs.append(round_heartbeat_sync)
         sync_before = get_json(server_url, "/node/sync-status")
         replay_status = get_json(server_url, "/replay/status")
         queue_size = int(replay_status.get("queue_size") or sync_before.get("pending_replay_blocks") or 0)
@@ -379,6 +402,12 @@ def command_node_catch_up(args: argparse.Namespace) -> int:
             "pending_replay_blocks": final_sync.get("pending_replay_blocks", 0),
             "audit_valid": bool(final_audit.get("valid")),
         }
+        if round_heartbeat_sync is not None:
+            round_summary["heartbeat_sync"] = {
+                "validator_heartbeat_inventory_seen": round_heartbeat_sync.get("validator_heartbeat_inventory_seen", 0),
+                "validator_heartbeats_imported": round_heartbeat_sync.get("validator_heartbeats_imported", 0),
+                "errors": round_heartbeat_sync.get("errors", []),
+            }
         rounds.append(round_summary)
         if (
             round_summary["pending_replay_blocks"] == 0
@@ -437,6 +466,7 @@ def command_node_catch_up(args: argparse.Namespace) -> int:
         ),
         "audit_valid": bool(final_audit.get("valid")),
         "audit_issues": final_audit.get("issues", []),
+        "heartbeat_syncs": heartbeat_syncs,
         "rounds": rounds,
     }
     print_json(output)
