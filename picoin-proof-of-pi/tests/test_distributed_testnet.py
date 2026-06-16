@@ -1571,6 +1571,7 @@ def test_receive_block_header_queues_certified_competing_tip_for_orphan_reorg(
 
 def test_sync_blocks_overlap_fetches_competing_tip_and_applies_orphan_reorg(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "sync-overlap-orphan-reorg.sqlite3")
+    monkeypatch.setattr("app.services.network.RECONCILE_BLOCK_OVERLAP", 0)
     miner_key = generate_keypair()
     miner = register_miner("sync-overlap-local-miner", miner_key["public_key"])
     _mine_legacy_block(miner["miner_id"], miner_key["private_key"])

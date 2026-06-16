@@ -1137,9 +1137,12 @@ def _local_effective_block_height() -> int:
 
 
 def _default_block_sync_start_height(effective_height: int, base_height: int) -> int:
-    if RECONCILE_BLOCK_OVERLAP <= 0 or effective_height <= base_height:
+    if effective_height <= base_height:
         return effective_height
-    return max(base_height, effective_height - RECONCILE_BLOCK_OVERLAP)
+    # Always keep at least one block of overlap. Without the local tip payload
+    # from the peer, a certified competing tip cannot be queued as a reorg parent.
+    overlap = max(1, RECONCILE_BLOCK_OVERLAP)
+    return max(base_height, effective_height - overlap)
 
 
 def _try_apply_bounded_orphan_reorg() -> dict[str, Any]:
