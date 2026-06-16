@@ -78,9 +78,13 @@ def test_replay_applies_scheduled_retroactive_audit_event_deterministically(tmp_
     source_block = get_blocks_since(0)["blocks"][0]
     source_audit = get_retroactive_audits()[0]
 
+    def fail_if_replay_recalculates_pi(*args, **kwargs):
+        raise AssertionError("canonical replay should not run the expensive PI audit inline")
+
     target_db = tmp_path / "scheduled-retroactive-target.sqlite3"
     monkeypatch.setattr("app.db.database.DATABASE_PATH", target_db)
     monkeypatch.setattr("app.core.settings.DATABASE_PATH", target_db)
+    monkeypatch.setattr("app.services.mining.calculate_pi_segment", fail_if_replay_recalculates_pi)
     init_db(target_db)
 
     receive_block_header(source_block, source_peer_id="peer-a")
@@ -92,6 +96,7 @@ def test_replay_applies_scheduled_retroactive_audit_event_deterministically(tmp_
     assert target_audit["audit_seed"] == source_audit["audit_seed"]
     assert target_audit["reward"] == 0.0
     assert target_audit["reward_account_id"] is None
+    assert target_audit["reason"] == "canonical replay audit marker; verification deferred"
     assert get_block(1)["state_root"] == source_block["state_root"]
 
 

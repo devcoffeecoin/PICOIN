@@ -8539,13 +8539,89 @@ def _apply_validator_fraud_penalty(connection: Any, validator_id: str, reason: s
     _refresh_validator_trust_score(connection, validator_id)
 
 
-def _maybe_run_scheduled_retroactive_audit(connection: Any, current_height: int) -> dict[str, Any] | None:
+def _record_replayed_scheduled_retroactive_audit_marker(
+    connection: Any,
+    block: dict[str, Any],
+    *,
+    params: dict[str, Any],
+    trigger_height: int,
+    trigger_timestamp: str,
+) -> dict[str, Any]:
+    base_samples = int(params["sample_count"])
+    sample_count = min(block["range_end"] - block["range_start"] + 1, base_samples * RETROACTIVE_AUDIT_SAMPLE_MULTIPLIER)
+    audit_seed = _scheduled_retroactive_audit_seed(block, sample_count, trigger_height, trigger_timestamp)
+    existing = connection.execute(
+        "SELECT * FROM retroactive_audits WHERE audit_seed = ?",
+        (audit_seed,),
+    ).fetchone()
+    if existing is not None:
+        return row_to_dict(existing)
+    requested_samples = _build_challenge_samples(
+        block["range_start"],
+        block["range_end"],
+        audit_seed,
+        sample_count,
+    )
+    samples = [{"position": sample["position"], "digit": None} for sample in requested_samples]
+    cursor = connection.execute(
+        """
+        INSERT INTO retroactive_audits (
+            block_height, block_hash, audit_seed, sample_count, samples,
+            expected_hash, actual_hash, passed, reason, automatic, reward,
+            reward_account_id, fraud_detected, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, 1, 0.0, NULL, 0, ?)
+        """,
+        (
+            block["height"],
+            block["block_hash"],
+            audit_seed,
+            sample_count,
+            json.dumps(samples),
+            block["result_hash"],
+            block["result_hash"],
+            "canonical replay audit marker; verification deferred",
+            trigger_timestamp,
+        ),
+    )
+    return row_to_dict(
+        connection.execute(
+            "SELECT * FROM retroactive_audits WHERE id = ?",
+            (cursor.lastrowid,),
+        ).fetchone()
+    )
+
+
+def _maybe_run_scheduled_retroactive_audit(
+    connection: Any,
+    current_height: int,
+    *,
+    canonical_replay: bool = False,
+) -> dict[str, Any] | None:
     if current_height <= 0 or current_height % RETROACTIVE_AUDIT_INTERVAL_BLOCKS != 0:
         return None
     trigger = connection.execute(
         "SELECT timestamp FROM blocks WHERE height = ?",
         (current_height,),
     ).fetchone()
+    if canonical_replay and RETROACTIVE_AUDIT_REWARD_PERCENT_OF_BLOCK <= 0:
+        block = _decode_block(
+            row_to_dict(
+                connection.execute(
+                    "SELECT * FROM blocks WHERE height = ?",
+                    (current_height,),
+                ).fetchone()
+            )
+        )
+        if block is None:
+            return None
+        return _record_replayed_scheduled_retroactive_audit_marker(
+            connection,
+            block,
+            params=_protocol_params_for_block(connection, block),
+            trigger_height=current_height,
+            trigger_timestamp=trigger["timestamp"] if trigger else utc_now(),
+        )
     return _run_retroactive_audit_in_connection(
         connection,
         block_height=None,

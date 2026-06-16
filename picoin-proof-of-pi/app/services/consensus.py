@@ -3088,7 +3088,7 @@ def _import_finalized_block(connection: Any, block: dict[str, Any], proposal_id:
     mature_block_rewards(connection, current_height=block["height"], timestamp=timestamp)
     from app.services.mining import _maybe_run_scheduled_retroactive_audit
 
-    _maybe_run_scheduled_retroactive_audit(connection, block["height"])
+    _maybe_run_scheduled_retroactive_audit(connection, block["height"], canonical_replay=True)
     state_root = update_block_state_root(connection, block["height"], timestamp)
     if block.get("state_root") and block["state_root"] != state_root:
         logger.error(
