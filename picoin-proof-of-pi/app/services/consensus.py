@@ -1655,6 +1655,12 @@ def apply_orphan_reorg(
     max_depth: int = 1,
     connection: Any | None = None,
 ) -> dict[str, Any]:
+    if not _REPLAY_LOCK.acquire(blocking=False):
+        return {
+            "applied": False,
+            "reason": "replay_active",
+            "checked_at": utc_now(),
+        }
     safe_limit = max(1, min(int(limit or 1), 100))
     safe_max_depth = max(1, min(int(max_depth or 1), 10))
     owns_connection = connection is None
@@ -1702,6 +1708,7 @@ def apply_orphan_reorg(
     finally:
         if owns_connection:
             connection.close()
+        _REPLAY_LOCK.release()
 
 
 def _orphan_reorg_apply_blockers(connection: Any, selected: dict[str, Any]) -> list[str]:

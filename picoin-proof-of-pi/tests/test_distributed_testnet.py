@@ -1863,6 +1863,20 @@ def test_orphan_reorg_apply_rolls_back_and_replays_safe_transfer(tmp_path, monke
     assert get_full_economic_audit()["valid"] is True
 
 
+def test_orphan_reorg_apply_defers_when_replay_is_active(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "orphan-reorg-replay-active.sqlite3")
+    from app.services.consensus import _REPLAY_LOCK
+
+    assert _REPLAY_LOCK.acquire(blocking=False)
+    try:
+        result = apply_orphan_reorg(max_depth=1)
+    finally:
+        _REPLAY_LOCK.release()
+
+    assert result["applied"] is False
+    assert result["reason"] == "replay_active"
+
+
 def test_orphan_reorg_prepare_blocks_unsupported_remote_transaction_type(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "orphan-reorg-unsupported-remote-tx.sqlite3")
     miner_key = generate_keypair()
