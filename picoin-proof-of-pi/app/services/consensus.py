@@ -2416,6 +2416,11 @@ def _orphan_candidate_reorg_plan(
     remote_child_block = (remote_child or {}).get("block") or {}
     remote_parent_certificate = _block_finality_certificate_summary(remote_parent_block)
     remote_child_certificate = _block_finality_certificate_summary(remote_child_block)
+    remote_parent_authenticated_by_child = (
+        remote_parent is not None
+        and remote_child_certificate["quorum_met"]
+        and remote_child_block.get("previous_hash") == remote_parent_hash
+    )
 
     if local_height <= 0:
         reasons.append("invalid_local_height")
@@ -2435,7 +2440,7 @@ def _orphan_candidate_reorg_plan(
         reasons.append("remote_child_height_mismatch")
     if remote_child_block and remote_child_block.get("previous_hash") != remote_parent_hash:
         reasons.append("remote_child_not_contiguous")
-    if not remote_parent_certificate["quorum_met"]:
+    if not remote_parent_certificate["quorum_met"] and not remote_parent_authenticated_by_child:
         reasons.append("remote_parent_not_certified")
     if not remote_child_certificate["quorum_met"]:
         reasons.append("remote_child_not_certified")
@@ -2455,6 +2460,7 @@ def _orphan_candidate_reorg_plan(
             "certificate": candidate.get("local_certificate"),
         },
         "remote_parent": _reorg_block_plan_summary(remote_parent, remote_parent_certificate),
+        "remote_parent_authenticated_by_child": remote_parent_authenticated_by_child,
         "remote_child": _reorg_block_plan_summary(remote_child, remote_child_certificate),
         "operations": [
             {

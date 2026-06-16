@@ -1628,6 +1628,54 @@ def test_sync_blocks_overlap_fetches_competing_tip_and_applies_orphan_reorg(tmp_
     assert sync_status["pending_replay_blocks"] == 0
 
 
+def test_sync_blocks_reorg_allows_parent_authenticated_by_certified_child(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "sync-overlap-child-certified-parent.sqlite3")
+    monkeypatch.setattr("app.services.network.RECONCILE_BLOCK_OVERLAP", 0)
+    miner_key = generate_keypair()
+    miner = register_miner("sync-child-certified-local-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    local_block = get_block(1)
+    assert local_block is not None
+
+    remote_parent = _certified_reorg_block(
+        height=1,
+        previous_hash=GENESIS_HASH,
+        task_id="task_remote_parent_child_certified",
+        job_id="job_remote_parent_child_certified",
+    )
+    remote_parent.pop("finality_certificate", None)
+    remote_child = _certified_reorg_block(
+        height=2,
+        previous_hash=remote_parent["block_hash"],
+        task_id="task_remote_child_certified",
+        job_id="job_remote_child_certified",
+    )
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, timeout):
+        if url == "http://peer-a:8000/node/sync/blocks?from_height=0&limit=2":
+            return FakeResponse({"from_height": 0, "count": 2, "blocks": [remote_parent, remote_child]})
+        if url == "http://peer-a:8000/node/sync/blocks?from_height=2&limit=1":
+            return FakeResponse({"from_height": 2, "count": 0, "blocks": []})
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr("app.services.network.requests.get", fake_get)
+
+    result = sync_blocks_until("http://peer-a:8000", limit=1)
+    plan = plan_orphan_reorg(max_depth=1)
+
+    assert (result.get("orphan_reorg") or {}).get("applied") is True
+    assert plan["candidate_count"] == 0
+    assert get_block(1)["block_hash"] == remote_parent["block_hash"]
+    assert get_block(2)["block_hash"] == remote_child["block_hash"]
+
+
 def test_orphan_reorg_apply_replaces_local_tip_with_certified_branch(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "orphan-reorg-apply.sqlite3")
     miner_key = generate_keypair()
