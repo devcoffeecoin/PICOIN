@@ -700,6 +700,11 @@ def _replay_health_snapshot() -> dict[str, Any]:
 
 
 def get_replay_liveness_status() -> dict[str, Any]:
+    try:
+        with get_connection() as connection:
+            _reset_replay_health_for_database(_connection_database_path(connection))
+    except Exception:
+        pass
     return {
         "active": bool(_REPLAY_METRICS.get("active")) or _REPLAY_LOCK.locked(),
         **_replay_health_snapshot(),
@@ -1686,7 +1691,7 @@ def apply_orphan_reorg(
             raise
         if owns_connection:
             connection.commit()
-        _reset_replay_health_for_database(_connection_database_path(connection))
+        clear_replay_liveness_status("catching_up")
         return {
             "applied": True,
             "reason": "applied",

@@ -71,6 +71,7 @@ HISTORY_BACKFILL_ENABLED = os.getenv("PICOIN_HISTORY_BACKFILL_ENABLED", "1").low
 HISTORY_BACKFILL_TIMEOUT_SECONDS = float(os.getenv("PICOIN_HISTORY_BACKFILL_TIMEOUT_SECONDS", "2"))
 HISTORY_BACKFILL_MAX_PEERS = int(os.getenv("PICOIN_HISTORY_BACKFILL_MAX_PEERS", "2"))
 HISTORY_BACKFILL_MIN_INTERVAL_SECONDS = int(os.getenv("PICOIN_HISTORY_BACKFILL_MIN_INTERVAL_SECONDS", "300"))
+RECONCILE_BLOCK_OVERLAP = max(0, int(os.getenv("PICOIN_RECONCILE_BLOCK_OVERLAP", "1")))
 _PEER_STALE_MARK_LOCK = threading.Lock()
 _PEER_STALE_MARK_LAST_RUN_MONOTONIC = 0.0
 _PEER_REGISTER_LOCK = threading.Lock()
@@ -1110,6 +1111,22 @@ def _local_replay_restore_required_status() -> dict[str, Any] | None:
     return None
 
 
+def _replay_divergence_can_try_peer_reorg(replay_status: dict[str, Any] | None) -> bool:
+    if not replay_status:
+        return False
+    reason = str(replay_status.get("divergence_reason") or replay_status.get("last_error") or "").lower()
+    recoverable_markers = (
+        "previous_hash does not match local chain tip",
+        "cannot import block before ancestors",
+        "missing ancestor",
+        "pending_missing_ancestors",
+        "conflicting block at height",
+        "competing tip",
+        "block_hash does not match canonical payload",
+    )
+    return any(marker in reason for marker in recoverable_markers)
+
+
 def _local_effective_block_height() -> int:
     with get_connection() as connection:
         latest = connection.execute("SELECT COALESCE(MAX(height), 0) AS height FROM blocks").fetchone()
@@ -1117,6 +1134,27 @@ def _local_effective_block_height() -> int:
     latest_height = int(latest["height"] if latest else 0)
     snapshot_height = int(active_base["height"]) if active_base is not None else 0
     return max(latest_height, snapshot_height)
+
+
+def _default_block_sync_start_height(effective_height: int, base_height: int) -> int:
+    if RECONCILE_BLOCK_OVERLAP <= 0 or effective_height <= base_height:
+        return effective_height
+    return max(base_height, effective_height - RECONCILE_BLOCK_OVERLAP)
+
+
+def _try_apply_bounded_orphan_reorg() -> dict[str, Any]:
+    try:
+        from app.services.consensus import apply_orphan_reorg, clear_replay_liveness_status, plan_orphan_reorg
+
+        plan = plan_orphan_reorg(limit=20, max_depth=1)
+        if not plan.get("can_apply"):
+            return {"attempted": False, "reason": plan.get("reason"), "plan": plan}
+        applied = apply_orphan_reorg(limit=20, max_depth=1)
+        if applied.get("applied"):
+            clear_replay_liveness_status("catching_up")
+        return {"attempted": True, **applied}
+    except Exception as exc:
+        return {"attempted": False, "reason": "error", "error": str(exc)}
 
 
 def reconcile_peer(peer_address: str) -> dict[str, Any]:
@@ -1160,10 +1198,12 @@ def reconcile_peer(peer_address: str) -> dict[str, Any]:
             result["headers_skipped_pre_snapshot"] = int(
                 restore_required.get("headers_skipped_pre_snapshot") or 0
             )
-            result["errors"].append("replay divergent; restore required")
-            with get_connection() as connection:
-                _record_sync_event(connection, None, "peer_reconcile", "outbound", "skipped", result)
-            return result
+            if not _replay_divergence_can_try_peer_reorg(restore_required):
+                result["errors"].append("replay divergent; restore required")
+                with get_connection() as connection:
+                    _record_sync_event(connection, None, "peer_reconcile", "outbound", "skipped", result)
+                return result
+            result["errors"].append("replay divergent; attempting peer sync before restore")
     except Exception as exc:
         result["errors"].append(f"replay status: {exc}")
 
@@ -1621,7 +1661,11 @@ def sync_blocks_until(
         active_base = active_snapshot_base_in_connection(connection)
         base_height = int(active_base["height"]) if active_base is not None else 0
         effective_height = max(latest_height, base_height)
-        sync_from_height = effective_height if from_height is None else max(int(from_height), base_height)
+        sync_from_height = (
+            _default_block_sync_start_height(effective_height, base_height)
+            if from_height is None
+            else max(int(from_height), base_height)
+        )
     result["local_block_height"] = latest_height
     result["snapshot_height"] = base_height
     result["effective_latest_block_height"] = effective_height
@@ -1632,9 +1676,11 @@ def sync_blocks_until(
         restore_required = _local_replay_restore_required_status()
         if restore_required is not None:
             result["replay"] = restore_required
-            if AUTO_RECOVERY_ENABLED:
-                result["auto_recovery"] = recover_from_peer_snapshot(peer_address, source="auto-recovery")
-            return result
+            if not _replay_divergence_can_try_peer_reorg(restore_required):
+                if AUTO_RECOVERY_ENABLED:
+                    result["auto_recovery"] = recover_from_peer_snapshot(peer_address, source="auto-recovery")
+                return result
+            result["errors"].append("replay divergent; attempting peer block overlap before restore")
     except Exception as exc:
         result["errors"].append(f"replay status: {exc}")
 
@@ -1642,7 +1688,8 @@ def sync_blocks_until(
     max_rounds = 20
     while rounds < max_rounds:
         rounds += 1
-        request_limit = max(1, min(int(limit), 100))
+        overlap_padding = max(0, effective_height - sync_from_height)
+        request_limit = max(1, min(int(limit) + overlap_padding, 100))
         if target_height is not None:
             if sync_from_height >= int(target_height):
                 break
@@ -1672,14 +1719,34 @@ def sync_blocks_until(
     try:
         from app.services.consensus import get_replay_status, replay_finalized_blocks
 
+        pre_reorg = _try_apply_bounded_orphan_reorg()
+        if pre_reorg.get("attempted") or pre_reorg.get("applied"):
+            result["orphan_reorg"] = pre_reorg
         replay_status = get_replay_status()
         replay_stalled = bool(replay_status.get("replay_stalled")) or replay_status.get("sync_status") == "stalled"
         if bool(replay_status.get("active")) and not replay_stalled:
             result["replay"] = {"status": "skipped", "reason": "replay already active", **replay_status}
         elif replay_status.get("sync_status") == "divergent":
-            result["replay"] = {"status": "skipped", "reason": "replay divergent; restore required", **replay_status}
-            if AUTO_RECOVERY_ENABLED:
+            reorg = (
+                _try_apply_bounded_orphan_reorg()
+                if _replay_divergence_can_try_peer_reorg(replay_status)
+                else {"attempted": False, "reason": "divergence_not_reorg_recoverable"}
+            )
+            if reorg.get("attempted") or reorg.get("applied"):
+                result["orphan_reorg"] = reorg
+            if reorg.get("applied"):
+                result["replay"] = replay_finalized_blocks(min(max(int(limit), 1), REPLAY_BATCH_SIZE))
+            else:
+                result["replay"] = {"status": "skipped", "reason": "replay divergent; restore required", **replay_status}
+            if not reorg.get("applied") and AUTO_RECOVERY_ENABLED:
                 result["auto_recovery"] = recover_from_peer_snapshot(peer_address, source="auto-recovery")
+        elif replay_stalled:
+            reorg = _try_apply_bounded_orphan_reorg()
+            result["orphan_reorg"] = reorg
+            if reorg.get("applied"):
+                result["replay"] = replay_finalized_blocks(min(max(int(limit), 1), REPLAY_BATCH_SIZE))
+            else:
+                result["replay"] = replay_finalized_blocks(min(max(int(limit), 1), REPLAY_BATCH_SIZE))
         elif int(replay_status.get("queue_size") or 0) > REPLAY_BACKLOG_THRESHOLD:
             result["replay"] = replay_finalized_blocks(REPLAY_BATCH_SIZE)
             result["replay"]["reason"] = "replay backlog drained with bounded batch"

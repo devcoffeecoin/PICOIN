@@ -1031,7 +1031,7 @@ def test_reconcile_peer_skips_old_proposals_when_block_sync_times_out(tmp_path, 
             return Response({"jobs": []})
         if url == "http://peer-a:8000/validation/votes/inventory?limit=100":
             return Response({"votes": []})
-        if url == "http://peer-a:8000/node/sync/blocks?from_height=1&limit=100":
+        if url == "http://peer-a:8000/node/sync/blocks?from_height=0&limit=100":
             raise TimeoutError("slow block inventory")
         if url == "http://peer-a:8000/consensus/proposals?limit=100":
             return Response(
@@ -1568,6 +1568,64 @@ def test_receive_block_header_queues_certified_competing_tip_for_orphan_reorg(
     assert "finality_certificate" not in json.loads(stale_proposal["payload"])
 
 
+def test_sync_blocks_overlap_fetches_competing_tip_and_applies_orphan_reorg(tmp_path, monkeypatch) -> None:
+    _init_network_db(tmp_path, monkeypatch, "sync-overlap-orphan-reorg.sqlite3")
+    miner_key = generate_keypair()
+    miner = register_miner("sync-overlap-local-miner", miner_key["public_key"])
+    _mine_legacy_block(miner["miner_id"], miner_key["private_key"])
+    local_block = get_block(1)
+    assert local_block is not None
+
+    remote_parent = _certified_reorg_block(
+        height=1,
+        previous_hash=GENESIS_HASH,
+        task_id="task_remote_parent_sync_overlap",
+        job_id="job_remote_parent_sync_overlap",
+    )
+    assert remote_parent["block_hash"] != local_block["block_hash"]
+    remote_child = _certified_reorg_block(
+        height=2,
+        previous_hash=remote_parent["block_hash"],
+        task_id="task_remote_child_sync_overlap",
+        job_id="job_remote_child_sync_overlap",
+    )
+    requested_urls: list[str] = []
+
+    class FakeResponse:
+        def __init__(self, payload):
+            self._payload = payload
+
+        def json(self):
+            return self._payload
+
+    def fake_get(url, timeout):
+        requested_urls.append(url)
+        if url == "http://peer-a:8000/node/sync/blocks?from_height=0&limit=2":
+            return FakeResponse({"from_height": 0, "count": 2, "blocks": [remote_parent, remote_child]})
+        if url == "http://peer-a:8000/node/sync/blocks?from_height=2&limit=1":
+            return FakeResponse({"from_height": 2, "count": 0, "blocks": []})
+        raise AssertionError(f"unexpected URL: {url}")
+
+    monkeypatch.setattr("app.services.network.requests.get", fake_get)
+
+    result = sync_blocks_until("http://peer-a:8000", limit=1)
+    replay_status = get_replay_status()
+    sync_status = get_sync_status()
+
+    assert requested_urls == [
+        "http://peer-a:8000/node/sync/blocks?from_height=0&limit=2",
+        "http://peer-a:8000/node/sync/blocks?from_height=2&limit=1",
+    ]
+    assert result["catch_up_start_height"] == 0
+    assert result["blocks_seen"] == 2
+    assert (result.get("orphan_reorg") or {}).get("applied") is True
+    assert get_block(1)["block_hash"] == remote_parent["block_hash"]
+    assert get_block(2)["block_hash"] == remote_child["block_hash"]
+    assert replay_status["replay_stalled"] is False
+    assert replay_status["divergence_detected"] is False
+    assert sync_status["pending_replay_blocks"] == 0
+
+
 def test_orphan_reorg_apply_replaces_local_tip_with_certified_branch(tmp_path, monkeypatch) -> None:
     _init_network_db(tmp_path, monkeypatch, "orphan-reorg-apply.sqlite3")
     miner_key = generate_keypair()
@@ -1597,6 +1655,7 @@ def test_orphan_reorg_apply_replaces_local_tip_with_certified_branch(tmp_path, m
     assert prepared["prepared"] is True
     assert prepared["apply_blockers"] == []
 
+    _mark_replay_divergent("test divergent status should clear after bounded reorg")
     result = apply_orphan_reorg(max_depth=1)
 
     assert result["applied"] is True
@@ -1608,6 +1667,9 @@ def test_orphan_reorg_apply_replaces_local_tip_with_certified_branch(tmp_path, m
     assert get_block(1)["block_hash"] == remote_parent["block_hash"]
     assert get_block(2)["block_hash"] == remote_child["block_hash"]
     assert get_full_economic_audit()["valid"] is True
+    replay_status = get_replay_status()
+    assert replay_status["replay_stalled"] is False
+    assert replay_status["divergence_detected"] is False
     with get_connection() as connection:
         local_task = connection.execute(
             "SELECT status, stale_reason FROM tasks WHERE task_id = ?",
