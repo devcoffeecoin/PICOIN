@@ -1872,7 +1872,7 @@ def list_address_transaction_history(
         raise NetworkError(422, "invalid address")
     expire_mempool_transactions()
     history = _list_local_address_transaction_history(address, limit)
-    if backfill and _address_history_needs_backfill(history, confirmed_only=confirmed_only):
+    if backfill and _address_history_needs_backfill(history, limit=limit, confirmed_only=confirmed_only):
         _backfill_address_transaction_history(address, limit)
         history = _list_local_address_transaction_history(address, limit)
     if confirmed_only:
@@ -2091,13 +2091,25 @@ def _address_history_from_tx_row(row: dict[str, Any], address: str, latest_heigh
     }
 
 
-def _address_history_needs_backfill(history: list[dict[str, Any]], *, confirmed_only: bool = False) -> bool:
+def _address_history_needs_backfill(
+    history: list[dict[str, Any]],
+    *,
+    limit: int,
+    confirmed_only: bool = False,
+) -> bool:
+    safe_limit = max(1, int(limit or 1))
     if confirmed_only:
-        return not any(
-            item.get("tx_hash") and item.get("status") == "confirmed" and _address_history_has_positive_block(item)
-            for item in history
+        return True
+    confirmed_or_pending = [
+        item
+        for item in history
+        if item.get("tx_hash")
+        and (
+            item.get("status") != "confirmed"
+            or _address_history_has_positive_block(item)
         )
-    return not any(item.get("tx_hash") for item in history)
+    ]
+    return len(confirmed_or_pending) < safe_limit
 
 
 def _confirmed_address_history(history: list[dict[str, Any]]) -> list[dict[str, Any]]:

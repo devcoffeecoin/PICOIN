@@ -879,6 +879,135 @@ def test_address_transaction_history_backfills_pre_snapshot_archival_history(tmp
     assert "read-only history" in history[0]["note"]
 
 
+def test_address_transaction_history_refreshes_partial_confirmed_cache(tmp_path, monkeypatch) -> None:
+    client = _build_test_client(tmp_path, monkeypatch)
+
+    recipient = address_from_public_key(generate_keypair()["public_key"])
+    sender = address_from_public_key(generate_keypair()["public_key"])
+    old_tx_hash = "a" * 64
+    new_tx_hash = "b" * 64
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            INSERT INTO miners (miner_id, name, public_key, registered_at)
+            VALUES ('miner-history-refresh', 'miner-history-refresh', 'ed25519:test-history-refresh',
+                    '2026-06-17T00:00:00+00:00')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO tasks (
+                task_id, miner_id, range_start, range_end, algorithm, status, created_at
+            )
+            VALUES ('task-history-refresh', 'miner-history-refresh', 1, 2, 'bbp_hex_v1', 'accepted',
+                    '2026-06-17T00:00:00+00:00')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO blocks (
+                height, previous_hash, miner_id, range_start, range_end, algorithm,
+                result_hash, samples, timestamp, block_hash, reward, task_id, tx_hashes, tx_count
+            )
+            VALUES (200, ?, 'miner-history-refresh', 1, 2, 'bbp_hex_v1',
+                    ?, '[]', '2026-06-17T00:10:00+00:00', ?, 3.1416, 'task-history-refresh', '[]', 0)
+            """,
+            ("0" * 64, "f" * 64, "1" * 64),
+        )
+        connection.execute(
+            """
+            INSERT INTO address_transaction_history_cache (
+                history_id, address, tx_hash, block_height, status, source_peer,
+                local_verified, archival, payload, created_at, updated_at
+            )
+            VALUES ('old-history', ?, ?, 100, 'confirmed', 'https://api.picoin.science',
+                    0, 1, ?, '2026-06-17T00:00:00+00:00', '2026-06-17T00:00:00+00:00')
+            """,
+            (
+                recipient,
+                old_tx_hash,
+                json.dumps(
+                    {
+                        "tx_hash": old_tx_hash,
+                        "tx_type": "transfer",
+                        "sender": sender,
+                        "recipient": recipient,
+                        "amount": "1.000000",
+                        "amount_units": 1000000,
+                        "fee": "0.001000",
+                        "fee_units": 1000,
+                        "status": "confirmed",
+                        "nonce": 1,
+                        "block_height": 100,
+                        "timestamp": "2026-06-17T00:00:00+00:00",
+                        "confirmed_at": "2026-06-17T00:00:00+00:00",
+                    },
+                    sort_keys=True,
+                ),
+            ),
+        )
+
+    requested: list[tuple[str, dict]] = []
+
+    class FakeResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> list[dict]:
+            return [
+                {
+                    "tx_hash": new_tx_hash,
+                    "tx_type": "transfer",
+                    "sender": sender,
+                    "recipient": recipient,
+                    "amount": 2.0,
+                    "amount_units": 2000000,
+                    "fee": 0.001,
+                    "fee_units": 1000,
+                    "status": "confirmed",
+                    "nonce": 2,
+                    "block_height": 150,
+                    "timestamp": "2026-06-17T00:05:00Z",
+                    "confirmed_at": "2026-06-17T00:05:10Z",
+                    "created_at": "2026-06-17T00:04:50Z",
+                    "updated_at": "2026-06-17T00:05:10Z",
+                },
+                {
+                    "tx_hash": old_tx_hash,
+                    "tx_type": "transfer",
+                    "sender": sender,
+                    "recipient": recipient,
+                    "amount": 1.0,
+                    "amount_units": 1000000,
+                    "fee": 0.001,
+                    "fee_units": 1000,
+                    "status": "confirmed",
+                    "nonce": 1,
+                    "block_height": 100,
+                    "timestamp": "2026-06-17T00:00:00Z",
+                    "confirmed_at": "2026-06-17T00:00:00Z",
+                },
+            ]
+
+    def fake_get(url: str, *, params: dict, timeout: float) -> FakeResponse:
+        requested.append((url, params))
+        return FakeResponse()
+
+    monkeypatch.setattr("app.services.network.BOOTSTRAP_PEERS", ["https://api.picoin.science"])
+    monkeypatch.setattr("app.services.network.HISTORY_BACKFILL_MIN_INTERVAL_SECONDS", 0)
+    monkeypatch.setattr("app.services.network.requests.get", fake_get)
+
+    response = client.get(f"/transactions/history?address={recipient}&limit=5&confirmed_only=true&backfill=true")
+
+    assert response.status_code == 200
+    history = response.json()
+    assert requested
+    assert [item["tx_hash"] for item in history[:2]] == [new_tx_hash, old_tx_hash]
+    assert history[0]["source"] == "history_cache"
+    assert history[0]["archival_peer_backfill"] is True
+
+
 def test_address_transaction_history_confirmed_only_hides_unconfirmed_without_block_height(
     tmp_path,
     monkeypatch,
