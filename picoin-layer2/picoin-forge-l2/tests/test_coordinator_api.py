@@ -89,3 +89,17 @@ def test_coordinator_api_challenge_flow(tmp_path, monkeypatch):
     assert "Latest Benchmark Metrics" in dashboard_response.text
     assert "Epoch History" in dashboard_response.text
     assert "AI Network" in dashboard_response.text
+
+
+def test_ai_portal_serves_browser_client(tmp_path, monkeypatch):
+    monkeypatch.setattr(coordinator_main, "DEFAULT_COORDINATOR_STATE_DIR", str(tmp_path))
+    client = TestClient(coordinator_main.api)
+
+    response = client.get("/ai/portal")
+
+    assert response.status_code == 200
+    assert "Picoin Forge AI Portal" in response.text
+    assert "request-form" in response.text
+    assert "/ai/requests" in response.text
+    assert "/ai/capabilities" in response.text
+    assert "receipt-output" in response.text

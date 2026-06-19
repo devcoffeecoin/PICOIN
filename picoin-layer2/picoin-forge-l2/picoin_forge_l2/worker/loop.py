@@ -21,6 +21,7 @@ def run_worker_once(
     coordinator_url: str | None = None,
     benchmark_scale: int | None = None,
     request_challenge: bool | None = None,
+    challenge_type: str = "cpu",
 ) -> dict:
     state_path = worker_state_dir(state_dir)
     config = load_worker_config(state_path, required=False)
@@ -48,7 +49,7 @@ def run_worker_once(
     solved = []
     challenges = client.open_challenges(registration.worker_id)
     if should_request_challenge and not challenges:
-        challenges = [client.request_challenge(registration.worker_id)]
+        challenges = [client.request_challenge(registration.worker_id, challenge_type=challenge_type)]
     for challenge in challenges:
         result = solve_challenge(challenge)
         client.submit_challenge_result(challenge.challenge_id, result)
@@ -103,6 +104,7 @@ def run_worker_loop(
     interval_seconds: float | None = None,
     iterations: int | None = None,
     benchmark_scale: int | None = None,
+    challenge_type: str = "cpu",
 ) -> dict[str, Any]:
     """Run the worker loop.
 
@@ -119,6 +121,7 @@ def run_worker_loop(
             coordinator_url=coordinator_url,
             benchmark_scale=benchmark_scale,
             request_challenge=True,
+            challenge_type=challenge_type,
         )
         completed += 1
         if iterations is not None and completed >= iterations:

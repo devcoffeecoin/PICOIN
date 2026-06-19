@@ -43,6 +43,7 @@ from .audit import build_event_export, write_event_export
 from .demo import run_demo_network
 from .epoch_engine import EpochEngine
 from .federation import run_federated_demo, verify_federated_manifest
+from .local_devnet import run_local_ai_devnet, run_local_ai_http_devnet
 from .maintenance import challenge_expiration_loop, expire_challenges_once
 from .settlement import build_settlement_payload_preview, list_settlements, read_settlement, summarize_settlement
 from .storage import CoordinatorStorage, benchmark_normalization_caps
@@ -399,6 +400,11 @@ def dashboard() -> str:
   <ul>{event_rows or '<li>No events yet.</li>'}</ul>
 </body>
 </html>"""
+
+
+@api.get("/ai/portal", response_class=HTMLResponse)
+def ai_portal() -> str:
+    return render_ai_portal(ai_access_min_stake_pi())
 
 
 @api.get("/events")
@@ -964,6 +970,44 @@ if typer is not None:
         result = run_demo_network(state_dir, worker_count=workers, epoch_reward=epoch_reward)
         console.print_json(data=result.model_dump(mode="json"))
 
+    @app.command("local-ai-demo")
+    def local_ai_demo(
+        state_dir: Path = Path(".picoin-forge-l2-local-demo"),
+        workers: int = 2,
+        requester_wallet: str = "PILOCALAIREQUESTER0001",
+        stake_snapshot_pi: float = 25.0,
+        prompt: str = "Explain Picoin Forge L2 in one short paragraph.",
+        epoch_reward: float = DEFAULT_EPOCH_REWARD_PI,
+    ) -> None:
+        result = run_local_ai_devnet(
+            state_dir,
+            worker_count=workers,
+            requester_wallet=requester_wallet,
+            stake_snapshot_pi=stake_snapshot_pi,
+            prompt=prompt,
+            epoch_reward=epoch_reward,
+        )
+        console.print_json(data=result)
+
+    @app.command("local-ai-http-demo")
+    def local_ai_http_demo(
+        state_dir: Path = Path(".picoin-forge-l2-local-http-demo"),
+        workers: int = 1,
+        requester_wallet: str = "PILOCALHTTPREQUESTER0001",
+        stake_snapshot_pi: float = 25.0,
+        prompt: str = "Explain Picoin Forge L2 HTTP devnet in one short paragraph.",
+        epoch_reward: float = DEFAULT_EPOCH_REWARD_PI,
+    ) -> None:
+        result = run_local_ai_http_devnet(
+            state_dir,
+            worker_count=workers,
+            requester_wallet=requester_wallet,
+            stake_snapshot_pi=stake_snapshot_pi,
+            prompt=prompt,
+            epoch_reward=epoch_reward,
+        )
+        console.print_json(data=result)
+
     @app.command("federation-demo")
     def federation_demo(
         state_dir: Path = Path(DEFAULT_COORDINATOR_STATE_DIR),
@@ -997,6 +1041,10 @@ def escape_html(value: object) -> str:
     return html.escape(str(value), quote=True)
 
 
+def render_ai_portal(min_stake_pi: float) -> str:
+    return AI_PORTAL_HTML.replace("__MIN_STAKE_PI__", f"{min_stake_pi:.6f}")
+
+
 def render_ai_request_row(queue: AIAccessQueue, item) -> str:
     selected = queue.select_worker_for_request(item)
     selected_worker_id = selected["worker_id"] if selected else ""
@@ -1015,3 +1063,326 @@ def render_ai_request_row(queue: AIAccessQueue, item) -> str:
         f"<td><code>{escape_html((item.receipt_hash or '')[:16])}</code></td>"
         f"<td>{escape_html(', '.join(item.required_capabilities))}</td></tr>"
     )
+
+
+AI_PORTAL_HTML = """<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Picoin Forge AI Portal</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #17202a;
+      --muted: #5d6d7e;
+      --line: #d6dbdf;
+      --surface: #ffffff;
+      --band: #f6f8fa;
+      --accent: #1967d2;
+      --ok: #18794e;
+      --warn: #9a6700;
+      --bad: #b42318;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--band);
+    }
+    header {
+      padding: 18px 24px;
+      border-bottom: 1px solid var(--line);
+      background: var(--surface);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+    h1 { font-size: 1.35rem; margin: 0; letter-spacing: 0; }
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 24px;
+      display: grid;
+      grid-template-columns: minmax(320px, 420px) minmax(0, 1fr);
+      gap: 20px;
+    }
+    section {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+    }
+    h2 { font-size: 1rem; margin: 0 0 14px; letter-spacing: 0; }
+    label {
+      display: block;
+      font-size: 0.82rem;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
+    input, textarea {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px 11px;
+      font: inherit;
+      background: #fff;
+      color: var(--ink);
+    }
+    textarea { min-height: 150px; resize: vertical; }
+    .grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    .field { margin-bottom: 12px; }
+    .actions { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; }
+    button {
+      border: 1px solid var(--accent);
+      background: var(--accent);
+      color: #fff;
+      border-radius: 6px;
+      padding: 10px 12px;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    button.secondary {
+      background: #fff;
+      color: var(--accent);
+    }
+    button:disabled { opacity: 0.55; cursor: not-allowed; }
+    .status-line {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+      flex-wrap: wrap;
+      margin-bottom: 12px;
+    }
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 5px 9px;
+      background: #fff;
+      font-size: 0.84rem;
+    }
+    .pill.ok { color: var(--ok); border-color: #abefc6; background: #ecfdf3; }
+    .pill.warn { color: var(--warn); border-color: #fedf89; background: #fffaeb; }
+    .pill.bad { color: var(--bad); border-color: #fecdca; background: #fef3f2; }
+    pre {
+      margin: 0;
+      padding: 12px;
+      background: #0b1020;
+      color: #e6edf3;
+      border-radius: 8px;
+      overflow: auto;
+      min-height: 140px;
+      font-size: 0.83rem;
+      line-height: 1.45;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .stack { display: grid; gap: 16px; }
+    .output-title {
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .small { color: var(--muted); font-size: 0.85rem; }
+    a { color: var(--accent); text-decoration: none; }
+    @media (max-width: 860px) {
+      main { grid-template-columns: 1fr; padding: 16px; }
+      .grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Picoin Forge AI Portal</h1>
+    <nav><a href="/">Coordinator</a></nav>
+  </header>
+  <main>
+    <section>
+      <h2>New Request</h2>
+      <form id="request-form">
+        <div class="field">
+          <label for="requester">Requester wallet</label>
+          <input id="requester" value="PI_REQUESTER" autocomplete="off">
+        </div>
+        <div class="grid">
+          <div class="field">
+            <label for="stake">Stake snapshot PI</label>
+            <input id="stake" type="number" min="0" step="0.000001" value="25">
+          </div>
+          <div class="field">
+            <label for="max-tokens">Max tokens</label>
+            <input id="max-tokens" type="number" min="1" max="4096" step="1" value="256">
+          </div>
+        </div>
+        <div class="grid">
+          <div class="field">
+            <label for="capabilities">Capabilities</label>
+            <input id="capabilities" value="chat,reasoning" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="provider">Preferred provider</label>
+            <input id="provider" placeholder="ollama" autocomplete="off">
+          </div>
+        </div>
+        <div class="grid">
+          <div class="field">
+            <label for="model-hint">Model hint</label>
+            <input id="model-hint" placeholder="llama" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="token">Coordinator token</label>
+            <input id="token" type="password" autocomplete="off">
+          </div>
+        </div>
+        <div class="field">
+          <label for="prompt">Prompt</label>
+          <textarea id="prompt">Explain Picoin Forge L2 in one short paragraph.</textarea>
+        </div>
+        <div class="actions">
+          <button id="submit" type="submit">Run</button>
+          <button class="secondary" id="capabilities-button" type="button">Capabilities</button>
+        </div>
+      </form>
+    </section>
+    <div class="stack">
+      <section>
+        <div class="output-title">
+          <h2>Status</h2>
+          <span class="small">Minimum stake __MIN_STAKE_PI__ PI</span>
+        </div>
+        <div class="status-line">
+          <span id="state-pill" class="pill warn">idle</span>
+          <span id="request-id" class="pill">request</span>
+          <span id="worker-id" class="pill">worker</span>
+        </div>
+        <pre id="status-output">{}</pre>
+      </section>
+      <section>
+        <div class="output-title"><h2>Result</h2></div>
+        <pre id="result-output">{}</pre>
+      </section>
+      <section>
+        <div class="output-title"><h2>Receipt</h2></div>
+        <pre id="receipt-output">{}</pre>
+      </section>
+    </div>
+  </main>
+  <script>
+    const statusOutput = document.getElementById("status-output");
+    const resultOutput = document.getElementById("result-output");
+    const receiptOutput = document.getElementById("receipt-output");
+    const statePill = document.getElementById("state-pill");
+    const requestIdPill = document.getElementById("request-id");
+    const workerIdPill = document.getElementById("worker-id");
+    const submitButton = document.getElementById("submit");
+
+    function tokenHeaders() {
+      const token = document.getElementById("token").value.trim();
+      return token ? {"X-Picoin-Forge-Token": token} : {};
+    }
+
+    function asCapabilities(value) {
+      return value.split(",").map((item) => item.trim()).filter(Boolean);
+    }
+
+    function render(target, value) {
+      target.textContent = JSON.stringify(value, null, 2);
+    }
+
+    function setState(status) {
+      statePill.textContent = status || "idle";
+      statePill.className = "pill";
+      if (status === "verified") statePill.classList.add("ok");
+      else if (status === "failed" || status === "canceled" || status === "error") statePill.classList.add("bad");
+      else statePill.classList.add("warn");
+    }
+
+    async function api(path, options = {}) {
+      const response = await fetch(path, {
+        ...options,
+        headers: {
+          "Accept": "application/json",
+          ...(options.body ? {"Content-Type": "application/json"} : {}),
+          ...tokenHeaders(),
+          ...(options.headers || {})
+        }
+      });
+      const text = await response.text();
+      const payload = text ? JSON.parse(text) : {};
+      if (!response.ok) throw payload;
+      return payload;
+    }
+
+    async function pollRequest(requestId) {
+      for (let index = 0; index < 120; index += 1) {
+        const status = await api(`/ai/requests/${encodeURIComponent(requestId)}/status`);
+        render(statusOutput, status);
+        setState(status.status);
+        requestIdPill.textContent = status.request_id || "request";
+        workerIdPill.textContent = status.assigned_worker_id || "worker";
+        if (status.status === "verified") {
+          const result = await api(`/ai/requests/${encodeURIComponent(requestId)}/result`);
+          const receipt = await api(`/ai/requests/${encodeURIComponent(requestId)}/receipt`);
+          render(resultOutput, result);
+          render(receiptOutput, receipt);
+          return;
+        }
+        if (status.status === "failed" || status.status === "canceled") return;
+        await new Promise((resolve) => setTimeout(resolve, 1500));
+      }
+      setState("timeout");
+    }
+
+    document.getElementById("request-form").addEventListener("submit", async (event) => {
+      event.preventDefault();
+      submitButton.disabled = true;
+      setState("creating");
+      resultOutput.textContent = "{}";
+      receiptOutput.textContent = "{}";
+      try {
+        const created = await api("/ai/requests", {
+          method: "POST",
+          body: JSON.stringify({
+            requester_wallet: document.getElementById("requester").value.trim(),
+            stake_snapshot_pi: Number(document.getElementById("stake").value),
+            prompt: document.getElementById("prompt").value,
+            required_capabilities: asCapabilities(document.getElementById("capabilities").value),
+            preferred_provider: document.getElementById("provider").value.trim() || null,
+            model_hint: document.getElementById("model-hint").value.trim() || null,
+            max_tokens: Number(document.getElementById("max-tokens").value),
+            store_output: true
+          })
+        });
+        render(statusOutput, created);
+        await pollRequest(created.request_id);
+      } catch (error) {
+        setState("error");
+        render(statusOutput, error);
+      } finally {
+        submitButton.disabled = false;
+      }
+    });
+
+    document.getElementById("capabilities-button").addEventListener("click", async () => {
+      try {
+        render(statusOutput, await api("/ai/capabilities"));
+        setState("capabilities");
+      } catch (error) {
+        setState("error");
+        render(statusOutput, error);
+      }
+    });
+  </script>
+</body>
+</html>"""

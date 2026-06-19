@@ -35,6 +35,99 @@ curl -sS http://127.0.0.1:9380/ai/summary | python3 -m json.tool
 curl -sS http://127.0.0.1:9380/ai/capabilities | python3 -m json.tool
 ```
 
+## Preflight AI Model Smoke
+
+Before registering a real AI worker, verify the local runtime:
+
+```bash
+picoin-forge-worker ai-smoke
+```
+
+Expected result:
+
+```json
+{
+  "ready": true,
+  "availability": {
+    "verified": true
+  },
+  "inference": {
+    "accepted": true
+  },
+  "no_l1_transaction_created": true,
+  "no_per_task_payment": true
+}
+```
+
+If `ready=false`, fix the model endpoint, model name, provider, or local runtime
+before connecting the worker to a coordinator.
+
+## Docker AI Worker Devnet
+
+The base `docker-compose.yml` keeps generic CPU workers. To add one real AI
+worker backed by an Ollama/OpenAI-compatible runtime, use the AI compose
+overlay:
+
+```bash
+cp .env.ai.example .env.ai
+docker compose --env-file .env.ai -f docker-compose.yml -f docker-compose.ai.yml --profile ai up --build coordinator ai-worker-ollama
+```
+
+Default behavior:
+
+- Coordinator runs at `http://127.0.0.1:9380`.
+- The AI worker points to `http://host.docker.internal:11434`.
+- The worker runs `picoin-forge-worker ai-smoke` before joining.
+- The worker loop requests `ai_model` challenges instead of generic CPU
+  challenges.
+- L1 is not touched.
+- The worker still earns by verified network contribution, not per user prompt.
+
+For a quick deterministic compose smoke without a real Ollama process, set:
+
+```bash
+PICOIN_FORGE_TEST_AI_MODEL_BACKEND=1
+PICOIN_FORGE_AI_MODEL_PROVIDER=test-ai-model
+PICOIN_FORGE_AI_MODEL_ENDPOINT=local://picoin-forge-test-ai-model
+```
+
+## Submit a User AI Request Over HTTP
+
+Once the coordinator and AI worker are running, use the HTTP client:
+
+```bash
+picoin-forge-client ai capabilities --coordinator-url http://127.0.0.1:9380
+picoin-forge-client ai create PI_REQUESTER "Explain Picoin Forge L2 in one paragraph." 25 \
+  --capabilities chat,reasoning \
+  --preferred-provider ollama \
+  --coordinator-url http://127.0.0.1:9380
+picoin-forge-client ai status AI_REQUEST_ID --coordinator-url http://127.0.0.1:9380
+picoin-forge-client ai result AI_REQUEST_ID --coordinator-url http://127.0.0.1:9380
+picoin-forge-client ai receipt AI_REQUEST_ID --coordinator-url http://127.0.0.1:9380
+```
+
+For a one-command user smoke:
+
+```bash
+picoin-forge-client ai run PI_REQUESTER "Explain Picoin Forge L2 in one paragraph." 25 \
+  --capabilities chat,reasoning \
+  --preferred-provider ollama \
+  --wait-timeout-seconds 180 \
+  --coordinator-url http://127.0.0.1:9380
+```
+
+This path uses the coordinator's public HTTP API. It is the path exchanges,
+apps, and future user-facing portals should exercise during L2 devnet tests.
+
+Browser portal:
+
+```text
+http://127.0.0.1:9380/ai/portal
+```
+
+The portal creates stake-gated AI requests, polls status, and displays result
+and receipt from the same public HTTP API used by `picoin-forge-client`.
+
 Optional AI request failover settings:
 
 ```bash

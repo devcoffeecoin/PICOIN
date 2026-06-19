@@ -61,9 +61,11 @@ pip install -e ".[test]"
 ```bash
 picoin-forge-worker register --wallet PI_YOUR_ADDRESS
 picoin-forge-worker benchmark
+picoin-forge-worker ai-smoke
 picoin-forge-worker start
 picoin-forge-worker loop-once --coordinator-url http://127.0.0.1:9380
 picoin-forge-worker loop --coordinator-url http://127.0.0.1:9380 --interval-seconds 30
+picoin-forge-worker loop --coordinator-url http://127.0.0.1:9380 --challenge-type ai_model
 picoin-forge-worker rotate-key --submit
 picoin-forge-worker status
 ```
@@ -88,9 +90,35 @@ picoin-forge-coordinator ai result AI_REQUEST_ID
 picoin-forge-coordinator ai receipt AI_REQUEST_ID
 picoin-forge-coordinator ai export-request AI_REQUEST_ID
 picoin-forge-coordinator demo --workers 3
+picoin-forge-coordinator local-ai-demo --workers 2
+picoin-forge-coordinator local-ai-http-demo --workers 1
 picoin-forge-coordinator federation-demo --coordinators 2 --workers-per-coordinator 2
 picoin-forge-coordinator verify-federation federation-manifest.json
 ```
+
+## User HTTP Client
+
+Use `picoin-forge-client` when the coordinator is running as a service, Docker
+container, or remote devnet:
+
+```bash
+picoin-forge-client health --coordinator-url http://127.0.0.1:9380
+picoin-forge-client ai capabilities --coordinator-url http://127.0.0.1:9380
+picoin-forge-client ai summary --coordinator-url http://127.0.0.1:9380
+picoin-forge-client ai create PI_REQUESTER "Explain Picoin Forge L2." 25 --capabilities chat,reasoning --coordinator-url http://127.0.0.1:9380
+picoin-forge-client ai run PI_REQUESTER "Explain Picoin Forge L2." 25 --capabilities chat,reasoning --coordinator-url http://127.0.0.1:9380
+picoin-forge-client ai status AI_REQUEST_ID --coordinator-url http://127.0.0.1:9380
+picoin-forge-client ai result AI_REQUEST_ID --coordinator-url http://127.0.0.1:9380
+picoin-forge-client ai receipt AI_REQUEST_ID --coordinator-url http://127.0.0.1:9380
+picoin-forge-client ai export AI_REQUEST_ID --coordinator-url http://127.0.0.1:9380
+```
+
+If `PICOIN_FORGE_COORDINATOR_TOKEN` is set on the coordinator, pass `--token`
+or export the same variable before using write commands.
+
+`ai run` is the shortest devnet user flow: it creates a stake-gated request,
+polls until the request reaches a terminal state, and returns the verified
+result plus receipt when available.
 
 Optional automatic challenge expiration:
 
@@ -128,6 +156,50 @@ picoin-forge-worker rotate-key --submit --coordinator-url http://127.0.0.1:9380
 
 The worker keeps the same `worker_id`, writes a local backup of the previous key, generates a new Ed25519 key, and re-registers the updated public key when `--submit` is used.
 
+## Local AI Devnet Demo
+
+Run a complete one-command L2 AI flow without touching Picoin L1:
+
+```bash
+cd picoin-layer2/picoin-forge-l2
+picoin-forge-coordinator local-ai-demo --workers 2
+```
+
+The command creates a local coordinator state directory, registers local AI
+workers with a deterministic `test-ai-model` backend, verifies AI model
+capacity through an `ai_model` challenge, creates one stake-gated AI request,
+assigns it to a compatible worker, records the model output hash, verifies the
+receipt, and closes a simulated epoch.
+
+The report is written to:
+
+```text
+.picoin-forge-l2-local-demo/local_ai_devnet_report.json
+```
+
+For a stronger smoke test that exercises the actual FastAPI routes over local
+HTTP, run:
+
+```bash
+picoin-forge-coordinator local-ai-http-demo --workers 1
+```
+
+That command starts a temporary local coordinator on `127.0.0.1`, uses the
+normal worker HTTP client, solves an `ai_model` challenge, submits the AI
+request result through the public API, verifies the receipt endpoint, closes a
+simulated epoch through `/epochs/close`, and writes:
+
+```text
+.picoin-forge-l2-local-http-demo/local_ai_http_devnet_report.json
+```
+
+Important invariants preserved by the demo:
+
+- No Picoin L1 transaction is created.
+- No per-request worker payment is created.
+- Access is gated by a stake snapshot.
+- Workers earn simulated epoch rewards by verified contribution to the network.
+
 ## Local Docker Simulation
 
 Run one coordinator and three workers:
@@ -141,6 +213,12 @@ Dashboard:
 
 ```text
 http://127.0.0.1:9380/
+```
+
+AI portal:
+
+```text
+http://127.0.0.1:9380/ai/portal
 ```
 
 The dashboard includes worker score bars, latest benchmark metric bars, challenge pass/fail counts, epoch history, and recent events.
@@ -175,6 +253,7 @@ GET  /workloads
 POST /workloads/claim
 POST /workloads/{task_id}/submit
 GET  /ai/capabilities
+GET  /ai/portal
 POST /ai/requests
 GET  /ai/requests
 GET  /ai/summary
@@ -218,6 +297,17 @@ PICOIN_FORGE_AI_MODEL_QUANTIZATION=q4_k_m
 PICOIN_FORGE_AI_MODEL_CAPABILITIES=llm,chat,reasoning,tool-use
 PICOIN_FORGE_AI_MODEL_ENDPOINT=http://127.0.0.1:11434
 ```
+
+Before joining a coordinator, verify the local AI runtime:
+
+```bash
+picoin-forge-worker ai-smoke
+```
+
+The smoke command checks the configured model profile, runs an availability
+proof, performs one tiny inference, and prints whether the worker is ready to
+serve stake-gated AI access requests. It does not touch Picoin L1 and does not
+create per-task payments.
 
 The `ai_model` challenge proves that the advertised model backend is available. Passing it can assign a bounded `ai_model_score`, which contributes to epoch share together with uptime and reliability. This does not mean a user pays the worker for one prompt; prompts and workloads are evidence/audit flow, while rewards are based on verified contribution across the epoch.
 

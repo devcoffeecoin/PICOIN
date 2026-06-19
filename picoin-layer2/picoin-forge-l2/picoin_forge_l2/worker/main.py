@@ -8,6 +8,7 @@ from .client import CoordinatorClient
 from .config import load_worker_config, save_worker_config, worker_state_dir
 from .heartbeat import build_heartbeat
 from .loop import run_worker_loop, run_worker_once
+from .ai_model import run_ai_model_smoke
 from .registration import load_private_key, load_registration, register_worker, rotate_worker_key
 
 try:  # pragma: no cover - exercised when optional CLI deps are installed.
@@ -57,6 +58,13 @@ if typer is not None:
         path.write_text(result.model_dump_json(indent=2), encoding="utf-8")
         console.print_json(data=result.model_dump(mode="json"))
 
+    @app.command("ai-smoke")
+    def ai_smoke(
+        prompt: str = "Reply with one short Picoin Forge worker readiness sentence.",
+        max_tokens: int = 64,
+    ) -> None:
+        console.print_json(data=run_ai_model_smoke(prompt=prompt, max_tokens=max_tokens))
+
     @app.command()
     def start(state_dir: Path = Path(".picoin-forge-worker")) -> None:
         registration = load_registration(worker_state_dir(state_dir))
@@ -92,8 +100,9 @@ if typer is not None:
     def loop_once(
         coordinator_url: str | None = None,
         state_dir: Path = Path(".picoin-forge-worker"),
+        challenge_type: str = "cpu",
     ) -> None:
-        result = run_worker_once(state_dir=state_dir, coordinator_url=coordinator_url)
+        result = run_worker_once(state_dir=state_dir, coordinator_url=coordinator_url, challenge_type=challenge_type)
         console.print_json(data=result)
 
     @app.command("loop")
@@ -102,12 +111,14 @@ if typer is not None:
         state_dir: Path = Path(".picoin-forge-worker"),
         interval_seconds: float | None = None,
         iterations: int | None = None,
+        challenge_type: str = "cpu",
     ) -> None:
         result = run_worker_loop(
             state_dir=state_dir,
             coordinator_url=coordinator_url,
             interval_seconds=interval_seconds,
             iterations=iterations,
+            challenge_type=challenge_type,
         )
         console.print_json(data=result)
 

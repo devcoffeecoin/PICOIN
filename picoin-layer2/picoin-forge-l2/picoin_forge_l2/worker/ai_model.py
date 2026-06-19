@@ -49,11 +49,52 @@ def detect_ai_model_profile() -> AIModelProfile | None:
     return profile
 
 
+def run_ai_model_smoke(
+    *,
+    prompt: str = "Reply with one short Picoin Forge worker readiness sentence.",
+    max_tokens: int = 64,
+    seed: str = "picoin-forge-ai-smoke",
+) -> dict:
+    profile = detect_ai_model_profile()
+    proof = run_ai_model_availability_challenge(seed, difficulty=1, profile=profile)
+    inference = run_ai_inference(prompt, max_tokens=max_tokens, profile=profile)
+    return {
+        "schema": "picoin-forge-ai-model-smoke-v1",
+        "ready": bool(profile and proof.verified and inference.accepted),
+        "model_profile": profile.model_dump(mode="json") if profile else None,
+        "availability": {
+            "verified": proof.verified,
+            "backend": proof.backend,
+            "prompt_hash": proof.prompt_hash,
+            "proof_hash": proof.proof_hash,
+            "output_hash": proof.output_hash,
+            "reason": proof.reason,
+        },
+        "inference": {
+            "accepted": inference.accepted,
+            "backend": inference.backend,
+            "output_hash": inference.output_hash,
+            "output_preview": inference.output[:240],
+            "reason": inference.reason,
+        },
+        "no_l1_transaction_created": True,
+        "no_per_task_payment": True,
+    }
+
+
 def run_ai_inference(prompt: str, max_tokens: int = 256, profile: AIModelProfile | None = None) -> AIInferenceOutput:
     resolved = profile or detect_ai_model_profile()
     if not resolved or not resolved.available or not resolved.endpoint or not resolved.model_name:
         return AIInferenceOutput(False, "", "none", reason="no available AI model endpoint configured")
     model_profile = resolved.model_dump(mode="json")
+    if os.getenv("PICOIN_FORGE_TEST_AI_MODEL_BACKEND") == "1":
+        output = (
+            "Picoin Forge local AI demo response. "
+            f"model={model_profile.get('model_name')} "
+            f"prompt_hash={sha256_text(prompt)[:16]} "
+            f"max_tokens={max(1, int(max_tokens))}"
+        )
+        return _inference_output("test-ai-model", output)
     provider = str(model_profile.get("provider") or "").lower()
     if provider == "ollama":
         endpoint = _endpoint_url(str(model_profile["endpoint"]), "/api/generate")
