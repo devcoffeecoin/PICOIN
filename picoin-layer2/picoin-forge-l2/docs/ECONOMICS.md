@@ -33,7 +33,7 @@ uptime_weight = 0.50
 reliability_weight = 0.75
 ```
 
-In the current MVP, `gpu_score` remains `0` even if a GPU is passively detected. The `gpu` challenge type is a handshake-only placeholder and does not increase rewards until a real verified GPU workload challenge is added.
+In the current MVP, passive GPU detection does not increase `gpu_score`. A worker can receive a bounded `gpu_score` only after passing a verified GPU workload challenge. Real-network caps should still be calibrated with worker data before production payments.
 
 ## Simulated Epoch Reward
 

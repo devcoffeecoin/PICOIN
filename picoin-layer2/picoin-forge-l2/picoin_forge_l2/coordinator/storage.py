@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sqlite3
+import os
 from pathlib import Path
 from typing import Any
 
@@ -9,7 +10,7 @@ from picoin_forge_l2.common.hashing import sha256_text
 from picoin_forge_l2.common.models import BenchmarkResult, ChallengeType, CoordinatorEvent, utc_now
 
 
-BENCHMARK_NORMALIZATION_CAPS = {
+DEFAULT_BENCHMARK_NORMALIZATION_CAPS = {
     "cpu_score": 1000.0,
     "gpu_score": 1000.0,
     "ram_score": 10000.0,
@@ -350,13 +351,31 @@ def normalize_benchmark_component(value: float, cap: float) -> float:
 
 
 def normalize_benchmark_score(benchmark: BenchmarkResult) -> float:
+    caps = benchmark_normalization_caps()
     components = [
-        normalize_benchmark_component(benchmark.cpu_score, BENCHMARK_NORMALIZATION_CAPS["cpu_score"]),
-        normalize_benchmark_component(benchmark.gpu_score, BENCHMARK_NORMALIZATION_CAPS["gpu_score"]),
-        normalize_benchmark_component(benchmark.ram_score, BENCHMARK_NORMALIZATION_CAPS["ram_score"]),
-        normalize_benchmark_component(benchmark.io_score, BENCHMARK_NORMALIZATION_CAPS["io_score"]),
+        normalize_benchmark_component(benchmark.cpu_score, caps["cpu_score"]),
+        normalize_benchmark_component(benchmark.gpu_score, caps["gpu_score"]),
+        normalize_benchmark_component(benchmark.ram_score, caps["ram_score"]),
+        normalize_benchmark_component(benchmark.io_score, caps["io_score"]),
     ]
     return round(sum(components) / len(components), 8)
+
+
+def benchmark_normalization_caps() -> dict[str, float]:
+    return {
+        "cpu_score": _env_float("PICOIN_FORGE_CPU_SCORE_CAP", DEFAULT_BENCHMARK_NORMALIZATION_CAPS["cpu_score"]),
+        "gpu_score": _env_float("PICOIN_FORGE_GPU_SCORE_CAP", DEFAULT_BENCHMARK_NORMALIZATION_CAPS["gpu_score"]),
+        "ram_score": _env_float("PICOIN_FORGE_RAM_SCORE_CAP", DEFAULT_BENCHMARK_NORMALIZATION_CAPS["ram_score"]),
+        "io_score": _env_float("PICOIN_FORGE_IO_SCORE_CAP", DEFAULT_BENCHMARK_NORMALIZATION_CAPS["io_score"]),
+    }
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        value = float(os.getenv(name, "") or default)
+    except ValueError:
+        return default
+    return value if value > 0 else default
 
 
 def benchmark_metric_row_to_dict(row: sqlite3.Row) -> dict[str, Any]:

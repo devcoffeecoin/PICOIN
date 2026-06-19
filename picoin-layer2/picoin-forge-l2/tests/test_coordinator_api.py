@@ -85,4 +85,6 @@ def test_coordinator_api_challenge_flow(tmp_path, monkeypatch):
     dashboard_response = client.get("/")
     assert dashboard_response.status_code == 200
     assert "Picoin Forge L2 Coordinator" in dashboard_response.text
+    assert "Metrics Charts" in dashboard_response.text
+    assert "Latest Benchmark Metrics" in dashboard_response.text
     assert "Epoch History" in dashboard_response.text

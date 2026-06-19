@@ -35,7 +35,7 @@ The worker runs on Linux and provides:
 - Wallet registration.
 - Basic machine profile.
 - CPU/RAM/IO benchmark.
-- Optional GPU score placeholder.
+- Optional GPU score path, enabled only after a verified GPU workload proof.
 - Heartbeat generation.
 - Challenge solving.
 - Persistent config with wallet and coordinator URL.
@@ -57,7 +57,21 @@ The MVP coordinator stores workers, challenges, and epoch state in local SQLite.
 
 The coordinator also stores an append-only event log in SQLite. Events are used for auditability and future L1 settlement proofs.
 
+`/events/export` and `picoin-forge-coordinator export-events` export events as canonical JSONL with an export hash. This creates a portable audit artifact without changing L1.
+
 The coordinator stores normalized benchmark metrics and challenge metrics separately from events. Metrics are intended for calibration, dashboards, and fraud analysis. They do not change L1 and do not move PI.
+
+`/metrics/calibration` and `picoin-forge-coordinator metrics-calibration` generate read-only recommended benchmark caps from observed worker data. Operators must review and apply env vars manually.
+
+Current verified workload types:
+
+- `hash_text`: deterministic text hash.
+- `text_classify`: deterministic keyword-based text classification.
+- `batch_summarize`: deterministic extractive batch summarization.
+
+## Federated Simulation
+
+`picoin-forge-coordinator federation-demo` runs multiple independent local coordinators, closes one epoch per coordinator, and builds a federation manifest hash. This is not L1 consensus; it is an L2 audit artifact for testing multi-coordinator settlement shape before any real network integration.
 
 ## Local Simulation
 
@@ -70,7 +84,7 @@ Challenges prove availability after registration:
 - CPU challenge: deterministic hash loop.
 - RAM challenge: deterministic memory buffer.
 - IO challenge: deterministic temporary write/read hash.
-- GPU challenge: handshake-only placeholder. It verifies the GPU challenge path exists, but it does not create a GPU reward signal yet.
+- GPU challenge: verified workload proof. Workers without a supported GPU backend fail cleanly.
 
 ## Epochs
 
@@ -88,10 +102,12 @@ An epoch closes by:
 GET  /health
 GET  /
 GET  /events
+GET  /events/export
 GET  /epochs
 GET  /epochs/{epoch_id}
 GET  /epochs/{epoch_id}/l1-preview
 GET  /metrics/benchmarks
+GET  /metrics/calibration
 GET  /metrics/challenges
 POST /workers/register
 GET  /workers

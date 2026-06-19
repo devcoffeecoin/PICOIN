@@ -35,6 +35,8 @@ class WorkerStatus(str, Enum):
 
 class WorkloadType(str, Enum):
     HASH_TEXT = "hash_text"
+    TEXT_CLASSIFY = "text_classify"
+    BATCH_SUMMARIZE = "batch_summarize"
 
 
 class WorkloadStatus(str, Enum):
@@ -105,6 +107,7 @@ class ChallengeResult(BaseModel):
     passed: bool
     submitted_at: datetime = Field(default_factory=utc_now)
     elapsed_ms: float = 0.0
+    proof: dict[str, Any] = Field(default_factory=dict)
 
 
 class ChallengeCreateRequest(BaseModel):

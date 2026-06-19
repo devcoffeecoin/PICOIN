@@ -60,7 +60,7 @@ Existing components:
 
 - Worker registration.
 - CPU/RAM/IO benchmark.
-- GPU placeholder set to `0`.
+- Passive GPU detection remains `0`; verified GPU challenges can assign bounded GPU score.
 - CPU/RAM/IO challenge engine.
 - Heartbeat.
 - Worker registry.
@@ -84,7 +84,7 @@ Existing components:
 - Persistent worker config.
 - Passive GPU detection.
 - Local Docker Compose with coordinator plus three workers.
-- GPU challenge placeholder with no reward signal.
+- Verified GPU workload challenge.
 - Normalized benchmark metrics table.
 - Challenge metrics table.
 - Metrics API endpoints.
@@ -103,11 +103,22 @@ Existing components:
 - Worker signature replay cache.
 - Minimal verified workload queue.
 - First workload type: `hash_text`.
+- Configurable benchmark normalization caps.
+- Metrics config API endpoint.
+- Dashboard worker score bars and metric charts.
+- Federated multi-coordinator simulation manifest.
+- Worker Ed25519 key rotation.
+- Second workload type: `text_classify`.
+- Federated manifest offline verifier.
+- Bounded GPU score from verified GPU challenges.
+- Benchmark calibration report API and CLI.
+- Third workload type: `batch_summarize`.
+- Canonical JSONL event audit export.
 
 Current verification:
 
 ```text
-22 tests passed
+37 tests passed
 ```
 
 ## Phase 0 - Model Definition
@@ -210,7 +221,7 @@ Acceptance criteria:
 Status: initial MVP implemented for CPU/RAM/IO.
 Update: API endpoints now exist for challenge creation, listing, lookup, and submission.
 Update: challenge expiration is implemented and expired challenges penalize workers.
-Update: `gpu` challenge type exists as a handshake-only placeholder. It does not increase reliability, `gpu_score`, or reward score.
+Update: `gpu` challenge type now requires a verified GPU workload proof. Workers without a GPU backend fail cleanly. A verified GPU challenge can assign bounded `gpu_score`; passive detection still cannot.
 
 ## Phase 4 - Scoring And Epochs
 
@@ -247,6 +258,16 @@ Update: workers now generate a local Ed25519 key and can sign write requests. Co
 Update: `picoin-forge-coordinator verify-settlement <epoch_id>` recalculates settlement and preview hashes locally.
 Update: repeated worker signatures are rejected through a local replay cache.
 Update: a minimal verified workload queue exists with `hash_text` tasks. This proves queue lifecycle before real AI workloads.
+Update: benchmark normalization caps are configurable through env vars and visible through `/metrics/config`.
+Update: dashboard now includes worker score bars, challenge pass/fail counters, and latest benchmark metric bars.
+Update: `picoin-forge-coordinator federation-demo` simulates multiple independent coordinators and produces a federated manifest hash without touching L1.
+Update: `picoin-forge-worker rotate-key --submit` preserves `worker_id`, rotates the local Ed25519 key, and can re-register the new public key.
+Update: workload queue now supports `text_classify`, a deterministic keyword-based classification task.
+Update: `picoin-forge-coordinator verify-federation <manifest.json>` validates coordinator previews and the federation root hash offline.
+Update: GPU score calibration has started with a conservative proof-based score assigned only after a verified GPU challenge.
+Update: `/metrics/calibration` and `picoin-forge-coordinator metrics-calibration` recommend benchmark caps from observed metrics without changing configuration automatically.
+Update: workload queue now supports `batch_summarize`, a deterministic extractive summarization task for batch text.
+Update: `/events/export` and `picoin-forge-coordinator export-events <path>` export canonical JSONL events with a hash for audit.
 
 ## Phase 5 - Internal L2 Testnet
 
@@ -416,12 +437,9 @@ Strengthen Phase 1 + Phase 2 + Phase 3
 
 Immediate priorities:
 
-1. Replace GPU placeholder with verified GPU workload challenge.
-2. Calibrate benchmark normalization caps using real workers.
-3. Add richer dashboard charts after real worker data exists.
-4. Add multi-coordinator simulation.
-5. Add worker signature key rotation.
-6. Add next useful workload type: text classification or batch summarization.
+1. Run real-worker calibration sessions and apply reviewed env caps.
+2. Add a heavier useful workload after calibration: embeddings.
+3. Add real-worker federation test runs.
 
 ## Criteria For Touching L1
 
@@ -457,7 +475,7 @@ Do not touch L1 until all of this is true:
 - Worker config file. MVP implemented.
 - Passive GPU detection. MVP implemented.
 - Docker Compose local simulation. MVP implemented.
-- GPU challenge placeholder. MVP implemented.
+- Verified GPU workload challenge. MVP implemented.
 - Normalized benchmark metrics. MVP implemented.
 - Challenge metrics. MVP implemented.
 - Epoch history API and dashboard table. MVP implemented.
@@ -469,7 +487,16 @@ Do not touch L1 until all of this is true:
 - Offline settlement verifier. MVP implemented.
 - Worker signature replay cache. MVP implemented.
 - Minimal verified workload queue. MVP implemented.
-- Structured logs.
+- Configurable benchmark normalization caps. MVP implemented.
+- Dashboard worker and metric charts. MVP implemented.
+- Multi-coordinator federation demo. MVP implemented.
+- Worker signature key rotation. MVP implemented.
+- `text_classify` workload. MVP implemented.
+- Federated manifest verifier. MVP implemented.
+- Proof-based GPU score calibration. MVP implemented.
+- Benchmark calibration report. MVP implemented.
+- `batch_summarize` workload. MVP implemented.
+- Structured event audit export. MVP implemented.
 - Web dashboard.
 - Local Docker Compose.
 - Replay/attack tests.

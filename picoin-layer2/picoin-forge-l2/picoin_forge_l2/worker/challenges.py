@@ -6,10 +6,27 @@ from pathlib import Path
 
 from picoin_forge_l2.common.hashing import sha256_bytes, sha256_text
 from picoin_forge_l2.common.models import ChallengeResult, ChallengeType, ComputeChallenge
+from picoin_forge_l2.worker.gpu import gpu_expected_workload_hash, run_gpu_workload_challenge
 
 
 def solve_challenge(challenge: ComputeChallenge) -> ChallengeResult:
     started = time.perf_counter()
+    if challenge.challenge_type == ChallengeType.GPU:
+        proof = run_gpu_workload_challenge(challenge.seed, challenge.difficulty)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        return ChallengeResult(
+            challenge_id=challenge.challenge_id,
+            worker_id=challenge.worker_id,
+            result_hash=proof.result_hash,
+            passed=proof.verified and proof.result_hash == challenge.expected_hash,
+            elapsed_ms=elapsed_ms,
+            proof={
+                "gpu_verified": proof.verified,
+                "backend": proof.backend,
+                "device_name": proof.device_name,
+                "reason": proof.reason,
+            },
+        )
     result_hash = compute_challenge_hash(challenge.challenge_type, challenge.seed, challenge.difficulty)
     elapsed_ms = (time.perf_counter() - started) * 1000.0
     return ChallengeResult(
@@ -29,7 +46,7 @@ def compute_challenge_hash(challenge_type: ChallengeType, seed: str, difficulty:
     if challenge_type == ChallengeType.IO:
         return io_challenge_hash(seed, difficulty)
     if challenge_type == ChallengeType.GPU:
-        return gpu_placeholder_challenge_hash(seed, difficulty)
+        return gpu_expected_workload_hash(seed, difficulty)
     raise ValueError(f"unsupported challenge type: {challenge_type}")
 
 
@@ -57,12 +74,3 @@ def io_challenge_hash(seed: str, difficulty: int) -> str:
         path.write_bytes(payload)
         return sha256_bytes(path.read_bytes())
 
-
-def gpu_placeholder_challenge_hash(seed: str, difficulty: int) -> str:
-    """Handshake-only GPU challenge.
-
-    This proves the worker supports the GPU challenge path, but it is not a
-    verified GPU workload and must not increase GPU reward scoring.
-    """
-
-    return sha256_text(f"gpu-placeholder:{seed}:{max(1, difficulty)}")

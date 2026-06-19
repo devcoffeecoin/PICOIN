@@ -7,10 +7,11 @@ import sys
 from pathlib import Path
 
 from picoin_forge_l2.common.crypto import generate_ed25519_private_key, public_key_from_private_key, worker_id_from_wallet
-from picoin_forge_l2.common.models import MachineInfo, WorkerRegistration
+from picoin_forge_l2.common.models import MachineInfo, WorkerRegistration, utc_now
 from picoin_forge_l2.worker.gpu import detect_gpu_info, detect_ram_bytes
 
 WORKER_KEY_FILE = "worker-key.json"
+PREVIOUS_WORKER_KEY_FILE = "worker-key.previous.json"
 
 
 def detect_machine_info() -> MachineInfo:
@@ -39,6 +40,35 @@ def register_worker(wallet: str, state_dir: str | Path, public_key: str | None =
         wallet=clean_wallet,
         public_key=key,
         machine_info=detect_machine_info(),
+    )
+    (path / "worker.json").write_text(registration.model_dump_json(indent=2), encoding="utf-8")
+    return registration
+
+
+def rotate_worker_key(state_dir: str | Path) -> WorkerRegistration:
+    path = Path(state_dir)
+    existing = load_registration(path)
+    key_path = path / WORKER_KEY_FILE
+    previous_key = load_private_key(path)
+    if previous_key:
+        previous_payload = {
+            "private_key": previous_key,
+            "public_key": existing.public_key,
+            "worker_id": existing.worker_id,
+            "rotated_at": utc_now().isoformat(),
+        }
+        (path / PREVIOUS_WORKER_KEY_FILE).write_text(json.dumps(previous_payload, indent=2) + "\n", encoding="utf-8")
+
+    private_key = generate_ed25519_private_key()
+    public_key = public_key_from_private_key(private_key)
+    key_path.write_text(json.dumps({"private_key": private_key}, indent=2) + "\n", encoding="utf-8")
+    registration = WorkerRegistration(
+        worker_id=existing.worker_id,
+        wallet=existing.wallet,
+        public_key=public_key,
+        machine_info=detect_machine_info(),
+        status=existing.status,
+        registered_at=existing.registered_at,
     )
     (path / "worker.json").write_text(registration.model_dump_json(indent=2), encoding="utf-8")
     return registration

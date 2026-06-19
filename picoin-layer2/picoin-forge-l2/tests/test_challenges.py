@@ -6,7 +6,9 @@ from picoin_forge_l2.common.models import ChallengeType
 from picoin_forge_l2.common.models import utc_now
 from picoin_forge_l2.coordinator.challenge_engine import ChallengeEngine
 from picoin_forge_l2.coordinator.worker_registry import WorkerRegistry
+from picoin_forge_l2.worker.benchmark import run_benchmark
 from picoin_forge_l2.worker.challenges import solve_challenge
+from picoin_forge_l2.worker.gpu import GPUWorkloadProof
 from picoin_forge_l2.worker.registration import register_worker
 
 
@@ -67,10 +69,12 @@ def test_expired_challenge_penalizes_worker(tmp_path):
     assert any(event.event_type == "challenge.expired" for event in engine.storage.list_events())
 
 
-def test_gpu_placeholder_challenge_passes_without_reward_signal(tmp_path):
+def test_gpu_verified_challenge_passes_with_verified_backend(tmp_path, monkeypatch):
+    monkeypatch.setenv("PICOIN_FORGE_TEST_GPU_BACKEND", "1")
     registry = WorkerRegistry(tmp_path)
-    registration = register_worker("PIGPUPLACEHOLDER", tmp_path / "worker")
+    registration = register_worker("PIGPUVERIFIED", tmp_path / "worker")
     registry.register(registration)
+    registry.update_benchmark(run_benchmark(registration.worker_id, scale=1))
     engine = ChallengeEngine(tmp_path, registry)
 
     challenge = engine.create_challenge(registration.worker_id, ChallengeType.GPU, difficulty=1)
@@ -81,10 +85,38 @@ def test_gpu_placeholder_challenge_passes_without_reward_signal(tmp_path):
 
     assert passed is True
     assert state.passed_challenges == 1
-    assert state.reliability_score == 50.0
+    assert state.benchmark is not None
+    assert state.benchmark.gpu_score > 0
+    assert state.reliability_score > 50.0
     assert any(
         event.event_type == "challenge.passed"
-        and event.payload.get("gpu_placeholder") is True
-        and event.payload.get("reliability_delta") == 0.0
+        and event.payload.get("gpu_verified") is True
+        and event.payload.get("gpu_backend") == "test-gpu"
+        and event.payload.get("gpu_score") > 0
         for event in events
     )
+
+
+def test_gpu_challenge_fails_without_verified_backend(tmp_path, monkeypatch):
+    registry = WorkerRegistry(tmp_path)
+    registration = register_worker("PIGPUUNVERIFIED", tmp_path / "worker")
+    registry.register(registration)
+    engine = ChallengeEngine(tmp_path, registry)
+    challenge = engine.create_challenge(registration.worker_id, ChallengeType.GPU, difficulty=1)
+
+    def fake_unverified_gpu(seed: str, difficulty: int) -> GPUWorkloadProof:
+        return GPUWorkloadProof(
+            verified=False,
+            result_hash=challenge.expected_hash,
+            backend="none",
+            reason="test unavailable",
+        )
+
+    monkeypatch.setattr("picoin_forge_l2.worker.challenges.run_gpu_workload_challenge", fake_unverified_gpu)
+    result = solve_challenge(challenge)
+    passed = engine.verify_result(result)
+    state = registry.get(registration.worker_id)
+
+    assert passed is False
+    assert state.failed_challenges == 1
+    assert state.penalty_score > 0

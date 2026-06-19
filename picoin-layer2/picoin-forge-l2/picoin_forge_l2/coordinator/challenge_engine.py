@@ -58,19 +58,31 @@ class ChallengeEngine:
         if result.submitted_at > challenge.deadline:
             self._expire_challenge(challenge, reason="submitted_after_deadline")
             return False
-        passed = result.worker_id == challenge.worker_id and result.result_hash == challenge.expected_hash
+        gpu_proof_valid = True
+        if challenge.challenge_type == ChallengeType.GPU:
+            gpu_proof_valid = bool(result.proof.get("gpu_verified")) and result.proof.get("backend") in {
+                "cupy",
+                "test-gpu",
+            }
+        passed = (
+            result.worker_id == challenge.worker_id
+            and result.result_hash == challenge.expected_hash
+            and gpu_proof_valid
+        )
         challenge.status = ChallengeStatus.PASSED if passed else ChallengeStatus.FAILED
         self.put(challenge)
         state = self.registry.get(result.worker_id)
         if passed:
             state.passed_challenges += 1
-            reliability_delta = 0.0 if challenge.challenge_type == ChallengeType.GPU else 5.0
+            reliability_delta = 5.0
             penalty_delta = 0.0
+            gpu_score = apply_verified_gpu_score(state, result, challenge) if challenge.challenge_type == ChallengeType.GPU else None
             state.reliability_score = min(100.0, state.reliability_score + reliability_delta)
             event_type = "challenge.passed"
         else:
             reliability_delta = -10.0
             penalty_delta = 10.0
+            gpu_score = None
             state.failed_challenges += 1
             state.penalty_score += penalty_delta
             state.reliability_score = max(0.0, state.reliability_score - 10.0)
@@ -98,7 +110,9 @@ class ChallengeEngine:
                 "elapsed_ms": result.elapsed_ms,
                 "reliability_delta": reliability_delta,
                 "penalty_delta": penalty_delta,
-                "gpu_placeholder": challenge.challenge_type == ChallengeType.GPU,
+                "gpu_verified": bool(result.proof.get("gpu_verified")),
+                "gpu_backend": result.proof.get("backend"),
+                "gpu_score": gpu_score,
             },
         )
         return passed
@@ -191,3 +205,14 @@ class ChallengeEngine:
             },
         )
         return challenge
+
+
+def apply_verified_gpu_score(state, result: ChallengeResult, challenge: ComputeChallenge) -> float | None:
+    if state.benchmark is None:
+        return None
+    elapsed_ms = max(float(result.elapsed_ms or 0.0), 1.0)
+    difficulty_score = min(100.0, float(challenge.difficulty) * 10.0)
+    speed_score = min(50.0, 1000.0 / elapsed_ms)
+    score = round(difficulty_score + speed_score, 8)
+    state.benchmark.gpu_score = max(float(state.benchmark.gpu_score or 0.0), score)
+    return state.benchmark.gpu_score

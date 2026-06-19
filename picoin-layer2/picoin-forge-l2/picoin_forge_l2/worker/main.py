@@ -4,10 +4,11 @@ import json
 from pathlib import Path
 
 from .benchmark import run_benchmark
+from .client import CoordinatorClient
 from .config import load_worker_config, save_worker_config, worker_state_dir
 from .heartbeat import build_heartbeat
 from .loop import run_worker_loop, run_worker_once
-from .registration import load_registration, register_worker
+from .registration import load_private_key, load_registration, register_worker, rotate_worker_key
 
 try:  # pragma: no cover - exercised when optional CLI deps are installed.
     import typer
@@ -63,6 +64,29 @@ if typer is not None:
         path = worker_state_dir(state_dir) / "heartbeat.json"
         path.write_text(heartbeat.model_dump_json(indent=2), encoding="utf-8")
         console.print(f"[green]Worker heartbeat generated:[/green] {path}")
+
+    @app.command("rotate-key")
+    def rotate_key(
+        state_dir: Path = Path(".picoin-forge-worker"),
+        coordinator_url: str | None = None,
+        submit: bool = False,
+    ) -> None:
+        state_path = worker_state_dir(state_dir)
+        registration = rotate_worker_key(state_path)
+        response = None
+        if submit:
+            config = load_worker_config(state_path, required=False)
+            target_url = (coordinator_url or (config.coordinator_url if config else None) or "http://127.0.0.1:9380").rstrip("/")
+            response = CoordinatorClient(
+                target_url,
+                private_key=load_private_key(state_path),
+                worker_id=registration.worker_id,
+            ).register(registration)
+        payload = registration.model_dump(mode="json")
+        payload["submitted"] = response is not None
+        if response is not None:
+            payload["coordinator_response"] = response
+        console.print_json(data=payload)
 
     @app.command("loop-once")
     def loop_once(

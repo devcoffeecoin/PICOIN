@@ -13,7 +13,8 @@ Mitigation:
 - Ignore declared hardware unless backed by benchmarks and random challenges.
 - Use future validator audits.
 - In the MVP, passive GPU detection alone does not increase `gpu_score`.
-- The MVP `gpu` challenge is handshake-only and does not increase reliability or reward score.
+- The MVP `gpu` challenge requires a verified workload proof.
+- Passive GPU detection still does not increase reward score.
 
 ## Replay Attack
 

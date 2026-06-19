@@ -25,11 +25,14 @@ from picoin_forge_l2.common.models import (
 )
 
 from .challenge_engine import ChallengeEngine
+from .calibration import build_benchmark_calibration_report
+from .audit import build_event_export, write_event_export
 from .demo import run_demo_network
 from .epoch_engine import EpochEngine
+from .federation import run_federated_demo, verify_federated_manifest
 from .maintenance import challenge_expiration_loop, expire_challenges_once
 from .settlement import build_settlement_payload_preview, list_settlements, read_settlement, summarize_settlement
-from .storage import CoordinatorStorage
+from .storage import CoordinatorStorage, benchmark_normalization_caps
 from .verifier import verify_settlement_file
 from .worker_registry import WorkerRegistry
 from .workload_queue import WorkloadQueue
@@ -156,12 +159,18 @@ def dashboard() -> str:
     workers = registry().all()
     storage = CoordinatorStorage(DEFAULT_COORDINATOR_STATE_DIR)
     events = storage.list_events(limit=20)
+    benchmark_metrics = storage.list_benchmark_metrics(limit=10)
+    challenge_metrics = storage.list_challenge_metrics(limit=1000)
     benchmark_metric_count = len(storage.list_benchmark_metrics(limit=1000))
-    challenge_metric_count = len(storage.list_challenge_metrics(limit=1000))
+    challenge_metric_count = len(challenge_metrics)
     settlements = list_settlements(DEFAULT_COORDINATOR_STATE_DIR, limit=10)
+    max_worker_score = max((state.verified_compute_score for state in workers), default=0.0)
+    passed_challenges = sum(1 for metric in challenge_metrics if metric["passed"])
+    failed_challenges = challenge_metric_count - passed_challenges
     rows = "\n".join(
         f"<tr><td>{state.registration.worker_id}</td><td>{state.registration.wallet}</td>"
         f"<td>{state.registration.status.value}</td><td>{state.verified_compute_score:.4f}</td>"
+        f"<td><div class=\"bar score\"><span style=\"width:{bar_width(state.verified_compute_score, max_worker_score)}%\"></span></div></td>"
         f"<td>{state.uptime_score:.2f}</td><td>{state.reliability_score:.2f}</td>"
         f"<td>{state.penalty_score:.2f}</td></tr>"
         for state in workers
@@ -169,6 +178,12 @@ def dashboard() -> str:
     event_rows = "\n".join(
         f"<li><code>{event.event_type}</code> {event.subject_id or ''} <small>{event.created_at}</small></li>"
         for event in events
+    )
+    benchmark_rows = "\n".join(
+        f"<tr><td>{metric['worker_id']}</td><td>{metric['normalized_score']:.4f}</td>"
+        f"<td><div class=\"bar benchmark\"><span style=\"width:{bar_width(metric['normalized_score'], 100.0)}%\"></span></div></td>"
+        f"<td><code>{metric['result_hash'][:16]}</code></td><td>{metric['created_at']}</td></tr>"
+        for metric in benchmark_metrics
     )
     max_compute = max((settlement.total_verified_compute for settlement in settlements), default=0.0)
     epoch_rows = "\n".join(
@@ -191,6 +206,11 @@ def dashboard() -> str:
     code {{ background: #f4f6f7; padding: 2px 4px; border-radius: 4px; }}
     .bar {{ background: #edf2f7; height: 10px; width: 100%; }}
     .bar span {{ display: block; background: #2b6cb0; height: 10px; }}
+    .bar.score span {{ background: #2f855a; }}
+    .bar.benchmark span {{ background: #805ad5; }}
+    .metric-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 16px 0; }}
+    .metric {{ border: 1px solid #d6dbdf; padding: 12px; }}
+    .metric strong {{ display: block; font-size: 1.35rem; margin-top: 4px; }}
   </style>
 </head>
 <body>
@@ -203,8 +223,19 @@ def dashboard() -> str:
   </p>
   <h2>Workers</h2>
   <table>
-    <thead><tr><th>Worker</th><th>Wallet</th><th>Status</th><th>Score</th><th>Uptime</th><th>Reliability</th><th>Penalty</th></tr></thead>
-    <tbody>{rows or '<tr><td colspan="7">No workers registered.</td></tr>'}</tbody>
+    <thead><tr><th>Worker</th><th>Wallet</th><th>Status</th><th>Score</th><th>Score Bar</th><th>Uptime</th><th>Reliability</th><th>Penalty</th></tr></thead>
+    <tbody>{rows or '<tr><td colspan="8">No workers registered.</td></tr>'}</tbody>
+  </table>
+  <h2>Metrics Charts</h2>
+  <div class="metric-grid">
+    <div class="metric">Challenge Passes<strong>{passed_challenges}</strong></div>
+    <div class="metric">Challenge Failures<strong>{failed_challenges}</strong></div>
+    <div class="metric">Latest Benchmarks<strong>{len(benchmark_metrics)}</strong></div>
+  </div>
+  <h3>Latest Benchmark Metrics</h3>
+  <table>
+    <thead><tr><th>Worker</th><th>Normalized Score</th><th>Score Bar</th><th>Hash</th><th>Recorded</th></tr></thead>
+    <tbody>{benchmark_rows or '<tr><td colspan="5">No benchmark metrics yet.</td></tr>'}</tbody>
   </table>
   <h2>Epoch History</h2>
   <table>
@@ -221,6 +252,11 @@ def dashboard() -> str:
 def events_api(limit: int = 100) -> list[dict]:
     events = CoordinatorStorage(DEFAULT_COORDINATOR_STATE_DIR).list_events(limit=limit)
     return [event.model_dump(mode="json") for event in events]
+
+
+@api.get("/events/export")
+def events_export_api(limit: int = 1000) -> dict:
+    return build_event_export(DEFAULT_COORDINATOR_STATE_DIR, limit=limit)
 
 
 @api.get("/epochs")
@@ -248,6 +284,19 @@ def epoch_l1_preview_api(epoch_id: int) -> dict:
 @api.get("/metrics/benchmarks")
 def benchmark_metrics_api(limit: int = 100, worker_id: str | None = None) -> list[dict]:
     return CoordinatorStorage(DEFAULT_COORDINATOR_STATE_DIR).list_benchmark_metrics(worker_id=worker_id, limit=limit)
+
+
+@api.get("/metrics/config")
+def metrics_config_api() -> dict:
+    return {
+        "benchmark_normalization_caps": benchmark_normalization_caps(),
+    }
+
+
+@api.get("/metrics/calibration")
+def metrics_calibration_api(limit: int = 1000, percentile: float = 0.95) -> dict:
+    metrics = CoordinatorStorage(DEFAULT_COORDINATOR_STATE_DIR).list_benchmark_metrics(limit=limit)
+    return build_benchmark_calibration_report(metrics, percentile=percentile)
 
 
 @api.get("/metrics/challenges")
@@ -413,6 +462,23 @@ if typer is not None:
         rows = [event.model_dump(mode="json") for event in CoordinatorStorage(state_dir).list_events(limit=limit)]
         console.print_json(data=rows)
 
+    @app.command("export-events")
+    def export_events(
+        output_path: Path,
+        state_dir: Path = Path(DEFAULT_COORDINATOR_STATE_DIR),
+        limit: int = 1000,
+    ) -> None:
+        console.print_json(data=write_event_export(state_dir, output_path, limit=limit))
+
+    @app.command("metrics-calibration")
+    def metrics_calibration(
+        state_dir: Path = Path(DEFAULT_COORDINATOR_STATE_DIR),
+        limit: int = 1000,
+        percentile: float = 0.95,
+    ) -> None:
+        metrics = CoordinatorStorage(state_dir).list_benchmark_metrics(limit=limit)
+        console.print_json(data=build_benchmark_calibration_report(metrics, percentile=percentile))
+
     @app.command("expire-challenges")
     def expire_challenges(state_dir: Path = Path(DEFAULT_COORDINATOR_STATE_DIR)) -> None:
         console.print_json(data=expire_challenges_once(state_dir))
@@ -425,6 +491,26 @@ if typer is not None:
     ) -> None:
         result = run_demo_network(state_dir, worker_count=workers, epoch_reward=epoch_reward)
         console.print_json(data=result.model_dump(mode="json"))
+
+    @app.command("federation-demo")
+    def federation_demo(
+        state_dir: Path = Path(DEFAULT_COORDINATOR_STATE_DIR),
+        coordinators: int = 2,
+        workers_per_coordinator: int = 2,
+        epoch_reward: float = DEFAULT_EPOCH_REWARD_PI,
+    ) -> None:
+        result = run_federated_demo(
+            state_dir,
+            coordinator_count=coordinators,
+            workers_per_coordinator=workers_per_coordinator,
+            epoch_reward=epoch_reward,
+        )
+        console.print_json(data=result)
+
+    @app.command("verify-federation")
+    def verify_federation(manifest_path: Path) -> None:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        console.print_json(data=verify_federated_manifest(manifest))
 else:  # pragma: no cover
     app = None
 
