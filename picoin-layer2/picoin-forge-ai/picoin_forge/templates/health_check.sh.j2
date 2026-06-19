@@ -1,0 +1,8 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "Picoin Forge generated health check"
+{% for port in ports %}
+echo "Checking port {{ port }}"
+(ss -ltn 2>/dev/null || netstat -ltn 2>/dev/null || true) | grep ':{{ port }} ' || true
+{% endfor %}

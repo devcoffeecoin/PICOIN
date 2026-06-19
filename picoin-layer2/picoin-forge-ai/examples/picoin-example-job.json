@@ -1,0 +1,18 @@
+{
+  "job_type": "setup_node",
+  "repo_url": "https://github.com/devcoffeecoin/PICOIN",
+  "reward": "50 PI",
+  "requirements": [
+    "linux",
+    "python",
+    "systemd",
+    "crypto",
+    "picoin"
+  ],
+  "expected_outputs": [
+    ".picoin-forge/project-map.json",
+    ".picoin-forge/scripts/install.sh",
+    ".picoin-forge/systemd/",
+    ".picoin-forge/reports/health-report.md"
+  ]
+}

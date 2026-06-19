@@ -1,0 +1,15 @@
+[Unit]
+Description={{ description }}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=picoin
+WorkingDirectory={{ working_directory }}
+ExecStart={{ exec_start }}
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "picoin-forge-l2"
+version = "0.1.0"
+description = "Picoin Forge L2 MVP for verified distributed compute capacity and epoch rewards."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.110",
+  "uvicorn>=0.29",
+  "pydantic>=2",
+  "typer>=0.12",
+  "rich>=13.7",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+picoin-forge-worker = "picoin_forge_l2.worker.main:app"
+picoin-forge-coordinator = "picoin_forge_l2.coordinator.main:app"
+
+[tool.setuptools.packages.find]
+include = ["picoin_forge_l2*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

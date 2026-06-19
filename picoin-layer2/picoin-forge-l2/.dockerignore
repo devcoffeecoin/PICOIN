@@ -1,0 +1,8 @@
+.pytest_cache
+**/__pycache__
+*.pyc
+.picoin-forge-l2
+.picoin-forge-worker
+.venv
+dist
+build

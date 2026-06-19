@@ -1,0 +1,44 @@
+services:
+  coordinator:
+    build: .
+    command: picoin-forge-coordinator start --host 0.0.0.0 --port 9380
+    ports:
+      - "9380:9380"
+    volumes:
+      - forge_l2_coordinator:/app/.picoin-forge-l2
+
+  worker-1:
+    build: .
+    depends_on:
+      - coordinator
+    command: >
+      sh -lc "picoin-forge-worker register --wallet PIDOCKERWORKER0001 --coordinator-url http://coordinator:9380
+      && picoin-forge-worker loop --coordinator-url http://coordinator:9380 --interval-seconds 20"
+    volumes:
+      - forge_l2_worker_1:/app/.picoin-forge-worker
+
+  worker-2:
+    build: .
+    depends_on:
+      - coordinator
+    command: >
+      sh -lc "picoin-forge-worker register --wallet PIDOCKERWORKER0002 --coordinator-url http://coordinator:9380
+      && picoin-forge-worker loop --coordinator-url http://coordinator:9380 --interval-seconds 20"
+    volumes:
+      - forge_l2_worker_2:/app/.picoin-forge-worker
+
+  worker-3:
+    build: .
+    depends_on:
+      - coordinator
+    command: >
+      sh -lc "picoin-forge-worker register --wallet PIDOCKERWORKER0003 --coordinator-url http://coordinator:9380
+      && picoin-forge-worker loop --coordinator-url http://coordinator:9380 --interval-seconds 20"
+    volumes:
+      - forge_l2_worker_3:/app/.picoin-forge-worker
+
+volumes:
+  forge_l2_coordinator:
+  forge_l2_worker_1:
+  forge_l2_worker_2:
+  forge_l2_worker_3:
