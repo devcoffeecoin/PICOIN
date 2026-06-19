@@ -12,7 +12,7 @@ The target model is a distributed compute network:
 
 1. Anyone installs a Linux worker.
 2. The worker registers a PI wallet.
-3. The worker contributes CPU, optional GPU, RAM, IO, and availability.
+3. The worker contributes CPU, optional GPU, optional full AI model capacity, RAM, IO, and availability.
 4. The network verifies that capacity through benchmarks and random challenges.
 5. Each epoch calculates the verified compute power of all workers.
 6. Each worker earns PI proportionally to its verified compute share in the network.
@@ -30,6 +30,7 @@ Compute formula:
 worker_verified_compute =
 CPU_score
 + GPU_score
++ AI_model_score
 + RAM_score
 + IO_score
 + uptime_score
@@ -61,6 +62,7 @@ Existing components:
 - Worker registration.
 - CPU/RAM/IO benchmark.
 - Passive GPU detection remains `0`; verified GPU challenges can assign bounded GPU score.
+- Optional AI model profile; verified AI model availability can assign bounded AI model score.
 - CPU/RAM/IO challenge engine.
 - Heartbeat.
 - Worker registry.
@@ -114,11 +116,29 @@ Existing components:
 - Benchmark calibration report API and CLI.
 - Third workload type: `batch_summarize`.
 - Canonical JSONL event audit export.
+- Operator calibration session artifact and `.env` export.
+- Fourth workload type: `text_embed`.
+- AI model capacity challenge type: `ai_model`.
+- Ollama/OpenAI-compatible endpoint availability proof for full model workers.
+- Stake-gated AI access queue with auditable receipts and no per-task payment.
+- AI worker runbook for Ollama/OpenAI-compatible pilots.
+- Capacity-aware AI routing with candidate ranking and active-load balancing.
+- AI request assignment leases and failover requeue.
+- Worker loop execution for compatible AI requests against the registered model profile.
+- Stake-weighted AI access queue priority.
+- Verifiable AI request receipt endpoint.
+- Verified AI request result endpoint.
+- Compact AI request status polling endpoint.
+- AI request cancellation before verification.
+- AI network capability discovery endpoint.
+- Single AI request audit export endpoint.
+- Coordinator CLI commands for AI access operations.
+- Optional non-persistence of AI output content.
 
 Current verification:
 
 ```text
-37 tests passed
+61 tests passed, 1 skipped when optional Typer CLI dependency is unavailable
 ```
 
 ## Phase 0 - Model Definition
@@ -222,6 +242,8 @@ Status: initial MVP implemented for CPU/RAM/IO.
 Update: API endpoints now exist for challenge creation, listing, lookup, and submission.
 Update: challenge expiration is implemented and expired challenges penalize workers.
 Update: `gpu` challenge type now requires a verified GPU workload proof. Workers without a GPU backend fail cleanly. A verified GPU challenge can assign bounded `gpu_score`; passive detection still cannot.
+Update: `ai_model` challenge type verifies full model availability. An advertised model profile does not earn score by itself; only a valid availability proof can assign bounded `ai_model_score`.
+Update: AI model proof can call an Ollama-compatible `/api/generate` endpoint or an OpenAI-compatible `/v1/chat/completions` endpoint with a tiny deterministic availability prompt.
 
 ## Phase 4 - Scoring And Epochs
 
@@ -266,8 +288,26 @@ Update: workload queue now supports `text_classify`, a deterministic keyword-bas
 Update: `picoin-forge-coordinator verify-federation <manifest.json>` validates coordinator previews and the federation root hash offline.
 Update: GPU score calibration has started with a conservative proof-based score assigned only after a verified GPU challenge.
 Update: `/metrics/calibration` and `picoin-forge-coordinator metrics-calibration` recommend benchmark caps from observed metrics without changing configuration automatically.
+Update: `/metrics/calibration/session` and `picoin-forge-coordinator metrics-calibration-session <dir>` produce `calibration_session.json` plus `recommended_caps.env` for operator review.
 Update: workload queue now supports `batch_summarize`, a deterministic extractive summarization task for batch text.
+Update: workload queue now supports `text_embed`, a deterministic lightweight hash-based embedding vector.
 Update: `/events/export` and `picoin-forge-coordinator export-events <path>` export canonical JSONL events with a hash for audit.
+Update: the scoring model now includes `ai_model_score * ai_model_weight`, making full model availability a first-class network contribution.
+Update: AI access queue is available through `/ai/requests`, `/ai/requests/claim`, and `/ai/requests/{request_id}/submit`. Access uses a simulated stake snapshot. Completed requests produce receipt hashes and explicitly mark `no_per_task_payment`.
+Update: `/ai/summary` and the dashboard show AI workers, model readiness, request status counts, latest AI requests, and receipt hashes.
+Update: `docs/AI_WORKER_RUNBOOK.md` documents how to run a real Ollama or OpenAI-compatible worker pilot.
+Update: `/ai/requests/{request_id}/routing` previews compatible workers and the selected route. Claiming now respects routing rank, so requests are distributed by verified capacity and active load instead of first-compatible polling.
+Update: AI requests now use configurable assignment leases. `POST /ai/requests/expire` requeues expired requests for another verified worker, preferring workers not already attempted, and marks them failed after `PICOIN_FORGE_AI_REQUEST_MAX_ASSIGNMENTS`. This improves access reliability without introducing per-task worker payments.
+Update: `picoin-forge-worker loop-once` can claim a compatible AI request, execute it against the worker's registered model profile, submit the output, and create a verified receipt. Endpoint failures are reported locally and rely on request lease failover instead of submitting fake success.
+Update: queued AI requests are prioritized by `stake_snapshot_pi` first and creation time second. This gives PI staking direct access utility without paying a worker per individual prompt.
+Update: `/ai/requests/{request_id}/receipt` reconstructs the canonical AI request receipt payload and validates the stored `receipt_hash`.
+Update: `/ai/requests/{request_id}/result` returns the verified model output, output hash, receipt hash, model profile, and no-payment flags after worker submission.
+Update: `/ai/requests/{request_id}/status` provides compact polling fields for request state, lease state, attempts, result readiness, receipt readiness, and failure reason.
+Update: `/ai/requests/{request_id}/cancel` cancels queued or assigned requests. Verified requests cannot be canceled because their result and receipt remain audit artifacts.
+Update: `/ai/capabilities` summarizes ready model workers by provider, model, capability, max context, and max parameter count for frontend/SDK discovery.
+Update: `/ai/requests/{request_id}/export` returns a canonical single-request audit artifact. It redacts prompt/output by default and can include content with `include_content=true` for debugging.
+Update: `picoin-forge-coordinator ai ...` commands now support capabilities discovery, request creation, status polling, result lookup, receipt verification, and request export for local pilots.
+Update: AI request creation supports `store_output=false`, allowing the coordinator to keep output hashes and receipts without persisting the model output text.
 
 ## Phase 5 - Internal L2 Testnet
 
@@ -396,36 +436,62 @@ Acceptance criteria:
 
 Status: future.
 
-## Phase 10 - Real AI On The Network
+## Phase 10 - Full AI On The Network
 
-Goal: use the compute network for real AI workloads without trying to compete with ChatGPT or Gemini at the beginning.
+Goal: use the compute network for full AI model capacity, not only small demo jobs. The first production target is verified access to open model runtimes contributed by workers, with staking-based access for users and epoch-based rewards for contributors.
 
-Viable initial workloads:
+Model capacity requirements:
 
-- Embeddings.
-- Text classification.
-- OCR.
-- Lightweight transcription.
-- Batch summarization.
-- Inference with small open-source models.
-- Redundant output validation.
+- Worker advertises model provider, name, parameter count, context window, quantization, capabilities, and endpoint.
+- Coordinator verifies availability through randomized `ai_model` challenges.
+- Capacity, uptime, and reliability increase epoch share.
+- Individual prompts or jobs do not create direct per-task payouts.
+- User access is controlled by PI staking or future access policy, not direct worker billing.
+- In the MVP, `PICOIN_FORGE_AI_ACCESS_MIN_STAKE_PI` gates access through a local stake snapshot until real L1 staking proofs are integrated.
+- The local stake snapshot also controls queue priority: higher stake gets earlier access, then older requests.
+- Routing chooses workers by capabilities, model size, context window, AI score, uptime, reliability, and current active requests.
+- Request leases prevent a stalled worker from holding user access indefinitely; expired work is reassigned or failed after a bounded number of attempts.
+
+Useful workloads on top of that capacity:
+
+- LLM chat and completion from open models.
+- Embeddings and retrieval.
+- Classification and moderation.
+- OCR plus document extraction.
+- Transcription and summarization.
+- Tool-use workflows.
+- Redundant output validation across multiple workers.
 
 Deliverables:
 
-- GPU worker profile.
+- GPU and AI model worker profile.
 - Internal workload queue.
 - Sampling-based verification.
 - Cost/capacity report.
 - Staking-based access rules.
+- AI request receipt hash.
+- AI request lease and failover handling.
+- Worker-side AI request execution and receipt submission.
+- Stake-weighted access priority.
+- Receipt verification endpoint.
+- Result polling endpoint.
+- Compact request status endpoint.
+- Request cancellation endpoint before verification.
+- Capability discovery endpoint.
+- Single request audit export endpoint.
+- Coordinator AI CLI commands.
+- Optional `store_output=false` privacy control.
 
 Acceptance criteria:
 
-- The network runs useful workloads.
+- The network proves full model capacity before exposing useful workloads.
 - Compute usage does not break scoring.
 - Results are verifiable or auditable.
 - Access can be connected to PI staking in a later phase.
+- No prompt or job creates a direct worker payout.
+- A stalled worker cannot hold an AI request forever.
 
-Status: future.
+Status: MVP path in progress. Model profiles, availability proof, capability discovery, stake-gated requests, stake-weighted queue priority, routing, worker execution, status/result polling, optional output non-persistence, cancellation, verifiable receipts, single-request exports, coordinator CLI, and lease failover are implemented locally without touching L1.
 
 ## Recommended Current Decision
 
@@ -438,8 +504,9 @@ Strengthen Phase 1 + Phase 2 + Phase 3
 Immediate priorities:
 
 1. Run real-worker calibration sessions and apply reviewed env caps.
-2. Add a heavier useful workload after calibration: embeddings.
-3. Add real-worker federation test runs.
+2. Add real-worker federation test runs.
+3. Run real Ollama/vLLM worker pilots and calibrate `ai_model_score` caps.
+4. Add useful workload families on top of verified model capacity: chat/completion, embeddings, OCR, transcription, and tool-use.
 
 ## Criteria For Touching L1
 
@@ -461,6 +528,8 @@ Do not touch L1 until all of this is true:
 | 2026-06-19 | Use epoch-based model, not individual task marketplace | The goal is available compute capacity, not per-task freelancing |
 | 2026-06-19 | Start with local JSON settlement | Allows economic testing without moving real PI |
 | 2026-06-19 | Integrate L1 later | L2 must be proven before touching payments or consensus |
+| 2026-06-19 | Reward network contribution, not individual tasks | Jobs and prompts are evidence/audit flow; epoch rewards come from capacity, uptime, and reliability |
+| 2026-06-19 | Make full AI model capacity first-class | The L2 goal is a real AI model network, not only small utility tasks |
 
 ## Technical Backlog
 
@@ -495,8 +564,31 @@ Do not touch L1 until all of this is true:
 - Federated manifest verifier. MVP implemented.
 - Proof-based GPU score calibration. MVP implemented.
 - Benchmark calibration report. MVP implemented.
+- Operator calibration session artifact. MVP implemented.
 - `batch_summarize` workload. MVP implemented.
+- `text_embed` workload. MVP implemented.
 - Structured event audit export. MVP implemented.
+- AI model profile. MVP implemented.
+- AI model availability challenge. MVP implemented.
+- AI model score in epoch formula. MVP implemented.
+- Ollama/OpenAI-compatible model proof adapter. MVP implemented.
+- Stake-gated AI access queue. MVP implemented.
+- AI request receipt hash. MVP implemented.
+- AI dashboard and summary endpoint. MVP implemented.
+- AI worker runbook. MVP implemented.
+- AI route preview endpoint. MVP implemented.
+- Capacity-aware AI request claiming. MVP implemented.
+- AI request assignment leases and failover endpoint. MVP implemented.
+- Worker loop AI request execution. MVP implemented.
+- Stake-weighted AI access priority. MVP implemented.
+- AI request receipt verification endpoint. MVP implemented.
+- AI request result endpoint. MVP implemented.
+- AI request status polling endpoint. MVP implemented.
+- AI request cancellation endpoint. MVP implemented.
+- AI capability discovery endpoint. MVP implemented.
+- AI request audit export endpoint. MVP implemented.
+- Coordinator AI CLI commands. MVP implemented.
+- Optional AI output non-persistence. MVP implemented.
 - Web dashboard.
 - Local Docker Compose.
 - Replay/attack tests.

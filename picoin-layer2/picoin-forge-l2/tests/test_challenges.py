@@ -120,3 +120,55 @@ def test_gpu_challenge_fails_without_verified_backend(tmp_path, monkeypatch):
     assert passed is False
     assert state.failed_challenges == 1
     assert state.penalty_score > 0
+
+
+def test_ai_model_challenge_passes_with_verified_backend(tmp_path, monkeypatch):
+    monkeypatch.setenv("PICOIN_FORGE_TEST_AI_MODEL_BACKEND", "1")
+    monkeypatch.setenv("PICOIN_FORGE_AI_MODEL_PROVIDER", "local")
+    monkeypatch.setenv("PICOIN_FORGE_AI_MODEL_NAME", "llama-3.1-70b")
+    monkeypatch.setenv("PICOIN_FORGE_AI_MODEL_PARAMETERS_B", "70")
+    monkeypatch.setenv("PICOIN_FORGE_AI_MODEL_CONTEXT_TOKENS", "131072")
+    monkeypatch.setenv("PICOIN_FORGE_AI_MODEL_CAPABILITIES", "llm,chat,tool-use")
+    registry = WorkerRegistry(tmp_path)
+    registration = register_worker("PIAIMODELVERIFIED", tmp_path / "worker")
+    registry.register(registration)
+    registry.update_benchmark(run_benchmark(registration.worker_id, scale=1))
+    engine = ChallengeEngine(tmp_path, registry)
+
+    challenge = engine.create_challenge(registration.worker_id, ChallengeType.AI_MODEL, difficulty=2)
+    result = solve_challenge(challenge)
+    passed = engine.verify_result(result)
+    state = registry.get(registration.worker_id)
+    events = engine.storage.list_events()
+
+    assert passed is True
+    assert state.passed_challenges == 1
+    assert state.ai_model_score > 0
+    assert any(
+        event.event_type == "challenge.passed"
+        and event.payload.get("ai_model_verified") is True
+        and event.payload.get("ai_model_backend") == "test-ai-model"
+        and event.payload.get("ai_model_score") > 0
+        and event.payload.get("ai_model_name") == "llama-3.1-70b"
+        for event in events
+    )
+
+
+def test_ai_model_challenge_fails_without_verified_backend(tmp_path, monkeypatch):
+    monkeypatch.setenv("PICOIN_FORGE_AI_MODEL_PROVIDER", "local")
+    monkeypatch.setenv("PICOIN_FORGE_AI_MODEL_NAME", "llama-3.1-70b")
+    monkeypatch.setenv("PICOIN_FORGE_AI_MODEL_PARAMETERS_B", "70")
+    registry = WorkerRegistry(tmp_path)
+    registration = register_worker("PIAIMODELUNVERIFIED", tmp_path / "worker")
+    registry.register(registration)
+    engine = ChallengeEngine(tmp_path, registry)
+
+    challenge = engine.create_challenge(registration.worker_id, ChallengeType.AI_MODEL, difficulty=1)
+    result = solve_challenge(challenge)
+    passed = engine.verify_result(result)
+    state = registry.get(registration.worker_id)
+
+    assert passed is False
+    assert state.failed_challenges == 1
+    assert state.penalty_score > 0
+    assert state.ai_model_score == 0

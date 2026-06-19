@@ -16,6 +16,7 @@ class ChallengeType(str, Enum):
     RAM = "ram"
     IO = "io"
     GPU = "gpu"
+    AI_MODEL = "ai_model"
 
 
 class ChallengeStatus(str, Enum):
@@ -37,6 +38,7 @@ class WorkloadType(str, Enum):
     HASH_TEXT = "hash_text"
     TEXT_CLASSIFY = "text_classify"
     BATCH_SUMMARIZE = "batch_summarize"
+    TEXT_EMBED = "text_embed"
 
 
 class WorkloadStatus(str, Enum):
@@ -45,6 +47,26 @@ class WorkloadStatus(str, Enum):
     SUBMITTED = "submitted"
     VERIFIED = "verified"
     FAILED = "failed"
+
+
+class AIRequestStatus(str, Enum):
+    QUEUED = "queued"
+    ASSIGNED = "assigned"
+    SUBMITTED = "submitted"
+    VERIFIED = "verified"
+    FAILED = "failed"
+    CANCELED = "canceled"
+
+
+class AIModelProfile(BaseModel):
+    provider: str = "none"
+    model_name: str | None = None
+    parameter_count_b: float = 0.0
+    context_tokens: int = 0
+    quantization: str | None = None
+    capabilities: list[str] = Field(default_factory=list)
+    endpoint: str | None = None
+    available: bool = False
 
 
 class MachineInfo(BaseModel):
@@ -72,6 +94,7 @@ class WorkerRegistration(BaseModel):
     wallet: str
     public_key: str
     machine_info: MachineInfo
+    ai_model_profile: AIModelProfile | None = None
     status: WorkerStatus = WorkerStatus.REGISTERED
     registered_at: datetime = Field(default_factory=utc_now)
 
@@ -151,6 +174,61 @@ class WorkloadResult(BaseModel):
     submitted_at: datetime = Field(default_factory=utc_now)
 
 
+class AIInferenceCreateRequest(BaseModel):
+    requester_wallet: str
+    stake_snapshot_pi: float = Field(default=0.0, ge=0.0)
+    prompt: str = Field(min_length=1, max_length=16000)
+    required_capabilities: list[str] = Field(default_factory=list)
+    model_hint: str | None = None
+    min_parameter_count_b: float = Field(default=0.0, ge=0.0)
+    min_context_tokens: int = Field(default=0, ge=0)
+    preferred_provider: str | None = None
+    max_tokens: int = Field(default=256, ge=1, le=4096)
+    store_output: bool = True
+
+
+class AIInferenceRequest(BaseModel):
+    request_id: str
+    requester_wallet: str
+    stake_snapshot_pi: float = 0.0
+    required_stake_pi: float = 0.0
+    prompt: str
+    prompt_hash: str
+    required_capabilities: list[str] = Field(default_factory=list)
+    model_hint: str | None = None
+    min_parameter_count_b: float = 0.0
+    min_context_tokens: int = 0
+    preferred_provider: str | None = None
+    max_tokens: int = 256
+    store_output: bool = True
+    status: AIRequestStatus = AIRequestStatus.QUEUED
+    assigned_worker_id: str | None = None
+    assigned_at: datetime | None = None
+    lease_expires_at: datetime | None = None
+    assignment_attempts: int = 0
+    assignment_history: list[str] = Field(default_factory=list)
+    model_profile: AIModelProfile | None = None
+    output: str | None = None
+    output_hash: str | None = None
+    receipt_hash: str | None = None
+    failure_reason: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    no_l1_transaction_created: bool = True
+    no_per_task_payment: bool = True
+
+
+class AIInferenceClaimRequest(BaseModel):
+    worker_id: str
+
+
+class AIInferenceResult(BaseModel):
+    request_id: str
+    worker_id: str
+    output: str = Field(min_length=1, max_length=64000)
+    submitted_at: datetime = Field(default_factory=utc_now)
+
+
 class WorkerState(BaseModel):
     registration: WorkerRegistration
     benchmark: BenchmarkResult | None = None
@@ -160,12 +238,14 @@ class WorkerState(BaseModel):
     penalty_score: float = 0.0
     uptime_score: float = 0.0
     reliability_score: float = 50.0
+    ai_model_score: float = 0.0
     verified_compute_score: float = 0.0
 
 
 class ScoreWeights(BaseModel):
     cpu_weight: float = 1.0
     gpu_weight: float = 2.5
+    ai_model_weight: float = 3.0
     ram_weight: float = 0.35
     io_weight: float = 0.25
     uptime_weight: float = 0.50

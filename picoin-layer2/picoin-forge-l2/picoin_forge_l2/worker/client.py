@@ -6,7 +6,15 @@ import time
 from urllib import request
 
 from picoin_forge_l2.common.crypto import request_signing_payload, sign_message
-from picoin_forge_l2.common.models import BenchmarkResult, ChallengeResult, ComputeChallenge, Heartbeat, WorkerRegistration
+from picoin_forge_l2.common.models import (
+    AIInferenceRequest,
+    AIInferenceResult,
+    BenchmarkResult,
+    ChallengeResult,
+    ComputeChallenge,
+    Heartbeat,
+    WorkerRegistration,
+)
 
 
 class CoordinatorClient:
@@ -36,6 +44,14 @@ class CoordinatorClient:
 
     def submit_challenge_result(self, challenge_id: str, result: ChallengeResult) -> dict:
         return self._post(f"/challenges/{challenge_id}/submit", result.model_dump(mode="json"))
+
+    def claim_ai_request(self, worker_id: str) -> AIInferenceRequest | None:
+        response = self._post("/ai/requests/claim", {"worker_id": worker_id})
+        item = response.get("request") if isinstance(response, dict) else None
+        return AIInferenceRequest.model_validate(item) if item else None
+
+    def submit_ai_request_result(self, request_id: str, result: AIInferenceResult) -> dict:
+        return self._post(f"/ai/requests/{request_id}/submit", result.model_dump(mode="json"))
 
     def _get(self, path: str) -> object:
         with request.urlopen(self.base_url + path, timeout=30) as response:

@@ -27,6 +27,19 @@ def test_score_uses_benchmark_uptime_reliability_and_penalty(tmp_path):
     assert refreshed.verified_compute_score == score
 
 
+def test_score_includes_verified_ai_model_capacity(tmp_path):
+    registry = WorkerRegistry(tmp_path)
+    registration = register_worker("PIAISCORING123", tmp_path / "worker")
+    state: WorkerState = registry.register(registration)
+    state.benchmark = run_benchmark(registration.worker_id, scale=1)
+    baseline = calculate_verified_compute_score(state)
+    state.ai_model_score = 125.0
+
+    score = calculate_verified_compute_score(state)
+
+    assert score > baseline
+
+
 def test_heartbeat_increases_uptime(tmp_path):
     registry = WorkerRegistry(tmp_path)
     registration = register_worker("PITESTHEARTBEAT", tmp_path / "worker")

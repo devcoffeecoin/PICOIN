@@ -88,3 +88,4 @@ def test_coordinator_api_challenge_flow(tmp_path, monkeypatch):
     assert "Metrics Charts" in dashboard_response.text
     assert "Latest Benchmark Metrics" in dashboard_response.text
     assert "Epoch History" in dashboard_response.text
+    assert "AI Network" in dashboard_response.text

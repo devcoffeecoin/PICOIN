@@ -30,6 +30,8 @@ def compute_workload_result_hash(task_type: WorkloadType, payload: dict) -> str:
         return hash_json({"task_type": task_type.value, "result": classify_text_payload(payload)})
     if task_type == WorkloadType.BATCH_SUMMARIZE:
         return hash_json({"task_type": task_type.value, "result": summarize_text_payload(payload)})
+    if task_type == WorkloadType.TEXT_EMBED:
+        return hash_json({"task_type": task_type.value, "result": embed_text_payload(payload)})
     raise ValueError(f"unsupported workload type: {task_type}")
 
 
@@ -95,6 +97,31 @@ def summarize_text_payload(payload: dict) -> dict:
         "summary": " ".join(selected_sentences),
         "sentences": selected_sentences,
         "sentence_count": len(sentences),
+    }
+
+
+def embed_text_payload(payload: dict) -> dict:
+    documents = payload.get("documents")
+    if isinstance(documents, list):
+        text = "\n".join(str(document) for document in documents)
+    else:
+        text = str(payload.get("text", ""))
+    dimensions = _safe_int(payload.get("dimensions", 16), default=16, minimum=4, maximum=256)
+    tokens = _words(text)
+    vector = [0.0 for _ in range(dimensions)]
+    for token in tokens:
+        digest = sha256_text(token)
+        bucket = int(digest[:8], 16) % dimensions
+        sign = 1.0 if int(digest[8:10], 16) % 2 == 0 else -1.0
+        weight = 1.0 + (int(digest[10:12], 16) % 7) / 10.0
+        vector[bucket] += sign * weight
+    norm = sum(abs(value) for value in vector) or 1.0
+    normalized = [round(value / norm, 8) for value in vector]
+    return {
+        "dimensions": dimensions,
+        "token_count": len(tokens),
+        "vector": normalized,
+        "vector_hash": hash_json(normalized),
     }
 
 

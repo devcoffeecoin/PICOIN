@@ -8,6 +8,7 @@ from pathlib import Path
 
 from picoin_forge_l2.common.crypto import generate_ed25519_private_key, public_key_from_private_key, worker_id_from_wallet
 from picoin_forge_l2.common.models import MachineInfo, WorkerRegistration, utc_now
+from picoin_forge_l2.worker.ai_model import detect_ai_model_profile
 from picoin_forge_l2.worker.gpu import detect_gpu_info, detect_ram_bytes
 
 WORKER_KEY_FILE = "worker-key.json"
@@ -40,6 +41,7 @@ def register_worker(wallet: str, state_dir: str | Path, public_key: str | None =
         wallet=clean_wallet,
         public_key=key,
         machine_info=detect_machine_info(),
+        ai_model_profile=detect_ai_model_profile(),
     )
     (path / "worker.json").write_text(registration.model_dump_json(indent=2), encoding="utf-8")
     return registration
@@ -67,6 +69,7 @@ def rotate_worker_key(state_dir: str | Path) -> WorkerRegistration:
         wallet=existing.wallet,
         public_key=public_key,
         machine_info=detect_machine_info(),
+        ai_model_profile=detect_ai_model_profile(),
         status=existing.status,
         registered_at=existing.registered_at,
     )

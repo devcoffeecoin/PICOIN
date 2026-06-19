@@ -6,11 +6,31 @@ from pathlib import Path
 
 from picoin_forge_l2.common.hashing import sha256_bytes, sha256_text
 from picoin_forge_l2.common.models import ChallengeResult, ChallengeType, ComputeChallenge
+from picoin_forge_l2.worker.ai_model import ai_model_expected_prompt_hash, run_ai_model_availability_challenge
 from picoin_forge_l2.worker.gpu import gpu_expected_workload_hash, run_gpu_workload_challenge
 
 
 def solve_challenge(challenge: ComputeChallenge) -> ChallengeResult:
     started = time.perf_counter()
+    if challenge.challenge_type == ChallengeType.AI_MODEL:
+        proof = run_ai_model_availability_challenge(challenge.seed, challenge.difficulty)
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+        return ChallengeResult(
+            challenge_id=challenge.challenge_id,
+            worker_id=challenge.worker_id,
+            result_hash=proof.proof_hash,
+            passed=proof.verified and proof.prompt_hash == challenge.expected_hash,
+            elapsed_ms=elapsed_ms,
+            proof={
+                "ai_model_verified": proof.verified,
+                "prompt_hash": proof.prompt_hash,
+                "proof_hash": proof.proof_hash,
+                "output_hash": proof.output_hash,
+                "backend": proof.backend,
+                "model_profile": proof.model_profile,
+                "reason": proof.reason,
+            },
+        )
     if challenge.challenge_type == ChallengeType.GPU:
         proof = run_gpu_workload_challenge(challenge.seed, challenge.difficulty)
         elapsed_ms = (time.perf_counter() - started) * 1000.0
@@ -47,6 +67,8 @@ def compute_challenge_hash(challenge_type: ChallengeType, seed: str, difficulty:
         return io_challenge_hash(seed, difficulty)
     if challenge_type == ChallengeType.GPU:
         return gpu_expected_workload_hash(seed, difficulty)
+    if challenge_type == ChallengeType.AI_MODEL:
+        return ai_model_expected_prompt_hash(seed, difficulty)
     raise ValueError(f"unsupported challenge type: {challenge_type}")
 
 
@@ -73,4 +95,3 @@ def io_challenge_hash(seed: str, difficulty: int) -> str:
         path = Path(tmp) / "challenge.bin"
         path.write_bytes(payload)
         return sha256_bytes(path.read_bytes())
-

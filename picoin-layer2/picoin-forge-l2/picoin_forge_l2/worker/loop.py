@@ -4,6 +4,9 @@ import time
 from pathlib import Path
 from typing import Any
 
+from picoin_forge_l2.common.models import AIInferenceResult
+
+from .ai_model import run_ai_inference
 from .benchmark import run_benchmark
 from .challenges import solve_challenge
 from .client import CoordinatorClient
@@ -51,12 +54,45 @@ def run_worker_once(
         client.submit_challenge_result(challenge.challenge_id, result)
         solved.append(result.model_dump(mode="json"))
 
+    ai_requests_handled = []
+    ai_request = client.claim_ai_request(registration.worker_id) if hasattr(client, "claim_ai_request") else None
+    if ai_request is not None and hasattr(client, "submit_ai_request_result"):
+        inference = run_ai_inference(
+            ai_request.prompt,
+            max_tokens=ai_request.max_tokens,
+            profile=registration.ai_model_profile,
+        )
+        if inference.accepted:
+            ai_result = AIInferenceResult(
+                request_id=ai_request.request_id,
+                worker_id=registration.worker_id,
+                output=inference.output,
+            )
+            client.submit_ai_request_result(ai_request.request_id, ai_result)
+            ai_requests_handled.append(
+                {
+                    "request_id": ai_request.request_id,
+                    "backend": inference.backend,
+                    "output_hash": inference.output_hash,
+                }
+            )
+        else:
+            ai_requests_handled.append(
+                {
+                    "request_id": ai_request.request_id,
+                    "accepted": False,
+                    "backend": inference.backend,
+                    "reason": inference.reason,
+                }
+            )
+
     return {
         "worker_id": registration.worker_id,
         "coordinator_url": resolved_url,
         "benchmark_score": benchmark.benchmark_score,
         "heartbeat_sent": True,
         "challenges_solved": solved,
+        "ai_requests_handled": ai_requests_handled,
     }
 
 

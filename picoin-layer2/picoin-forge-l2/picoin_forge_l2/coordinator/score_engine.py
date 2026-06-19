@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from picoin_forge_l2.common.constants import (
+    AI_MODEL_WEIGHT,
     CPU_WEIGHT,
     GPU_WEIGHT,
     IO_WEIGHT,
@@ -14,6 +15,7 @@ from picoin_forge_l2.common.models import ScoreWeights, WorkerState
 DEFAULT_WEIGHTS = ScoreWeights(
     cpu_weight=CPU_WEIGHT,
     gpu_weight=GPU_WEIGHT,
+    ai_model_weight=AI_MODEL_WEIGHT,
     ram_weight=RAM_WEIGHT,
     io_weight=IO_WEIGHT,
     uptime_weight=UPTIME_WEIGHT,
@@ -28,6 +30,7 @@ def calculate_verified_compute_score(state: WorkerState, weights: ScoreWeights =
     score = (
         benchmark.cpu_score * weights.cpu_weight
         + benchmark.gpu_score * weights.gpu_weight
+        + state.ai_model_score * weights.ai_model_weight
         + benchmark.ram_score * weights.ram_weight
         + benchmark.io_score * weights.io_weight
         + state.uptime_score * weights.uptime_weight

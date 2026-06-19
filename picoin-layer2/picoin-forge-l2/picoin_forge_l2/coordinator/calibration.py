@@ -1,9 +1,15 @@
 from __future__ import annotations
 
+import json
 import math
+from pathlib import Path
 from statistics import mean
 from typing import Any
 
+from picoin_forge_l2.common.hashing import hash_json
+from picoin_forge_l2.common.models import utc_now
+
+from .storage import CoordinatorStorage
 from .storage import benchmark_normalization_caps
 
 
@@ -61,6 +67,63 @@ def build_benchmark_calibration_report(metrics: list[dict[str, Any]], *, percent
         "components": component_reports,
         "note": "Operator review required. This report does not change running configuration.",
     }
+
+
+def build_calibration_session(metrics: list[dict[str, Any]], *, percentile: float = 0.95) -> dict[str, Any]:
+    report = build_benchmark_calibration_report(metrics, percentile=percentile)
+    session_payload = {
+        "schema_version": "picoin-forge-l2-calibration-session-v1",
+        "sample_count": report["sample_count"],
+        "percentile": report["percentile"],
+        "recommended_caps": report["recommended_caps"],
+        "recommended_env": report["recommended_env"],
+        "components": report["components"],
+    }
+    env_file = render_recommended_caps_env(report["recommended_env"])
+    return {
+        **session_payload,
+        "generated_at": utc_now().isoformat(),
+        "ready": report["ready"],
+        "current_caps": report["current_caps"],
+        "session_hash": hash_json(session_payload),
+        "env_file": env_file,
+        "note": "Review this session before applying the generated env vars.",
+    }
+
+
+def write_calibration_session(
+    state_dir: str | Path,
+    output_dir: str | Path,
+    *,
+    limit: int = 1000,
+    percentile: float = 0.95,
+) -> dict[str, Any]:
+    metrics = CoordinatorStorage(state_dir).list_benchmark_metrics(limit=limit)
+    session = build_calibration_session(metrics, percentile=percentile)
+    path = Path(output_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    report_path = path / "calibration_session.json"
+    env_path = path / "recommended_caps.env"
+    report_path.write_text(json.dumps(session, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    env_path.write_text(session["env_file"], encoding="utf-8")
+    return {
+        "schema_version": session["schema_version"],
+        "sample_count": session["sample_count"],
+        "ready": session["ready"],
+        "session_hash": session["session_hash"],
+        "report_path": str(report_path),
+        "env_path": str(env_path),
+    }
+
+
+def render_recommended_caps_env(recommended_env: dict[str, str]) -> str:
+    lines = [
+        "# Picoin Forge L2 recommended benchmark caps",
+        "# Generated from observed benchmark metrics. Review before applying.",
+    ]
+    for key in sorted(recommended_env):
+        lines.append(f"{key}={recommended_env[key]}")
+    return "\n".join(lines) + "\n"
 
 
 def _nearest_rank_percentile(values: list[float], percentile: float) -> float:

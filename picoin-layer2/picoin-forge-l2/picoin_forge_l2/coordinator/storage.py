@@ -139,6 +139,21 @@ class CoordinatorStorage:
 
                 CREATE INDEX IF NOT EXISTS idx_workloads_status_updated
                     ON workloads(status, updated_at);
+
+                CREATE TABLE IF NOT EXISTS ai_requests (
+                    request_id TEXT PRIMARY KEY,
+                    status TEXT NOT NULL,
+                    assigned_worker_id TEXT,
+                    requester_wallet TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_ai_requests_status_updated
+                    ON ai_requests(status, updated_at);
+
+                CREATE INDEX IF NOT EXISTS idx_ai_requests_wallet_updated
+                    ON ai_requests(requester_wallet, updated_at);
                 """
             )
 

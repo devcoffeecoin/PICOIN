@@ -59,15 +59,21 @@ class ChallengeEngine:
             self._expire_challenge(challenge, reason="submitted_after_deadline")
             return False
         gpu_proof_valid = True
+        ai_model_proof_valid = True
+        result_hash_valid = result.result_hash == challenge.expected_hash
         if challenge.challenge_type == ChallengeType.GPU:
             gpu_proof_valid = bool(result.proof.get("gpu_verified")) and result.proof.get("backend") in {
                 "cupy",
                 "test-gpu",
             }
+        if challenge.challenge_type == ChallengeType.AI_MODEL:
+            ai_model_proof_valid = validate_ai_model_proof(result, challenge)
+            result_hash_valid = ai_model_proof_valid
         passed = (
             result.worker_id == challenge.worker_id
-            and result.result_hash == challenge.expected_hash
+            and result_hash_valid
             and gpu_proof_valid
+            and ai_model_proof_valid
         )
         challenge.status = ChallengeStatus.PASSED if passed else ChallengeStatus.FAILED
         self.put(challenge)
@@ -77,12 +83,18 @@ class ChallengeEngine:
             reliability_delta = 5.0
             penalty_delta = 0.0
             gpu_score = apply_verified_gpu_score(state, result, challenge) if challenge.challenge_type == ChallengeType.GPU else None
+            ai_model_score = (
+                apply_verified_ai_model_score(state, result, challenge)
+                if challenge.challenge_type == ChallengeType.AI_MODEL
+                else None
+            )
             state.reliability_score = min(100.0, state.reliability_score + reliability_delta)
             event_type = "challenge.passed"
         else:
             reliability_delta = -10.0
             penalty_delta = 10.0
             gpu_score = None
+            ai_model_score = None
             state.failed_challenges += 1
             state.penalty_score += penalty_delta
             state.reliability_score = max(0.0, state.reliability_score - 10.0)
@@ -113,6 +125,12 @@ class ChallengeEngine:
                 "gpu_verified": bool(result.proof.get("gpu_verified")),
                 "gpu_backend": result.proof.get("backend"),
                 "gpu_score": gpu_score,
+                "ai_model_verified": bool(result.proof.get("ai_model_verified")),
+                "ai_model_backend": result.proof.get("backend") if challenge.challenge_type == ChallengeType.AI_MODEL else None,
+                "ai_model_score": ai_model_score,
+                "ai_model_name": (result.proof.get("model_profile") or {}).get("model_name")
+                if isinstance(result.proof.get("model_profile"), dict)
+                else None,
             },
         )
         return passed
@@ -216,3 +234,46 @@ def apply_verified_gpu_score(state, result: ChallengeResult, challenge: ComputeC
     score = round(difficulty_score + speed_score, 8)
     state.benchmark.gpu_score = max(float(state.benchmark.gpu_score or 0.0), score)
     return state.benchmark.gpu_score
+
+
+def validate_ai_model_proof(result: ChallengeResult, challenge: ComputeChallenge) -> bool:
+    profile = result.proof.get("model_profile") or {}
+    if not isinstance(profile, dict):
+        return False
+    parameter_count_b = _safe_float(profile.get("parameter_count_b"), 0.0)
+    return (
+        bool(result.proof.get("ai_model_verified"))
+        and result.proof.get("prompt_hash") == challenge.expected_hash
+        and result.proof.get("proof_hash") == result.result_hash
+        and result.proof.get("backend") in {"test-ai-model", "ollama", "openai-compatible"}
+        and bool(profile.get("model_name"))
+        and parameter_count_b > 0.0
+    )
+
+
+def apply_verified_ai_model_score(state, result: ChallengeResult, challenge: ComputeChallenge) -> float:
+    profile = result.proof.get("model_profile") or {}
+    parameter_count_b = max(_safe_float(profile.get("parameter_count_b"), 0.0), 0.0)
+    context_tokens = max(_safe_int(profile.get("context_tokens"), 0), 0)
+    capabilities = profile.get("capabilities") or []
+    capability_bonus = min(len(capabilities) * 5.0, 50.0) if isinstance(capabilities, list) else 0.0
+    difficulty_score = min(100.0, float(challenge.difficulty) * 10.0)
+    model_size_score = min(600.0, parameter_count_b * 18.0)
+    context_score = min(200.0, context_tokens / 512.0)
+    score = round(model_size_score + context_score + capability_bonus + difficulty_score, 8)
+    state.ai_model_score = max(float(state.ai_model_score or 0.0), score)
+    return state.ai_model_score
+
+
+def _safe_float(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _safe_int(value, default: int) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
