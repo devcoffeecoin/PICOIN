@@ -13,7 +13,7 @@ def test_worker_loop_runs_single_iteration_against_coordinator(tmp_path, monkeyp
     registration = register_worker("PILOOPWORKER123", tmp_path / "worker")
 
     class LocalClient:
-        def __init__(self, base_url: str):
+        def __init__(self, base_url: str, **kwargs):
             self.base_url = base_url
 
         def register(self, worker_registration):

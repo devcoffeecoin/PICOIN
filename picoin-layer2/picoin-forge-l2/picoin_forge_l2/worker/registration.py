@@ -6,9 +6,11 @@ import platform
 import sys
 from pathlib import Path
 
-from picoin_forge_l2.common.crypto import simulated_public_key, worker_id_from_wallet
+from picoin_forge_l2.common.crypto import generate_ed25519_private_key, public_key_from_private_key, worker_id_from_wallet
 from picoin_forge_l2.common.models import MachineInfo, WorkerRegistration
 from picoin_forge_l2.worker.gpu import detect_gpu_info, detect_ram_bytes
+
+WORKER_KEY_FILE = "worker-key.json"
 
 
 def detect_machine_info() -> MachineInfo:
@@ -28,15 +30,16 @@ def register_worker(wallet: str, state_dir: str | Path, public_key: str | None =
     clean_wallet = wallet.strip().upper()
     if not clean_wallet.startswith("PI"):
         raise ValueError("wallet must look like a Picoin address and start with PI")
-    key = public_key or simulated_public_key(clean_wallet)
+    path = Path(state_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    private_key = load_or_create_private_key(path)
+    key = public_key or public_key_from_private_key(private_key)
     registration = WorkerRegistration(
         worker_id=worker_id_from_wallet(clean_wallet, key),
         wallet=clean_wallet,
         public_key=key,
         machine_info=detect_machine_info(),
     )
-    path = Path(state_dir)
-    path.mkdir(parents=True, exist_ok=True)
     (path / "worker.json").write_text(registration.model_dump_json(indent=2), encoding="utf-8")
     return registration
 
@@ -44,3 +47,21 @@ def register_worker(wallet: str, state_dir: str | Path, public_key: str | None =
 def load_registration(state_dir: str | Path) -> WorkerRegistration:
     payload = json.loads((Path(state_dir) / "worker.json").read_text(encoding="utf-8"))
     return WorkerRegistration.model_validate(payload)
+
+
+def load_or_create_private_key(state_dir: str | Path) -> str:
+    path = Path(state_dir)
+    path.mkdir(parents=True, exist_ok=True)
+    key_path = path / WORKER_KEY_FILE
+    if key_path.exists():
+        return json.loads(key_path.read_text(encoding="utf-8"))["private_key"]
+    private_key = generate_ed25519_private_key()
+    key_path.write_text(json.dumps({"private_key": private_key}, indent=2) + "\n", encoding="utf-8")
+    return private_key
+
+
+def load_private_key(state_dir: str | Path) -> str | None:
+    key_path = Path(state_dir) / WORKER_KEY_FILE
+    if not key_path.exists():
+        return None
+    return json.loads(key_path.read_text(encoding="utf-8"))["private_key"]

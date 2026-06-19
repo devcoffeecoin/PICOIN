@@ -85,11 +85,29 @@ Existing components:
 - Passive GPU detection.
 - Local Docker Compose with coordinator plus three workers.
 - GPU challenge placeholder with no reward signal.
+- Normalized benchmark metrics table.
+- Challenge metrics table.
+- Metrics API endpoints.
+- Epoch history API endpoints.
+- Dashboard epoch history table.
+- Optional challenge expiration scheduler.
+- CLI command for one-shot challenge expiration.
+- Optional coordinator write-token auth.
+- Docker Compose health checks.
+- Docker Compose coordinator readiness dependency.
+- L1 settlement preview payload.
+- L1 preview API and CLI command.
+- Ed25519 worker request signatures.
+- Optional signature enforcement flag.
+- Offline settlement verifier.
+- Worker signature replay cache.
+- Minimal verified workload queue.
+- First workload type: `hash_text`.
 
 Current verification:
 
 ```text
-14 tests passed
+22 tests passed
 ```
 
 ## Phase 0 - Model Definition
@@ -219,6 +237,16 @@ Acceptance criteria:
 Status: initial MVP implemented.
 Update: missed heartbeat penalty is implemented in the coordinator registry and applied during epoch close.
 Update: reward rounding now preserves exact epoch reward totals when total verified compute is positive.
+Update: normalized benchmark metrics and challenge metrics are stored in SQLite for future calibration and dashboard views.
+Update: settlement history is exposed through `/epochs` and `/epochs/{epoch_id}` and displayed in the dashboard.
+Update: optional background challenge expiration can be enabled with `PICOIN_FORGE_CHALLENGE_EXPIRER_SECONDS`.
+Update: optional write-token auth can be enabled with `PICOIN_FORGE_COORDINATOR_TOKEN`; when unset, local MVP compatibility is preserved.
+Update: Docker Compose now includes coordinator and worker health checks, and workers wait for coordinator health before starting.
+Update: settlement previews can be generated through `/epochs/{epoch_id}/l1-preview` or `picoin-forge-coordinator l1-preview <epoch_id>`. These previews do not create L1 transactions.
+Update: workers now generate a local Ed25519 key and can sign write requests. Coordinators can require signatures with `PICOIN_FORGE_REQUIRE_WORKER_SIGNATURES=1`.
+Update: `picoin-forge-coordinator verify-settlement <epoch_id>` recalculates settlement and preview hashes locally.
+Update: repeated worker signatures are rejected through a local replay cache.
+Update: a minimal verified workload queue exists with `hash_text` tasks. This proves queue lifecycle before real AI workloads.
 
 ## Phase 5 - Internal L2 Testnet
 
@@ -388,12 +416,12 @@ Strengthen Phase 1 + Phase 2 + Phase 3
 
 Immediate priorities:
 
-1. Add normalized benchmark/challenge metrics tables.
-2. Add dashboard charts and epoch history.
-3. Add challenge timeout scheduler/background task.
-4. Add coordinator auth for worker submissions.
-5. Add Docker health checks.
-6. Replace GPU placeholder with verified GPU workload challenge.
+1. Replace GPU placeholder with verified GPU workload challenge.
+2. Calibrate benchmark normalization caps using real workers.
+3. Add richer dashboard charts after real worker data exists.
+4. Add multi-coordinator simulation.
+5. Add worker signature key rotation.
+6. Add next useful workload type: text classification or batch summarization.
 
 ## Criteria For Touching L1
 
@@ -430,6 +458,17 @@ Do not touch L1 until all of this is true:
 - Passive GPU detection. MVP implemented.
 - Docker Compose local simulation. MVP implemented.
 - GPU challenge placeholder. MVP implemented.
+- Normalized benchmark metrics. MVP implemented.
+- Challenge metrics. MVP implemented.
+- Epoch history API and dashboard table. MVP implemented.
+- Challenge expiration scheduler. MVP implemented.
+- Optional coordinator write-token auth. MVP implemented.
+- Docker Compose health checks. MVP implemented.
+- L1 settlement preview payload. MVP implemented.
+- Worker request signatures. MVP implemented.
+- Offline settlement verifier. MVP implemented.
+- Worker signature replay cache. MVP implemented.
+- Minimal verified workload queue. MVP implemented.
 - Structured logs.
 - Web dashboard.
 - Local Docker Compose.

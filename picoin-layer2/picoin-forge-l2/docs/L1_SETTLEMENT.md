@@ -43,3 +43,48 @@ This file contains:
 - `result_hash`
 - timestamp
 - note that no real L1 transaction was created
+
+## MVP L1 Preview Payload
+
+The current MVP can also produce a signature-ready preview payload:
+
+```text
+GET /epochs/{epoch_id}/l1-preview
+picoin-forge-coordinator l1-preview <epoch_id>
+```
+
+Example shape:
+
+```json
+{
+  "schema_version": "picoin-forge-l2-settlement-preview-v1",
+  "payload_type": "l2_epoch_settlement_preview",
+  "epoch_id": 1,
+  "epoch_reward": 100.0,
+  "total_verified_compute": 1234.56,
+  "worker_count": 2,
+  "settlement_result_hash": "settlement_hash",
+  "worker_rewards": [],
+  "payload_hash": "canonical_preview_hash",
+  "signatures": [],
+  "no_l1_transaction_created": true
+}
+```
+
+This preview is not submitted to Picoin L1. It exists to stabilize the future payload format before real integration.
+
+## Offline Verification
+
+Any closed epoch can be checked locally:
+
+```text
+picoin-forge-coordinator verify-settlement <epoch_id>
+```
+
+The verifier recalculates:
+
+- `total_verified_compute`
+- settlement `result_hash`
+- reward sum
+- preview `payload_hash`
+- `no_l1_transaction_created`

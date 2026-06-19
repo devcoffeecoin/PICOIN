@@ -9,7 +9,7 @@ from .challenges import solve_challenge
 from .client import CoordinatorClient
 from .config import load_worker_config, worker_state_dir
 from .heartbeat import build_heartbeat
-from .registration import load_registration
+from .registration import load_private_key, load_registration
 
 
 def run_worker_once(
@@ -27,7 +27,11 @@ def run_worker_once(
     should_request_challenge = (
         request_challenge if request_challenge is not None else (config.request_challenges if config else True)
     )
-    client = CoordinatorClient(resolved_url)
+    client = CoordinatorClient(
+        resolved_url,
+        private_key=load_private_key(state_path),
+        worker_id=registration.worker_id,
+    )
     client.register(registration)
 
     benchmark = run_benchmark(registration.worker_id, scale=resolved_scale)

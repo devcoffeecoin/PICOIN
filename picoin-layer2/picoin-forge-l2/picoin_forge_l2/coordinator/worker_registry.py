@@ -34,11 +34,13 @@ class WorkerRegistry:
         state = self.get(benchmark.worker_id)
         state.benchmark = benchmark
         self.put(state)
+        metric = self.storage.record_benchmark_metric(benchmark)
         self.storage.record_event(
             "worker.benchmark",
             benchmark.worker_id,
             {
                 "benchmark_score": benchmark.benchmark_score,
+                "normalized_score": metric["normalized_score"],
                 "result_hash": benchmark.result_hash,
             },
         )

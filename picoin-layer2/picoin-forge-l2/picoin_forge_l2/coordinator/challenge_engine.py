@@ -65,15 +65,29 @@ class ChallengeEngine:
         if passed:
             state.passed_challenges += 1
             reliability_delta = 0.0 if challenge.challenge_type == ChallengeType.GPU else 5.0
+            penalty_delta = 0.0
             state.reliability_score = min(100.0, state.reliability_score + reliability_delta)
             event_type = "challenge.passed"
         else:
             reliability_delta = -10.0
+            penalty_delta = 10.0
             state.failed_challenges += 1
-            state.penalty_score += 10.0
+            state.penalty_score += penalty_delta
             state.reliability_score = max(0.0, state.reliability_score - 10.0)
             event_type = "challenge.failed"
         self.registry.put(state)
+        self.storage.record_challenge_metric(
+            challenge_id=challenge.challenge_id,
+            worker_id=result.worker_id,
+            challenge_type=challenge.challenge_type,
+            status=challenge.status.value,
+            difficulty=challenge.difficulty,
+            passed=passed,
+            elapsed_ms=result.elapsed_ms,
+            reliability_delta=reliability_delta,
+            penalty_delta=penalty_delta,
+            result_hash=result.result_hash,
+        )
         self.storage.record_event(
             event_type,
             result.worker_id,
@@ -83,6 +97,7 @@ class ChallengeEngine:
                 "result_hash": result.result_hash,
                 "elapsed_ms": result.elapsed_ms,
                 "reliability_delta": reliability_delta,
+                "penalty_delta": penalty_delta,
                 "gpu_placeholder": challenge.challenge_type == ChallengeType.GPU,
             },
         )
@@ -156,6 +171,16 @@ class ChallengeEngine:
         state.penalty_score += EXPIRED_CHALLENGE_PENALTY
         state.reliability_score = max(0.0, state.reliability_score - EXPIRED_CHALLENGE_PENALTY)
         self.registry.put(state)
+        self.storage.record_challenge_metric(
+            challenge_id=challenge.challenge_id,
+            worker_id=challenge.worker_id,
+            challenge_type=challenge.challenge_type,
+            status=challenge.status.value,
+            difficulty=challenge.difficulty,
+            passed=False,
+            reliability_delta=-EXPIRED_CHALLENGE_PENALTY,
+            penalty_delta=EXPIRED_CHALLENGE_PENALTY,
+        )
         self.storage.record_event(
             "challenge.expired",
             challenge.worker_id,

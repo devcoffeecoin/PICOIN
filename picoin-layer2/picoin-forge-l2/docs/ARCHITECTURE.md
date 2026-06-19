@@ -24,6 +24,7 @@ L2 is responsible for:
 - Assigning random challenges.
 - Tracking uptime and reliability.
 - Calculating verified compute scores.
+- Running a minimal verified workload queue.
 - Closing epochs.
 - Producing settlement JSON and result hashes.
 
@@ -46,6 +47,7 @@ The coordinator provides:
 
 - Worker registry.
 - Challenge engine.
+- Optional challenge expiration scheduler.
 - Score engine.
 - Epoch engine.
 - Reward engine.
@@ -54,6 +56,8 @@ The coordinator provides:
 The MVP coordinator stores workers, challenges, and epoch state in local SQLite. Settlement remains exported as JSON so it can later become an L1 payload artifact.
 
 The coordinator also stores an append-only event log in SQLite. Events are used for auditability and future L1 settlement proofs.
+
+The coordinator stores normalized benchmark metrics and challenge metrics separately from events. Metrics are intended for calibration, dashboards, and fraud analysis. They do not change L1 and do not move PI.
 
 ## Local Simulation
 
@@ -84,10 +88,20 @@ An epoch closes by:
 GET  /health
 GET  /
 GET  /events
+GET  /epochs
+GET  /epochs/{epoch_id}
+GET  /epochs/{epoch_id}/l1-preview
+GET  /metrics/benchmarks
+GET  /metrics/challenges
 POST /workers/register
 GET  /workers
+GET  /workers/{worker_id}/metrics
 POST /benchmarks
 POST /heartbeats
+POST /workloads
+GET  /workloads
+POST /workloads/claim
+POST /workloads/{task_id}/submit
 POST /challenges
 GET  /challenges/{challenge_id}
 GET  /workers/{worker_id}/challenges
@@ -95,3 +109,5 @@ POST /challenges/{challenge_id}/submit
 POST /challenges/expire
 POST /epochs/close
 ```
+
+The background challenge expiration scheduler is disabled by default. It can be enabled with `PICOIN_FORGE_CHALLENGE_EXPIRER_SECONDS`.

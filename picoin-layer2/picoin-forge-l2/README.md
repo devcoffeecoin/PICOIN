@@ -72,8 +72,39 @@ picoin-forge-coordinator start
 picoin-forge-coordinator workers
 picoin-forge-coordinator epoch close
 picoin-forge-coordinator rewards
+picoin-forge-coordinator l1-preview 1
+picoin-forge-coordinator verify-settlement 1
+picoin-forge-coordinator expire-challenges
 picoin-forge-coordinator demo --workers 3
 ```
+
+Optional automatic challenge expiration:
+
+```bash
+PICOIN_FORGE_CHALLENGE_EXPIRER_SECONDS=30 picoin-forge-coordinator start
+```
+
+Optional write authentication:
+
+```bash
+PICOIN_FORGE_COORDINATOR_TOKEN=change-me picoin-forge-coordinator start
+```
+
+When set, write endpoints require:
+
+```text
+X-Picoin-Forge-Token: change-me
+```
+
+If the token is not set, the coordinator remains open for local MVP compatibility.
+
+Optional worker request signatures:
+
+```bash
+PICOIN_FORGE_REQUIRE_WORKER_SIGNATURES=1 picoin-forge-coordinator start
+```
+
+Workers created by `picoin-forge-worker register` store a local Ed25519 private key in the worker state directory and sign write requests automatically during `loop` and `loop-once`.
 
 ## Local Docker Simulation
 
@@ -90,14 +121,31 @@ Dashboard:
 http://127.0.0.1:9380/
 ```
 
+The compose file includes:
+
+- Coordinator health check on `/health`.
+- Workers waiting for the coordinator to become healthy.
+- Worker health checks for local registration/config files.
+- Challenge expiration scheduler enabled every 30 seconds.
+
 ## Coordinator API
 
 ```text
 GET  /health
 GET  /
 GET  /events
+GET  /epochs
+GET  /epochs/{epoch_id}
+GET  /epochs/{epoch_id}/l1-preview
+GET  /metrics/benchmarks
+GET  /metrics/challenges
 POST /workers/register
 GET  /workers
+GET  /workers/{worker_id}/metrics
+POST /workloads
+GET  /workloads
+POST /workloads/claim
+POST /workloads/{task_id}/submit
 POST /benchmarks
 POST /heartbeats
 POST /challenges
@@ -127,6 +175,16 @@ Picoin L1 is not touched in this MVP. Future settlement would only register comp
 - validator signatures
 
 The heavy compute and validation remain off-chain in L2.
+
+## Workload Queue Prototype
+
+The MVP includes one verified workload type:
+
+```text
+hash_text
+```
+
+This is intentionally basic. It proves the lifecycle of a useful workload queue without introducing heavy AI execution, payments, or L1 writes yet.
 
 ## GPU Policy In MVP
 

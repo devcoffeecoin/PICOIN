@@ -64,3 +64,36 @@ Mitigation:
 - Heartbeats only affect uptime.
 - Compute score still depends on benchmark and challenges.
 - Random challenge failures reduce reliability and add penalties.
+
+## Metrics Safety
+
+Benchmark and challenge metric tables are observational in the MVP.
+
+Mitigation:
+
+- Metrics support dashboards, calibration, and fraud analysis.
+- Metrics do not trigger payments.
+- Metrics do not create L1 transactions.
+
+## Coordinator Write Token
+
+The coordinator can require a shared write token for worker submissions.
+
+Mitigation:
+
+- Set `PICOIN_FORGE_COORDINATOR_TOKEN` to protect write endpoints.
+- Workers send `X-Picoin-Forge-Token`.
+- If the token is unset, the MVP remains open for local development compatibility.
+
+## Worker Request Signatures
+
+Workers can sign coordinator write requests with a local Ed25519 key.
+
+Mitigation:
+
+- `picoin-forge-worker register` creates a local private key.
+- The coordinator stores only the worker public key.
+- Write requests include worker id, timestamp, and signature headers.
+- Set `PICOIN_FORGE_REQUIRE_WORKER_SIGNATURES=1` to require signatures.
+- Replayed signatures are rejected through a local replay cache.
+- This is still L2-only and does not create L1 transactions.

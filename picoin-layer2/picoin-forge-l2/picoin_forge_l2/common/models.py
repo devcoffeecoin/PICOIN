@@ -33,6 +33,18 @@ class WorkerStatus(str, Enum):
     PENALIZED = "penalized"
 
 
+class WorkloadType(str, Enum):
+    HASH_TEXT = "hash_text"
+
+
+class WorkloadStatus(str, Enum):
+    QUEUED = "queued"
+    ASSIGNED = "assigned"
+    SUBMITTED = "submitted"
+    VERIFIED = "verified"
+    FAILED = "failed"
+
+
 class MachineInfo(BaseModel):
     hostname: str
     platform: str
@@ -107,6 +119,35 @@ class Heartbeat(BaseModel):
     status: WorkerStatus = WorkerStatus.ONLINE
 
 
+class WorkloadCreateRequest(BaseModel):
+    task_type: WorkloadType = WorkloadType.HASH_TEXT
+    payload: dict[str, Any] = Field(default_factory=dict)
+    requester_wallet: str | None = None
+
+
+class WorkloadTask(BaseModel):
+    task_id: str
+    task_type: WorkloadType
+    payload: dict[str, Any] = Field(default_factory=dict)
+    status: WorkloadStatus = WorkloadStatus.QUEUED
+    expected_result_hash: str
+    assigned_worker_id: str | None = None
+    result_hash: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class WorkloadClaimRequest(BaseModel):
+    worker_id: str
+
+
+class WorkloadResult(BaseModel):
+    task_id: str
+    worker_id: str
+    result_hash: str
+    submitted_at: datetime = Field(default_factory=utc_now)
+
+
 class WorkerState(BaseModel):
     registration: WorkerRegistration
     benchmark: BenchmarkResult | None = None
@@ -144,6 +185,21 @@ class EpochSettlement(BaseModel):
     timestamp: datetime = Field(default_factory=utc_now)
     l1_settlement_ready: bool = False
     l1_note: str = "Simulated only; no Picoin L1 transaction was created."
+
+
+class SettlementPayloadPreview(BaseModel):
+    schema_version: str = "picoin-forge-l2-settlement-preview-v1"
+    payload_type: str = "l2_epoch_settlement_preview"
+    epoch_id: int
+    epoch_reward: float
+    total_verified_compute: float
+    worker_count: int
+    settlement_result_hash: str
+    worker_rewards: list[EpochReward]
+    payload_hash: str
+    signatures: list[dict[str, Any]] = Field(default_factory=list)
+    no_l1_transaction_created: bool = True
+    note: str = "Preview only. This payload is not submitted to Picoin L1."
 
 
 class DemoResult(BaseModel):

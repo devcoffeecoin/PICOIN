@@ -60,6 +60,10 @@ def test_expired_challenge_penalizes_worker(tmp_path):
     assert expired[0].challenge_id == challenge.challenge_id
     assert state.failed_challenges == 1
     assert state.penalty_score > 0
+    metrics = engine.storage.list_challenge_metrics(worker_id=registration.worker_id)
+    assert len(metrics) == 1
+    assert metrics[0]["status"] == "expired"
+    assert metrics[0]["penalty_delta"] > 0
     assert any(event.event_type == "challenge.expired" for event in engine.storage.list_events())
 
 

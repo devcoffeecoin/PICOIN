@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import os
+import time
 from urllib import request
 
+from picoin_forge_l2.common.crypto import request_signing_payload, sign_message
 from picoin_forge_l2.common.models import BenchmarkResult, ChallengeResult, ComputeChallenge, Heartbeat, WorkerRegistration
 
 
 class CoordinatorClient:
-    def __init__(self, base_url: str):
+    def __init__(self, base_url: str, token: str | None = None, private_key: str | None = None, worker_id: str | None = None):
         self.base_url = base_url.rstrip("/")
+        self.token = token if token is not None else os.getenv("PICOIN_FORGE_COORDINATOR_TOKEN")
+        self.private_key = private_key
+        self.worker_id = worker_id
 
     def register(self, registration: WorkerRegistration) -> dict:
         return self._post("/workers/register", registration.model_dump(mode="json"))
@@ -38,10 +43,21 @@ class CoordinatorClient:
 
     def _post(self, path: str, payload: dict) -> object:
         body = json.dumps(payload, default=str).encode("utf-8")
+        headers = {"Content-Type": "application/json"}
+        if self.token:
+            headers["X-Picoin-Forge-Token"] = self.token
+        if self.private_key and self.worker_id:
+            timestamp = str(int(time.time()))
+            headers["X-Picoin-Forge-Worker-Id"] = self.worker_id
+            headers["X-Picoin-Forge-Timestamp"] = timestamp
+            headers["X-Picoin-Forge-Signature"] = sign_message(
+                self.private_key,
+                request_signing_payload("POST", path, timestamp, body),
+            )
         req = request.Request(
             self.base_url + path,
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers=headers,
             method="POST",
         )
         with request.urlopen(req, timeout=30) as response:
