@@ -154,6 +154,33 @@ class CoordinatorStorage:
 
                 CREATE INDEX IF NOT EXISTS idx_ai_requests_wallet_updated
                     ON ai_requests(requester_wallet, updated_at);
+
+                CREATE TABLE IF NOT EXISTS ai_chat_sessions (
+                    session_id TEXT PRIMARY KEY,
+                    requester_wallet TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_ai_chat_sessions_wallet_updated
+                    ON ai_chat_sessions(requester_wallet, updated_at);
+
+                CREATE TABLE IF NOT EXISTS ai_chat_messages (
+                    message_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    request_id TEXT,
+                    role TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_ai_chat_messages_session_created
+                    ON ai_chat_messages(session_id, created_at);
+
+                CREATE INDEX IF NOT EXISTS idx_ai_chat_messages_request_role
+                    ON ai_chat_messages(request_id, role);
                 """
             )
 

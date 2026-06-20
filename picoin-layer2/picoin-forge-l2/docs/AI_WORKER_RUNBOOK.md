@@ -125,8 +125,11 @@ Browser portal:
 http://127.0.0.1:9380/ai/portal
 ```
 
-The portal creates stake-gated AI requests, polls status, and displays result
-and receipt from the same public HTTP API used by `picoin-forge-client`.
+The portal creates a local chat session, sends each message as a stake-gated AI
+request, polls status, syncs verified responses back into the chat, and displays
+result and receipt from the same public HTTP API used by `picoin-forge-client`.
+This is session memory for the L2 access layer only; it does not create a L1
+transaction and it does not pay a worker per prompt.
 
 Optional AI request failover settings:
 

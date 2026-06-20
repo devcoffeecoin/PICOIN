@@ -254,6 +254,12 @@ POST /workloads/claim
 POST /workloads/{task_id}/submit
 GET  /ai/capabilities
 GET  /ai/portal
+POST /ai/chat/sessions
+GET  /ai/chat/sessions
+GET  /ai/chat/sessions/{session_id}
+GET  /ai/chat/sessions/{session_id}/messages
+POST /ai/chat/sessions/{session_id}/messages
+POST /ai/chat/sessions/{session_id}/sync
 POST /ai/requests
 GET  /ai/requests
 GET  /ai/summary
@@ -328,6 +334,12 @@ The MVP includes a local AI access queue:
 
 ```text
 GET  /ai/capabilities
+POST /ai/chat/sessions
+GET  /ai/chat/sessions
+GET  /ai/chat/sessions/{session_id}
+GET  /ai/chat/sessions/{session_id}/messages
+POST /ai/chat/sessions/{session_id}/messages
+POST /ai/chat/sessions/{session_id}/sync
 POST /ai/requests
 GET  /ai/requests
 GET  /ai/summary
@@ -341,6 +353,12 @@ POST /ai/requests/claim
 POST /ai/requests/{request_id}/cancel
 POST /ai/requests/{request_id}/submit
 ```
+
+The browser portal at `GET /ai/portal` uses chat sessions on top of this same
+queue. Each user message creates one normal AI request, and each verified
+worker response is synced back into the session with the same output hash and
+receipt hash. The session layer is local L2 memory only; it does not create a
+Picoin L1 transaction and it does not pay workers per prompt.
 
 This is not a per-task payment rail. A requester includes a simulated `stake_snapshot_pi`, and the coordinator checks it against:
 

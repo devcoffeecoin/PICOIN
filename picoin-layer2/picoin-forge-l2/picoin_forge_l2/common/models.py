@@ -229,6 +229,58 @@ class AIInferenceResult(BaseModel):
     submitted_at: datetime = Field(default_factory=utc_now)
 
 
+class AIChatSessionCreateRequest(BaseModel):
+    requester_wallet: str
+    stake_snapshot_pi: float = Field(default=0.0, ge=0.0)
+    title: str | None = Field(default=None, max_length=120)
+    required_capabilities: list[str] = Field(default_factory=list)
+    model_hint: str | None = None
+    min_parameter_count_b: float = Field(default=0.0, ge=0.0)
+    min_context_tokens: int = Field(default=0, ge=0)
+    preferred_provider: str | None = None
+    max_tokens: int = Field(default=256, ge=1, le=4096)
+    store_output: bool = True
+
+
+class AIChatSession(BaseModel):
+    session_id: str
+    requester_wallet: str
+    stake_snapshot_pi: float = 0.0
+    title: str | None = None
+    required_capabilities: list[str] = Field(default_factory=list)
+    model_hint: str | None = None
+    min_parameter_count_b: float = 0.0
+    min_context_tokens: int = 0
+    preferred_provider: str | None = None
+    max_tokens: int = 256
+    store_output: bool = True
+    message_count: int = 0
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    no_l1_transaction_created: bool = True
+    no_per_task_payment: bool = True
+
+
+class AIChatMessageCreateRequest(BaseModel):
+    prompt: str = Field(min_length=1, max_length=16000)
+
+
+class AIChatMessage(BaseModel):
+    message_id: str
+    session_id: str
+    role: str
+    content: str | None = Field(default=None, max_length=64000)
+    status: str = "created"
+    request_id: str | None = None
+    prompt_hash: str | None = None
+    output_hash: str | None = None
+    receipt_hash: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    no_l1_transaction_created: bool = True
+    no_per_task_payment: bool = True
+
+
 class WorkerState(BaseModel):
     registration: WorkerRegistration
     benchmark: BenchmarkResult | None = None

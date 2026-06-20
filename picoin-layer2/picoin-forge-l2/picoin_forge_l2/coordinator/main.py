@@ -16,6 +16,8 @@ from picoin_forge_l2.common.constants import DEFAULT_COORDINATOR_STATE_DIR, DEFA
 from picoin_forge_l2.common.crypto import request_signing_payload, verify_message
 from picoin_forge_l2.common.hashing import hash_json
 from picoin_forge_l2.common.models import (
+    AIChatMessageCreateRequest,
+    AIChatSessionCreateRequest,
     AIInferenceClaimRequest,
     AIInferenceCreateRequest,
     AIInferenceResult,
@@ -37,6 +39,7 @@ from .ai_access_queue import (
     ai_request_max_assignments,
     worker_can_serve_ai,
 )
+from .ai_chat import AIChatManager
 from .challenge_engine import ChallengeEngine
 from .calibration import build_benchmark_calibration_report, build_calibration_session, write_calibration_session
 from .audit import build_event_export, write_event_export
@@ -110,6 +113,11 @@ def workloads(state_dir: str | Path | None = None) -> WorkloadQueue:
 def ai_requests(state_dir: str | Path | None = None) -> AIAccessQueue:
     resolved = state_dir or DEFAULT_COORDINATOR_STATE_DIR
     return AIAccessQueue(resolved, registry(resolved))
+
+
+def ai_chats(state_dir: str | Path | None = None) -> AIChatManager:
+    resolved = state_dir or DEFAULT_COORDINATOR_STATE_DIR
+    return AIChatManager(resolved, ai_requests(resolved))
 
 
 def build_ai_capabilities(state_dir: str | Path | None = None) -> dict:
@@ -538,6 +546,76 @@ def ai_requests_api(limit: int = 100, requester_wallet: str | None = None) -> li
 @api.get("/ai/capabilities")
 def ai_capabilities_api() -> dict:
     return build_ai_capabilities(DEFAULT_COORDINATOR_STATE_DIR)
+
+
+@api.post("/ai/chat/sessions")
+def create_ai_chat_session_api(payload: AIChatSessionCreateRequest, _: None = Depends(require_write_token)) -> dict:
+    return ai_chats().create_session(payload).model_dump(mode="json")
+
+
+@api.get("/ai/chat/sessions")
+def ai_chat_sessions_api(limit: int = 100, requester_wallet: str | None = None) -> list[dict]:
+    return [
+        session.model_dump(mode="json")
+        for session in ai_chats().list_sessions(limit=limit, requester_wallet=requester_wallet)
+    ]
+
+
+@api.get("/ai/chat/sessions/{session_id}")
+def ai_chat_session_api(session_id: str) -> dict:
+    try:
+        return ai_chats().get_session(session_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@api.get("/ai/chat/sessions/{session_id}/messages")
+def ai_chat_messages_api(session_id: str) -> list[dict]:
+    try:
+        return [message.model_dump(mode="json") for message in ai_chats().list_messages(session_id)]
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@api.post("/ai/chat/sessions/{session_id}/messages")
+def create_ai_chat_message_api(
+    session_id: str,
+    payload: AIChatMessageCreateRequest,
+    _: None = Depends(require_write_token),
+) -> dict:
+    try:
+        result = ai_chats().send_message(session_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {
+        "session": result["session"].model_dump(mode="json"),
+        "message": result["message"].model_dump(mode="json"),
+        "ai_request": result["ai_request"].model_dump(mode="json"),
+    }
+
+
+@api.post("/ai/chat/sessions/{session_id}/sync")
+def sync_ai_chat_message_api(
+    session_id: str,
+    request_id: str,
+    _: None = Depends(require_write_token),
+) -> dict:
+    try:
+        result = ai_chats().sync_request(session_id, request_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {
+        "synced": result["synced"],
+        "request_status": result["request_status"],
+        "session": result["session"].model_dump(mode="json"),
+        "request_message": result["request_message"].model_dump(mode="json"),
+        "assistant_message": result["assistant_message"].model_dump(mode="json")
+        if result["assistant_message"]
+        else None,
+        "ai_request": result["ai_request"].model_dump(mode="json"),
+    }
 
 
 @api.get("/ai/requests/{request_id}/routing")
@@ -1186,6 +1264,27 @@ AI_PORTAL_HTML = """<!doctype html>
       white-space: pre-wrap;
       overflow-wrap: anywhere;
     }
+    .message-list {
+      display: grid;
+      gap: 10px;
+      min-height: 220px;
+    }
+    .message {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px 12px;
+      background: #fff;
+      overflow-wrap: anywhere;
+    }
+    .message.user { border-color: #bfdbfe; background: #eff6ff; }
+    .message.assistant { border-color: #bbf7d0; background: #f0fdf4; }
+    .message strong {
+      display: block;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 6px;
+    }
     .stack { display: grid; gap: 16px; }
     .output-title {
       display: flex;
@@ -1209,11 +1308,15 @@ AI_PORTAL_HTML = """<!doctype html>
   </header>
   <main>
     <section>
-      <h2>New Request</h2>
+      <h2>Chat Session</h2>
       <form id="request-form">
         <div class="field">
           <label for="requester">Requester wallet</label>
           <input id="requester" value="PI_REQUESTER" autocomplete="off">
+        </div>
+        <div class="field">
+          <label for="session-title">Session title</label>
+          <input id="session-title" value="Picoin Forge chat" autocomplete="off">
         </div>
         <div class="grid">
           <div class="field">
@@ -1250,12 +1353,19 @@ AI_PORTAL_HTML = """<!doctype html>
           <textarea id="prompt">Explain Picoin Forge L2 in one short paragraph.</textarea>
         </div>
         <div class="actions">
-          <button id="submit" type="submit">Run</button>
+          <button id="submit" type="submit">Send</button>
           <button class="secondary" id="capabilities-button" type="button">Capabilities</button>
         </div>
       </form>
     </section>
     <div class="stack">
+      <section>
+        <div class="output-title">
+          <h2>Chat</h2>
+          <span id="session-id" class="pill">session</span>
+        </div>
+        <div id="chat-output" class="message-list"></div>
+      </section>
       <section>
         <div class="output-title">
           <h2>Status</h2>
@@ -1282,10 +1392,13 @@ AI_PORTAL_HTML = """<!doctype html>
     const statusOutput = document.getElementById("status-output");
     const resultOutput = document.getElementById("result-output");
     const receiptOutput = document.getElementById("receipt-output");
+    const chatOutput = document.getElementById("chat-output");
     const statePill = document.getElementById("state-pill");
+    const sessionIdPill = document.getElementById("session-id");
     const requestIdPill = document.getElementById("request-id");
     const workerIdPill = document.getElementById("worker-id");
     const submitButton = document.getElementById("submit");
+    let activeSessionId = null;
 
     function tokenHeaders() {
       const token = document.getElementById("token").value.trim();
@@ -1298,6 +1411,19 @@ AI_PORTAL_HTML = """<!doctype html>
 
     function render(target, value) {
       target.textContent = JSON.stringify(value, null, 2);
+    }
+
+    function appendMessage(role, content, meta = "") {
+      const row = document.createElement("div");
+      row.className = `message ${role}`;
+      const label = document.createElement("strong");
+      label.textContent = meta ? `${role} · ${meta}` : role;
+      const body = document.createElement("div");
+      body.textContent = content || "";
+      row.appendChild(label);
+      row.appendChild(body);
+      chatOutput.appendChild(row);
+      chatOutput.scrollTop = chatOutput.scrollHeight;
     }
 
     function setState(status) {
@@ -1324,6 +1450,27 @@ AI_PORTAL_HTML = """<!doctype html>
       return payload;
     }
 
+    async function ensureSession() {
+      if (activeSessionId) return activeSessionId;
+      const session = await api("/ai/chat/sessions", {
+        method: "POST",
+        body: JSON.stringify({
+          requester_wallet: document.getElementById("requester").value.trim(),
+          stake_snapshot_pi: Number(document.getElementById("stake").value),
+          title: document.getElementById("session-title").value.trim() || null,
+          required_capabilities: asCapabilities(document.getElementById("capabilities").value),
+          preferred_provider: document.getElementById("provider").value.trim() || null,
+          model_hint: document.getElementById("model-hint").value.trim() || null,
+          max_tokens: Number(document.getElementById("max-tokens").value),
+          store_output: true
+        })
+      });
+      activeSessionId = session.session_id;
+      sessionIdPill.textContent = activeSessionId;
+      render(statusOutput, session);
+      return activeSessionId;
+    }
+
     async function pollRequest(requestId) {
       for (let index = 0; index < 120; index += 1) {
         const status = await api(`/ai/requests/${encodeURIComponent(requestId)}/status`);
@@ -1334,8 +1481,11 @@ AI_PORTAL_HTML = """<!doctype html>
         if (status.status === "verified") {
           const result = await api(`/ai/requests/${encodeURIComponent(requestId)}/result`);
           const receipt = await api(`/ai/requests/${encodeURIComponent(requestId)}/receipt`);
+          const synced = await api(`/ai/chat/sessions/${encodeURIComponent(activeSessionId)}/sync?request_id=${encodeURIComponent(requestId)}`, {method: "POST"});
           render(resultOutput, result);
           render(receiptOutput, receipt);
+          render(statusOutput, synced);
+          if (synced.assistant_message) appendMessage("assistant", synced.assistant_message.content, synced.assistant_message.receipt_hash || "verified");
           return;
         }
         if (status.status === "failed" || status.status === "canceled") return;
@@ -1351,21 +1501,17 @@ AI_PORTAL_HTML = """<!doctype html>
       resultOutput.textContent = "{}";
       receiptOutput.textContent = "{}";
       try {
-        const created = await api("/ai/requests", {
+        const sessionId = await ensureSession();
+        const prompt = document.getElementById("prompt").value;
+        appendMessage("user", prompt, "queued");
+        const created = await api(`/ai/chat/sessions/${encodeURIComponent(sessionId)}/messages`, {
           method: "POST",
           body: JSON.stringify({
-            requester_wallet: document.getElementById("requester").value.trim(),
-            stake_snapshot_pi: Number(document.getElementById("stake").value),
-            prompt: document.getElementById("prompt").value,
-            required_capabilities: asCapabilities(document.getElementById("capabilities").value),
-            preferred_provider: document.getElementById("provider").value.trim() || null,
-            model_hint: document.getElementById("model-hint").value.trim() || null,
-            max_tokens: Number(document.getElementById("max-tokens").value),
-            store_output: true
+            prompt
           })
         });
         render(statusOutput, created);
-        await pollRequest(created.request_id);
+        await pollRequest(created.ai_request.request_id);
       } catch (error) {
         setState("error");
         render(statusOutput, error);

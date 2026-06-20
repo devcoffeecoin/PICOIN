@@ -100,6 +100,8 @@ def test_ai_portal_serves_browser_client(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert "Picoin Forge AI Portal" in response.text
     assert "request-form" in response.text
+    assert "chat-output" in response.text
+    assert "/ai/chat/sessions" in response.text
     assert "/ai/requests" in response.text
     assert "/ai/capabilities" in response.text
     assert "receipt-output" in response.text
