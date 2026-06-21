@@ -4,6 +4,7 @@ This directory contains Linux deployment artifacts for:
 
 - `picoin-marketplace`: FastAPI app on `127.0.0.1:9410`
 - `picoin-marketplace-scanner`: deposit scanner loop for Picoin and EVM rails
+- `picoin-marketplace-maintenance`: worker expiry and marketplace housekeeping
 
 ## Install
 
@@ -33,6 +34,7 @@ Restart after editing:
 
 ```bash
 sudo systemctl restart picoin-marketplace picoin-marketplace-scanner
+sudo systemctl restart picoin-marketplace-maintenance
 ```
 
 ## Status
@@ -40,8 +42,10 @@ sudo systemctl restart picoin-marketplace picoin-marketplace-scanner
 ```bash
 systemctl status picoin-marketplace --no-pager -l
 systemctl status picoin-marketplace-scanner --no-pager -l
+systemctl status picoin-marketplace-maintenance --no-pager -l
 journalctl -u picoin-marketplace -f
 journalctl -u picoin-marketplace-scanner -f
+journalctl -u picoin-marketplace-maintenance -f
 ```
 
 ## Nginx

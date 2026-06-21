@@ -141,6 +141,8 @@ PICOIN_MARKETPLACE_SCANNER_EVM_NATIVE_ENABLED=0
 PICOIN_MARKETPLACE_SCANNER_EVM_TOKEN_SYMBOL=
 PICOIN_MARKETPLACE_SCANNER_EVM_BATCH_SIZE=500
 PICOIN_MARKETPLACE_SCANNER_EVM_NATIVE_BATCH_SIZE=100
+PICOIN_MARKETPLACE_MAINTENANCE_INTERVAL_SECONDS=30
+PICOIN_MARKETPLACE_WORKER_STALE_AFTER_SECONDS=120
 ```
 
 ## Scanner Worker
@@ -194,6 +196,23 @@ picoin-marketplace-scanner --once --no-picoin --evm-native
 Each tick prints one JSON line with `runs` and `errors`, so systemd or Docker
 logs can be monitored directly.
 
+## Maintenance Worker
+
+Run one maintenance tick:
+
+```bash
+picoin-marketplace-maintenance --once
+```
+
+Run continuously:
+
+```bash
+picoin-marketplace-maintenance --interval-seconds 30 --stale-after-seconds 120
+```
+
+The maintenance worker expires stale providers, marking their worker `offline`
+and pausing the generated listing so unavailable capacity cannot be booked.
+
 ## Production Deployment
 
 Deployment artifacts live in:
@@ -214,6 +233,7 @@ This installs:
 ```text
 picoin-marketplace.service
 picoin-marketplace-scanner.service
+picoin-marketplace-maintenance.service
 /etc/picoin-marketplace/picoin-marketplace.env
 /var/lib/picoin-marketplace
 ```

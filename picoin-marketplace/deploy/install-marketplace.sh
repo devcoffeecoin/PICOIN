@@ -42,13 +42,14 @@ fi
 
 cp "${APP_DIR}/deploy/picoin-marketplace.service" /etc/systemd/system/picoin-marketplace.service
 cp "${APP_DIR}/deploy/picoin-marketplace-scanner.service" /etc/systemd/system/picoin-marketplace-scanner.service
+cp "${APP_DIR}/deploy/picoin-marketplace-maintenance.service" /etc/systemd/system/picoin-marketplace-maintenance.service
 
 chown -R "${APP_USER}:${APP_USER}" "${STATE_DIR}" "${APP_DIR}" "${ENV_DIR}"
 chmod 640 "${ENV_DIR}/picoin-marketplace.env"
 
 systemctl daemon-reload
-systemctl enable picoin-marketplace.service picoin-marketplace-scanner.service
-systemctl restart picoin-marketplace.service picoin-marketplace-scanner.service
+systemctl enable picoin-marketplace.service picoin-marketplace-scanner.service picoin-marketplace-maintenance.service
+systemctl restart picoin-marketplace.service picoin-marketplace-scanner.service picoin-marketplace-maintenance.service
 
 echo "Picoin Marketplace installed."
 echo "Edit ${ENV_DIR}/picoin-marketplace.env for production addresses and RPC URLs."

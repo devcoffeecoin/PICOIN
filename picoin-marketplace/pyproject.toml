@@ -19,6 +19,7 @@ test = ["pytest>=8"]
 
 [project.scripts]
 picoin-marketplace = "picoin_marketplace.api:main"
+picoin-marketplace-maintenance = "picoin_marketplace.maintenance_worker:main"
 picoin-marketplace-scanner = "picoin_marketplace.scanner_worker:main"
 picoin-marketplace-worker = "picoin_marketplace.worker_agent:main"
 
