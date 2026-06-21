@@ -5,6 +5,10 @@ from fastapi.testclient import TestClient
 from picoin_marketplace import api as marketplace_api
 
 
+def evm_topic(address: str) -> str:
+    return "0x" + ("0" * 24) + address.lower().removeprefix("0x")
+
+
 def test_gpu_listing_booking_payment_and_release(tmp_path, monkeypatch):
     monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("PICOIN_MARKETPLACE_ESCROW_ADDRESS", "PI_ESCROW_MARKET")
@@ -547,3 +551,195 @@ def test_picoin_node_poll_uses_history_endpoint(tmp_path, monkeypatch):
     assert seen_urls
     assert "http://node.local:8000/transactions/history" in seen_urls[0]
     assert "address=PI_MARKETPLACE_ESCROW" in seen_urls[0]
+
+
+def test_evm_token_transfer_log_import_credits_verified_wallet(tmp_path, monkeypatch):
+    monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("PICOIN_MARKETPLACE_SEED_DEFAULT_POOLS", "0")
+    monkeypatch.setenv("PICOIN_MARKETPLACE_ETH_CONFIRMATIONS", "3")
+    monkeypatch.setenv("PICOIN_MARKETPLACE_EVM_ESCROW_ADDRESS", "0x2222222222222222222222222222222222222222")
+    client = TestClient(marketplace_api.api)
+
+    account = client.post("/accounts", json={"email": "erc20@example.com"}).json()
+    wallet = client.post(
+        f"/accounts/{account['account_id']}/wallets",
+        json={
+            "chain_code": "ethereum",
+            "address": "0x1111111111111111111111111111111111111111",
+        },
+    ).json()
+    client.post(f"/wallets/{wallet['wallet_id']}/verify")
+    token = client.post(
+        "/tokens",
+        json={
+            "chain_code": "ethereum",
+            "token_symbol": "USDC",
+            "display_name": "USD Coin",
+            "decimals": 6,
+            "token_type": "erc20",
+            "contract_address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "pico_rate": 1,
+        },
+    ).json()
+    assert token["token_symbol"] == "USDC"
+
+    transfer_log = {
+        "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "topics": [
+            "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+            evm_topic("0x1111111111111111111111111111111111111111"),
+            evm_topic("0x2222222222222222222222222222222222222222"),
+        ],
+        "data": hex(25_000_000),
+        "transactionHash": "0x" + ("b" * 64),
+        "blockNumber": hex(100),
+        "blockHash": "0x" + ("c" * 64),
+        "logIndex": hex(4),
+    }
+
+    imported = client.post(
+        "/scanner/evm/import-token-transfers",
+        json={
+            "chain_code": "ethereum",
+            "token_symbol": "USDC",
+            "logs": [transfer_log],
+            "latest_block_number": 102,
+        },
+    ).json()
+
+    assert imported["imported"] == 1
+    assert imported["confirmation_result"]["credited"] == 1
+
+    balances = client.get(f"/accounts/{account['account_id']}/balances").json()
+    usdc_balance = next(row for row in balances if row["token_symbol"] == "USDC")
+    assert usdc_balance["available_base_units"] == "25000000"
+    assert usdc_balance["available"] == "25"
+
+
+def test_evm_token_transfer_poll_uses_rpc_logs(tmp_path, monkeypatch):
+    monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("PICOIN_MARKETPLACE_SEED_DEFAULT_POOLS", "0")
+    monkeypatch.setenv("PICOIN_MARKETPLACE_ETH_CONFIRMATIONS", "1")
+    monkeypatch.setenv("PICOIN_MARKETPLACE_EVM_ESCROW_ADDRESS", "0x2222222222222222222222222222222222222222")
+    client = TestClient(marketplace_api.api)
+
+    account = client.post("/accounts", json={"email": "poll-erc20@example.com"}).json()
+    wallet = client.post(
+        f"/accounts/{account['account_id']}/wallets",
+        json={"chain_code": "ethereum", "address": "0x1111111111111111111111111111111111111111"},
+    ).json()
+    client.post(f"/wallets/{wallet['wallet_id']}/verify")
+    client.post(
+        "/tokens",
+        json={
+            "chain_code": "ethereum",
+            "token_symbol": "GPU",
+            "display_name": "GPU Token",
+            "decimals": 18,
+            "token_type": "erc20",
+            "contract_address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "pico_rate": 2,
+        },
+    )
+
+    calls = []
+
+    def fake_rpc(rpc_url, method, params):
+        calls.append((rpc_url, method, params))
+        if method == "eth_getLogs":
+            return [
+                {
+                    "address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "topics": [
+                        "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef",
+                        evm_topic("0x1111111111111111111111111111111111111111"),
+                        evm_topic("0x2222222222222222222222222222222222222222"),
+                    ],
+                    "data": hex(10**18),
+                    "transactionHash": "0x" + ("d" * 64),
+                    "blockNumber": hex(77),
+                    "blockHash": "0x" + ("e" * 64),
+                    "logIndex": "0x0",
+                }
+            ]
+        raise AssertionError(method)
+
+    monkeypatch.setattr("picoin_marketplace.marketplace.json_rpc_call", fake_rpc)
+
+    result = client.post(
+        "/scanner/evm/poll-token-transfers",
+        json={
+            "chain_code": "ethereum",
+            "token_symbol": "GPU",
+            "rpc_url": "https://rpc.example",
+            "from_block": 77,
+            "to_block": 77,
+        },
+    ).json()
+
+    assert result["imported"] == 1
+    assert calls[0][1] == "eth_getLogs"
+    assert calls[0][2][0]["fromBlock"] == "0x4d"
+    balances = client.get(f"/accounts/{account['account_id']}/balances").json()
+    gpu_balance = next(row for row in balances if row["token_symbol"] == "GPU")
+    assert gpu_balance["available_base_units"] == str(10**18)
+
+
+def test_evm_native_transfer_poll_scans_blocks(tmp_path, monkeypatch):
+    monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("PICOIN_MARKETPLACE_SEED_DEFAULT_POOLS", "0")
+    monkeypatch.setenv("PICOIN_MARKETPLACE_ETH_CONFIRMATIONS", "1")
+    monkeypatch.setenv("PICOIN_MARKETPLACE_EVM_ESCROW_ADDRESS", "0x2222222222222222222222222222222222222222")
+    client = TestClient(marketplace_api.api)
+
+    account = client.post("/accounts", json={"email": "native@example.com"}).json()
+    wallet = client.post(
+        f"/accounts/{account['account_id']}/wallets",
+        json={"chain_code": "ethereum", "address": "0x1111111111111111111111111111111111111111"},
+    ).json()
+    client.post(f"/wallets/{wallet['wallet_id']}/verify")
+
+    def fake_rpc(rpc_url, method, params):
+        if method == "eth_getBlockByNumber":
+            return {
+                "number": hex(88),
+                "hash": "0x" + ("f" * 64),
+                "transactions": [
+                    {
+                        "hash": "0x" + ("1" * 64),
+                        "from": "0x1111111111111111111111111111111111111111",
+                        "to": "0x2222222222222222222222222222222222222222",
+                        "value": hex(2 * 10**18),
+                        "blockNumber": hex(88),
+                        "blockHash": "0x" + ("f" * 64),
+                    },
+                    {
+                        "hash": "0x" + ("2" * 64),
+                        "from": "0x1111111111111111111111111111111111111111",
+                        "to": "0x3333333333333333333333333333333333333333",
+                        "value": hex(10**18),
+                        "blockNumber": hex(88),
+                    },
+                ],
+            }
+        raise AssertionError(method)
+
+    monkeypatch.setattr("picoin_marketplace.marketplace.json_rpc_call", fake_rpc)
+
+    result = client.post(
+        "/scanner/evm/poll-native-transfers",
+        json={
+            "chain_code": "ethereum",
+            "token_symbol": "ETH",
+            "rpc_url": "https://rpc.example",
+            "from_block": 88,
+            "to_block": 88,
+        },
+    ).json()
+
+    assert result["imported"] == 1
+    assert result["skipped"] == 1
+    assert result["confirmation_result"]["credited"] == 1
+    balances = client.get(f"/accounts/{account['account_id']}/balances").json()
+    eth_balance = next(row for row in balances if row["token_symbol"] == "ETH")
+    assert eth_balance["available_base_units"] == str(2 * 10**18)

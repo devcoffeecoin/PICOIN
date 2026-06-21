@@ -183,5 +183,16 @@ class MarketplaceStorage:
 
                 CREATE INDEX IF NOT EXISTS idx_ledger_account_token
                     ON ledger_entries(account_id, chain_code, token_symbol, created_at);
+
+                CREATE TABLE IF NOT EXISTS scanner_checkpoints (
+                    scanner_id TEXT PRIMARY KEY,
+                    chain_code TEXT NOT NULL,
+                    cursor_block INTEGER NOT NULL,
+                    payload TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_scanner_checkpoints_chain
+                    ON scanner_checkpoints(chain_code, updated_at);
                 """
             )

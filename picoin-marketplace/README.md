@@ -153,6 +153,9 @@ POST /scanner/deposits
 POST /scanner/{chain_code}/confirmations/process
 POST /scanner/picoin/import-history
 POST /scanner/picoin/poll
+POST /scanner/evm/import-token-transfers
+POST /scanner/evm/poll-token-transfers
+POST /scanner/evm/poll-native-transfers
 GET  /deposits
 GET  /ledger
 GET  /accounts/{account_id}/balances
@@ -284,6 +287,77 @@ tx_hash = present
 
 Repeated rows are safe because deposits are idempotent by
 `chain_code + tx_hash + log_index`.
+
+## Ethereum / EVM Scanner
+
+The marketplace can scan EVM deposits without adding external dependencies.
+
+Supported modes:
+
+```text
+ERC20 Transfer logs -> /scanner/evm/poll-token-transfers
+Native ETH txs      -> /scanner/evm/poll-native-transfers
+Manual log import   -> /scanner/evm/import-token-transfers
+```
+
+### Add An ERC20 Token
+
+```bash
+curl -sS -X POST http://127.0.0.1:9410/tokens \
+  -H 'content-type: application/json' \
+  -d '{
+    "chain_code": "ethereum",
+    "token_symbol": "USDC",
+    "display_name": "USD Coin",
+    "decimals": 6,
+    "token_type": "erc20",
+    "contract_address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+    "pico_rate": 1
+  }' | python -m json.tool
+```
+
+### Poll ERC20 Transfer Logs
+
+```bash
+curl -sS -X POST http://127.0.0.1:9410/scanner/evm/poll-token-transfers \
+  -H 'content-type: application/json' \
+  -d '{
+    "chain_code": "ethereum",
+    "token_symbol": "USDC",
+    "rpc_url": "https://YOUR_ETH_RPC",
+    "from_block": 20000000,
+    "to_block": 20000100,
+    "batch_size": 500
+  }' | python -m json.tool
+```
+
+If `from_block` is omitted, the scanner uses its stored checkpoint. If there is
+no checkpoint yet, it scans the latest `batch_size` window.
+
+### Poll Native ETH Transfers
+
+```bash
+curl -sS -X POST http://127.0.0.1:9410/scanner/evm/poll-native-transfers \
+  -H 'content-type: application/json' \
+  -d '{
+    "chain_code": "ethereum",
+    "token_symbol": "ETH",
+    "rpc_url": "https://YOUR_ETH_RPC",
+    "from_block": 20000000,
+    "to_block": 20000100
+  }' | python -m json.tool
+```
+
+EVM scanner safety rules:
+
+```text
+destination must equal PICOIN_MARKETPLACE_EVM_ESCROW_ADDRESS
+sender must be a verified account wallet
+amount must be positive
+block number must be positive
+ERC20 contract must match the registered token contract
+duplicate tx/log rows cannot double-credit the ledger
+```
 
 Check balances:
 

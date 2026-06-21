@@ -197,6 +197,33 @@ class PicoinNodePollRequest(BaseModel):
     latest_block_number: int | None = Field(default=None, gt=0)
 
 
+class EvmTokenTransferImportRequest(BaseModel):
+    chain_code: str = Field(default="ethereum", min_length=2, max_length=32)
+    token_symbol: str = Field(min_length=2, max_length=24)
+    logs: list[dict[str, Any]] = Field(default_factory=list)
+    latest_block_number: int | None = Field(default=None, gt=0)
+
+
+class EvmTokenTransferPollRequest(BaseModel):
+    chain_code: str = Field(default="ethereum", min_length=2, max_length=32)
+    token_symbol: str | None = Field(default=None, min_length=2, max_length=24)
+    rpc_url: str | None = Field(default=None, max_length=240)
+    from_block: int | None = Field(default=None, ge=0)
+    to_block: int | None = Field(default=None, ge=0)
+    batch_size: int = Field(default=500, ge=1, le=10_000)
+    latest_block_number: int | None = Field(default=None, gt=0)
+
+
+class EvmNativeTransferPollRequest(BaseModel):
+    chain_code: str = Field(default="ethereum", min_length=2, max_length=32)
+    token_symbol: str = Field(default="ETH", min_length=2, max_length=24)
+    rpc_url: str | None = Field(default=None, max_length=240)
+    from_block: int | None = Field(default=None, ge=0)
+    to_block: int | None = Field(default=None, ge=0)
+    batch_size: int = Field(default=100, ge=1, le=1_000)
+    latest_block_number: int | None = Field(default=None, gt=0)
+
+
 class LedgerEntry(BaseModel):
     entry_id: str
     account_id: str

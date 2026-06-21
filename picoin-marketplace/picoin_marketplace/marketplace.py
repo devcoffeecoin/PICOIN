@@ -20,6 +20,9 @@ from .models import (
     ConfirmationProcessRequest,
     Deposit,
     DepositStatus,
+    EvmNativeTransferPollRequest,
+    EvmTokenTransferImportRequest,
+    EvmTokenTransferPollRequest,
     LedgerDirection,
     LedgerEntry,
     PICO_CURRENCY,
@@ -62,6 +65,8 @@ DEFAULT_EVM_ESCROW_ADDRESS = os.getenv(
     "0x0000000000000000000000000000000000000000",
 )
 DEFAULT_CONFIRMATIONS_REQUIRED = int(os.getenv("PICOIN_MARKETPLACE_CONFIRMATIONS_REQUIRED", "1"))
+EVM_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+EVM_NATIVE_LOG_INDEX = 2_147_483_647
 DEFAULT_POOL_SPECS = [
     {
         "hardware_type": HardwareType.CPU,
@@ -653,6 +658,200 @@ class Marketplace:
         result["node_url"] = node_url
         result["history_address"] = address
         return result
+
+    def import_evm_token_transfers(self, request: EvmTokenTransferImportRequest) -> dict:
+        chain = self.get_chain(request.chain_code)
+        if chain.family != ChainFamily.EVM:
+            raise ValueError("chain is not EVM")
+        token = self.get_token(chain.chain_code, request.token_symbol)
+        if not token.contract_address:
+            raise ValueError("token has no ERC20 contract address")
+        imported = 0
+        skipped = 0
+        errors: list[dict[str, object]] = []
+        deposits: list[Deposit] = []
+        for index, log in enumerate(request.logs):
+            try:
+                deposit_request = evm_transfer_log_to_deposit_request(log, chain, token)
+                if deposit_request is None:
+                    skipped += 1
+                    continue
+                deposit = self.accept_deposit(deposit_request)
+                deposits.append(deposit)
+                imported += 1
+            except (KeyError, ValueError) as exc:
+                skipped += 1
+                errors.append({"log": index, "error": str(exc)})
+        confirmation_result = None
+        if request.latest_block_number:
+            confirmation_result = self.process_confirmations(
+                chain.chain_code,
+                ConfirmationProcessRequest(latest_block_number=request.latest_block_number),
+            )
+        return {
+            "chain_code": chain.chain_code,
+            "token_symbol": token.token_symbol,
+            "logs_seen": len(request.logs),
+            "imported": imported,
+            "skipped": skipped,
+            "errors": errors,
+            "confirmation_result": confirmation_result,
+            "deposits": [deposit.model_dump(mode="json") for deposit in deposits],
+        }
+
+    def poll_evm_token_transfers(self, request: EvmTokenTransferPollRequest) -> dict:
+        chain = self.get_chain(request.chain_code)
+        if chain.family != ChainFamily.EVM:
+            raise ValueError("chain is not EVM")
+        rpc_url = resolve_rpc_url(chain, request.rpc_url)
+        latest = request.to_block if request.to_block is not None else evm_block_number(rpc_url)
+        tokens = self.evm_tokens_for_poll(chain.chain_code, request.token_symbol)
+        results = []
+        total_imported = 0
+        total_skipped = 0
+        for token in tokens:
+            scanner_id = evm_token_scanner_id(chain.chain_code, token.token_symbol)
+            from_block = resolve_scan_from_block(
+                explicit_from=request.from_block,
+                checkpoint=self.get_scanner_checkpoint(scanner_id),
+                latest=latest,
+                batch_size=request.batch_size,
+            )
+            to_block = min(latest, from_block + request.batch_size - 1)
+            logs = evm_get_transfer_logs(rpc_url, token.contract_address or "", chain.deposit_address or "", from_block, to_block)
+            result = self.import_evm_token_transfers(
+                EvmTokenTransferImportRequest(
+                    chain_code=chain.chain_code,
+                    token_symbol=token.token_symbol,
+                    logs=logs,
+                    latest_block_number=request.latest_block_number or latest,
+                )
+            )
+            self.set_scanner_checkpoint(
+                scanner_id,
+                chain.chain_code,
+                to_block,
+                {"token_symbol": token.token_symbol, "mode": "erc20_transfer"},
+            )
+            result["from_block"] = from_block
+            result["to_block"] = to_block
+            results.append(result)
+            total_imported += int(result["imported"])
+            total_skipped += int(result["skipped"])
+        return {
+            "chain_code": chain.chain_code,
+            "rpc_url": rpc_url,
+            "token_count": len(tokens),
+            "imported": total_imported,
+            "skipped": total_skipped,
+            "results": results,
+        }
+
+    def poll_evm_native_transfers(self, request: EvmNativeTransferPollRequest) -> dict:
+        chain = self.get_chain(request.chain_code)
+        if chain.family != ChainFamily.EVM:
+            raise ValueError("chain is not EVM")
+        token = self.get_token(chain.chain_code, request.token_symbol)
+        if token.token_type != "native":
+            raise ValueError("token is not native")
+        rpc_url = resolve_rpc_url(chain, request.rpc_url)
+        latest = request.to_block if request.to_block is not None else evm_block_number(rpc_url)
+        scanner_id = evm_native_scanner_id(chain.chain_code, token.token_symbol)
+        from_block = resolve_scan_from_block(
+            explicit_from=request.from_block,
+            checkpoint=self.get_scanner_checkpoint(scanner_id),
+            latest=latest,
+            batch_size=request.batch_size,
+        )
+        to_block = min(latest, from_block + request.batch_size - 1)
+        imported = 0
+        skipped = 0
+        errors: list[dict[str, object]] = []
+        deposits: list[Deposit] = []
+        for height in range(from_block, to_block + 1):
+            block = evm_get_block(rpc_url, height)
+            for tx_index, tx in enumerate(block.get("transactions") or []):
+                try:
+                    deposit_request = evm_native_tx_to_deposit_request(tx, block, chain, token, tx_index)
+                    if deposit_request is None:
+                        skipped += 1
+                        continue
+                    deposit = self.accept_deposit(deposit_request)
+                    deposits.append(deposit)
+                    imported += 1
+                except (KeyError, ValueError) as exc:
+                    skipped += 1
+                    errors.append({"block": height, "tx": tx_index, "error": str(exc)})
+        confirmation_result = self.process_confirmations(
+            chain.chain_code,
+            ConfirmationProcessRequest(latest_block_number=request.latest_block_number or latest),
+        )
+        self.set_scanner_checkpoint(
+            scanner_id,
+            chain.chain_code,
+            to_block,
+            {"token_symbol": token.token_symbol, "mode": "native_transfer"},
+        )
+        return {
+            "chain_code": chain.chain_code,
+            "token_symbol": token.token_symbol,
+            "rpc_url": rpc_url,
+            "from_block": from_block,
+            "to_block": to_block,
+            "imported": imported,
+            "skipped": skipped,
+            "errors": errors,
+            "confirmation_result": confirmation_result,
+            "deposits": [deposit.model_dump(mode="json") for deposit in deposits],
+        }
+
+    def evm_tokens_for_poll(self, chain_code: str, token_symbol: str | None) -> list[TokenDefinition]:
+        if token_symbol:
+            token = self.get_token(chain_code, token_symbol)
+            if not token.contract_address:
+                raise ValueError("token has no ERC20 contract address")
+            return [token]
+        return [
+            token
+            for token in self.list_tokens(chain_code=chain_code, enabled_only=True)
+            if token.contract_address
+        ]
+
+    def get_scanner_checkpoint(self, scanner_id: str) -> int | None:
+        with self.storage.connect() as connection:
+            row = connection.execute(
+                "SELECT cursor_block FROM scanner_checkpoints WHERE scanner_id = ?",
+                (scanner_id,),
+            ).fetchone()
+        return int(row["cursor_block"]) if row else None
+
+    def set_scanner_checkpoint(self, scanner_id: str, chain_code: str, cursor_block: int, payload: dict[str, object]) -> None:
+        now = utc_now()
+        with self.storage.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO scanner_checkpoints (
+                    scanner_id,
+                    chain_code,
+                    cursor_block,
+                    payload,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(scanner_id) DO UPDATE SET
+                    chain_code = excluded.chain_code,
+                    cursor_block = excluded.cursor_block,
+                    payload = excluded.payload,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    scanner_id,
+                    normalize_chain_code(chain_code),
+                    int(cursor_block),
+                    json.dumps(payload, sort_keys=True),
+                    now.isoformat(),
+                ),
+            )
 
     def put_deposit(self, deposit: Deposit) -> None:
         with self.storage.connect() as connection:
@@ -1542,6 +1741,203 @@ def picoin_history_row_to_deposit_request(
 def latest_block_height_from_history(rows: list[dict[str, object]]) -> int | None:
     heights = [height for row in rows if (height := first_int(row, "block_height", "height"))]
     return max(heights) if heights else None
+
+
+def evm_transfer_log_to_deposit_request(
+    log: dict[str, object],
+    chain: ChainDefinition,
+    token: TokenDefinition,
+) -> ScannerDepositCreateRequest | None:
+    contract = normalize_address(chain.family, str(log.get("address") or ""))
+    if contract != token.contract_address:
+        return None
+    topics = log.get("topics")
+    if not isinstance(topics, list) or len(topics) < 3:
+        return None
+    topic0 = str(topics[0]).lower()
+    if topic0 != EVM_TRANSFER_TOPIC:
+        return None
+    from_address = evm_topic_to_address(str(topics[1]))
+    to_address = evm_topic_to_address(str(topics[2]))
+    if chain.deposit_address and to_address != chain.deposit_address:
+        return None
+    amount = int_from_hex(str(log.get("data") or "0x0"))
+    if amount <= 0:
+        return None
+    block_number = int_from_hex_or_int(log.get("blockNumber"))
+    if block_number <= 0:
+        return None
+    log_index = int_from_hex_or_int(log.get("logIndex"))
+    return ScannerDepositCreateRequest(
+        chain_code=chain.chain_code,
+        token_symbol=token.token_symbol,
+        from_address=from_address,
+        to_address=to_address,
+        amount_base_units=str(amount),
+        tx_hash=str(log.get("transactionHash") or ""),
+        block_number=block_number,
+        block_hash=str(log.get("blockHash")) if log.get("blockHash") else None,
+        log_index=log_index,
+        status=DepositStatus.DETECTED,
+    )
+
+
+def evm_native_tx_to_deposit_request(
+    tx: dict[str, object],
+    block: dict[str, object],
+    chain: ChainDefinition,
+    token: TokenDefinition,
+    tx_index: int,
+) -> ScannerDepositCreateRequest | None:
+    to_value = tx.get("to")
+    if not to_value:
+        return None
+    to_address = normalize_address(chain.family, str(to_value))
+    if chain.deposit_address and to_address != chain.deposit_address:
+        return None
+    amount = int_from_hex_or_int(tx.get("value"))
+    if amount <= 0:
+        return None
+    block_number = int_from_hex_or_int(tx.get("blockNumber") or block.get("number"))
+    if block_number <= 0:
+        return None
+    from_address = normalize_address(chain.family, str(tx.get("from") or ""))
+    native_log_index = EVM_NATIVE_LOG_INDEX - max(0, int(tx_index))
+    return ScannerDepositCreateRequest(
+        chain_code=chain.chain_code,
+        token_symbol=token.token_symbol,
+        from_address=from_address,
+        to_address=to_address,
+        amount_base_units=str(amount),
+        tx_hash=str(tx.get("hash") or ""),
+        block_number=block_number,
+        block_hash=str(tx.get("blockHash") or block.get("hash")) if (tx.get("blockHash") or block.get("hash")) else None,
+        log_index=native_log_index,
+        status=DepositStatus.DETECTED,
+    )
+
+
+def evm_topic_to_address(topic: str) -> str:
+    normalized = topic.lower()
+    if normalized.startswith("0x"):
+        normalized = normalized[2:]
+    if len(normalized) != 64:
+        raise ValueError("invalid EVM address topic")
+    return "0x" + normalized[-40:]
+
+
+def int_from_hex_or_int(value: object) -> int:
+    if value is None:
+        return 0
+    if isinstance(value, int):
+        return value
+    text = str(value)
+    return int_from_hex(text) if text.lower().startswith("0x") else int(text)
+
+
+def int_from_hex(value: str) -> int:
+    return int(value, 16)
+
+
+def address_to_topic(address: str) -> str:
+    normalized = address.lower()
+    if normalized.startswith("0x"):
+        normalized = normalized[2:]
+    if len(normalized) != 40:
+        raise ValueError("invalid EVM address")
+    return "0x" + ("0" * 24) + normalized
+
+
+def resolve_rpc_url(chain: ChainDefinition, explicit_rpc_url: str | None) -> str:
+    if explicit_rpc_url:
+        return explicit_rpc_url.rstrip("/")
+    if chain.rpc_endpoints:
+        return chain.rpc_endpoints[0].rstrip("/")
+    raise ValueError("rpc_url is required when chain has no RPC endpoint configured")
+
+
+def resolve_scan_from_block(
+    *,
+    explicit_from: int | None,
+    checkpoint: int | None,
+    latest: int,
+    batch_size: int,
+) -> int:
+    if explicit_from is not None:
+        return explicit_from
+    if checkpoint is not None:
+        return checkpoint + 1
+    return max(0, latest - batch_size + 1)
+
+
+def evm_token_scanner_id(chain_code: str, token_symbol: str) -> str:
+    return f"evm_erc20:{normalize_chain_code(chain_code)}:{normalize_coin(token_symbol)}"
+
+
+def evm_native_scanner_id(chain_code: str, token_symbol: str) -> str:
+    return f"evm_native:{normalize_chain_code(chain_code)}:{normalize_coin(token_symbol)}"
+
+
+def evm_block_number(rpc_url: str) -> int:
+    return int_from_hex(str(json_rpc_call(rpc_url, "eth_blockNumber", [])))
+
+
+def evm_get_transfer_logs(
+    rpc_url: str,
+    contract_address: str,
+    deposit_address: str,
+    from_block: int,
+    to_block: int,
+) -> list[dict[str, object]]:
+    if not contract_address:
+        raise ValueError("contract_address is required")
+    if not deposit_address:
+        raise ValueError("deposit address is required")
+    result = json_rpc_call(
+        rpc_url,
+        "eth_getLogs",
+        [
+            {
+                "address": contract_address,
+                "fromBlock": hex(from_block),
+                "toBlock": hex(to_block),
+                "topics": [EVM_TRANSFER_TOPIC, None, address_to_topic(deposit_address)],
+            }
+        ],
+    )
+    if not isinstance(result, list):
+        raise ValueError("eth_getLogs did not return a list")
+    return [row for row in result if isinstance(row, dict)]
+
+
+def evm_get_block(rpc_url: str, height: int) -> dict[str, object]:
+    result = json_rpc_call(rpc_url, "eth_getBlockByNumber", [hex(height), True])
+    if not isinstance(result, dict):
+        raise ValueError("eth_getBlockByNumber did not return a block object")
+    return result
+
+
+def json_rpc_call(rpc_url: str, method: str, params: list[object]) -> object:
+    payload = json.dumps(
+        {
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": method,
+            "params": params,
+        }
+    ).encode("utf-8")
+    timeout = float(os.getenv("PICOIN_MARKETPLACE_HTTP_TIMEOUT_SECONDS", "30"))
+    request = urllib.request.Request(
+        rpc_url,
+        data=payload,
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    if data.get("error"):
+        raise ValueError(f"JSON-RPC error: {data['error']}")
+    return data.get("result")
 
 
 def first_text(row: dict[str, object], *keys: str) -> str | None:

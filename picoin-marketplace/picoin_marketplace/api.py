@@ -14,6 +14,9 @@ from .models import (
     BookingQuoteRequest,
     ChainCreateRequest,
     ConfirmationProcessRequest,
+    EvmNativeTransferPollRequest,
+    EvmTokenTransferImportRequest,
+    EvmTokenTransferPollRequest,
     HardwareType,
     ListingCreateRequest,
     MiningPoolCreateRequest,
@@ -162,6 +165,34 @@ def import_picoin_history_api(payload: PicoinHistoryImportRequest) -> dict:
 def poll_picoin_node_api(payload: PicoinNodePollRequest) -> dict:
     try:
         return marketplace().poll_picoin_node(payload)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@api.post("/scanner/evm/import-token-transfers")
+def import_evm_token_transfers_api(payload: EvmTokenTransferImportRequest) -> dict:
+    try:
+        return marketplace().import_evm_token_transfers(payload)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@api.post("/scanner/evm/poll-token-transfers")
+def poll_evm_token_transfers_api(payload: EvmTokenTransferPollRequest) -> dict:
+    try:
+        return marketplace().poll_evm_token_transfers(payload)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+
+@api.post("/scanner/evm/poll-native-transfers")
+def poll_evm_native_transfers_api(payload: EvmNativeTransferPollRequest) -> dict:
+    try:
+        return marketplace().poll_evm_native_transfers(payload)
     except (KeyError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except OSError as exc:
