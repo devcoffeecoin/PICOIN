@@ -1,0 +1,61 @@
+# Picoin Marketplace Deployment
+
+This directory contains Linux deployment artifacts for:
+
+- `picoin-marketplace`: FastAPI app on `127.0.0.1:9410`
+- `picoin-marketplace-scanner`: deposit scanner loop for Picoin and EVM rails
+
+## Install
+
+From the repository root on the server:
+
+```bash
+cd picoin-marketplace
+sudo bash deploy/install-marketplace.sh
+```
+
+Then edit:
+
+```text
+/etc/picoin-marketplace/picoin-marketplace.env
+```
+
+At minimum, set real values for:
+
+```text
+PICOIN_MARKETPLACE_ESCROW_ADDRESS
+PICOIN_MARKETPLACE_PICOIN_NODE_URL
+PICOIN_MARKETPLACE_EVM_ESCROW_ADDRESS
+PICOIN_MARKETPLACE_EVM_RPC_URL
+```
+
+Restart after editing:
+
+```bash
+sudo systemctl restart picoin-marketplace picoin-marketplace-scanner
+```
+
+## Status
+
+```bash
+systemctl status picoin-marketplace --no-pager -l
+systemctl status picoin-marketplace-scanner --no-pager -l
+journalctl -u picoin-marketplace -f
+journalctl -u picoin-marketplace-scanner -f
+```
+
+## Nginx
+
+The sample `nginx-marketplace.conf` proxies `marketplace.picoin.science` to
+`127.0.0.1:9410`.
+
+Example:
+
+```bash
+sudo cp deploy/nginx-marketplace.conf /etc/nginx/sites-available/marketplace.picoin.science
+sudo ln -sf /etc/nginx/sites-available/marketplace.picoin.science /etc/nginx/sites-enabled/marketplace.picoin.science
+sudo nginx -t
+sudo systemctl reload nginx
+```
+
+Add TLS with certbot or the existing production proxy flow.

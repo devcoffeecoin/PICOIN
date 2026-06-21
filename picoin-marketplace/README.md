@@ -194,6 +194,40 @@ picoin-marketplace-scanner --once --no-picoin --evm-native
 Each tick prints one JSON line with `runs` and `errors`, so systemd or Docker
 logs can be monitored directly.
 
+## Production Deployment
+
+Deployment artifacts live in:
+
+```text
+deploy/
+```
+
+Quick install on Ubuntu:
+
+```bash
+cd picoin-marketplace
+sudo bash deploy/install-marketplace.sh
+```
+
+This installs:
+
+```text
+picoin-marketplace.service
+picoin-marketplace-scanner.service
+/etc/picoin-marketplace/picoin-marketplace.env
+/var/lib/picoin-marketplace
+```
+
+After install, edit the environment file with the real Picoin escrow, EVM
+escrow, node URL, and RPC URL:
+
+```bash
+sudo nano /etc/picoin-marketplace/picoin-marketplace.env
+sudo systemctl restart picoin-marketplace picoin-marketplace-scanner
+```
+
+See `deploy/README.md` for nginx and status commands.
+
 ## API
 
 ```text

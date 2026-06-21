@@ -1,0 +1,19 @@
+[Unit]
+Description=Picoin Marketplace API
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=picoin-marketplace
+Group=picoin-marketplace
+WorkingDirectory=/opt/picoin-marketplace
+EnvironmentFile=/etc/picoin-marketplace/picoin-marketplace.env
+ExecStart=/opt/picoin-marketplace/.venv/bin/picoin-marketplace
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
