@@ -267,6 +267,7 @@ GET  /workers
 GET  /workers/{worker_id}
 GET  /workers/{worker_id}/assignments
 POST /workers/{worker_id}/heartbeat
+POST /workers/maintenance/expire-stale
 POST /bookings/quote
 POST /bookings
 GET  /bookings
@@ -614,6 +615,17 @@ payment:
 curl -sS "http://127.0.0.1:9410/workers/worker-gpu-1/assignments?active_only=false" \
   | python -m json.tool
 ```
+
+Expire stale workers:
+
+```bash
+curl -sS -X POST \
+  "http://127.0.0.1:9410/workers/maintenance/expire-stale?stale_after_seconds=120" \
+  | python -m json.tool
+```
+
+Expired workers are marked `offline`, their listing is paused, and
+`units_available` becomes `0` so customers cannot buy unavailable capacity.
 
 ## Quote Before Booking
 

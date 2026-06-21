@@ -1559,6 +1559,42 @@ class Marketplace:
             )
         return assignments
 
+    def expire_stale_workers(self, *, stale_after_seconds: int = 120, limit: int = 1000) -> dict[str, object]:
+        cutoff_seconds = max(0, int(stale_after_seconds))
+        now = utc_now()
+        expired: list[dict[str, object]] = []
+        for worker in self.list_workers(status=WorkerStatus.ONLINE, limit=limit):
+            last_seen = worker.last_seen_at or worker.updated_at
+            if (now - last_seen).total_seconds() <= cutoff_seconds:
+                continue
+            listing = self.get_listing(worker.listing_id)
+            worker.status = WorkerStatus.OFFLINE
+            worker.updated_at = now
+            listing.status = ListingStatus.PAUSED
+            listing.units_available = 0
+            listing.updated_at = now
+            listing.metadata = {
+                **listing.metadata,
+                "worker_status": WorkerStatus.OFFLINE.value,
+                "worker_last_seen_at": last_seen.isoformat(),
+                "worker_offline_at": now.isoformat(),
+            }
+            self.put_listing(listing)
+            self.put_worker(worker)
+            expired.append(
+                {
+                    "worker_id": worker.worker_id,
+                    "listing_id": listing.listing_id,
+                    "last_seen_at": last_seen.isoformat(),
+                }
+            )
+        return {
+            "checked_at": now.isoformat(),
+            "stale_after_seconds": cutoff_seconds,
+            "expired": len(expired),
+            "workers": expired,
+        }
+
     def put_worker(self, worker: Worker) -> None:
         with self.storage.connect() as connection:
             connection.execute(

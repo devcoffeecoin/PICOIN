@@ -353,6 +353,14 @@ def test_worker_registration_and_heartbeat_manage_capacity(tmp_path, monkeypatch
     assert online["listing"]["status"] == "active"
     assert online["listing"]["units_available"] == 3
 
+    expired = client.post("/workers/maintenance/expire-stale?stale_after_seconds=0").json()
+    assert expired["expired"] == 1
+    worker_after_expiry = client.get("/workers/worker-gpu-1").json()
+    listing_after_expiry = client.get(f"/listings/{listing['listing_id']}").json()
+    assert worker_after_expiry["status"] == "offline"
+    assert listing_after_expiry["status"] == "paused"
+    assert listing_after_expiry["units_available"] == 0
+
 
 def test_booking_quote_does_not_reserve_capacity(tmp_path, monkeypatch):
     monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))

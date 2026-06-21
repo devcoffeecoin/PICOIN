@@ -1312,6 +1312,14 @@ def worker_assignments_api(worker_id: str, active_only: bool = True, limit: int 
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@api.post("/workers/maintenance/expire-stale")
+def expire_stale_workers_api(stale_after_seconds: int = 120, limit: int = 1000) -> dict:
+    return marketplace().expire_stale_workers(
+        stale_after_seconds=stale_after_seconds,
+        limit=limit,
+    )
+
+
 @api.get("/workers/{worker_id}")
 def worker_api(worker_id: str) -> dict:
     try:
