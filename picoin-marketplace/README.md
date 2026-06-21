@@ -131,7 +131,68 @@ PICOIN_MARKETPLACE_PAYMENT_WINDOW_MINUTES=30
 PICOIN_MARKETPLACE_SEED_DEFAULT_POOLS=1
 PICOIN_MARKETPLACE_HOST=127.0.0.1
 PICOIN_MARKETPLACE_PORT=9410
+PICOIN_MARKETPLACE_PICOIN_NODE_URL=http://127.0.0.1:8000
+PICOIN_MARKETPLACE_SCANNER_INTERVAL_SECONDS=30
+PICOIN_MARKETPLACE_SCANNER_PICOIN_ENABLED=1
+PICOIN_MARKETPLACE_SCANNER_PICOIN_LIMIT=50
+PICOIN_MARKETPLACE_EVM_RPC_URL=
+PICOIN_MARKETPLACE_SCANNER_EVM_TOKENS_ENABLED=0
+PICOIN_MARKETPLACE_SCANNER_EVM_NATIVE_ENABLED=0
+PICOIN_MARKETPLACE_SCANNER_EVM_TOKEN_SYMBOL=
+PICOIN_MARKETPLACE_SCANNER_EVM_BATCH_SIZE=500
+PICOIN_MARKETPLACE_SCANNER_EVM_NATIVE_BATCH_SIZE=100
 ```
+
+## Scanner Worker
+
+The marketplace includes a standalone scanner process. It can run one tick for
+manual testing or stay alive as a service.
+
+Run one scan tick:
+
+```bash
+picoin-marketplace-scanner --once
+```
+
+Run continuously:
+
+```bash
+picoin-marketplace-scanner --interval-seconds 30
+```
+
+PowerShell without installing the package script:
+
+```powershell
+python -m picoin_marketplace.scanner_worker --once
+```
+
+Enable Picoin polling:
+
+```bash
+PICOIN_MARKETPLACE_PICOIN_NODE_URL=http://127.0.0.1:8000
+PICOIN_MARKETPLACE_SCANNER_PICOIN_ENABLED=1
+picoin-marketplace-scanner --once
+```
+
+Enable ERC20 polling:
+
+```bash
+PICOIN_MARKETPLACE_EVM_RPC_URL=https://YOUR_ETH_RPC
+PICOIN_MARKETPLACE_SCANNER_EVM_TOKENS_ENABLED=1
+PICOIN_MARKETPLACE_SCANNER_EVM_TOKEN_SYMBOL=USDC
+picoin-marketplace-scanner --once --no-picoin
+```
+
+Enable native ETH polling:
+
+```bash
+PICOIN_MARKETPLACE_EVM_RPC_URL=https://YOUR_ETH_RPC
+PICOIN_MARKETPLACE_SCANNER_EVM_NATIVE_ENABLED=1
+picoin-marketplace-scanner --once --no-picoin --evm-native
+```
+
+Each tick prints one JSON line with `runs` and `errors`, so systemd or Docker
+logs can be monitored directly.
 
 ## API
 
