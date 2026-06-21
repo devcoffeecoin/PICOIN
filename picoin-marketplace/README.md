@@ -576,6 +576,27 @@ status=offline -> listing is paused and units_available becomes 0
 reserved units cannot be overwritten by a heartbeat
 ```
 
+Run the packaged worker agent once:
+
+```bash
+PICOIN_MARKETPLACE_URL=http://127.0.0.1:9410 \
+PICOIN_MARKETPLACE_WORKER_ID=worker-gpu-1 \
+PICOIN_MARKETPLACE_WORKER_PROVIDER_ID=provider-gpu-1 \
+PICOIN_MARKETPLACE_WORKER_PROVIDER_WALLET=PI_PROVIDER_GPU \
+PICOIN_MARKETPLACE_WORKER_POOL_ID=pool_FROM_THE_POOL_RESPONSE \
+PICOIN_MARKETPLACE_WORKER_HARDWARE_TYPE=gpu \
+PICOIN_MARKETPLACE_WORKER_UNITS_TOTAL=3 \
+PICOIN_MARKETPLACE_WORKER_UNITS_AVAILABLE=3 \
+PICOIN_MARKETPLACE_WORKER_PRICE_PI_PER_HOUR=2.0 \
+picoin-marketplace-worker --once
+```
+
+Run continuously:
+
+```bash
+picoin-marketplace-worker --interval-seconds 30
+```
+
 ## Quote Before Booking
 
 Use `/bookings/quote` to preview the exact Picoin cost and capacity split before
