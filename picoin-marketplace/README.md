@@ -265,6 +265,7 @@ GET  /listings/{listing_id}
 POST /workers/register
 GET  /workers
 GET  /workers/{worker_id}
+GET  /workers/{worker_id}/assignments
 POST /workers/{worker_id}/heartbeat
 POST /bookings/quote
 POST /bookings
@@ -595,6 +596,23 @@ Run continuously:
 
 ```bash
 picoin-marketplace-worker --interval-seconds 30
+```
+
+Each worker tick prints one JSON document with the heartbeat response and active
+assignments:
+
+```text
+assignment_count
+assignments[]
+```
+
+Assignments are derived from active bookings on the worker listing. Use
+`active_only=false` to inspect reserved bookings that are still waiting for
+payment:
+
+```bash
+curl -sS "http://127.0.0.1:9410/workers/worker-gpu-1/assignments?active_only=false" \
+  | python -m json.tool
 ```
 
 ## Quote Before Booking

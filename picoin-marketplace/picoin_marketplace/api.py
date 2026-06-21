@@ -1297,6 +1297,21 @@ def workers_api(
     ]
 
 
+@api.get("/workers/{worker_id}/assignments")
+def worker_assignments_api(worker_id: str, active_only: bool = True, limit: int = 100) -> list[dict]:
+    try:
+        return [
+            assignment.model_dump(mode="json")
+            for assignment in marketplace().worker_assignments(
+                worker_id,
+                active_only=active_only,
+                limit=limit,
+            )
+        ]
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @api.get("/workers/{worker_id}")
 def worker_api(worker_id: str) -> dict:
     try:

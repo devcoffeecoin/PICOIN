@@ -296,7 +296,7 @@ def test_worker_registration_and_heartbeat_manage_capacity(tmp_path, monkeypatch
     assert listing["units_total"] == 3
     assert listing["units_available"] == 3
 
-    booking = client.post(
+    booking_payload = client.post(
         "/bookings",
         json={
             "requester_wallet": "PI_CUSTOMER_WALLET",
@@ -304,7 +304,13 @@ def test_worker_registration_and_heartbeat_manage_capacity(tmp_path, monkeypatch
             "units": 2,
             "duration_minutes": 60,
         },
-    ).json()["booking"]
+    ).json()
+    booking = booking_payload["booking"]
+    payment = booking_payload["payment"]
+    client.post(
+        f"/payments/{payment['payment_id']}/submit",
+        json={"tx_hash": "abcdef1234567890abcdef", "confirmations": 1},
+    )
 
     heartbeat = client.post(
         "/workers/worker-gpu-1/heartbeat",
@@ -330,6 +336,14 @@ def test_worker_registration_and_heartbeat_manage_capacity(tmp_path, monkeypatch
     listed_workers = client.get("/workers?provider_id=provider-gpu-1").json()
     assert len(listed_workers) == 1
     assert listed_workers[0]["worker_id"] == "worker-gpu-1"
+
+    assignments = client.get("/workers/worker-gpu-1/assignments").json()
+    assert len(assignments) == 1
+    assert assignments[0]["booking_id"] == booking["booking_id"]
+    assert assignments[0]["status"] == "active"
+    assert assignments[0]["pair_symbol"] == "PICO/RAVENCOIN"
+    assert assignments[0]["picoin_capacity_units"] == 0.2
+    assert assignments[0]["paired_capacity_units"] == 1.8
 
     client.post(f"/bookings/{booking['booking_id']}/release")
     online = client.post(
@@ -468,7 +482,6 @@ def test_account_picoin_deposit_confirmation_and_balance_payment(tmp_path, monke
     balances_after = client.get(f"/accounts/{account['account_id']}/balances").json()
     pico_after = next(row for row in balances_after if row["token_symbol"] == "PICO")
     assert pico_after["available_base_units"] == "6858400"
-
 
 def test_ethereum_token_deposit_can_pay_marketplace_booking(tmp_path, monkeypatch):
     monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))

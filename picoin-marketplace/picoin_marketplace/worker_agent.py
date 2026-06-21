@@ -127,6 +127,12 @@ def json_post(url: str, payload: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+def json_get(url: str) -> Any:
+    timeout = float(os.getenv("PICOIN_MARKETPLACE_HTTP_TIMEOUT_SECONDS", "30"))
+    with urllib.request.urlopen(url, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
+
+
 def register_worker(config: WorkerAgentConfig) -> dict[str, Any]:
     if not config.pool_id:
         raise ValueError("pool_id is required")
@@ -135,6 +141,13 @@ def register_worker(config: WorkerAgentConfig) -> dict[str, Any]:
 
 def heartbeat_worker(config: WorkerAgentConfig, worker_id: str) -> dict[str, Any]:
     return json_post(f"{config.marketplace_url}/workers/{worker_id}/heartbeat", heartbeat_payload(config))
+
+
+def fetch_assignments(config: WorkerAgentConfig, worker_id: str) -> list[dict[str, Any]]:
+    data = json_get(f"{config.marketplace_url}/workers/{worker_id}/assignments?active_only=true&limit=100")
+    if not isinstance(data, list):
+        raise ValueError("assignments response is not a list")
+    return [item for item in data if isinstance(item, dict)]
 
 
 def run_once(config: WorkerAgentConfig, *, register: bool = True, worker_id: str | None = None) -> dict[str, Any]:
@@ -147,6 +160,7 @@ def run_once(config: WorkerAgentConfig, *, register: bool = True, worker_id: str
     if not active_worker_id:
         raise ValueError("worker_id is required when registration is disabled")
     heartbeat = heartbeat_worker(config, active_worker_id)
+    assignments = fetch_assignments(config, active_worker_id)
     return {
         "service": "picoin-marketplace-worker",
         "started_at": started_at.isoformat(),
@@ -154,6 +168,8 @@ def run_once(config: WorkerAgentConfig, *, register: bool = True, worker_id: str
         "worker_id": active_worker_id,
         "registered": registered,
         "heartbeat": heartbeat,
+        "assignments": assignments,
+        "assignment_count": len(assignments),
     }
 
 

@@ -18,6 +18,10 @@ def test_worker_agent_registers_and_sends_heartbeat(monkeypatch):
         raise AssertionError(url)
 
     monkeypatch.setattr("picoin_marketplace.worker_agent.json_post", fake_json_post)
+    monkeypatch.setattr(
+        "picoin_marketplace.worker_agent.json_get",
+        lambda url: [{"assignment_id": "assign-1", "booking_id": "booking-1"}],
+    )
     config = WorkerAgentConfig(
         marketplace_url="http://marketplace.local",
         worker_id="worker-gpu-1",
@@ -52,10 +56,13 @@ def test_worker_agent_registers_and_sends_heartbeat(monkeypatch):
     )
     assert calls[1][0] == "http://marketplace.local/workers/worker-gpu-1/heartbeat"
     assert calls[1][1]["units_available"] == 3
+    assert result["assignment_count"] == 1
+    assert result["assignments"][0]["booking_id"] == "booking-1"
 
 
 def test_worker_agent_requires_worker_id_without_registration(monkeypatch):
     monkeypatch.setattr("picoin_marketplace.worker_agent.json_post", lambda url, payload: {})
+    monkeypatch.setattr("picoin_marketplace.worker_agent.json_get", lambda url: [])
     config = WorkerAgentConfig(pool_id="pool_gpu_raven", worker_id=None)
 
     with pytest.raises(ValueError, match="worker_id is required"):

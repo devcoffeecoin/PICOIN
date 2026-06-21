@@ -53,6 +53,7 @@ from .models import (
     WalletCreateRequest,
     WalletStatus,
     Worker,
+    WorkerAssignment,
     WorkerHeartbeatRequest,
     WorkerRegisterRequest,
     WorkerStatus,
@@ -1503,6 +1504,60 @@ class Marketplace:
         with self.storage.connect() as connection:
             rows = connection.execute(query, params).fetchall()
         return [Worker.model_validate(json.loads(row["payload"])) for row in rows]
+
+    def worker_assignments(
+        self,
+        worker_id: str,
+        *,
+        active_only: bool = True,
+        limit: int = 100,
+    ) -> list[WorkerAssignment]:
+        worker = self.get_worker(worker_id)
+        listing = self.get_listing(worker.listing_id)
+        safe_limit = max(1, min(int(limit), 1000))
+        params: list[object] = [listing.listing_id]
+        query = "SELECT payload FROM bookings WHERE listing_id = ?"
+        if active_only:
+            query += " AND status = ?"
+            params.append(BookingStatus.ACTIVE.value)
+        else:
+            query += " AND status IN (?, ?)"
+            params.extend([BookingStatus.AWAITING_PAYMENT.value, BookingStatus.ACTIVE.value])
+        query += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(safe_limit)
+        with self.storage.connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        assignments: list[WorkerAssignment] = []
+        for row in rows:
+            booking = Booking.model_validate(json.loads(row["payload"]))
+            assignments.append(
+                WorkerAssignment(
+                    assignment_id="assign_" + hash_json({"worker_id": worker.worker_id, "booking_id": booking.booking_id})[:18],
+                    worker_id=worker.worker_id,
+                    booking_id=booking.booking_id,
+                    listing_id=booking.listing_id,
+                    pool_id=booking.pool_id,
+                    provider_id=booking.provider_id,
+                    requester_wallet=booking.requester_wallet,
+                    hardware_type=booking.hardware_type,
+                    pair_symbol=booking.pair_symbol,
+                    paired_coin=booking.paired_coin,
+                    units=booking.units,
+                    duration_minutes=booking.duration_minutes,
+                    amount_pi=booking.amount_pi,
+                    status=booking.status,
+                    picoin_capacity_percent=booking.picoin_capacity_percent,
+                    paired_capacity_percent=booking.paired_capacity_percent,
+                    picoin_capacity_units=booking.picoin_capacity_units,
+                    paired_capacity_units=booking.paired_capacity_units,
+                    starts_at=booking.starts_at,
+                    expires_at=booking.expires_at,
+                    created_at=booking.created_at,
+                    updated_at=booking.updated_at,
+                    metadata=booking.metadata,
+                )
+            )
+        return assignments
 
     def put_worker(self, worker: Worker) -> None:
         with self.storage.connect() as connection:

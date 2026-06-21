@@ -479,6 +479,32 @@ class Booking(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class WorkerAssignment(BaseModel):
+    assignment_id: str
+    worker_id: str
+    booking_id: str
+    listing_id: str
+    pool_id: str
+    provider_id: str
+    requester_wallet: str
+    hardware_type: HardwareType
+    pair_symbol: str
+    paired_coin: str
+    units: int
+    duration_minutes: int
+    amount_pi: float
+    status: BookingStatus
+    picoin_capacity_percent: float
+    paired_capacity_percent: float
+    picoin_capacity_units: float
+    paired_capacity_units: float
+    starts_at: datetime | None = None
+    expires_at: datetime | None = None
+    created_at: datetime
+    updated_at: datetime
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 class PaymentSubmitRequest(BaseModel):
     tx_hash: str = Field(min_length=16, max_length=128)
     confirmations: int = Field(default=0, ge=0)
