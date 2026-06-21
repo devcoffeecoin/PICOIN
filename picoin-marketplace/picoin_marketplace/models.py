@@ -26,6 +26,12 @@ class ListingStatus(str, Enum):
     RETIRED = "retired"
 
 
+class WorkerStatus(str, Enum):
+    ONLINE = "online"
+    PAUSED = "paused"
+    OFFLINE = "offline"
+
+
 class BookingStatus(str, Enum):
     AWAITING_PAYMENT = "awaiting_payment"
     ACTIVE = "active"
@@ -323,6 +329,56 @@ class Listing(BaseModel):
     asic_algorithm: str | None = None
     asic_hashrate_th_s: float | None = None
     status: ListingStatus = ListingStatus.ACTIVE
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class WorkerRegisterRequest(BaseModel):
+    worker_id: str | None = Field(default=None, max_length=80)
+    provider_id: str = Field(min_length=1, max_length=120)
+    provider_wallet: str = Field(min_length=10, max_length=96)
+    pool_id: str = Field(min_length=1, max_length=80)
+    hardware_type: HardwareType
+    title: str | None = Field(default=None, max_length=140)
+    units_total: int = Field(default=1, ge=1, le=100000)
+    price_pi_per_hour: float = Field(gt=0.0)
+    min_booking_minutes: int = Field(default=30, ge=1, le=60 * 24 * 30)
+    region: str | None = Field(default=None, max_length=80)
+    capabilities: list[str] = Field(default_factory=list)
+    cpu_threads: int | None = Field(default=None, ge=1)
+    memory_gb: float | None = Field(default=None, ge=0.0)
+    gpu_model: str | None = Field(default=None, max_length=120)
+    gpu_count: int | None = Field(default=None, ge=1)
+    gpu_vram_gb: float | None = Field(default=None, ge=0.0)
+    asic_algorithm: str | None = Field(default=None, max_length=80)
+    asic_hashrate_th_s: float | None = Field(default=None, ge=0.0)
+    endpoint_url: str | None = Field(default=None, max_length=240)
+    agent_version: str | None = Field(default=None, max_length=40)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class WorkerHeartbeatRequest(BaseModel):
+    status: WorkerStatus = WorkerStatus.ONLINE
+    units_total: int | None = Field(default=None, ge=1, le=100000)
+    units_available: int | None = Field(default=None, ge=0, le=100000)
+    endpoint_url: str | None = Field(default=None, max_length=240)
+    agent_version: str | None = Field(default=None, max_length=40)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class Worker(BaseModel):
+    worker_id: str
+    listing_id: str
+    provider_id: str
+    pool_id: str
+    hardware_type: HardwareType
+    status: WorkerStatus = WorkerStatus.ONLINE
+    endpoint_url: str | None = None
+    agent_version: str | None = None
+    last_seen_at: datetime | None = None
+    metrics: dict[str, Any] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)

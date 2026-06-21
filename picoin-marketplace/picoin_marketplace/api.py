@@ -27,6 +27,9 @@ from .models import (
     ScannerDepositCreateRequest,
     TokenCreateRequest,
     WalletCreateRequest,
+    WorkerHeartbeatRequest,
+    WorkerRegisterRequest,
+    WorkerStatus,
 )
 
 
@@ -732,6 +735,64 @@ def home() -> str:
         <pre id="listing-output"></pre>
       </section>
       <section>
+        <h2>Worker Agents</h2>
+        <form id="worker-form">
+          <label>Pool
+            <select name="pool_id" id="worker-pool"></select>
+          </label>
+          <label>Hardware
+            <select name="hardware_type">
+              <option value="cpu">CPU</option>
+              <option value="gpu">GPU</option>
+              <option value="asic">ASIC</option>
+            </select>
+          </label>
+          <label>Worker ID
+            <input name="worker_id" value="worker-gpu-1">
+          </label>
+          <label>Provider
+            <input name="provider_id" value="provider-gpu-1" required>
+          </label>
+          <label class="span-2">Provider wallet
+            <input name="provider_wallet" value="PI_PROVIDER_GPU" required>
+          </label>
+          <label>Units
+            <input name="units_total" type="number" min="1" value="3" required>
+          </label>
+          <label>PI/hour
+            <input name="price_pi_per_hour" type="number" min="0.000001" step="0.000001" value="2" required>
+          </label>
+          <label class="span-2">Title
+            <input name="title" value="GPU worker node">
+          </label>
+          <button class="span-2 secondary" type="submit">Register worker</button>
+        </form>
+        <form id="worker-heartbeat-form" style="margin-top:10px">
+          <label>Worker ID
+            <input name="worker_id" value="worker-gpu-1" required>
+          </label>
+          <label>Status
+            <select name="status">
+              <option value="online">Online</option>
+              <option value="paused">Paused</option>
+              <option value="offline">Offline</option>
+            </select>
+          </label>
+          <label>Units total
+            <input name="units_total" type="number" min="1" value="3">
+          </label>
+          <label>Units available
+            <input name="units_available" type="number" min="0" value="3">
+          </label>
+          <button class="span-2 light" type="submit">Send heartbeat</button>
+        </form>
+        <table class="mini-table" style="margin-top:10px">
+          <thead><tr><th>Worker</th><th>Status</th><th>Pool</th><th>Seen</th></tr></thead>
+          <tbody id="worker-rows"></tbody>
+        </table>
+        <pre id="worker-output"></pre>
+      </section>
+      <section>
         <h2>Create Pair Pool</h2>
         <form id="pool-form">
           <label>Hardware
@@ -773,8 +834,11 @@ def home() -> str:
     }}
     function readForm(form) {{
       const data = Object.fromEntries(new FormData(form).entries());
-      for (const key of ['picoin_capacity_percent', 'paired_capacity_percent', 'units_total', 'price_pi_per_hour', 'units', 'duration_minutes', 'block_number', 'log_index']) {{
+      for (const key of ['picoin_capacity_percent', 'paired_capacity_percent', 'units_total', 'units_available', 'price_pi_per_hour', 'units', 'duration_minutes', 'block_number', 'log_index']) {{
         if (key in data) data[key] = Number(data[key]);
+      }}
+      for (const key of Object.keys(data)) {{
+        if (data[key] === '') delete data[key];
       }}
       return data;
     }}
@@ -879,11 +943,12 @@ def home() -> str:
       }}
     }}
     async function loadData() {{
-      const [summary, pools, cards, listings] = await Promise.all([
+      const [summary, pools, cards, listings, workers] = await Promise.all([
         request('/summary'),
         request('/pools?active_only=true&limit=100'),
         request('/pool-cards?active_only=true&limit=100'),
-        request('/listings?active_only=true&limit=100')
+        request('/listings?active_only=true&limit=100'),
+        request('/workers?limit=100')
       ]);
       cardData = cards;
       document.getElementById('metric-pools').textContent = summary.active_pool_count;
@@ -900,7 +965,14 @@ def home() -> str:
           <td>${{item.units_available}} / ${{item.units_total}}</td>
           <td>${{fmtPi(item.price_pi_per_hour)}}</td>
         </tr>`).join('');
-      for (const selectId of ['listing-pool', 'booking-pool']) {{
+      document.getElementById('worker-rows').innerHTML = workers.length ? workers.map(item => `
+        <tr>
+          <td>${{item.worker_id}}</td>
+          <td>${{item.status}}</td>
+          <td><code>${{item.pool_id.slice(0, 12)}}</code></td>
+          <td>${{item.last_seen_at ? item.last_seen_at.replace('T', ' ').slice(0, 19) : '-'}}</td>
+        </tr>`).join('') : '<tr><td colspan="4" class="muted">No workers registered yet.</td></tr>';
+      for (const selectId of ['listing-pool', 'booking-pool', 'worker-pool']) {{
         const select = document.getElementById(selectId);
         const current = select.value;
         select.innerHTML = '';
@@ -908,6 +980,7 @@ def home() -> str:
         if (current) select.value = current;
       }}
       syncHardwareFromPool(document.getElementById('listing-pool'), document.querySelector('#listing-form [name="hardware_type"]'));
+      syncHardwareFromPool(document.getElementById('worker-pool'), document.querySelector('#worker-form [name="hardware_type"]'));
       await refreshQuote();
     }}
     document.getElementById('package-grid').addEventListener('click', event => {{
@@ -927,6 +1000,9 @@ def home() -> str:
     }});
     document.getElementById('listing-pool').addEventListener('change', event => {{
       syncHardwareFromPool(event.target, document.querySelector('#listing-form [name="hardware_type"]'));
+    }});
+    document.getElementById('worker-pool').addEventListener('change', event => {{
+      syncHardwareFromPool(event.target, document.querySelector('#worker-form [name="hardware_type"]'));
     }});
     document.getElementById('booking-form').addEventListener('input', refreshQuote);
     document.getElementById('booking-form').addEventListener('change', refreshQuote);
@@ -955,6 +1031,35 @@ def home() -> str:
         out('listing-output', result);
         await loadData();
       }} catch (error) {{ out('listing-output', error); }}
+    }});
+    document.getElementById('worker-form').addEventListener('submit', async event => {{
+      event.preventDefault();
+      try {{
+        const payload = readForm(event.target);
+        const result = await request('/workers/register', {{
+          method: 'POST',
+          headers: {{'content-type': 'application/json'}},
+          body: JSON.stringify(payload)
+        }});
+        document.querySelector('#worker-heartbeat-form [name="worker_id"]').value = result.worker.worker_id;
+        out('worker-output', result);
+        await loadData();
+      }} catch (error) {{ out('worker-output', error); }}
+    }});
+    document.getElementById('worker-heartbeat-form').addEventListener('submit', async event => {{
+      event.preventDefault();
+      try {{
+        const payload = readForm(event.target);
+        const workerId = payload.worker_id;
+        delete payload.worker_id;
+        const result = await request(`/workers/${{workerId}}/heartbeat`, {{
+          method: 'POST',
+          headers: {{'content-type': 'application/json'}},
+          body: JSON.stringify(payload)
+        }});
+        out('worker-output', result);
+        await loadData();
+      }} catch (error) {{ out('worker-output', error); }}
     }});
     document.getElementById('booking-form').addEventListener('submit', async event => {{
       event.preventDefault();
@@ -1144,6 +1249,58 @@ def listings_api(
 def listing_api(listing_id: str) -> dict:
     try:
         return marketplace().get_listing(listing_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@api.post("/workers/register")
+def register_worker_api(payload: WorkerRegisterRequest) -> dict:
+    try:
+        worker, listing = marketplace().register_worker(payload)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "worker": worker.model_dump(mode="json"),
+        "listing": listing.model_dump(mode="json"),
+    }
+
+
+@api.post("/workers/{worker_id}/heartbeat")
+def heartbeat_worker_api(worker_id: str, payload: WorkerHeartbeatRequest) -> dict:
+    try:
+        worker, listing = marketplace().heartbeat_worker(worker_id, payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "worker": worker.model_dump(mode="json"),
+        "listing": listing.model_dump(mode="json"),
+    }
+
+
+@api.get("/workers")
+def workers_api(
+    provider_id: str | None = None,
+    pool_id: str | None = None,
+    status: WorkerStatus | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    return [
+        worker.model_dump(mode="json")
+        for worker in marketplace().list_workers(
+            provider_id=provider_id,
+            pool_id=pool_id,
+            status=status,
+            limit=limit,
+        )
+    ]
+
+
+@api.get("/workers/{worker_id}")
+def worker_api(worker_id: str) -> dict:
+    try:
+        return marketplace().get_worker(worker_id).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

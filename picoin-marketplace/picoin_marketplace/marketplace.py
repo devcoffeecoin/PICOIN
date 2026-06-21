@@ -52,6 +52,10 @@ from .models import (
     Wallet,
     WalletCreateRequest,
     WalletStatus,
+    Worker,
+    WorkerHeartbeatRequest,
+    WorkerRegisterRequest,
+    WorkerStatus,
     utc_now,
 )
 from .storage import MarketplaceStorage
@@ -1345,6 +1349,209 @@ class Marketplace:
                 ),
             )
 
+    def register_worker(self, request: WorkerRegisterRequest) -> tuple[Worker, Listing]:
+        pool = self.get_pool(request.pool_id)
+        if pool.status != PoolStatus.ACTIVE:
+            raise ValueError("pool is not active")
+        if pool.hardware_type != request.hardware_type:
+            raise ValueError("worker hardware_type must match pool hardware_type")
+        now = utc_now()
+        provider_wallet = request.provider_wallet.strip().upper()
+        worker_id = normalize_worker_id(
+            request.worker_id
+            or "worker_"
+            + hash_json(
+                {
+                    "provider_id": request.provider_id.strip(),
+                    "provider_wallet": provider_wallet,
+                    "pool_id": pool.pool_id,
+                    "hardware_type": request.hardware_type.value,
+                }
+            )[:18]
+        )
+        listing_id = "listing_" + hash_json({"worker_id": worker_id, "pool_id": pool.pool_id})[:18]
+        try:
+            existing_listing = self.get_listing(listing_id)
+            listing_created_at = existing_listing.created_at
+        except KeyError:
+            listing_created_at = now
+        try:
+            existing_worker = self.get_worker(worker_id)
+            worker_created_at = existing_worker.created_at
+        except KeyError:
+            worker_created_at = now
+        reserved_units = self.reserved_units_for_listing(listing_id)
+        units_available = max(0, request.units_total - reserved_units)
+        listing = Listing(
+            listing_id=listing_id,
+            pool_id=pool.pool_id,
+            pair_symbol=pool.pair_symbol,
+            paired_coin=pool.paired_coin,
+            picoin_capacity_percent=pool.picoin_capacity_percent,
+            paired_capacity_percent=pool.paired_capacity_percent,
+            provider_id=request.provider_id.strip(),
+            provider_wallet=provider_wallet,
+            hardware_type=request.hardware_type,
+            title=(request.title or f"{request.provider_id.strip()} {pool.pair_symbol} worker").strip(),
+            units_total=request.units_total,
+            units_available=units_available,
+            price_pi_per_hour=round(float(request.price_pi_per_hour), 8),
+            min_booking_minutes=request.min_booking_minutes,
+            region=request.region,
+            capabilities=normalize_capabilities(request.capabilities),
+            cpu_threads=request.cpu_threads,
+            memory_gb=request.memory_gb,
+            gpu_model=request.gpu_model,
+            gpu_count=request.gpu_count,
+            gpu_vram_gb=request.gpu_vram_gb,
+            asic_algorithm=request.asic_algorithm,
+            asic_hashrate_th_s=request.asic_hashrate_th_s,
+            metadata={
+                **request.metadata,
+                "worker_id": worker_id,
+                "worker_status": WorkerStatus.ONLINE.value,
+            },
+            created_at=listing_created_at,
+            updated_at=now,
+        )
+        worker = Worker(
+            worker_id=worker_id,
+            listing_id=listing.listing_id,
+            provider_id=listing.provider_id,
+            pool_id=pool.pool_id,
+            hardware_type=request.hardware_type,
+            status=WorkerStatus.ONLINE,
+            endpoint_url=request.endpoint_url,
+            agent_version=request.agent_version,
+            last_seen_at=now,
+            metadata=request.metadata,
+            created_at=worker_created_at,
+            updated_at=now,
+        )
+        self.put_listing(listing)
+        self.put_worker(worker)
+        return worker, listing
+
+    def heartbeat_worker(self, worker_id: str, request: WorkerHeartbeatRequest) -> tuple[Worker, Listing]:
+        worker = self.get_worker(worker_id)
+        listing = self.get_listing(worker.listing_id)
+        now = utc_now()
+        worker.status = request.status
+        worker.last_seen_at = now
+        worker.updated_at = now
+        worker.metrics = request.metrics
+        if request.endpoint_url is not None:
+            worker.endpoint_url = request.endpoint_url
+        if request.agent_version is not None:
+            worker.agent_version = request.agent_version
+        if request.metadata:
+            worker.metadata = {**worker.metadata, **request.metadata}
+
+        units_total = request.units_total or listing.units_total
+        reserved_units = self.reserved_units_for_listing(listing.listing_id)
+        listing.units_total = units_total
+        if request.status == WorkerStatus.ONLINE:
+            reported_available = listing.units_available if request.units_available is None else request.units_available
+            listing.units_available = max(0, min(reported_available, units_total - reserved_units))
+            listing.status = ListingStatus.ACTIVE
+        else:
+            listing.units_available = 0
+            listing.status = ListingStatus.PAUSED
+        listing.metadata = {
+            **listing.metadata,
+            "worker_id": worker.worker_id,
+            "worker_status": worker.status.value,
+            "worker_last_seen_at": now.isoformat(),
+        }
+        listing.updated_at = now
+        self.put_listing(listing)
+        self.put_worker(worker)
+        return worker, listing
+
+    def get_worker(self, worker_id: str) -> Worker:
+        with self.storage.connect() as connection:
+            row = connection.execute("SELECT payload FROM workers WHERE worker_id = ?", (worker_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"worker not found: {worker_id}")
+        return Worker.model_validate(json.loads(row["payload"]))
+
+    def list_workers(
+        self,
+        *,
+        provider_id: str | None = None,
+        pool_id: str | None = None,
+        status: WorkerStatus | None = None,
+        limit: int = 100,
+    ) -> list[Worker]:
+        safe_limit = max(1, min(int(limit), 1000))
+        params: list[object] = []
+        query = "SELECT payload FROM workers"
+        clauses: list[str] = []
+        if provider_id:
+            clauses.append("provider_id = ?")
+            params.append(provider_id.strip())
+        if pool_id:
+            clauses.append("pool_id = ?")
+            params.append(pool_id)
+        if status:
+            clauses.append("status = ?")
+            params.append(status.value)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(safe_limit)
+        with self.storage.connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [Worker.model_validate(json.loads(row["payload"])) for row in rows]
+
+    def put_worker(self, worker: Worker) -> None:
+        with self.storage.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO workers (
+                    worker_id,
+                    listing_id,
+                    provider_id,
+                    pool_id,
+                    hardware_type,
+                    status,
+                    payload,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(worker_id) DO UPDATE SET
+                    listing_id = excluded.listing_id,
+                    provider_id = excluded.provider_id,
+                    pool_id = excluded.pool_id,
+                    hardware_type = excluded.hardware_type,
+                    status = excluded.status,
+                    payload = excluded.payload,
+                    updated_at = excluded.updated_at
+                """,
+                (
+                    worker.worker_id,
+                    worker.listing_id,
+                    worker.provider_id,
+                    worker.pool_id,
+                    worker.hardware_type.value,
+                    worker.status.value,
+                    worker.model_dump_json(),
+                    worker.updated_at.isoformat(),
+                ),
+            )
+
+    def reserved_units_for_listing(self, listing_id: str) -> int:
+        with self.storage.connect() as connection:
+            rows = connection.execute(
+                "SELECT payload FROM bookings WHERE listing_id = ? AND status IN (?, ?)",
+                (
+                    listing_id,
+                    BookingStatus.AWAITING_PAYMENT.value,
+                    BookingStatus.ACTIVE.value,
+                ),
+            ).fetchall()
+        return sum(Booking.model_validate(json.loads(row["payload"])).units for row in rows)
+
     def create_booking(self, request: BookingCreateRequest) -> tuple[Booking, PaymentOrder]:
         listing = self.select_listing(request)
         if request.duration_minutes < listing.min_booking_minutes:
@@ -1633,6 +1840,15 @@ def normalize_email(value: str) -> str:
     if "@" not in email:
         raise ValueError("email must contain @")
     return email
+
+
+def normalize_worker_id(value: str) -> str:
+    worker_id = value.strip()
+    if not worker_id:
+        raise ValueError("worker_id is required")
+    if not re.fullmatch(r"[A-Za-z0-9_.:-]{3,80}", worker_id):
+        raise ValueError("worker_id may contain letters, numbers, '.', '_', ':', or '-'")
+    return worker_id
 
 
 def normalize_chain_code(value: str) -> str:

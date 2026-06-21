@@ -208,6 +208,8 @@ def test_home_returns_operator_dashboard(tmp_path, monkeypatch):
     assert "Quick Order" in response.text
     assert "Create Pair Pool" in response.text
     assert "Publish Capacity" in response.text
+    assert "Worker Agents" in response.text
+    assert "Register worker" in response.text
     assert "Pay from confirmed balance" in response.text
     assert "Accounts & Deposits" in response.text
 
@@ -252,6 +254,90 @@ def test_pool_cards_show_availability_and_price(tmp_path, monkeypatch):
     assert card["estimated_one_hour_pi"] == 1.25
     assert card["can_book"] is True
     assert card["status"] == "available"
+
+
+def test_worker_registration_and_heartbeat_manage_capacity(tmp_path, monkeypatch):
+    monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("PICOIN_MARKETPLACE_SEED_DEFAULT_POOLS", "0")
+    client = TestClient(marketplace_api.api)
+
+    pool = client.post(
+        "/pools",
+        json={
+            "hardware_type": "gpu",
+            "paired_coin": "ravencoin",
+        },
+    ).json()
+
+    registered = client.post(
+        "/workers/register",
+        json={
+            "worker_id": "worker-gpu-1",
+            "provider_id": "provider-gpu-1",
+            "provider_wallet": "PI_PROVIDER_GPU",
+            "pool_id": pool["pool_id"],
+            "hardware_type": "gpu",
+            "title": "GPU worker node",
+            "units_total": 3,
+            "price_pi_per_hour": 2.0,
+            "gpu_model": "RTX 4090",
+            "gpu_count": 3,
+            "gpu_vram_gb": 24,
+            "agent_version": "0.1.0",
+        },
+    )
+
+    assert registered.status_code == 200
+    worker_payload = registered.json()
+    worker = worker_payload["worker"]
+    listing = worker_payload["listing"]
+    assert worker["worker_id"] == "worker-gpu-1"
+    assert worker["listing_id"] == listing["listing_id"]
+    assert listing["units_total"] == 3
+    assert listing["units_available"] == 3
+
+    booking = client.post(
+        "/bookings",
+        json={
+            "requester_wallet": "PI_CUSTOMER_WALLET",
+            "pool_id": pool["pool_id"],
+            "units": 2,
+            "duration_minutes": 60,
+        },
+    ).json()["booking"]
+
+    heartbeat = client.post(
+        "/workers/worker-gpu-1/heartbeat",
+        json={
+            "status": "online",
+            "units_total": 3,
+            "units_available": 3,
+            "metrics": {"temperature_c": 65},
+        },
+    ).json()
+    assert heartbeat["worker"]["metrics"] == {"temperature_c": 65}
+    assert heartbeat["listing"]["units_available"] == 1
+    assert heartbeat["listing"]["status"] == "active"
+
+    paused = client.post(
+        "/workers/worker-gpu-1/heartbeat",
+        json={"status": "paused", "units_total": 3, "units_available": 3},
+    ).json()
+    assert paused["worker"]["status"] == "paused"
+    assert paused["listing"]["status"] == "paused"
+    assert paused["listing"]["units_available"] == 0
+
+    listed_workers = client.get("/workers?provider_id=provider-gpu-1").json()
+    assert len(listed_workers) == 1
+    assert listed_workers[0]["worker_id"] == "worker-gpu-1"
+
+    client.post(f"/bookings/{booking['booking_id']}/release")
+    online = client.post(
+        "/workers/worker-gpu-1/heartbeat",
+        json={"status": "online", "units_total": 3, "units_available": 3},
+    ).json()
+    assert online["listing"]["status"] == "active"
+    assert online["listing"]["units_available"] == 3
 
 
 def test_booking_quote_does_not_reserve_capacity(tmp_path, monkeypatch):

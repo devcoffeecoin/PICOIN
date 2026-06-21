@@ -262,6 +262,10 @@ GET  /pools/{pool_id}
 POST /listings
 GET  /listings
 GET  /listings/{listing_id}
+POST /workers/register
+GET  /workers
+GET  /workers/{worker_id}
+POST /workers/{worker_id}/heartbeat
 POST /bookings/quote
 POST /bookings
 GET  /bookings
@@ -517,6 +521,60 @@ can_book
 
 This is the marketplace-facing layer for a NiceHash EasyMining-like flow:
 choose the pair, choose units and duration, then reserve and pay in PICO.
+
+## Worker Agents
+
+Providers can publish capacity manually with `/listings`, or run a worker agent
+that registers itself and keeps the listing alive through heartbeats.
+
+Register a GPU worker:
+
+```bash
+curl -sS -X POST http://127.0.0.1:9410/workers/register \
+  -H 'content-type: application/json' \
+  -d '{
+    "worker_id": "worker-gpu-1",
+    "provider_id": "provider-gpu-1",
+    "provider_wallet": "PI_PROVIDER_GPU",
+    "pool_id": "pool_FROM_THE_POOL_RESPONSE",
+    "hardware_type": "gpu",
+    "title": "GPU worker node",
+    "units_total": 3,
+    "price_pi_per_hour": 2.0,
+    "gpu_model": "RTX 4090",
+    "gpu_count": 3,
+    "gpu_vram_gb": 24,
+    "agent_version": "0.1.0"
+  }' | python -m json.tool
+```
+
+The response includes both the `worker` and its generated `listing`. The listing
+is what customers reserve from the marketplace.
+
+Send a heartbeat:
+
+```bash
+curl -sS -X POST http://127.0.0.1:9410/workers/worker-gpu-1/heartbeat \
+  -H 'content-type: application/json' \
+  -d '{
+    "status": "online",
+    "units_total": 3,
+    "units_available": 3,
+    "metrics": {
+      "temperature_c": 65,
+      "accepted_jobs": 12
+    }
+  }' | python -m json.tool
+```
+
+Heartbeat safety rules:
+
+```text
+status=online  -> listing can receive new reservations
+status=paused  -> listing is paused and units_available becomes 0
+status=offline -> listing is paused and units_available becomes 0
+reserved units cannot be overwritten by a heartbeat
+```
 
 ## Quote Before Booking
 
