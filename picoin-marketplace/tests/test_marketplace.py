@@ -345,6 +345,20 @@ def test_worker_registration_and_heartbeat_manage_capacity(tmp_path, monkeypatch
     assert assignments[0]["picoin_capacity_units"] == 0.2
     assert assignments[0]["paired_capacity_units"] == 1.8
 
+    settlement = client.post(f"/settlements/bookings/{booking['booking_id']}").json()
+    assert settlement["status"] == "accrued"
+    assert settlement["provider_id"] == "provider-gpu-1"
+    assert settlement["provider_wallet"] == "PI_PROVIDER_GPU"
+    assert settlement["gross_amount_base_units"] == "4000000"
+    assert settlement["fee_amount_base_units"] == "40000"
+    assert settlement["provider_amount_base_units"] == "3960000"
+    assert settlement["currency"] == "PICO"
+
+    duplicate_settlement = client.post(f"/settlements/bookings/{booking['booking_id']}").json()
+    assert duplicate_settlement["settlement_id"] == settlement["settlement_id"]
+    provider_settlements = client.get("/settlements?provider_id=provider-gpu-1").json()
+    assert len(provider_settlements) == 1
+
     client.post(f"/bookings/{booking['booking_id']}/release")
     online = client.post(
         "/workers/worker-gpu-1/heartbeat",

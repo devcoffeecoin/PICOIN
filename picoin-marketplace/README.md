@@ -127,6 +127,7 @@ PICOIN_MARKETPLACE_CONFIRMATIONS_REQUIRED=1
 PICOIN_MARKETPLACE_ETH_CONFIRMATIONS=12
 PICOIN_MARKETPLACE_ETH_PICO_RATE=1000
 PICOIN_MARKETPLACE_ETH_RPC_URLS=
+PICOIN_MARKETPLACE_FEE_PERCENT=1
 PICOIN_MARKETPLACE_PAYMENT_WINDOW_MINUTES=30
 PICOIN_MARKETPLACE_SEED_DEFAULT_POOLS=1
 PICOIN_MARKETPLACE_HOST=127.0.0.1
@@ -296,6 +297,9 @@ GET  /payments/{payment_id}
 POST /payments/{payment_id}/submit
 POST /payments/{payment_id}/pay-from-balance
 POST /bookings/{booking_id}/release
+POST /settlements/bookings/{booking_id}
+GET  /settlements
+GET  /settlements/{settlement_id}
 ```
 
 ## Accounts, Deposits, And Ledger
@@ -501,6 +505,37 @@ curl -sS -X POST http://127.0.0.1:9410/payments/PAYMENT_ID/pay-from-balance \
 
 The response activates the booking when the account has enough confirmed
 balance.
+
+## Provider Settlements
+
+After a booking payment is confirmed, the operator can accrue provider earnings:
+
+```bash
+curl -sS -X POST http://127.0.0.1:9410/settlements/bookings/BOOKING_ID \
+  | python -m json.tool
+```
+
+Settlements are idempotent by `booking_id`. Amounts are PICO-denominated:
+
+```text
+gross_amount_base_units
+fee_amount_base_units
+provider_amount_base_units
+currency=PICO
+```
+
+Set the marketplace fee:
+
+```bash
+PICOIN_MARKETPLACE_FEE_PERCENT=1
+```
+
+List provider settlements:
+
+```bash
+curl -sS "http://127.0.0.1:9410/settlements?provider_id=provider-gpu-1" \
+  | python -m json.tool
+```
 
 ## Example Pool
 

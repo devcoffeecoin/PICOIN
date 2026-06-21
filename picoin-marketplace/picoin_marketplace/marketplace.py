@@ -46,7 +46,9 @@ from .models import (
     PaymentSubmitRequest,
     PoolCard,
     PoolStatus,
+    ProviderSettlement,
     ScannerDepositCreateRequest,
+    SettlementStatus,
     TokenCreateRequest,
     TokenDefinition,
     Wallet,
@@ -1895,6 +1897,126 @@ class Marketplace:
         self.put_booking(booking)
         return booking
 
+    def settle_booking(self, booking_id: str) -> ProviderSettlement:
+        booking = self.get_booking(booking_id)
+        payment = self.get_payment(booking.payment_id)
+        if payment.status != PaymentStatus.CONFIRMED:
+            raise ValueError("booking payment is not confirmed")
+        if booking.status not in {BookingStatus.ACTIVE, BookingStatus.RELEASED}:
+            raise ValueError("booking is not active or released")
+        existing = self.get_settlement_by_booking(booking.booking_id)
+        if existing is not None:
+            return existing
+        gross_units = pi_amount_to_base_units(booking.amount_pi)
+        fee_percent = marketplace_fee_percent()
+        fee_units = int(
+            (Decimal(gross_units) * Decimal(str(fee_percent)) / Decimal("100")).to_integral_value(
+                rounding=ROUND_CEILING
+            )
+        )
+        provider_units = max(0, gross_units - fee_units)
+        now = utc_now()
+        settlement = ProviderSettlement(
+            settlement_id="settlement_" + hash_json({"booking_id": booking.booking_id})[:18],
+            booking_id=booking.booking_id,
+            payment_id=booking.payment_id,
+            provider_id=booking.provider_id,
+            provider_wallet=booking.provider_wallet,
+            listing_id=booking.listing_id,
+            pool_id=booking.pool_id,
+            pair_symbol=booking.pair_symbol,
+            gross_amount_pi=booking.amount_pi,
+            fee_percent=fee_percent,
+            fee_amount_pi=base_units_to_pi(fee_units),
+            provider_amount_pi=base_units_to_pi(provider_units),
+            gross_amount_base_units=str(gross_units),
+            fee_amount_base_units=str(fee_units),
+            provider_amount_base_units=str(provider_units),
+            created_at=now,
+            updated_at=now,
+            metadata={
+                "payment_chain_code": payment.payment_chain_code,
+                "payment_token_symbol": payment.payment_token_symbol,
+                "payment_amount_base_units": payment.amount_base_units,
+            },
+        )
+        self.put_settlement(settlement)
+        return settlement
+
+    def get_settlement(self, settlement_id: str) -> ProviderSettlement:
+        with self.storage.connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM provider_settlements WHERE settlement_id = ?",
+                (settlement_id,),
+            ).fetchone()
+        if row is None:
+            raise KeyError(f"settlement not found: {settlement_id}")
+        return ProviderSettlement.model_validate(json.loads(row["payload"]))
+
+    def get_settlement_by_booking(self, booking_id: str) -> ProviderSettlement | None:
+        with self.storage.connect() as connection:
+            row = connection.execute(
+                "SELECT payload FROM provider_settlements WHERE booking_id = ?",
+                (booking_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return ProviderSettlement.model_validate(json.loads(row["payload"]))
+
+    def list_settlements(
+        self,
+        *,
+        provider_id: str | None = None,
+        status: SettlementStatus | None = None,
+        limit: int = 100,
+    ) -> list[ProviderSettlement]:
+        safe_limit = max(1, min(int(limit), 1000))
+        query = "SELECT payload FROM provider_settlements"
+        clauses: list[str] = []
+        params: list[object] = []
+        if provider_id:
+            clauses.append("provider_id = ?")
+            params.append(provider_id.strip())
+        if status:
+            clauses.append("status = ?")
+            params.append(status.value)
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY updated_at DESC LIMIT ?"
+        params.append(safe_limit)
+        with self.storage.connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [ProviderSettlement.model_validate(json.loads(row["payload"])) for row in rows]
+
+    def put_settlement(self, settlement: ProviderSettlement) -> None:
+        with self.storage.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO provider_settlements (
+                    settlement_id,
+                    booking_id,
+                    payment_id,
+                    provider_id,
+                    provider_wallet,
+                    status,
+                    payload,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(booking_id) DO NOTHING
+                """,
+                (
+                    settlement.settlement_id,
+                    settlement.booking_id,
+                    settlement.payment_id,
+                    settlement.provider_id,
+                    settlement.provider_wallet,
+                    settlement.status.value,
+                    settlement.model_dump_json(),
+                    settlement.updated_at.isoformat(),
+                ),
+            )
+
     def summary(self) -> MarketplaceSummary:
         pools = self.list_pools(active_only=False, limit=1000)
         listings = self.list_listings(active_only=False, limit=1000)
@@ -2318,6 +2440,14 @@ def format_base_units(amount_base_units: int, decimals: int) -> str:
     return format(amount.normalize(), "f")
 
 
+def pi_amount_to_base_units(amount_pi: float) -> int:
+    return int((Decimal(str(amount_pi)) * Decimal(1_000_000)).to_integral_value(rounding=ROUND_CEILING))
+
+
+def base_units_to_pi(amount_base_units: int) -> float:
+    return float(Decimal(int(amount_base_units)) / Decimal(1_000_000))
+
+
 def quote_for_listing(listing: Listing, units: int, duration_minutes: int) -> BookingQuote:
     amount_pi = compute_amount_pi(listing.price_pi_per_hour, units, duration_minutes)
     picoin_units = round(units * (listing.picoin_capacity_percent / 100.0), 8)
@@ -2352,6 +2482,14 @@ def marketplace_confirmations_required() -> int:
     except ValueError:
         return DEFAULT_CONFIRMATIONS_REQUIRED
     return max(1, value)
+
+
+def marketplace_fee_percent() -> float:
+    try:
+        value = float(os.getenv("PICOIN_MARKETPLACE_FEE_PERCENT", "1"))
+    except ValueError:
+        value = 1.0
+    return max(0.0, min(value, 100.0))
 
 
 def booking_payment_window() -> timedelta:

@@ -112,6 +112,23 @@ class MarketplaceStorage:
                 CREATE INDEX IF NOT EXISTS idx_payments_tx_hash
                     ON payments(tx_hash);
 
+                CREATE TABLE IF NOT EXISTS provider_settlements (
+                    settlement_id TEXT PRIMARY KEY,
+                    booking_id TEXT NOT NULL UNIQUE,
+                    payment_id TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    provider_wallet TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    updated_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_provider_settlements_provider
+                    ON provider_settlements(provider_id, status, updated_at);
+
+                CREATE INDEX IF NOT EXISTS idx_provider_settlements_payment
+                    ON provider_settlements(payment_id, updated_at);
+
                 CREATE TABLE IF NOT EXISTS accounts (
                     account_id TEXT PRIMARY KEY,
                     email TEXT NOT NULL UNIQUE,

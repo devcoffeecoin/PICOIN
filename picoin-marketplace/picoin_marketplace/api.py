@@ -25,6 +25,7 @@ from .models import (
     PicoinHistoryImportRequest,
     PicoinNodePollRequest,
     ScannerDepositCreateRequest,
+    SettlementStatus,
     TokenCreateRequest,
     WalletCreateRequest,
     WorkerHeartbeatRequest,
@@ -1403,6 +1404,40 @@ def pay_from_balance_api(payment_id: str, payload: PayFromBalanceRequest) -> dic
 def release_booking_api(booking_id: str) -> dict:
     try:
         return marketplace().release_booking(booking_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@api.post("/settlements/bookings/{booking_id}")
+def settle_booking_api(booking_id: str) -> dict:
+    try:
+        return marketplace().settle_booking(booking_id).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@api.get("/settlements")
+def settlements_api(
+    provider_id: str | None = None,
+    status: SettlementStatus | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    return [
+        settlement.model_dump(mode="json")
+        for settlement in marketplace().list_settlements(
+            provider_id=provider_id,
+            status=status,
+            limit=limit,
+        )
+    ]
+
+
+@api.get("/settlements/{settlement_id}")
+def settlement_api(settlement_id: str) -> dict:
+    try:
+        return marketplace().get_settlement(settlement_id).model_dump(mode="json")
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 

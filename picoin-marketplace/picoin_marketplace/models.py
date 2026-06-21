@@ -47,6 +47,12 @@ class PaymentStatus(str, Enum):
     REJECTED = "rejected"
 
 
+class SettlementStatus(str, Enum):
+    ACCRUED = "accrued"
+    PAID = "paid"
+    CANCELED = "canceled"
+
+
 class PoolStatus(str, Enum):
     ACTIVE = "active"
     PAUSED = "paused"
@@ -502,6 +508,29 @@ class WorkerAssignment(BaseModel):
     expires_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class ProviderSettlement(BaseModel):
+    settlement_id: str
+    booking_id: str
+    payment_id: str
+    provider_id: str
+    provider_wallet: str
+    listing_id: str
+    pool_id: str
+    pair_symbol: str
+    gross_amount_pi: float
+    fee_percent: float
+    fee_amount_pi: float
+    provider_amount_pi: float
+    gross_amount_base_units: str
+    fee_amount_base_units: str
+    provider_amount_base_units: str
+    currency: str = PICO_CURRENCY
+    status: SettlementStatus = SettlementStatus.ACCRUED
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
