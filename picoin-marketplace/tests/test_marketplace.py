@@ -459,3 +459,91 @@ def test_ethereum_token_deposit_can_pay_marketplace_booking(tmp_path, monkeypatc
     assert paid["booking"]["status"] == "active"
     assert paid["payment"]["currency"] == "ETH"
     assert paid["ledger_entry"]["amount_base_units"] == "3141600000000000"
+
+
+def test_picoin_history_import_scans_confirmed_deposits(tmp_path, monkeypatch):
+    monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("PICOIN_MARKETPLACE_CONFIRMATIONS_REQUIRED", "2")
+    monkeypatch.setenv("PICOIN_MARKETPLACE_SEED_DEFAULT_POOLS", "0")
+    client = TestClient(marketplace_api.api)
+
+    account = client.post("/accounts", json={"email": "scan@example.com"}).json()
+    wallet = client.post(
+        f"/accounts/{account['account_id']}/wallets",
+        json={"chain_code": "picoin", "address": "PI_SCAN_WALLET"},
+    ).json()
+    client.post(f"/wallets/{wallet['wallet_id']}/verify")
+
+    history_row = {
+        "tx_hash": "1234567890abcdef1234567890abcdef",
+        "sender": "PI_SCAN_WALLET",
+        "recipient": "PI_MARKETPLACE_ESCROW",
+        "amount": "2.500000",
+        "status": "confirmed",
+        "block_height": 500,
+    }
+    payload = {
+        "rows": [
+            history_row,
+            {**history_row, "tx_hash": "noheight", "block_height": 0},
+            {**history_row, "recipient": "PI_OTHER_ESCROW", "tx_hash": "abcdef1234567890abcdef1234567890"},
+        ],
+        "latest_block_number": 501,
+    }
+
+    imported = client.post("/scanner/picoin/import-history", json=payload).json()
+
+    assert imported["rows_seen"] == 3
+    assert imported["imported"] == 1
+    assert imported["skipped"] == 2
+    assert imported["confirmation_result"]["credited"] == 1
+
+    duplicate = client.post("/scanner/picoin/import-history", json=payload).json()
+    assert duplicate["imported"] == 1
+    assert duplicate["confirmation_result"]["credited"] == 0
+
+    balances = client.get(f"/accounts/{account['account_id']}/balances").json()
+    pico_balance = next(row for row in balances if row["token_symbol"] == "PICO")
+    assert pico_balance["available_base_units"] == "2500000"
+
+
+def test_picoin_node_poll_uses_history_endpoint(tmp_path, monkeypatch):
+    monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("PICOIN_MARKETPLACE_CONFIRMATIONS_REQUIRED", "1")
+    monkeypatch.setenv("PICOIN_MARKETPLACE_SEED_DEFAULT_POOLS", "0")
+    client = TestClient(marketplace_api.api)
+
+    account = client.post("/accounts", json={"email": "poll@example.com"}).json()
+    wallet = client.post(
+        f"/accounts/{account['account_id']}/wallets",
+        json={"chain_code": "picoin", "address": "PI_POLL_WALLET"},
+    ).json()
+    client.post(f"/wallets/{wallet['wallet_id']}/verify")
+
+    seen_urls = []
+
+    def fake_fetch(url):
+        seen_urls.append(url)
+        return [
+            {
+                "tx_hash": "abcdefabcdefabcdefabcdefabcdef12",
+                "sender": "PI_POLL_WALLET",
+                "recipient": "PI_MARKETPLACE_ESCROW",
+                "amount_units": 9000000,
+                "status": "confirmed",
+                "block_height": 700,
+            }
+        ]
+
+    monkeypatch.setattr("picoin_marketplace.marketplace.fetch_json_url", fake_fetch)
+
+    result = client.post(
+        "/scanner/picoin/poll",
+        json={"node_url": "http://node.local:8000", "limit": 25},
+    ).json()
+
+    assert result["imported"] == 1
+    assert result["confirmation_result"]["credited"] == 1
+    assert seen_urls
+    assert "http://node.local:8000/transactions/history" in seen_urls[0]
+    assert "address=PI_MARKETPLACE_ESCROW" in seen_urls[0]

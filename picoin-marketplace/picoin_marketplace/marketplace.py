@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 import os
 import re
+import urllib.parse
+import urllib.request
 from datetime import timedelta
 from decimal import Decimal, ROUND_CEILING
 from pathlib import Path
@@ -22,6 +24,8 @@ from .models import (
     LedgerEntry,
     PICO_CURRENCY,
     PayFromBalanceRequest,
+    PicoinHistoryImportRequest,
+    PicoinNodePollRequest,
     Booking,
     BookingCreateRequest,
     BookingQuote,
@@ -52,6 +56,7 @@ from .storage import MarketplaceStorage
 
 DEFAULT_STATE_DIR = Path(os.getenv("PICOIN_MARKETPLACE_STATE_DIR", ".picoin-marketplace-state"))
 DEFAULT_ESCROW_ADDRESS = os.getenv("PICOIN_MARKETPLACE_ESCROW_ADDRESS", "PI_MARKETPLACE_ESCROW")
+DEFAULT_PICOIN_NODE_URL = os.getenv("PICOIN_MARKETPLACE_PICOIN_NODE_URL", "http://127.0.0.1:8000")
 DEFAULT_EVM_ESCROW_ADDRESS = os.getenv(
     "PICOIN_MARKETPLACE_EVM_ESCROW_ADDRESS",
     "0x0000000000000000000000000000000000000000",
@@ -584,6 +589,70 @@ class Marketplace:
             "processed": processed,
             "credited": credited,
         }
+
+    def import_picoin_history(self, request: PicoinHistoryImportRequest) -> dict:
+        chain = self.get_chain("picoin")
+        token = self.get_token(chain.chain_code, PICO_CURRENCY)
+        imported = 0
+        skipped = 0
+        errors: list[dict[str, object]] = []
+        deposits: list[Deposit] = []
+        for index, row in enumerate(request.rows):
+            try:
+                deposit_request = picoin_history_row_to_deposit_request(row, chain.deposit_address)
+                if deposit_request is None:
+                    skipped += 1
+                    continue
+                if deposit_request.chain_code != chain.chain_code or deposit_request.token_symbol != token.token_symbol:
+                    skipped += 1
+                    continue
+                deposit = self.accept_deposit(deposit_request)
+                deposits.append(deposit)
+                imported += 1
+            except (KeyError, ValueError) as exc:
+                skipped += 1
+                errors.append({"row": index, "error": str(exc)})
+        confirmation_result = None
+        if request.latest_block_number:
+            confirmation_result = self.process_confirmations(
+                chain.chain_code,
+                ConfirmationProcessRequest(latest_block_number=request.latest_block_number),
+            )
+        return {
+            "chain_code": chain.chain_code,
+            "rows_seen": len(request.rows),
+            "imported": imported,
+            "skipped": skipped,
+            "errors": errors,
+            "confirmation_result": confirmation_result,
+            "deposits": [deposit.model_dump(mode="json") for deposit in deposits],
+        }
+
+    def poll_picoin_node(self, request: PicoinNodePollRequest) -> dict:
+        chain = self.get_chain("picoin")
+        address = normalize_address(chain.family, request.address or chain.deposit_address or marketplace_escrow_address())
+        node_url = (request.node_url or os.getenv("PICOIN_MARKETPLACE_PICOIN_NODE_URL", DEFAULT_PICOIN_NODE_URL)).rstrip("/")
+        params = urllib.parse.urlencode(
+            {
+                "address": address,
+                "limit": request.limit,
+                "confirmed_only": str(request.confirmed_only).lower(),
+                "backfill": "true",
+            }
+        )
+        url = f"{node_url}/transactions/history?{params}"
+        rows = fetch_json_url(url)
+        if not isinstance(rows, list):
+            raise ValueError("Picoin node history endpoint did not return a list")
+        result = self.import_picoin_history(
+            PicoinHistoryImportRequest(
+                rows=rows,
+                latest_block_number=request.latest_block_number or latest_block_height_from_history(rows),
+            )
+        )
+        result["node_url"] = node_url
+        result["history_address"] = address
+        return result
 
     def put_deposit(self, deposit: Deposit) -> None:
         with self.storage.connect() as connection:
@@ -1431,6 +1500,77 @@ def deposits_match(left: Deposit, right: Deposit) -> bool:
         and left.block_number == right.block_number
         and left.log_index == right.log_index
     )
+
+
+def picoin_history_row_to_deposit_request(
+    row: dict[str, object],
+    deposit_address: str | None,
+) -> ScannerDepositCreateRequest | None:
+    tx_hash = first_text(row, "tx_hash", "hash", "transaction_hash", "related_id")
+    sender = first_text(row, "sender", "from_address", "from")
+    recipient = first_text(row, "recipient", "to_address", "to")
+    status = first_text(row, "status")
+    block_height = first_int(row, "block_height", "height", "confirmed_block_height")
+    log_index = first_int(row, "log_index", "output_index", "index") or 0
+    amount_units = first_int(row, "amount_units", "amount_base_units")
+    if amount_units is None:
+        amount_text = first_text(row, "amount")
+        if amount_text:
+            amount_units = int((Decimal(amount_text) * Decimal(1_000_000)).to_integral_value())
+    if not tx_hash or not sender or not recipient or not amount_units or not block_height:
+        return None
+    if block_height <= 0:
+        return None
+    if status and status.lower() not in {"confirmed", "credited"}:
+        return None
+    if deposit_address and recipient.upper() != deposit_address.upper():
+        return None
+    return ScannerDepositCreateRequest(
+        chain_code="picoin",
+        token_symbol=PICO_CURRENCY,
+        from_address=sender,
+        to_address=recipient,
+        amount_base_units=str(amount_units),
+        tx_hash=tx_hash,
+        block_number=block_height,
+        block_hash=first_text(row, "block_hash"),
+        log_index=log_index,
+        status=DepositStatus.DETECTED,
+    )
+
+
+def latest_block_height_from_history(rows: list[dict[str, object]]) -> int | None:
+    heights = [height for row in rows if (height := first_int(row, "block_height", "height"))]
+    return max(heights) if heights else None
+
+
+def first_text(row: dict[str, object], *keys: str) -> str | None:
+    for key in keys:
+        value = row.get(key)
+        if value is None:
+            continue
+        text = str(value).strip()
+        if text:
+            return text
+    return None
+
+
+def first_int(row: dict[str, object], *keys: str) -> int | None:
+    for key in keys:
+        value = row.get(key)
+        if value is None or value == "":
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def fetch_json_url(url: str) -> object:
+    timeout = float(os.getenv("PICOIN_MARKETPLACE_HTTP_TIMEOUT_SECONDS", "30"))
+    with urllib.request.urlopen(url, timeout=timeout) as response:
+        return json.loads(response.read().decode("utf-8"))
 
 
 def split_env_list(name: str) -> list[str]:

@@ -184,6 +184,19 @@ class ConfirmationProcessRequest(BaseModel):
     latest_block_number: int = Field(gt=0)
 
 
+class PicoinHistoryImportRequest(BaseModel):
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+    latest_block_number: int | None = Field(default=None, gt=0)
+
+
+class PicoinNodePollRequest(BaseModel):
+    node_url: str | None = Field(default=None, max_length=240)
+    address: str | None = Field(default=None, max_length=128)
+    limit: int = Field(default=50, ge=1, le=500)
+    confirmed_only: bool = True
+    latest_block_number: int | None = Field(default=None, gt=0)
+
+
 class LedgerEntry(BaseModel):
     entry_id: str
     account_id: str

@@ -19,6 +19,8 @@ from .models import (
     MiningPoolCreateRequest,
     PayFromBalanceRequest,
     PaymentSubmitRequest,
+    PicoinHistoryImportRequest,
+    PicoinNodePollRequest,
     ScannerDepositCreateRequest,
     TokenCreateRequest,
     WalletCreateRequest,
@@ -149,6 +151,21 @@ def process_confirmations_api(chain_code: str, payload: ConfirmationProcessReque
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@api.post("/scanner/picoin/import-history")
+def import_picoin_history_api(payload: PicoinHistoryImportRequest) -> dict:
+    return marketplace().import_picoin_history(payload)
+
+
+@api.post("/scanner/picoin/poll")
+def poll_picoin_node_api(payload: PicoinNodePollRequest) -> dict:
+    try:
+        return marketplace().poll_picoin_node(payload)
+    except (KeyError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except OSError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @api.get("/deposits")

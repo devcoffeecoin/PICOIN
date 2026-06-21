@@ -151,6 +151,8 @@ GET  /tokens
 GET  /scanner/{chain_code}/config
 POST /scanner/deposits
 POST /scanner/{chain_code}/confirmations/process
+POST /scanner/picoin/import-history
+POST /scanner/picoin/poll
 GET  /deposits
 GET  /ledger
 GET  /accounts/{account_id}/balances
@@ -249,6 +251,39 @@ curl -sS -X POST http://127.0.0.1:9410/scanner/picoin/confirmations/process \
   -H 'content-type: application/json' \
   -d '{"latest_block_number": 102}' | python -m json.tool
 ```
+
+### Poll A Picoin Node
+
+The marketplace can poll a Picoin node history endpoint directly:
+
+```bash
+curl -sS -X POST http://127.0.0.1:9410/scanner/picoin/poll \
+  -H 'content-type: application/json' \
+  -d '{
+    "node_url": "http://127.0.0.1:8000",
+    "limit": 50,
+    "confirmed_only": true
+  }' | python -m json.tool
+```
+
+The scanner calls:
+
+```text
+/transactions/history?address=PI_MARKETPLACE_ESCROW&limit=50&confirmed_only=true&backfill=true
+```
+
+Then it imports only valid confirmed incoming deposits:
+
+```text
+recipient = marketplace Picoin escrow address
+block_height > 0
+status = confirmed
+sender = a verified account wallet
+tx_hash = present
+```
+
+Repeated rows are safe because deposits are idempotent by
+`chain_code + tx_hash + log_index`.
 
 Check balances:
 
