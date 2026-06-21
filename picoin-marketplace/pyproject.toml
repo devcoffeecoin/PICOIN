@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "picoin-marketplace"
+version = "0.1.0"
+description = "Marketplace app for renting CPU, GPU, and ASIC capacity paid only with Picoin."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.110",
+  "pydantic>=2",
+  "uvicorn>=0.29",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8"]
+
+[project.scripts]
+picoin-marketplace = "picoin_marketplace.api:main"
+
+[tool.setuptools.packages.find]
+include = ["picoin_marketplace*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

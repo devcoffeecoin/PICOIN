@@ -1,0 +1,5 @@
+.picoin-marketplace-state/
+.pytest_cache/
+.pytest_tmp*/
+__pycache__/
+*.pyc

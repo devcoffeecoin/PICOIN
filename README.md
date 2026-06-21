@@ -1,5 +1,9 @@
 # PICOIN
 
+## Applications
+
+- `picoin-marketplace`: standalone app for `marketplace.picoin.science`, with CPU/GPU/ASIC paired mining pools such as `PICO/MONERO`, `PICO/DOGE`, `PICO/RAVENCOIN`, and `PICO/LITECOIN`; marketplace capacity is priced in Picoin and can be paid with PICO or approved Ethereum tokens.
+
 Official mainnet and node operator guide.
 
 Picoin is a useful-compute blockchain protocol based on Proof of Pi. Miners compute deterministic hexadecimal ranges of pi, validators independently verify the work, accepted jobs settle into blocks, and protocol accounting records wallet balances, validator rewards, the Science Compute Reserve, and the Scientific Development Treasury.
