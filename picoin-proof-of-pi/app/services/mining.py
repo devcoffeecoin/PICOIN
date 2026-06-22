@@ -181,6 +181,7 @@ _PARTICIPANT_LIVENESS_LAST_RUN_MONOTONIC = 0.0
 _EXPIRED_TASK_CLEANUP_LOCK = threading.Lock()
 _EXPIRED_TASK_CLEANUP_LAST_RUN_MONOTONIC = 0.0
 _STATUS_ENDPOINT_CACHE_LOCK = threading.Lock()
+_STATUS_ENDPOINT_BUILD_LOCK = threading.Lock()
 _STATUS_ENDPOINT_CACHE: dict[str, tuple[float, dict[str, Any]]] = {}
 
 
@@ -227,11 +228,36 @@ def _status_cache_set(key: str, payload: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
+def _status_cache_get_stale(key: str) -> dict[str, Any] | None:
+    with _STATUS_ENDPOINT_CACHE_LOCK:
+        cached = _STATUS_ENDPOINT_CACHE.get(key)
+        if cached is None:
+            return None
+        return cached[1]
+
+
 def _cached_status_payload(key: str, ttl_seconds: int, builder: Any) -> dict[str, Any]:
     cached = _status_cache_get(key, ttl_seconds)
     if cached is not None:
         return cached
-    return _status_cache_set(key, builder())
+    if not _STATUS_ENDPOINT_BUILD_LOCK.acquire(blocking=False):
+        stale = _status_cache_get_stale(key)
+        if stale is not None:
+            payload = dict(stale)
+            payload["cache_stale"] = True
+            return payload
+        with _STATUS_ENDPOINT_BUILD_LOCK:
+            cached = _status_cache_get(key, ttl_seconds)
+            if cached is not None:
+                return cached
+            return _status_cache_set(key, builder())
+    try:
+        cached = _status_cache_get(key, ttl_seconds)
+        if cached is not None:
+            return cached
+        return _status_cache_set(key, builder())
+    finally:
+        _STATUS_ENDPOINT_BUILD_LOCK.release()
 
 
 def _task_expiration_seconds_for_position(params: dict[str, Any], position: int | None) -> int:
@@ -479,6 +505,23 @@ def enrich_validator(validator: dict[str, Any] | None, connection: Any | None = 
         selection = _validator_selection_metrics(connection, validator)
     validator.update(selection)
     return validator
+
+
+def validator_status_payload(validator: dict[str, Any]) -> dict[str, Any]:
+    completed_jobs = int(validator["accepted_jobs"]) + int(validator["rejected_jobs"])
+    total_validation_ms = int(validator.get("total_validation_ms") or 0)
+    payload = dict(validator)
+    payload["completed_jobs"] = completed_jobs
+    payload["avg_validation_ms"] = round(total_validation_ms / completed_jobs, 2) if completed_jobs else 0.0
+    payload["is_banned"] = bool(payload["is_banned"])
+    payload["enabled"] = bool(payload.get("enabled", 1))
+    payload["online_status"] = payload.get("online_status") or "offline"
+    payload["sync_status"] = payload.get("sync_status") or "unknown"
+    payload["eligibility_stake"] = round(_validator_eligibility_stake(payload), 8)
+    payload["eligibility_stake_source"] = VALIDATOR_ELIGIBILITY_STAKE_SOURCE
+    payload["eligible"] = _validator_row_is_eligible(payload)
+    payload["reason_if_not_eligible"] = None if payload["eligible"] else _validator_reason_if_not_eligible(payload)
+    return payload
 
 
 def enrich_miner(miner: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -2164,7 +2207,6 @@ def get_validators_status(limit: int = 500) -> dict[str, Any]:
 
     def build() -> dict[str, Any]:
         with get_connection() as connection:
-            _maybe_expire_assigned_tasks(connection)
             rows = connection.execute(
                 """
                 SELECT *
@@ -2182,7 +2224,7 @@ def get_validators_status(limit: int = 500) -> dict[str, Any]:
                 """,
                 (limit,),
             ).fetchall()
-            validators = [enrich_validator(row_to_dict(row), connection) for row in rows]
+            validators = [validator_status_payload(row_to_dict(row)) for row in rows]
             counts = connection.execute(
                 """
                 SELECT
