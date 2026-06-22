@@ -228,6 +228,39 @@ def account_balances_api(account_id: str) -> list[dict]:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
+@api.get("/accounts/{account_id}/dashboard")
+def account_dashboard_api(account_id: str, deposit_limit: int = 25) -> dict:
+    try:
+        app = marketplace()
+        chains = app.list_chains(enabled_only=True)
+        return {
+            "account": app.get_account(account_id).model_dump(mode="json"),
+            "wallets": [wallet.model_dump(mode="json") for wallet in app.list_wallets(account_id=account_id)],
+            "balances": [balance.model_dump(mode="json") for balance in app.account_balances(account_id)],
+            "deposits": [
+                deposit.model_dump(mode="json")
+                for deposit in app.list_deposits(account_id=account_id, limit=deposit_limit)
+            ],
+            "deposit_addresses": [
+                {
+                    "chain_code": chain.chain_code,
+                    "display_name": chain.display_name,
+                    "deposit_address": chain.deposit_address,
+                    "confirmations_required": chain.confirmations_required,
+                }
+                for chain in chains
+                if chain.deposit_address
+            ],
+            "accepted_tokens": [
+                token.model_dump(mode="json")
+                for token in app.list_tokens(enabled_only=True)
+                if token.token_symbol in {"PICOIN", "USDT", "USDC"}
+            ],
+        }
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
 @api.get("/", response_class=HTMLResponse)
 def home() -> str:
     return f"""<!doctype html>
@@ -464,6 +497,50 @@ def home() -> str:
       font-size: .84rem;
     }}
     .balance-line:last-child {{ border-bottom: 0; }}
+    .dashboard-grid {{
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }}
+    .dashboard-box {{
+      border: 1px solid #e3e8ec;
+      background: #f8fafb;
+      border-radius: 8px;
+      padding: 9px;
+      min-height: 72px;
+      overflow-wrap: anywhere;
+    }}
+    .dashboard-box span {{
+      display: block;
+      color: var(--muted);
+      font-size: .72rem;
+      margin-bottom: 5px;
+    }}
+    .dashboard-box strong, .dashboard-box code {{
+      font-size: .83rem;
+    }}
+    .token-rail {{
+      display: flex;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }}
+    .deposit-list {{
+      display: grid;
+      gap: 6px;
+      margin-top: 8px;
+    }}
+    .deposit-line {{
+      border: 1px solid #e3e8ec;
+      border-radius: 7px;
+      padding: 8px;
+      display: grid;
+      gap: 4px;
+      font-size: .79rem;
+      background: #fff;
+      overflow-wrap: anywhere;
+    }}
     .empty-state {{
       border: 1px dashed #b8c4cc;
       border-radius: 8px;
@@ -544,7 +621,7 @@ def home() -> str:
   <header>
     <h1>Picoin Marketplace</h1>
     <div class="toolbar">
-      <span class="pill">Picoin + Ethereum tokens</span>
+      <span class="pill">PICOIN / USDT / USDC</span>
       <span class="pill blue">CPU / GPU / ASIC</span>
       <span class="status">marketplace.picoin.science</span>
     </div>
@@ -596,8 +673,8 @@ def home() -> str:
     <div class="side-column">
       <section class="account-section">
         <div class="section-head">
-          <h2>User Registration & Wallets</h2>
-          <span class="pill blue">create account first</span>
+          <h2>User Dashboard</h2>
+          <span class="pill blue">scanner deposits</span>
         </div>
         <form id="account-form">
           <label class="span-2">Email
@@ -608,6 +685,13 @@ def home() -> str:
           </label>
           <button class="span-2 secondary" type="submit">Create account</button>
         </form>
+        <div class="quote-box">
+          <div class="quote-row"><span>Account</span><strong id="dashboard-account-label">Not selected</strong></div>
+          <label class="span-2">Active Account ID
+            <input id="dashboard-account-id" placeholder="acct_...">
+          </label>
+          <button id="refresh-dashboard-button" class="light" type="button">Refresh dashboard</button>
+        </div>
         <form id="wallet-form" style="margin-top:10px">
           <label class="span-2">Account ID
             <input name="account_id" id="wallet-account-id" placeholder="acct_..." required>
@@ -623,36 +707,24 @@ def home() -> str:
           </label>
           <button class="span-2 light" type="submit">Register and verify wallet</button>
         </form>
-        <form id="deposit-form" style="margin-top:10px">
-          <label>Chain
-            <select name="chain_code">
-              <option value="picoin">Picoin</option>
-              <option value="ethereum">Ethereum</option>
-            </select>
-          </label>
-          <label>Token
-            <select name="token_symbol">
-              <option value="PICOIN">PICOIN</option>
-              <option value="ETH">ETH</option>
-            </select>
-          </label>
-          <label class="span-2">From verified wallet
-            <input name="from_address" value="PI_CUSTOMER_WALLET" required>
-          </label>
-          <label class="span-2">To marketplace deposit address
-            <input name="to_address" id="deposit-to-address" value="PI_MARKETPLACE_ESCROW" required>
-          </label>
-          <label>Amount base units
-            <input name="amount_base_units" value="10000000" required>
-          </label>
-          <label>Block
-            <input name="block_number" type="number" value="100" required>
-          </label>
-          <label class="span-2">Transaction hash
-            <input name="tx_hash" value="abcdef1234567890abcdef1234567890" required>
-          </label>
-          <button class="span-2" type="submit">Record deposit and confirm</button>
-        </form>
+        <div class="dashboard-grid" id="deposit-address-grid">
+          <div class="dashboard-box span-2"><span>Deposit addresses</span><strong>Create or select an account.</strong></div>
+        </div>
+        <div class="token-rail" id="accepted-token-rail">
+          <span class="pill">PICOIN</span><span class="pill blue">USDT</span><span class="pill blue">USDC</span>
+        </div>
+        <div class="quote-box">
+          <div class="quote-row"><span>Scanner worker</span><strong id="scanner-status-label">Waiting for account</strong></div>
+          <div class="muted">Deposits are credited automatically after the scanner sees enough confirmations.</div>
+        </div>
+        <div class="quote-box">
+          <div class="quote-row"><span>Balances</span><button id="dashboard-balances-button" class="light" type="button">Refresh</button></div>
+          <div class="balance-list" id="dashboard-balance-list"><span class="muted">No account selected.</span></div>
+        </div>
+        <div class="quote-box">
+          <div class="quote-row"><span>Recent deposits</span><span class="muted" id="deposit-count-label">0</span></div>
+          <div class="deposit-list" id="deposit-list"><span class="muted">No deposits yet.</span></div>
+        </div>
         <pre id="account-output"></pre>
       </section>
       <section>
@@ -684,7 +756,8 @@ def home() -> str:
           <label>Payment token
             <select name="payment_token_symbol">
               <option value="PICOIN">PICOIN</option>
-              <option value="ETH">ETH</option>
+              <option value="USDT">USDT</option>
+              <option value="USDC">USDC</option>
             </select>
           </label>
           <label>Units
@@ -864,8 +937,31 @@ def home() -> str:
       document.getElementById('quote-pico').textContent = payload ? `${{fmtPi(payload.picoin_capacity_units)}} units` : '-';
       document.getElementById('quote-paired').textContent = payload ? `${{fmtPi(payload.paired_capacity_units)}} units` : '-';
     }}
-    function renderBalances(rows) {{
-      const target = document.getElementById('balance-list');
+    function paymentChainForToken(symbol) {{
+      return symbol === 'PICOIN' ? 'picoin' : 'ethereum';
+    }}
+    function syncPaymentChain() {{
+      const token = document.querySelector('#booking-form [name="payment_token_symbol"]').value;
+      document.querySelector('#booking-form [name="payment_chain_code"]').value = paymentChainForToken(token);
+    }}
+    function normalizeBookingPayment(payload) {{
+      if (payload.payment_token_symbol) payload.payment_chain_code = paymentChainForToken(payload.payment_token_symbol);
+      return payload;
+    }}
+    function activeAccountId() {{
+      return document.getElementById('dashboard-account-id').value.trim()
+        || document.getElementById('booking-account-id').value.trim()
+        || document.getElementById('wallet-account-id').value.trim();
+    }}
+    function syncAccountInputs(accountId) {{
+      if (!accountId) return;
+      document.getElementById('dashboard-account-id').value = accountId;
+      document.getElementById('wallet-account-id').value = accountId;
+      document.getElementById('booking-account-id').value = accountId;
+    }}
+    function renderBalanceRows(rows, targetId) {{
+      const target = document.getElementById(targetId);
+      if (!target) return;
       if (!rows || !rows.length) {{
         target.innerHTML = '<span class="muted">No balances yet.</span>';
         return;
@@ -877,23 +973,95 @@ def home() -> str:
         </div>
       `).join('');
     }}
+    function renderBalances(rows) {{
+      renderBalanceRows(rows, 'balance-list');
+      renderBalanceRows(rows, 'dashboard-balance-list');
+    }}
+    function renderDepositAddresses(rows) {{
+      const target = document.getElementById('deposit-address-grid');
+      if (!rows || !rows.length) {{
+        target.innerHTML = '<div class="dashboard-box span-2"><span>Deposit addresses</span><strong>No active deposit rails.</strong></div>';
+        return;
+      }}
+      target.innerHTML = rows.map(row => `
+        <div class="dashboard-box">
+          <span>${{row.display_name}} · ${{row.confirmations_required}} confirmations</span>
+          <code>${{row.deposit_address}}</code>
+        </div>
+      `).join('');
+    }}
+    function renderAcceptedTokens(rows) {{
+      const target = document.getElementById('accepted-token-rail');
+      const tokens = rows && rows.length ? rows : [
+        {{token_symbol:'PICOIN', chain_code:'picoin'}},
+        {{token_symbol:'USDT', chain_code:'ethereum'}},
+        {{token_symbol:'USDC', chain_code:'ethereum'}}
+      ];
+      target.innerHTML = tokens.map(row => `<span class="pill ${{row.chain_code === 'picoin' ? '' : 'blue'}}">${{row.token_symbol}}</span>`).join('');
+    }}
+    function renderDeposits(rows) {{
+      const target = document.getElementById('deposit-list');
+      document.getElementById('deposit-count-label').textContent = rows ? rows.length : 0;
+      if (!rows || !rows.length) {{
+        target.innerHTML = '<span class="muted">No scanner deposits yet.</span>';
+        return;
+      }}
+      target.innerHTML = rows.map(row => `
+        <div class="deposit-line">
+          <strong>${{row.token_symbol}} · ${{row.status}} · ${{row.confirmations}} confirmations</strong>
+          <span>${{row.amount_base_units}} base units · block ${{row.block_number}}</span>
+          <code>${{row.tx_hash}}</code>
+        </div>
+      `).join('');
+    }}
+    function renderDashboard(payload) {{
+      const label = document.getElementById('dashboard-account-label');
+      if (!payload) {{
+        label.textContent = 'Not selected';
+        renderBalances(null);
+        renderDeposits(null);
+        renderDepositAddresses(null);
+        renderAcceptedTokens(null);
+        document.getElementById('scanner-status-label').textContent = 'Waiting for account';
+        return;
+      }}
+      syncAccountInputs(payload.account.account_id);
+      label.textContent = payload.account.email || payload.account.account_id;
+      renderBalances(payload.balances);
+      renderDeposits(payload.deposits);
+      renderDepositAddresses(payload.deposit_addresses);
+      renderAcceptedTokens(payload.accepted_tokens);
+      document.getElementById('scanner-status-label').textContent = 'Active';
+    }}
+    async function refreshDashboard() {{
+      const accountId = activeAccountId();
+      if (!accountId) {{
+        renderDashboard(null);
+        return;
+      }}
+      try {{
+        const dashboard = await request(`/accounts/${{accountId}}/dashboard?deposit_limit=25`);
+        renderDashboard(dashboard);
+      }} catch (error) {{
+        document.getElementById('account-output').textContent = JSON.stringify(error, null, 2);
+      }}
+    }}
     async function refreshBalances() {{
-      const accountId = document.getElementById('booking-account-id').value.trim()
-        || document.getElementById('wallet-account-id').value.trim();
+      const accountId = activeAccountId();
       if (!accountId) {{
         renderBalances(null);
         return;
       }}
       try {{
-        const rows = await request(`/accounts/${{accountId}}/balances`);
-        renderBalances(rows);
+        const dashboard = await request(`/accounts/${{accountId}}/dashboard?deposit_limit=25`);
+        renderDashboard(dashboard);
       }} catch (error) {{
         document.getElementById('balance-list').innerHTML = `<span class="muted">${{JSON.stringify(error)}}</span>`;
       }}
     }}
     async function refreshQuote() {{
       try {{
-        const payload = readForm(document.getElementById('booking-form'));
+        const payload = normalizeBookingPayment(readForm(document.getElementById('booking-form')));
         const quote = await request('/bookings/quote', {{
           method: 'POST',
           headers: {{'content-type': 'application/json'}},
@@ -1006,7 +1174,9 @@ def home() -> str:
       }}
       syncHardwareFromPool(document.getElementById('listing-pool'), document.querySelector('#listing-form [name="hardware_type"]'));
       syncHardwareFromPool(document.getElementById('worker-pool'), document.querySelector('#worker-form [name="hardware_type"]'));
+      syncPaymentChain();
       await refreshQuote();
+      await refreshDashboard();
     }}
     document.getElementById('package-grid').addEventListener('click', event => {{
       const button = event.target.closest('button[data-units]');
@@ -1031,6 +1201,10 @@ def home() -> str:
     }});
     document.getElementById('booking-form').addEventListener('input', refreshQuote);
     document.getElementById('booking-form').addEventListener('change', refreshQuote);
+    document.querySelector('#booking-form [name="payment_token_symbol"]').addEventListener('change', () => {{
+      syncPaymentChain();
+      refreshQuote();
+    }});
     document.getElementById('pool-form').addEventListener('submit', async event => {{
       event.preventDefault();
       try {{
@@ -1089,7 +1263,7 @@ def home() -> str:
     document.getElementById('booking-form').addEventListener('submit', async event => {{
       event.preventDefault();
       try {{
-        const payload = readForm(event.target);
+        const payload = normalizeBookingPayment(readForm(event.target));
         if (!payload.account_id) delete payload.account_id;
         const result = await request('/bookings', {{
           method: 'POST',
@@ -1098,7 +1272,7 @@ def home() -> str:
         }});
         lastPaymentId = result.payment.payment_id;
         out('booking-output', result);
-        await refreshBalances();
+        await refreshDashboard();
         await loadData();
       }} catch (error) {{ out('booking-output', error); }}
     }});
@@ -1112,8 +1286,9 @@ def home() -> str:
         }});
         document.getElementById('wallet-account-id').value = account.account_id;
         document.getElementById('booking-account-id').value = account.account_id;
+        document.getElementById('dashboard-account-id').value = account.account_id;
         out('account-output', account);
-        await refreshBalances();
+        await refreshDashboard();
       }} catch (error) {{ out('account-output', error); }}
     }});
     document.getElementById('wallet-form').addEventListener('submit', async event => {{
@@ -1129,41 +1304,20 @@ def home() -> str:
         }});
         const verified = await request(`/wallets/${{wallet.wallet_id}}/verify`, {{ method: 'POST' }});
         out('account-output', verified);
-        await refreshBalances();
-      }} catch (error) {{ out('account-output', error); }}
-    }});
-    document.getElementById('deposit-form').addEventListener('change', async event => {{
-      const chain = event.currentTarget.elements.chain_code.value;
-      try {{
-        const config = await request(`/scanner/${{chain}}/config`);
-        if (config.deposit_address) document.getElementById('deposit-to-address').value = config.deposit_address;
-      }} catch (_) {{}}
-    }});
-    document.getElementById('deposit-form').addEventListener('submit', async event => {{
-      event.preventDefault();
-      try {{
-        const payload = readForm(event.target);
-        const deposit = await request('/scanner/deposits', {{
-          method: 'POST',
-          headers: {{'content-type': 'application/json'}},
-          body: JSON.stringify(payload)
-        }});
-        const confirmed = await request(`/scanner/${{payload.chain_code}}/confirmations/process`, {{
-          method: 'POST',
-          headers: {{'content-type': 'application/json'}},
-          body: JSON.stringify({{ latest_block_number: Number(payload.block_number) + 32 }})
-        }});
-        const accountId = deposit.account_id;
-        const balances = await request(`/accounts/${{accountId}}/balances`);
-        out('account-output', {{ deposit, confirmed, balances }});
-        renderBalances(balances);
+        await refreshDashboard();
       }} catch (error) {{ out('account-output', error); }}
     }});
     document.getElementById('refresh-balances-button').addEventListener('click', refreshBalances);
+    document.getElementById('dashboard-balances-button').addEventListener('click', refreshDashboard);
+    document.getElementById('refresh-dashboard-button').addEventListener('click', refreshDashboard);
+    document.getElementById('dashboard-account-id').addEventListener('change', event => {{
+      syncAccountInputs(event.target.value.trim());
+      refreshDashboard();
+    }});
     document.getElementById('pay-balance-button').addEventListener('click', async () => {{
       const accountId = document.getElementById('booking-account-id').value.trim();
-      const chainCode = document.querySelector('#booking-form [name="payment_chain_code"]').value;
       const tokenSymbol = document.querySelector('#booking-form [name="payment_token_symbol"]').value;
+      const chainCode = paymentChainForToken(tokenSymbol);
       if (!lastPaymentId) {{
         out('booking-output', 'Create a booking first, then pay it from balance.');
         return;
@@ -1179,7 +1333,7 @@ def home() -> str:
           body: JSON.stringify({{ account_id: accountId, chain_code: chainCode, token_symbol: tokenSymbol }})
         }});
         out('booking-output', result);
-        await refreshBalances();
+        await refreshDashboard();
         await loadData();
       }} catch (error) {{ out('booking-output', error); }}
     }});

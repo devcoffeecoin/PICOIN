@@ -8,19 +8,18 @@ marketplace.picoin.science
 
 This is not a Layer 2 protocol module. It is an application marketplace where
 providers publish mining capacity into paired pools and customers reserve access.
-Payments can be made with Picoin or with Ethereum tokens explicitly enabled by
-the marketplace operator.
+Payments can be made with Picoin, USDT, or USDC.
 
 ## Core Rule
 
 ```text
 pricing_currency = PICOIN
-accepted_payment_rails = PICOIN + approved EVM tokens
+accepted_payment_rails = PICOIN + USDT + USDC
 ```
 
 The marketplace prices capacity in PICOIN. A customer can fund an account with
-PICOIN or an approved Ethereum token such as ETH/ERC20, and the marketplace
-converts the booking invoice through the token's configured `picoin_rate`.
+PICOIN, USDT, or USDC, and the marketplace converts the booking invoice through
+the token's configured `picoin_rate`.
 
 The paired coins are not payment currencies. They define how the rented mining
 capacity is split inside each pool.
@@ -107,22 +106,26 @@ http://127.0.0.1:9410/
 
 The root page is an Easy Mining style dashboard with pool cards, hardware
 filters, quick order, capacity publishing, pair pool creation, account
-registration, wallet verification, deposit intake, balance display, and
-pay-from-balance checkout.
+registration, wallet verification, automatic scanner deposits, balance display,
+and pay-from-balance checkout.
 
 ## UI Checkout Flow
 
 The dashboard supports a complete local operator flow:
 
-1. Create an account in `User Registration & Wallets`.
+1. Create an account in `User Dashboard`.
 2. Register and verify a Picoin or Ethereum wallet for that account.
-3. Record a scanner deposit and process confirmations.
+3. Send PICOIN, USDT, or USDC from the verified wallet to the marketplace deposit address.
 4. Select a pool in `Quick Order`.
 5. Create the capacity reservation.
 6. Click `Pay from confirmed balance`.
 
 After payment, the booking changes to `active` and the account balance is
 debited through the internal ledger.
+
+Deposits are not entered manually in the UI. The scanner worker watches Picoin
+history and EVM ERC-20 transfer logs, waits for the configured confirmations,
+then credits the account ledger once.
 
 ## Environment
 
@@ -132,7 +135,10 @@ PICOIN_MARKETPLACE_ESCROW_ADDRESS=PI_MARKETPLACE_ESCROW
 PICOIN_MARKETPLACE_EVM_ESCROW_ADDRESS=0x0000000000000000000000000000000000000000
 PICOIN_MARKETPLACE_CONFIRMATIONS_REQUIRED=1
 PICOIN_MARKETPLACE_ETH_CONFIRMATIONS=12
-PICOIN_MARKETPLACE_ETH_PICOIN_RATE=1000
+PICOIN_MARKETPLACE_USDT_CONTRACT_ADDRESS=0xdAC17F958D2ee523a2206206994597C13D831ec7
+PICOIN_MARKETPLACE_USDC_CONTRACT_ADDRESS=0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48
+PICOIN_MARKETPLACE_USDT_PICOIN_RATE=1
+PICOIN_MARKETPLACE_USDC_PICOIN_RATE=1
 PICOIN_MARKETPLACE_ETH_RPC_URLS=
 PICOIN_MARKETPLACE_FEE_PERCENT=1
 PICOIN_MARKETPLACE_PAYMENT_WINDOW_MINUTES=30
@@ -146,7 +152,7 @@ PICOIN_MARKETPLACE_SCANNER_PICOIN_LIMIT=50
 PICOIN_MARKETPLACE_EVM_RPC_URL=
 PICOIN_MARKETPLACE_SCANNER_EVM_TOKENS_ENABLED=0
 PICOIN_MARKETPLACE_SCANNER_EVM_NATIVE_ENABLED=0
-PICOIN_MARKETPLACE_SCANNER_EVM_TOKEN_SYMBOL=
+PICOIN_MARKETPLACE_SCANNER_EVM_TOKEN_SYMBOLS=USDT,USDC
 PICOIN_MARKETPLACE_SCANNER_EVM_BATCH_SIZE=500
 PICOIN_MARKETPLACE_SCANNER_EVM_NATIVE_BATCH_SIZE=100
 PICOIN_MARKETPLACE_MAINTENANCE_INTERVAL_SECONDS=30
@@ -189,7 +195,7 @@ Enable ERC20 polling:
 ```bash
 PICOIN_MARKETPLACE_EVM_RPC_URL=https://YOUR_ETH_RPC
 PICOIN_MARKETPLACE_SCANNER_EVM_TOKENS_ENABLED=1
-PICOIN_MARKETPLACE_SCANNER_EVM_TOKEN_SYMBOL=USDC
+PICOIN_MARKETPLACE_SCANNER_EVM_TOKEN_SYMBOLS=USDT,USDC
 picoin-marketplace-scanner --once --no-picoin
 ```
 
@@ -428,7 +434,7 @@ Supported modes:
 
 ```text
 ERC20 Transfer logs -> /scanner/evm/poll-token-transfers
-Native ETH txs      -> /scanner/evm/poll-native-transfers
+Native ETH txs      -> /scanner/evm/poll-native-transfers (optional, disabled by default)
 Manual log import   -> /scanner/evm/import-token-transfers
 ```
 
@@ -466,7 +472,7 @@ curl -sS -X POST http://127.0.0.1:9410/scanner/evm/poll-token-transfers \
 If `from_block` is omitted, the scanner uses its stored checkpoint. If there is
 no checkpoint yet, it scans the latest `batch_size` window.
 
-### Poll Native ETH Transfers
+### Optional Native ETH Transfers
 
 ```bash
 curl -sS -X POST http://127.0.0.1:9410/scanner/evm/poll-native-transfers \

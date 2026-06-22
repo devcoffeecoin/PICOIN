@@ -218,8 +218,46 @@ def test_home_returns_operator_dashboard(tmp_path, monkeypatch):
     assert "Worker Agents" in response.text
     assert "Register worker" in response.text
     assert "Pay from confirmed balance" in response.text
-    assert "User Registration & Wallets" in response.text
+    assert "User Dashboard" in response.text
+    assert "Scanner worker" in response.text
     assert "Register and verify wallet" in response.text
+    assert "Record deposit and confirm" not in response.text
+    assert "USDT" in response.text
+    assert "USDC" in response.text
+
+
+def test_seeded_pool_cards_are_visible_without_listings(tmp_path, monkeypatch):
+    monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("PICOIN_MARKETPLACE_SEED_DEFAULT_POOLS", "1")
+    client = TestClient(marketplace_api.api)
+
+    cards = client.get("/pool-cards?active_only=true&limit=100").json()
+
+    pairs = {card["pair_symbol"] for card in cards}
+    assert "PICOIN/QUANTUMR" in pairs
+    assert "PICOIN/ZANO" in pairs
+    assert "PICOIN/KARLSEN" in pairs
+    assert all(card["status"] == "waiting_capacity" for card in cards)
+
+
+def test_user_dashboard_returns_payment_rails_and_activity(tmp_path, monkeypatch):
+    monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("PICOIN_MARKETPLACE_SEED_DEFAULT_POOLS", "0")
+    monkeypatch.setenv("PICOIN_MARKETPLACE_EVM_ESCROW_ADDRESS", "0x2222222222222222222222222222222222222222")
+    client = TestClient(marketplace_api.api)
+
+    account = client.post("/accounts", json={"email": "dashboard@example.com"}).json()
+
+    dashboard = client.get(f"/accounts/{account['account_id']}/dashboard").json()
+
+    assert dashboard["account"]["account_id"] == account["account_id"]
+    assert {item["token_symbol"] for item in dashboard["accepted_tokens"]} == {"PICOIN", "USDT", "USDC"}
+    addresses = {item["chain_code"]: item["deposit_address"] for item in dashboard["deposit_addresses"]}
+    assert addresses["picoin"] == "PI_MARKETPLACE_ESCROW"
+    assert addresses["ethereum"] == "0x2222222222222222222222222222222222222222"
+    assert {item["token_symbol"] for item in dashboard["balances"]} == {"PICOIN", "USDT", "USDC"}
+    assert all(item["available_base_units"] == "0" for item in dashboard["balances"])
+    assert dashboard["deposits"] == []
 
 
 def test_pool_cards_show_availability_and_price(tmp_path, monkeypatch):
@@ -539,15 +577,15 @@ def test_account_picoin_deposit_confirmation_and_balance_payment(tmp_path, monke
     pico_after = next(row for row in balances_after if row["token_symbol"] == "PICOIN")
     assert pico_after["available_base_units"] == "6858400"
 
-def test_ethereum_token_deposit_can_pay_marketplace_booking(tmp_path, monkeypatch):
+def test_usdc_deposit_can_pay_marketplace_booking(tmp_path, monkeypatch):
     monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("PICOIN_MARKETPLACE_SEED_DEFAULT_POOLS", "0")
-    monkeypatch.setenv("PICOIN_MARKETPLACE_ETH_PICOIN_RATE", "1000")
+    monkeypatch.setenv("PICOIN_MARKETPLACE_USDC_PICOIN_RATE", "1")
     monkeypatch.setenv("PICOIN_MARKETPLACE_ETH_CONFIRMATIONS", "3")
     monkeypatch.setenv("PICOIN_MARKETPLACE_EVM_ESCROW_ADDRESS", "0x2222222222222222222222222222222222222222")
     client = TestClient(marketplace_api.api)
 
-    account = client.post("/accounts", json={"email": "eth@example.com"}).json()
+    account = client.post("/accounts", json={"email": "usdc@example.com"}).json()
     wallet = client.post(
         f"/accounts/{account['account_id']}/wallets",
         json={
@@ -561,10 +599,10 @@ def test_ethereum_token_deposit_can_pay_marketplace_booking(tmp_path, monkeypatc
         "/scanner/deposits",
         json={
             "chain_code": "ethereum",
-            "token_symbol": "ETH",
+            "token_symbol": "USDC",
             "from_address": "0x1111111111111111111111111111111111111111",
             "to_address": "0x2222222222222222222222222222222222222222",
-            "amount_base_units": "10000000000000000",
+            "amount_base_units": "10000000",
             "tx_hash": "0x" + ("a" * 64),
             "block_number": 50,
             "log_index": 0,
@@ -602,22 +640,22 @@ def test_ethereum_token_deposit_can_pay_marketplace_booking(tmp_path, monkeypatc
             "units": 1,
             "duration_minutes": 60,
             "payment_chain_code": "ethereum",
-            "payment_token_symbol": "ETH",
+            "payment_token_symbol": "USDC",
         },
     ).json()
 
     payment = booking_payload["payment"]
-    assert payment["currency"] == "ETH"
-    assert payment["amount_base_units"] == "3141600000000000"
+    assert payment["currency"] == "USDC"
+    assert payment["amount_base_units"] == "3141600"
     assert payment["pay_to_address"] == "0x2222222222222222222222222222222222222222"
 
     paid = client.post(
         f"/payments/{payment['payment_id']}/pay-from-balance",
-        json={"account_id": account["account_id"], "chain_code": "ethereum", "token_symbol": "ETH"},
+        json={"account_id": account["account_id"], "chain_code": "ethereum", "token_symbol": "USDC"},
     ).json()
     assert paid["booking"]["status"] == "active"
-    assert paid["payment"]["currency"] == "ETH"
-    assert paid["ledger_entry"]["amount_base_units"] == "3141600000000000"
+    assert paid["payment"]["currency"] == "USDC"
+    assert paid["ledger_entry"]["amount_base_units"] == "3141600"
 
 
 def test_picoin_history_import_scans_confirmed_deposits(tmp_path, monkeypatch):
@@ -853,6 +891,17 @@ def test_evm_native_transfer_poll_scans_blocks(tmp_path, monkeypatch):
         json={"chain_code": "ethereum", "address": "0x1111111111111111111111111111111111111111"},
     ).json()
     client.post(f"/wallets/{wallet['wallet_id']}/verify")
+    client.post(
+        "/tokens",
+        json={
+            "chain_code": "ethereum",
+            "token_symbol": "ETH",
+            "display_name": "Ether",
+            "decimals": 18,
+            "token_type": "native",
+            "picoin_rate": 1000,
+        },
+    )
 
     def fake_rpc(rpc_url, method, params):
         if method == "eth_getBlockByNumber":

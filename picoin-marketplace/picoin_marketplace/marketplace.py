@@ -74,6 +74,14 @@ DEFAULT_EVM_ESCROW_ADDRESS = os.getenv(
     "PICOIN_MARKETPLACE_EVM_ESCROW_ADDRESS",
     "0x0000000000000000000000000000000000000000",
 )
+DEFAULT_USDC_CONTRACT_ADDRESS = os.getenv(
+    "PICOIN_MARKETPLACE_USDC_CONTRACT_ADDRESS",
+    "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
+)
+DEFAULT_USDT_CONTRACT_ADDRESS = os.getenv(
+    "PICOIN_MARKETPLACE_USDT_CONTRACT_ADDRESS",
+    "0xdAC17F958D2ee523a2206206994597C13D831ec7",
+)
 DEFAULT_CONFIRMATIONS_REQUIRED = int(os.getenv("PICOIN_MARKETPLACE_CONFIRMATIONS_REQUIRED", "1"))
 EVM_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 EVM_NATIVE_LOG_INDEX = 2_147_483_647
@@ -189,16 +197,21 @@ class Marketplace:
             ),
             TokenCreateRequest(
                 chain_code="ethereum",
-                token_symbol="ETH",
-                display_name="Ether",
-                decimals=18,
-                token_type="native",
-                picoin_rate=float(
-                    os.getenv(
-                        "PICOIN_MARKETPLACE_ETH_PICOIN_RATE",
-                        os.getenv("PICOIN_MARKETPLACE_ETH_PICO_RATE", "1000"),
-                    )
-                ),
+                token_symbol="USDT",
+                display_name="Tether USD",
+                decimals=6,
+                token_type="erc20",
+                contract_address=DEFAULT_USDT_CONTRACT_ADDRESS,
+                picoin_rate=float(os.getenv("PICOIN_MARKETPLACE_USDT_PICOIN_RATE", "1")),
+            ),
+            TokenCreateRequest(
+                chain_code="ethereum",
+                token_symbol="USDC",
+                display_name="USD Coin",
+                decimals=6,
+                token_type="erc20",
+                contract_address=DEFAULT_USDC_CONTRACT_ADDRESS,
+                picoin_rate=float(os.getenv("PICOIN_MARKETPLACE_USDC_PICOIN_RATE", "1")),
             ),
         ]
         for request in token_defaults:

@@ -29,6 +29,14 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
+def env_symbols(name: str, default: tuple[str, ...]) -> tuple[str, ...]:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    symbols = tuple(item.strip().upper() for item in value.split(",") if item.strip())
+    return symbols or default
+
+
 @dataclass(frozen=True)
 class ScannerWorkerConfig:
     state_dir: Path = DEFAULT_STATE_DIR
@@ -42,6 +50,7 @@ class ScannerWorkerConfig:
     evm_chain_code: str = "ethereum"
     evm_rpc_url: str | None = None
     evm_token_symbol: str | None = None
+    evm_token_symbols: tuple[str, ...] = ("USDT", "USDC")
     evm_native_token_symbol: str = "ETH"
     evm_batch_size: int = 500
     evm_native_batch_size: int = 100
@@ -49,6 +58,7 @@ class ScannerWorkerConfig:
 
 def config_from_env() -> ScannerWorkerConfig:
     evm_rpc_url = os.getenv("PICOIN_MARKETPLACE_EVM_RPC_URL") or os.getenv("PICOIN_MARKETPLACE_ETH_RPC_URL")
+    legacy_token_symbol = os.getenv("PICOIN_MARKETPLACE_SCANNER_EVM_TOKEN_SYMBOL")
     return ScannerWorkerConfig(
         state_dir=Path(os.getenv("PICOIN_MARKETPLACE_STATE_DIR", str(DEFAULT_STATE_DIR))),
         interval_seconds=max(1, env_int("PICOIN_MARKETPLACE_SCANNER_INTERVAL_SECONDS", 30)),
@@ -60,7 +70,11 @@ def config_from_env() -> ScannerWorkerConfig:
         evm_native_enabled=env_flag("PICOIN_MARKETPLACE_SCANNER_EVM_NATIVE_ENABLED", False),
         evm_chain_code=os.getenv("PICOIN_MARKETPLACE_SCANNER_EVM_CHAIN_CODE", "ethereum"),
         evm_rpc_url=evm_rpc_url,
-        evm_token_symbol=os.getenv("PICOIN_MARKETPLACE_SCANNER_EVM_TOKEN_SYMBOL") or None,
+        evm_token_symbol=legacy_token_symbol or None,
+        evm_token_symbols=env_symbols(
+            "PICOIN_MARKETPLACE_SCANNER_EVM_TOKEN_SYMBOLS",
+            (legacy_token_symbol.upper(),) if legacy_token_symbol else ("USDT", "USDC"),
+        ),
         evm_native_token_symbol=os.getenv("PICOIN_MARKETPLACE_SCANNER_EVM_NATIVE_TOKEN_SYMBOL", "ETH"),
         evm_batch_size=max(1, env_int("PICOIN_MARKETPLACE_SCANNER_EVM_BATCH_SIZE", 500)),
         evm_native_batch_size=max(1, env_int("PICOIN_MARKETPLACE_SCANNER_EVM_NATIVE_BATCH_SIZE", 100)),
@@ -91,22 +105,25 @@ def run_scanner_once(marketplace: Marketplace, config: ScannerWorkerConfig) -> d
             errors.append({"scanner": "picoin_history", "error": str(exc)})
 
     if config.evm_token_enabled:
-        try:
-            runs.append(
-                {
-                    "scanner": "evm_erc20",
-                    "result": marketplace.poll_evm_token_transfers(
-                        EvmTokenTransferPollRequest(
-                            chain_code=config.evm_chain_code,
-                            token_symbol=config.evm_token_symbol,
-                            rpc_url=config.evm_rpc_url,
-                            batch_size=config.evm_batch_size,
-                        )
-                    ),
-                }
-            )
-        except Exception as exc:  # pragma: no cover - exercised by integration logs
-            errors.append({"scanner": "evm_erc20", "error": str(exc)})
+        token_symbols: tuple[str | None, ...] = config.evm_token_symbols or (config.evm_token_symbol,)
+        for token_symbol in token_symbols:
+            scanner_name = f"evm_erc20_{token_symbol}" if token_symbol else "evm_erc20"
+            try:
+                runs.append(
+                    {
+                        "scanner": scanner_name,
+                        "result": marketplace.poll_evm_token_transfers(
+                            EvmTokenTransferPollRequest(
+                                chain_code=config.evm_chain_code,
+                                token_symbol=token_symbol,
+                                rpc_url=config.evm_rpc_url,
+                                batch_size=config.evm_batch_size,
+                            )
+                        ),
+                    }
+                )
+            except Exception as exc:  # pragma: no cover - exercised by integration logs
+                errors.append({"scanner": scanner_name, "error": str(exc)})
 
     if config.evm_native_enabled:
         try:
@@ -154,6 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--evm-rpc-url", default=None)
     parser.add_argument("--evm-chain-code", default=None)
     parser.add_argument("--evm-token-symbol", default=None)
+    parser.add_argument("--evm-token-symbols", default=None)
     parser.add_argument("--evm-tokens", action="store_true")
     parser.add_argument("--evm-native", action="store_true")
     parser.add_argument("--evm-batch-size", type=int, default=None)
@@ -163,6 +181,12 @@ def build_parser() -> argparse.ArgumentParser:
 
 def config_from_args(args: argparse.Namespace) -> ScannerWorkerConfig:
     base = config_from_env()
+    if args.evm_token_symbols:
+        token_symbols = tuple(item.strip().upper() for item in args.evm_token_symbols.split(",") if item.strip())
+    elif args.evm_token_symbol:
+        token_symbols = (args.evm_token_symbol.upper(),)
+    else:
+        token_symbols = base.evm_token_symbols
     return ScannerWorkerConfig(
         state_dir=Path(args.state_dir) if args.state_dir else base.state_dir,
         interval_seconds=max(1, args.interval_seconds or base.interval_seconds),
@@ -175,6 +199,7 @@ def config_from_args(args: argparse.Namespace) -> ScannerWorkerConfig:
         evm_chain_code=args.evm_chain_code or base.evm_chain_code,
         evm_rpc_url=args.evm_rpc_url or base.evm_rpc_url,
         evm_token_symbol=args.evm_token_symbol or base.evm_token_symbol,
+        evm_token_symbols=token_symbols,
         evm_native_token_symbol=base.evm_native_token_symbol,
         evm_batch_size=max(1, args.evm_batch_size or base.evm_batch_size),
         evm_native_batch_size=max(1, args.evm_native_batch_size or base.evm_native_batch_size),

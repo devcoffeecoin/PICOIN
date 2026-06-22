@@ -33,17 +33,18 @@ def test_scanner_worker_runs_enabled_scanners():
         evm_token_enabled=True,
         evm_native_enabled=True,
         evm_rpc_url="https://rpc.example",
-        evm_token_symbol="USDC",
+        evm_token_symbols=("USDT", "USDC"),
     )
 
     result = run_scanner_once(fake, config)  # type: ignore[arg-type]
 
     assert not result["errors"]
-    assert [call[0] for call in fake.calls] == ["picoin", "evm_tokens", "evm_native"]
+    assert [call[0] for call in fake.calls] == ["picoin", "evm_tokens", "evm_tokens", "evm_native"]
     assert fake.calls[0][1].node_url == "http://picoin.local:8000"
     assert fake.calls[0][1].limit == 25
-    assert fake.calls[1][1].token_symbol == "USDC"
-    assert fake.calls[2][1].rpc_url == "https://rpc.example"
+    assert fake.calls[1][1].token_symbol == "USDT"
+    assert fake.calls[2][1].token_symbol == "USDC"
+    assert fake.calls[3][1].rpc_url == "https://rpc.example"
 
 
 def test_scanner_worker_continues_after_scanner_error():
@@ -62,7 +63,7 @@ def test_scanner_worker_continues_after_scanner_error():
     result = run_scanner_once(fake, config)  # type: ignore[arg-type]
 
     assert result["errors"] == [{"scanner": "picoin_history", "error": "picoin offline"}]
-    assert [call[0] for call in fake.calls] == ["evm_tokens"]
+    assert [call[0] for call in fake.calls] == ["evm_tokens", "evm_tokens"]
 
 
 def test_scanner_config_from_env(monkeypatch, tmp_path):
@@ -71,7 +72,7 @@ def test_scanner_config_from_env(monkeypatch, tmp_path):
     monkeypatch.setenv("PICOIN_MARKETPLACE_SCANNER_PICOIN_ENABLED", "0")
     monkeypatch.setenv("PICOIN_MARKETPLACE_EVM_RPC_URL", "https://rpc.example")
     monkeypatch.setenv("PICOIN_MARKETPLACE_SCANNER_EVM_NATIVE_ENABLED", "1")
-    monkeypatch.setenv("PICOIN_MARKETPLACE_SCANNER_EVM_TOKEN_SYMBOL", "USDC")
+    monkeypatch.setenv("PICOIN_MARKETPLACE_SCANNER_EVM_TOKEN_SYMBOLS", "USDT,USDC")
 
     config = config_from_env()
 
@@ -81,4 +82,16 @@ def test_scanner_config_from_env(monkeypatch, tmp_path):
     assert config.evm_token_enabled is True
     assert config.evm_native_enabled is True
     assert config.evm_rpc_url == "https://rpc.example"
+    assert config.evm_token_symbols == ("USDT", "USDC")
+
+
+def test_scanner_config_accepts_legacy_single_evm_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("PICOIN_MARKETPLACE_EVM_RPC_URL", "https://rpc.example")
+    monkeypatch.setenv("PICOIN_MARKETPLACE_SCANNER_EVM_TOKEN_SYMBOL", "USDC")
+
+    config = config_from_env()
+
+    assert config.evm_token_enabled is True
     assert config.evm_token_symbol == "USDC"
+    assert config.evm_token_symbols == ("USDC",)
