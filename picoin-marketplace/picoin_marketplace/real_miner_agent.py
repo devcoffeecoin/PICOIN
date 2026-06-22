@@ -46,6 +46,7 @@ class RealMinerConfig:
     miner_api_token: str | None = None
     warmup_seconds: int = 5
     restart_on_exit: bool = True
+    auto_create_pool: bool = True
     no_start: bool = False
 
 
@@ -74,6 +75,7 @@ def config_from_env() -> RealMinerConfig:
         miner_api_token=os.getenv("PICOIN_MARKETPLACE_MINER_API_TOKEN") or None,
         warmup_seconds=max(0, env_int("PICOIN_MARKETPLACE_MINER_WARMUP_SECONDS", 5)),
         restart_on_exit=env_bool("PICOIN_MARKETPLACE_MINER_RESTART_ON_EXIT", True),
+        auto_create_pool=env_bool("PICOIN_MARKETPLACE_MINER_AUTO_CREATE_POOL", True),
         no_start=env_bool("PICOIN_MARKETPLACE_MINER_NO_START", False),
     )
 
@@ -95,6 +97,20 @@ def discover_pool_id(config: RealMinerConfig) -> str:
             continue
         if str(pool.get("pair_symbol", "")).upper() == f"PICOIN/{config.paired_coin}":
             return str(pool["pool_id"])
+    if config.auto_create_pool:
+        created = worker_agent.json_post(
+            f"{config.marketplace_url}/pools",
+            {
+                "hardware_type": config.hardware_type.value,
+                "paired_coin": config.paired_coin,
+                "name": f"{config.hardware_type.value.upper()} PICOIN/{config.paired_coin} pool",
+                "picoin_capacity_percent": 10,
+                "paired_capacity_percent": 90,
+            },
+        )
+        pool_id = str(created.get("pool_id") or "").strip()
+        if pool_id:
+            return pool_id
     raise ValueError(f"active PICOIN/{config.paired_coin} {config.hardware_type.value} pool not found")
 
 
@@ -326,6 +342,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--xmrig-api-url", default=None)
     parser.add_argument("--xmrig-api-token", default=None)
     parser.add_argument("--warmup-seconds", type=int, default=None)
+    parser.add_argument(
+        "--no-auto-create-pool",
+        action="store_true",
+        default=None,
+        help="fail if the PICOIN paired pool does not already exist",
+    )
     return parser
 
 
@@ -351,6 +373,7 @@ def config_from_args(args: argparse.Namespace) -> RealMinerConfig:
         miner_api_url=args.xmrig_api_url or base.miner_api_url,
         miner_api_token=args.xmrig_api_token or base.miner_api_token,
         warmup_seconds=max(0, args.warmup_seconds if args.warmup_seconds is not None else base.warmup_seconds),
+        auto_create_pool=base.auto_create_pool if args.no_auto_create_pool is None else not args.no_auto_create_pool,
         no_start=base.no_start if args.no_start is None else args.no_start,
     )
 

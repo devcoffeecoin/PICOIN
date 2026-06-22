@@ -783,9 +783,12 @@ picoin-marketplace-miner
 ```
 
 The controller auto-discovers the active `PICOIN/MONERO` CPU pool when
-`PICOIN_MARKETPLACE_WORKER_POOL_ID` is empty. It reports `status=online` only
-while the miner process or monitored miner API is healthy. If the miner exits,
-the marketplace listing is reported as unavailable until the process restarts.
+`PICOIN_MARKETPLACE_WORKER_POOL_ID` is empty. If the pool is missing, it creates
+the `PICOIN/MONERO` CPU pool with the standard 10%/90% split unless
+`PICOIN_MARKETPLACE_MINER_AUTO_CREATE_POOL=0` is set. It reports
+`status=online` only while the miner process or monitored miner API is healthy.
+If the miner exits, the marketplace listing is reported as unavailable until the
+process restarts.
 
 Expire stale workers:
 

@@ -125,3 +125,51 @@ def test_real_miner_config_from_env(monkeypatch):
     assert config.miner_api_url == "http://127.0.0.1:18088/2/summary"
     assert config.units_total == 4
     assert config.price_pi_per_hour == 0.75
+
+
+def test_real_miner_creates_missing_picoin_monero_pool(monkeypatch):
+    posts = []
+
+    def fake_get(url):
+        if "/pools" in url:
+            return []
+        if url.endswith("/workers/real-monero-1/assignments?active_only=true&limit=100"):
+            return []
+        raise AssertionError(url)
+
+    def fake_post(url, payload):
+        posts.append((url, payload))
+        if url.endswith("/pools"):
+            return {"pool_id": "pool_created_cpu_monero", "pair_symbol": "PICOIN/MONERO"}
+        if url.endswith("/workers/register"):
+            return {"worker": {"worker_id": "real-monero-1"}, "listing": {"listing_id": "listing-1"}}
+        if url.endswith("/workers/real-monero-1/heartbeat"):
+            return {"worker": {"worker_id": "real-monero-1", "status": "online"}}
+        raise AssertionError(url)
+
+    monkeypatch.setattr("picoin_marketplace.worker_agent.json_get", fake_get)
+    monkeypatch.setattr("picoin_marketplace.worker_agent.json_post", fake_post)
+
+    config = RealMinerConfig(
+        marketplace_url="http://marketplace.local",
+        worker_id="real-monero-1",
+        provider_wallet="PI_PROVIDER_CPU",
+        hardware_type=HardwareType.CPU,
+        paired_coin="MONERO",
+        no_start=True,
+        warmup_seconds=0,
+    )
+
+    result = run_miner_once(config)
+
+    assert result["pool_id"] == "pool_created_cpu_monero"
+    assert posts[0] == (
+        "http://marketplace.local/pools",
+        {
+            "hardware_type": "cpu",
+            "paired_coin": "MONERO",
+            "name": "CPU PICOIN/MONERO pool",
+            "picoin_capacity_percent": 10,
+            "paired_capacity_percent": 90,
+        },
+    )

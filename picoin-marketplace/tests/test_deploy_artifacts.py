@@ -28,6 +28,7 @@ def test_deploy_env_example_contains_required_keys():
         "PICOIN_MARKETPLACE_MINER_PAIRED_COIN=MONERO",
         "PICOIN_MARKETPLACE_MINER_COMMAND=",
         "PICOIN_MARKETPLACE_MINER_API_URL=",
+        "PICOIN_MARKETPLACE_MINER_AUTO_CREATE_POOL=",
     ]
     for key in required:
         assert key in env_text
