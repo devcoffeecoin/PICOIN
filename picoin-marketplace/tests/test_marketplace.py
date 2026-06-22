@@ -218,12 +218,30 @@ def test_home_returns_operator_dashboard(tmp_path, monkeypatch):
     assert "Worker Agents" in response.text
     assert "Register worker" in response.text
     assert "Pay from confirmed balance" in response.text
+    assert 'href="/dashboard"' in response.text
     assert "User Dashboard" in response.text
-    assert "Scanner worker" in response.text
-    assert "Register and verify wallet" in response.text
+    assert "Scanner worker" not in response.text
+    assert "Register and verify wallet" not in response.text
     assert "Record deposit and confirm" not in response.text
     assert "USDT" in response.text
     assert "USDC" in response.text
+
+
+def test_user_dashboard_page_is_separate_from_marketplace_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))
+    client = TestClient(marketplace_api.api)
+
+    response = client.get("/dashboard")
+
+    assert response.status_code == 200
+    assert "Picoin User Dashboard" in response.text
+    assert "Create account" in response.text
+    assert "Register and verify wallet" in response.text
+    assert "Scanner Worker" in response.text
+    assert "Recent Deposits" in response.text
+    assert "Back to marketplace" in response.text
+    assert "Easy Mining Pools" not in response.text
+    assert "Create Pair Pool" not in response.text
 
 
 def test_seeded_pool_cards_are_visible_without_listings(tmp_path, monkeypatch):

@@ -105,18 +105,26 @@ http://127.0.0.1:9410/
 ```
 
 The root page is an Easy Mining style dashboard with pool cards, hardware
-filters, quick order, capacity publishing, pair pool creation, account
-registration, wallet verification, automatic scanner deposits, balance display,
+filters, quick order, capacity publishing, pair pool creation, worker agents,
 and pay-from-balance checkout.
+
+Open the user dashboard as a separate page:
+
+```text
+http://127.0.0.1:9410/dashboard
+```
+
+The user dashboard contains account registration, wallet verification, deposit
+addresses, automatic scanner deposits, recent deposit history, and balances.
 
 ## UI Checkout Flow
 
-The dashboard supports a complete local operator flow:
+The marketplace and user dashboard support a complete local operator flow:
 
-1. Create an account in `User Dashboard`.
+1. Open `/dashboard` and create an account.
 2. Register and verify a Picoin or Ethereum wallet for that account.
 3. Send PICOIN, USDT, or USDC from the verified wallet to the marketplace deposit address.
-4. Select a pool in `Quick Order`.
+4. Return to `/` and select a pool in `Quick Order`.
 5. Create the capacity reservation.
 6. Click `Pay from confirmed balance`.
 

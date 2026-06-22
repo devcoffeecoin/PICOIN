@@ -322,7 +322,6 @@ def home() -> str:
       gap: 14px;
       align-content: start;
     }}
-    .account-section {{ order: -1; }}
     .metrics {{
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -578,6 +577,20 @@ def home() -> str:
       color: var(--ink);
       border: 1px solid var(--line);
     }}
+    .nav-button {{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 6px;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--ink);
+      padding: 8px 10px;
+      font-size: .84rem;
+      font-weight: 700;
+      text-decoration: none;
+      white-space: nowrap;
+    }}
     button:disabled {{
       background: #d7dee3;
       color: #7d8992;
@@ -623,6 +636,7 @@ def home() -> str:
     <div class="toolbar">
       <span class="pill">PICOIN / USDT / USDC</span>
       <span class="pill blue">CPU / GPU / ASIC</span>
+      <a class="nav-button" href="/dashboard">User Dashboard</a>
       <span class="status">marketplace.picoin.science</span>
     </div>
   </header>
@@ -671,62 +685,6 @@ def home() -> str:
       </section>
     </div>
     <div class="side-column">
-      <section class="account-section">
-        <div class="section-head">
-          <h2>User Dashboard</h2>
-          <span class="pill blue">scanner deposits</span>
-        </div>
-        <form id="account-form">
-          <label class="span-2">Email
-            <input name="email" value="customer@example.com" required>
-          </label>
-          <label class="span-2">Display name
-            <input name="display_name" value="Marketplace Customer">
-          </label>
-          <button class="span-2 secondary" type="submit">Create account</button>
-        </form>
-        <div class="quote-box">
-          <div class="quote-row"><span>Account</span><strong id="dashboard-account-label">Not selected</strong></div>
-          <label class="span-2">Active Account ID
-            <input id="dashboard-account-id" placeholder="acct_...">
-          </label>
-          <button id="refresh-dashboard-button" class="light" type="button">Refresh dashboard</button>
-        </div>
-        <form id="wallet-form" style="margin-top:10px">
-          <label class="span-2">Account ID
-            <input name="account_id" id="wallet-account-id" placeholder="acct_..." required>
-          </label>
-          <label>Chain
-            <select name="chain_code">
-              <option value="picoin">Picoin</option>
-              <option value="ethereum">Ethereum</option>
-            </select>
-          </label>
-          <label>Wallet
-            <input name="address" value="PI_CUSTOMER_WALLET" required>
-          </label>
-          <button class="span-2 light" type="submit">Register and verify wallet</button>
-        </form>
-        <div class="dashboard-grid" id="deposit-address-grid">
-          <div class="dashboard-box span-2"><span>Deposit addresses</span><strong>Create or select an account.</strong></div>
-        </div>
-        <div class="token-rail" id="accepted-token-rail">
-          <span class="pill">PICOIN</span><span class="pill blue">USDT</span><span class="pill blue">USDC</span>
-        </div>
-        <div class="quote-box">
-          <div class="quote-row"><span>Scanner worker</span><strong id="scanner-status-label">Waiting for account</strong></div>
-          <div class="muted">Deposits are credited automatically after the scanner sees enough confirmations.</div>
-        </div>
-        <div class="quote-box">
-          <div class="quote-row"><span>Balances</span><button id="dashboard-balances-button" class="light" type="button">Refresh</button></div>
-          <div class="balance-list" id="dashboard-balance-list"><span class="muted">No account selected.</span></div>
-        </div>
-        <div class="quote-box">
-          <div class="quote-row"><span>Recent deposits</span><span class="muted" id="deposit-count-label">0</span></div>
-          <div class="deposit-list" id="deposit-list"><span class="muted">No deposits yet.</span></div>
-        </div>
-        <pre id="account-output"></pre>
-      </section>
       <section>
         <div class="section-head">
           <h2>Quick Order</h2>
@@ -949,15 +907,17 @@ def home() -> str:
       return payload;
     }}
     function activeAccountId() {{
-      return document.getElementById('dashboard-account-id').value.trim()
-        || document.getElementById('booking-account-id').value.trim()
-        || document.getElementById('wallet-account-id').value.trim();
+      const dashboardInput = document.getElementById('dashboard-account-id');
+      const bookingInput = document.getElementById('booking-account-id');
+      const walletInput = document.getElementById('wallet-account-id');
+      return (dashboardInput?.value.trim() || bookingInput?.value.trim() || walletInput?.value.trim() || '');
     }}
     function syncAccountInputs(accountId) {{
       if (!accountId) return;
-      document.getElementById('dashboard-account-id').value = accountId;
-      document.getElementById('wallet-account-id').value = accountId;
-      document.getElementById('booking-account-id').value = accountId;
+      for (const id of ['dashboard-account-id', 'wallet-account-id', 'booking-account-id']) {{
+        const input = document.getElementById(id);
+        if (input) input.value = accountId;
+      }}
     }}
     function renderBalanceRows(rows, targetId) {{
       const target = document.getElementById(targetId);
@@ -979,6 +939,7 @@ def home() -> str:
     }}
     function renderDepositAddresses(rows) {{
       const target = document.getElementById('deposit-address-grid');
+      if (!target) return;
       if (!rows || !rows.length) {{
         target.innerHTML = '<div class="dashboard-box span-2"><span>Deposit addresses</span><strong>No active deposit rails.</strong></div>';
         return;
@@ -992,6 +953,7 @@ def home() -> str:
     }}
     function renderAcceptedTokens(rows) {{
       const target = document.getElementById('accepted-token-rail');
+      if (!target) return;
       const tokens = rows && rows.length ? rows : [
         {{token_symbol:'PICOIN', chain_code:'picoin'}},
         {{token_symbol:'USDT', chain_code:'ethereum'}},
@@ -1001,7 +963,9 @@ def home() -> str:
     }}
     function renderDeposits(rows) {{
       const target = document.getElementById('deposit-list');
-      document.getElementById('deposit-count-label').textContent = rows ? rows.length : 0;
+      if (!target) return;
+      const countLabel = document.getElementById('deposit-count-label');
+      if (countLabel) countLabel.textContent = rows ? rows.length : 0;
       if (!rows || !rows.length) {{
         target.innerHTML = '<span class="muted">No scanner deposits yet.</span>';
         return;
@@ -1016,6 +980,10 @@ def home() -> str:
     }}
     function renderDashboard(payload) {{
       const label = document.getElementById('dashboard-account-label');
+      if (!label) {{
+        renderBalances(payload ? payload.balances : null);
+        return;
+      }}
       if (!payload) {{
         label.textContent = 'Not selected';
         renderBalances(null);
@@ -1034,6 +1002,10 @@ def home() -> str:
       document.getElementById('scanner-status-label').textContent = 'Active';
     }}
     async function refreshDashboard() {{
+      if (!document.getElementById('dashboard-account-label')) {{
+        await refreshBalances();
+        return;
+      }}
       const accountId = activeAccountId();
       if (!accountId) {{
         renderDashboard(null);
@@ -1176,7 +1148,6 @@ def home() -> str:
       syncHardwareFromPool(document.getElementById('worker-pool'), document.querySelector('#worker-form [name="hardware_type"]'));
       syncPaymentChain();
       await refreshQuote();
-      await refreshDashboard();
     }}
     document.getElementById('package-grid').addEventListener('click', event => {{
       const button = event.target.closest('button[data-units]');
@@ -1276,44 +1247,7 @@ def home() -> str:
         await loadData();
       }} catch (error) {{ out('booking-output', error); }}
     }});
-    document.getElementById('account-form').addEventListener('submit', async event => {{
-      event.preventDefault();
-      try {{
-        const account = await request('/accounts', {{
-          method: 'POST',
-          headers: {{'content-type': 'application/json'}},
-          body: JSON.stringify(readForm(event.target))
-        }});
-        document.getElementById('wallet-account-id').value = account.account_id;
-        document.getElementById('booking-account-id').value = account.account_id;
-        document.getElementById('dashboard-account-id').value = account.account_id;
-        out('account-output', account);
-        await refreshDashboard();
-      }} catch (error) {{ out('account-output', error); }}
-    }});
-    document.getElementById('wallet-form').addEventListener('submit', async event => {{
-      event.preventDefault();
-      try {{
-        const payload = readForm(event.target);
-        const accountId = payload.account_id;
-        delete payload.account_id;
-        const wallet = await request(`/accounts/${{accountId}}/wallets`, {{
-          method: 'POST',
-          headers: {{'content-type': 'application/json'}},
-          body: JSON.stringify(payload)
-        }});
-        const verified = await request(`/wallets/${{wallet.wallet_id}}/verify`, {{ method: 'POST' }});
-        out('account-output', verified);
-        await refreshDashboard();
-      }} catch (error) {{ out('account-output', error); }}
-    }});
     document.getElementById('refresh-balances-button').addEventListener('click', refreshBalances);
-    document.getElementById('dashboard-balances-button').addEventListener('click', refreshDashboard);
-    document.getElementById('refresh-dashboard-button').addEventListener('click', refreshDashboard);
-    document.getElementById('dashboard-account-id').addEventListener('change', event => {{
-      syncAccountInputs(event.target.value.trim());
-      refreshDashboard();
-    }});
     document.getElementById('pay-balance-button').addEventListener('click', async () => {{
       const accountId = document.getElementById('booking-account-id').value.trim();
       const tokenSymbol = document.querySelector('#booking-form [name="payment_token_symbol"]').value;
@@ -1338,6 +1272,455 @@ def home() -> str:
       }} catch (error) {{ out('booking-output', error); }}
     }});
     loadData().catch(error => out('booking-output', error));
+  </script>
+</body>
+</html>"""
+
+
+@api.get("/dashboard", response_class=HTMLResponse)
+def user_dashboard_page() -> str:
+    return """<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Picoin User Dashboard</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3f6f8;
+      --surface: #ffffff;
+      --line: #d6dde2;
+      --ink: #17212b;
+      --muted: #667480;
+      --accent: #14746f;
+      --accent-2: #2f5d8c;
+      --soft: #edf5f4;
+      --blue-soft: #edf3fb;
+      --danger-soft: #fff1f1;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--bg);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--line);
+      padding: 13px 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+    h1 { margin: 0; font-size: 1.16rem; font-weight: 760; }
+    h2 { margin: 0; font-size: .98rem; font-weight: 760; }
+    main {
+      max-width: 1180px;
+      margin: 0 auto;
+      padding: 18px;
+      display: grid;
+      grid-template-columns: 420px minmax(0, 1fr);
+      gap: 16px;
+    }
+    .column { display: grid; gap: 14px; align-content: start; }
+    section {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 14px;
+      overflow: hidden;
+    }
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .pill {
+      background: var(--soft);
+      color: #0d5e59;
+      border: 1px solid #cce2df;
+      border-radius: 999px;
+      padding: 2px 7px;
+      font-size: .78rem;
+      white-space: nowrap;
+    }
+    .pill.blue {
+      background: var(--blue-soft);
+      color: #214f82;
+      border-color: #c9daef;
+    }
+    .muted { color: var(--muted); font-size: .82rem; }
+    form {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    label { display: grid; gap: 5px; color: var(--muted); font-size: .78rem; }
+    input, select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 9px 10px;
+      font: inherit;
+      color: var(--ink);
+      background: #fff;
+    }
+    button, .nav-button {
+      border: 0;
+      border-radius: 6px;
+      padding: 10px 12px;
+      background: var(--accent);
+      color: white;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: .88rem;
+    }
+    button.secondary { background: var(--accent-2); }
+    button.light, .nav-button.light {
+      background: #fff;
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    .span-2 { grid-column: span 2; }
+    .quote-box {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #f8fafb;
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+    }
+    .quote-row {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: .86rem;
+    }
+    .dashboard-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .dashboard-box {
+      border: 1px solid #e3e8ec;
+      background: #f8fafb;
+      border-radius: 8px;
+      padding: 9px;
+      min-height: 72px;
+      overflow-wrap: anywhere;
+    }
+    .dashboard-box span {
+      display: block;
+      color: var(--muted);
+      font-size: .72rem;
+      margin-bottom: 5px;
+    }
+    .dashboard-box strong, .dashboard-box code { font-size: .83rem; }
+    .token-rail { display: flex; gap: 6px; flex-wrap: wrap; }
+    .balance-list, .deposit-list { display: grid; gap: 6px; }
+    .balance-line {
+      display: flex;
+      justify-content: space-between;
+      gap: 8px;
+      border-bottom: 1px solid #e3e8ec;
+      padding: 6px 0;
+      font-size: .84rem;
+    }
+    .balance-line:last-child { border-bottom: 0; }
+    .deposit-line {
+      border: 1px solid #e3e8ec;
+      border-radius: 7px;
+      padding: 8px;
+      display: grid;
+      gap: 4px;
+      font-size: .79rem;
+      background: #fff;
+      overflow-wrap: anywhere;
+    }
+    .warning {
+      background: var(--danger-soft);
+      border: 1px solid #efcbcb;
+      border-radius: 8px;
+      padding: 10px;
+      color: #7a2a2a;
+      font-size: .82rem;
+    }
+    pre {
+      margin: 10px 0 0;
+      max-height: 240px;
+      overflow: auto;
+      background: #111923;
+      color: #dce8ec;
+      border-radius: 8px;
+      padding: 10px;
+      font-size: .78rem;
+    }
+    @media (max-width: 920px) {
+      header { align-items: flex-start; flex-direction: column; }
+      main { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 680px) {
+      form, .dashboard-grid { grid-template-columns: 1fr; }
+      .span-2 { grid-column: span 1; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Picoin User Dashboard</h1>
+    <div class="toolbar">
+      <span class="pill">PICOIN / USDT / USDC</span>
+      <span class="pill blue">Scanner deposits</span>
+      <a class="nav-button light" href="/">Back to marketplace</a>
+    </div>
+  </header>
+  <main>
+    <div class="column">
+      <section>
+        <div class="section-head">
+          <h2>Account</h2>
+          <span class="pill">wallets</span>
+        </div>
+        <form id="account-form">
+          <label class="span-2">Email
+            <input name="email" value="customer@example.com" required>
+          </label>
+          <label class="span-2">Display name
+            <input name="display_name" value="Marketplace Customer">
+          </label>
+          <button class="span-2 secondary" type="submit">Create account</button>
+        </form>
+        <div class="quote-box" style="margin-top:10px">
+          <div class="quote-row"><span>Active account</span><strong id="dashboard-account-label">Not selected</strong></div>
+          <label class="span-2">Account ID
+            <input id="dashboard-account-id" placeholder="acct_...">
+          </label>
+          <button id="refresh-dashboard-button" class="light" type="button">Refresh dashboard</button>
+        </div>
+      </section>
+      <section>
+        <div class="section-head">
+          <h2>Verified Wallet</h2>
+          <span class="pill blue">required</span>
+        </div>
+        <form id="wallet-form">
+          <label class="span-2">Account ID
+            <input name="account_id" id="wallet-account-id" placeholder="acct_..." required>
+          </label>
+          <label>Chain
+            <select name="chain_code">
+              <option value="picoin">Picoin</option>
+              <option value="ethereum">Ethereum</option>
+            </select>
+          </label>
+          <label>Wallet
+            <input name="address" value="PI_CUSTOMER_WALLET" required>
+          </label>
+          <button class="span-2 light" type="submit">Register and verify wallet</button>
+        </form>
+      </section>
+      <section>
+        <div class="section-head">
+          <h2>Deposit Rails</h2>
+          <span class="pill">automatic</span>
+        </div>
+        <div class="dashboard-grid" id="deposit-address-grid">
+          <div class="dashboard-box span-2"><span>Deposit addresses</span><strong>Create or select an account.</strong></div>
+        </div>
+        <div class="token-rail" id="accepted-token-rail" style="margin-top:10px">
+          <span class="pill">PICOIN</span><span class="pill blue">USDT</span><span class="pill blue">USDC</span>
+        </div>
+      </section>
+    </div>
+    <div class="column">
+      <section>
+        <div class="section-head">
+          <h2>Scanner Worker</h2>
+          <strong id="scanner-status-label" class="muted">Waiting for account</strong>
+        </div>
+        <div class="warning">Deposits are not entered manually. The worker scans Picoin history and EVM token transfers, waits for confirmations, and credits the user ledger once.</div>
+      </section>
+      <section>
+        <div class="section-head">
+          <h2>Balances</h2>
+          <button id="dashboard-balances-button" class="light" type="button">Refresh</button>
+        </div>
+        <div class="balance-list" id="dashboard-balance-list"><span class="muted">No account selected.</span></div>
+      </section>
+      <section>
+        <div class="section-head">
+          <h2>Recent Deposits</h2>
+          <span class="muted" id="deposit-count-label">0</span>
+        </div>
+        <div class="deposit-list" id="deposit-list"><span class="muted">No deposits yet.</span></div>
+      </section>
+      <section>
+        <div class="section-head">
+          <h2>Output</h2>
+          <span class="muted">API response</span>
+        </div>
+        <pre id="account-output"></pre>
+      </section>
+    </div>
+  </main>
+  <script>
+    const json = value => JSON.stringify(value, null, 2);
+    const out = (id, value) => document.getElementById(id).textContent = typeof value === 'string' ? value : json(value);
+    async function request(path, options = {}) {
+      const response = await fetch(path, options);
+      const payload = await response.json();
+      if (!response.ok) throw payload;
+      return payload;
+    }
+    function readForm(form) {
+      const data = Object.fromEntries(new FormData(form).entries());
+      for (const key of Object.keys(data)) {
+        if (data[key] === '') delete data[key];
+      }
+      return data;
+    }
+    function activeAccountId() {
+      return document.getElementById('dashboard-account-id').value.trim()
+        || document.getElementById('wallet-account-id').value.trim();
+    }
+    function syncAccountInputs(accountId) {
+      if (!accountId) return;
+      document.getElementById('dashboard-account-id').value = accountId;
+      document.getElementById('wallet-account-id').value = accountId;
+    }
+    function renderBalanceRows(rows) {
+      const target = document.getElementById('dashboard-balance-list');
+      if (!rows || !rows.length) {
+        target.innerHTML = '<span class="muted">No balances yet.</span>';
+        return;
+      }
+      target.innerHTML = rows.map(row => `
+        <div class="balance-line">
+          <span>${row.chain_code} / ${row.token_symbol}</span>
+          <strong>${row.available}</strong>
+        </div>
+      `).join('');
+    }
+    function renderDepositAddresses(rows) {
+      const target = document.getElementById('deposit-address-grid');
+      if (!rows || !rows.length) {
+        target.innerHTML = '<div class="dashboard-box span-2"><span>Deposit addresses</span><strong>No active deposit rails.</strong></div>';
+        return;
+      }
+      target.innerHTML = rows.map(row => `
+        <div class="dashboard-box">
+          <span>${row.display_name} - ${row.confirmations_required} confirmations</span>
+          <code>${row.deposit_address}</code>
+        </div>
+      `).join('');
+    }
+    function renderAcceptedTokens(rows) {
+      const tokens = rows && rows.length ? rows : [
+        {token_symbol:'PICOIN', chain_code:'picoin'},
+        {token_symbol:'USDT', chain_code:'ethereum'},
+        {token_symbol:'USDC', chain_code:'ethereum'}
+      ];
+      document.getElementById('accepted-token-rail').innerHTML = tokens.map(row => `<span class="pill ${row.chain_code === 'picoin' ? '' : 'blue'}">${row.token_symbol}</span>`).join('');
+    }
+    function renderDeposits(rows) {
+      document.getElementById('deposit-count-label').textContent = rows ? rows.length : 0;
+      const target = document.getElementById('deposit-list');
+      if (!rows || !rows.length) {
+        target.innerHTML = '<span class="muted">No scanner deposits yet.</span>';
+        return;
+      }
+      target.innerHTML = rows.map(row => `
+        <div class="deposit-line">
+          <strong>${row.token_symbol} - ${row.status} - ${row.confirmations} confirmations</strong>
+          <span>${row.amount_base_units} base units - block ${row.block_number}</span>
+          <code>${row.tx_hash}</code>
+        </div>
+      `).join('');
+    }
+    function renderDashboard(payload) {
+      const label = document.getElementById('dashboard-account-label');
+      if (!payload) {
+        label.textContent = 'Not selected';
+        renderBalanceRows(null);
+        renderDeposits(null);
+        renderDepositAddresses(null);
+        renderAcceptedTokens(null);
+        document.getElementById('scanner-status-label').textContent = 'Waiting for account';
+        return;
+      }
+      syncAccountInputs(payload.account.account_id);
+      label.textContent = payload.account.email || payload.account.account_id;
+      renderBalanceRows(payload.balances);
+      renderDeposits(payload.deposits);
+      renderDepositAddresses(payload.deposit_addresses);
+      renderAcceptedTokens(payload.accepted_tokens);
+      document.getElementById('scanner-status-label').textContent = 'Active';
+    }
+    async function refreshDashboard() {
+      const accountId = activeAccountId();
+      if (!accountId) {
+        renderDashboard(null);
+        return;
+      }
+      try {
+        const dashboard = await request(`/accounts/${accountId}/dashboard?deposit_limit=25`);
+        renderDashboard(dashboard);
+      } catch (error) {
+        out('account-output', error);
+      }
+    }
+    document.getElementById('account-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      try {
+        const account = await request('/accounts', {
+          method: 'POST',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify(readForm(event.target))
+        });
+        syncAccountInputs(account.account_id);
+        out('account-output', account);
+        await refreshDashboard();
+      } catch (error) { out('account-output', error); }
+    });
+    document.getElementById('wallet-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      try {
+        const payload = readForm(event.target);
+        const accountId = payload.account_id;
+        delete payload.account_id;
+        const wallet = await request(`/accounts/${accountId}/wallets`, {
+          method: 'POST',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        const verified = await request(`/wallets/${wallet.wallet_id}/verify`, { method: 'POST' });
+        out('account-output', verified);
+        await refreshDashboard();
+      } catch (error) { out('account-output', error); }
+    });
+    document.getElementById('dashboard-balances-button').addEventListener('click', refreshDashboard);
+    document.getElementById('refresh-dashboard-button').addEventListener('click', refreshDashboard);
+    document.getElementById('dashboard-account-id').addEventListener('change', event => {
+      syncAccountInputs(event.target.value.trim());
+      refreshDashboard();
+    });
+    const params = new URLSearchParams(location.search);
+    if (params.get('account_id')) syncAccountInputs(params.get('account_id'));
+    refreshDashboard();
   </script>
 </body>
 </html>"""
