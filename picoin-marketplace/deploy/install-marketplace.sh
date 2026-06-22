@@ -49,6 +49,7 @@ fi
 cp "${APP_DIR}/deploy/picoin-marketplace.service" /etc/systemd/system/picoin-marketplace.service
 cp "${APP_DIR}/deploy/picoin-marketplace-scanner.service" /etc/systemd/system/picoin-marketplace-scanner.service
 cp "${APP_DIR}/deploy/picoin-marketplace-maintenance.service" /etc/systemd/system/picoin-marketplace-maintenance.service
+cp "${APP_DIR}/deploy/picoin-marketplace-miner.service" /etc/systemd/system/picoin-marketplace-miner.service
 
 chown -R "${APP_USER}:${APP_USER}" "${STATE_DIR}" "${APP_DIR}" "${ENV_DIR}"
 chmod 640 "${ENV_DIR}/picoin-marketplace.env"
@@ -59,4 +60,5 @@ systemctl restart picoin-marketplace.service picoin-marketplace-scanner.service 
 
 echo "Picoin Marketplace installed."
 echo "Edit ${ENV_DIR}/picoin-marketplace.env for production addresses and RPC URLs."
+echo "Optional real miner service: configure PICOIN_MARKETPLACE_MINER_COMMAND, then enable picoin-marketplace-miner.service."
 echo "API health: curl -fsS http://127.0.0.1:9410/health"

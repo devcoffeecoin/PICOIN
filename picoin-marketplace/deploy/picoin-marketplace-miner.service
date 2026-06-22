@@ -1,0 +1,17 @@
+[Unit]
+Description=Picoin Marketplace Real Miner Worker
+After=network-online.target picoin-marketplace.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=picoin-marketplace
+Group=picoin-marketplace
+WorkingDirectory=/opt/picoin-marketplace
+EnvironmentFile=/etc/picoin-marketplace/picoin-marketplace.env
+ExecStart=/opt/picoin-marketplace/.venv/bin/picoin-marketplace-miner
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

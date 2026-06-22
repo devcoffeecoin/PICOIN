@@ -5,6 +5,8 @@ This directory contains Linux deployment artifacts for:
 - `picoin-marketplace`: FastAPI app on `127.0.0.1:9410`
 - `picoin-marketplace-scanner`: deposit scanner loop for Picoin and EVM rails
 - `picoin-marketplace-maintenance`: worker expiry and marketplace housekeeping
+- `picoin-marketplace-miner`: optional real external miner controller, for
+  example XMRig reporting into the `PICOIN/MONERO` pool
 
 ## Install
 
@@ -48,15 +50,24 @@ sudo systemctl restart picoin-marketplace picoin-marketplace-scanner
 sudo systemctl restart picoin-marketplace-maintenance
 ```
 
+The real miner service is installed but not enabled automatically. Configure
+`PICOIN_MARKETPLACE_MINER_COMMAND` first, then run:
+
+```bash
+sudo systemctl enable --now picoin-marketplace-miner
+```
+
 ## Status
 
 ```bash
 systemctl status picoin-marketplace --no-pager -l
 systemctl status picoin-marketplace-scanner --no-pager -l
 systemctl status picoin-marketplace-maintenance --no-pager -l
+systemctl status picoin-marketplace-miner --no-pager -l
 journalctl -u picoin-marketplace -f
 journalctl -u picoin-marketplace-scanner -f
 journalctl -u picoin-marketplace-maintenance -f
+journalctl -u picoin-marketplace-miner -f
 ```
 
 ## Nginx

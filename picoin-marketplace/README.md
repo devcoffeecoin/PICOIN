@@ -104,9 +104,9 @@ Open:
 http://127.0.0.1:9410/
 ```
 
-The root page is an Easy Mining style dashboard with pool cards, hardware
-filters, quick order, capacity publishing, pair pool creation, worker agents,
-and pay-from-balance checkout.
+The root page is an Easy Mining style public catalog with pool cards and
+hardware filters. Buying capacity is intentionally moved to the registered user
+dashboard.
 
 Open user access as a separate page:
 
@@ -116,8 +116,9 @@ http://127.0.0.1:9410/register
 
 Users register first with email and password, or log in with the same
 credentials. After login the UI opens the user dashboard with a signed session
-URL, where the user can verify wallets, view deposit addresses, automatic
-scanner deposits, recent deposit history, and balances.
+cookie, where the user can verify wallets, view deposit addresses, automatic
+scanner deposits, recent deposit history, balances, reserve mining capacity,
+and pay from confirmed balance.
 
 ## UI Checkout Flow
 
@@ -126,8 +127,8 @@ The marketplace and user dashboard support a complete local operator flow:
 1. Open `/register` and create an account with email and password.
 2. Register and verify a Picoin or Ethereum wallet for that account.
 3. Send PICOIN, USDT, or USDC from the verified wallet to the marketplace deposit address.
-4. Return to `/` and select a pool in `Quick Order`.
-5. Create the capacity reservation.
+4. Open the dashboard reservation panel and select a pool.
+5. Create the capacity reservation from the registered session.
 6. Click `Pay from confirmed balance`.
 
 After payment, the booking changes to `active` and the account balance is
@@ -742,6 +743,49 @@ picoin-marketplace-worker --once
 Execution reports do not release funds or change capacity by themselves. They
 give the marketplace, customer, and provider a live operational view of an
 active reservation before settlement/dispute logic is added.
+
+## Real PICOIN/MONERO Miner
+
+For a real CPU mining test, use the optional `picoin-marketplace-miner`
+controller. It does not mine by itself and it does not bundle a miner binary.
+It launches a real external process, such as `xmrig`, registers the worker in
+the `PICOIN/MONERO` pool, sends heartbeats, reads the XMRig HTTP API when
+configured, and reports live hashrate/shares against active bookings.
+
+Confirm the seeded CPU pool exists:
+
+```bash
+curl -sS "http://127.0.0.1:9410/pools?hardware_type=cpu&paired_coin=MONERO" \
+  | python -m json.tool
+```
+
+Run one real-miner tick with XMRig. Replace `MONERO_WALLET` and pool address
+with your own values:
+
+```bash
+PICOIN_MARKETPLACE_URL=http://127.0.0.1:9410 \
+PICOIN_MARKETPLACE_WORKER_ID=real-monero-1 \
+PICOIN_MARKETPLACE_WORKER_PROVIDER_ID=provider-cpu-1 \
+PICOIN_MARKETPLACE_WORKER_PROVIDER_WALLET=PI_PROVIDER_CPU \
+PICOIN_MARKETPLACE_WORKER_HARDWARE_TYPE=cpu \
+PICOIN_MARKETPLACE_WORKER_UNITS_TOTAL=1 \
+PICOIN_MARKETPLACE_WORKER_PRICE_PI_PER_HOUR=1 \
+PICOIN_MARKETPLACE_MINER_PAIRED_COIN=MONERO \
+PICOIN_MARKETPLACE_MINER_COMMAND='xmrig -o pool.supportxmr.com:443 -u MONERO_WALLET -k --tls --http-host 127.0.0.1 --http-port 18088' \
+PICOIN_MARKETPLACE_MINER_API_URL=http://127.0.0.1:18088/2/summary \
+picoin-marketplace-miner --once
+```
+
+Run continuously:
+
+```bash
+picoin-marketplace-miner
+```
+
+The controller auto-discovers the active `PICOIN/MONERO` CPU pool when
+`PICOIN_MARKETPLACE_WORKER_POOL_ID` is empty. It reports `status=online` only
+while the miner process or monitored miner API is healthy. If the miner exits,
+the marketplace listing is reported as unavailable until the process restarts.
 
 Expire stale workers:
 
