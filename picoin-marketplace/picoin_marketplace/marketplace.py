@@ -3,6 +3,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import base64
+import hashlib
+import hmac
+import secrets
 import urllib.parse
 import urllib.request
 from datetime import datetime, timedelta
@@ -14,6 +18,7 @@ from .models import (
     Account,
     AccountBalance,
     AccountCreateRequest,
+    AccountLoginRequest,
     AssignmentReport,
     AssignmentReportRequest,
     ChainCreateRequest,
@@ -83,6 +88,7 @@ DEFAULT_USDT_CONTRACT_ADDRESS = os.getenv(
     "0xdAC17F958D2ee523a2206206994597C13D831ec7",
 )
 DEFAULT_CONFIRMATIONS_REQUIRED = int(os.getenv("PICOIN_MARKETPLACE_CONFIRMATIONS_REQUIRED", "1"))
+PASSWORD_HASH_ITERATIONS = int(os.getenv("PICOIN_MARKETPLACE_PASSWORD_HASH_ITERATIONS", "210000"))
 EVM_TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
 EVM_NATIVE_LOG_INDEX = 2_147_483_647
 DEFAULT_POOL_SPECS = [
@@ -375,6 +381,7 @@ class Marketplace:
     def create_account(self, request: AccountCreateRequest) -> Account:
         now = utc_now()
         email = normalize_email(request.email)
+        password_hash = hash_password(request.password) if request.password else None
         account = Account(
             account_id="acct_" + hash_json({"email": email})[:18],
             email=email,
@@ -392,19 +399,39 @@ class Marketplace:
                     account_id,
                     email,
                     status,
+                    password_hash,
                     payload,
                     updated_at
                 )
-                VALUES (?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
                     account.account_id,
                     account.email,
                     account.status.value,
+                    password_hash,
                     account.model_dump_json(),
                     account.updated_at.isoformat(),
                 ),
             )
+        return account
+
+    def authenticate_account(self, request: AccountLoginRequest) -> Account:
+        email = normalize_email(request.email)
+        with self.storage.connect() as connection:
+            row = connection.execute(
+                "SELECT payload, password_hash FROM accounts WHERE email = ?",
+                (email,),
+            ).fetchone()
+        if row is None:
+            raise KeyError("account not found")
+        if not row["password_hash"]:
+            raise ValueError("account has no password; create a new password-enabled account")
+        if not verify_password(request.password, row["password_hash"]):
+            raise ValueError("invalid email or password")
+        account = Account.model_validate(json.loads(row["payload"]))
+        if account.status.value != "active":
+            raise ValueError("account is disabled")
         return account
 
     def get_account(self, account_id: str) -> Account:
@@ -2590,6 +2617,29 @@ def fetch_json_url(url: str) -> object:
 def split_env_list(name: str) -> list[str]:
     value = os.getenv(name, "")
     return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def hash_password(password: str) -> str:
+    salt = secrets.token_bytes(16)
+    password_bytes = password.encode("utf-8")
+    digest = hashlib.pbkdf2_hmac("sha256", password_bytes, salt, PASSWORD_HASH_ITERATIONS)
+    salt_text = base64.urlsafe_b64encode(salt).decode("ascii").rstrip("=")
+    digest_text = base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+    return f"pbkdf2_sha256${PASSWORD_HASH_ITERATIONS}${salt_text}${digest_text}"
+
+
+def verify_password(password: str, stored_hash: str) -> bool:
+    try:
+        algorithm, iterations_text, salt_text, digest_text = stored_hash.split("$", 3)
+        if algorithm != "pbkdf2_sha256":
+            return False
+        iterations = int(iterations_text)
+        salt = base64.urlsafe_b64decode(salt_text + "=" * (-len(salt_text) % 4))
+        expected = base64.urlsafe_b64decode(digest_text + "=" * (-len(digest_text) % 4))
+    except (ValueError, TypeError):
+        return False
+    actual = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, iterations)
+    return hmac.compare_digest(actual, expected)
 
 
 def evm_escrow_address() -> str:

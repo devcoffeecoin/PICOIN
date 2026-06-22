@@ -241,8 +241,21 @@ def test_user_dashboard_page_is_separate_from_marketplace_home(tmp_path, monkeyp
     assert "Create your marketplace account" in register.text
     assert "Already registered" in register.text
     assert "Register first" in register.text
+    assert 'type="password"' in register.text
 
-    response = client.get("/dashboard?account_id=acct_demo")
+    account = client.post(
+        "/accounts",
+        json={"email": "dashboard-login@example.com", "password": "secret-pass-1"},
+    ).json()
+    login = client.post(
+        "/accounts/login",
+        json={"email": "dashboard-login@example.com", "password": "secret-pass-1"},
+    ).json()
+
+    assert login["account"]["account_id"] == account["account_id"]
+    assert login["dashboard_url"].startswith(f"/dashboard?account_id={account['account_id']}&session=")
+
+    response = client.get(login["dashboard_url"])
 
     assert response.status_code == 200
     assert "Picoin User Dashboard" in response.text
@@ -255,6 +268,23 @@ def test_user_dashboard_page_is_separate_from_marketplace_home(tmp_path, monkeyp
     assert "Switch account" in response.text
     assert "Easy Mining Pools" not in response.text
     assert "Create Pair Pool" not in response.text
+
+
+def test_account_login_rejects_wrong_password(tmp_path, monkeypatch):
+    monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))
+    client = TestClient(marketplace_api.api)
+
+    client.post(
+        "/accounts",
+        json={"email": "secure@example.com", "password": "correct-pass"},
+    )
+
+    response = client.post(
+        "/accounts/login",
+        json={"email": "secure@example.com", "password": "wrong-pass-1"},
+    )
+
+    assert response.status_code == 401
 
 
 def test_seeded_pool_cards_are_visible_without_listings(tmp_path, monkeypatch):

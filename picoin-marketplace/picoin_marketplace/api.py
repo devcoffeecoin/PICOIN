@@ -2,6 +2,10 @@ from __future__ import annotations
 
 import os
 import json
+import base64
+import hashlib
+import hmac
+import time
 from pathlib import Path
 
 import uvicorn
@@ -11,6 +15,7 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from .marketplace import Marketplace, DEFAULT_STATE_DIR
 from .models import (
     AccountCreateRequest,
+    AccountLoginRequest,
     AssignmentReportRequest,
     BookingCreateRequest,
     BookingQuoteRequest,
@@ -46,6 +51,35 @@ def marketplace() -> Marketplace:
     return instance
 
 
+def dashboard_session_secret() -> bytes:
+    return os.getenv(
+        "PICOIN_MARKETPLACE_SESSION_SECRET",
+        "picoin-marketplace-local-session-secret",
+    ).encode("utf-8")
+
+
+def sign_dashboard_session(account_id: str, ttl_seconds: int = 86_400) -> str:
+    expires_at = int(time.time()) + ttl_seconds
+    payload = json.dumps({"account_id": account_id, "exp": expires_at}, separators=(",", ":")).encode("utf-8")
+    payload_text = base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+    signature = hmac.new(dashboard_session_secret(), payload_text.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{payload_text}.{signature}"
+
+
+def verify_dashboard_session(account_id: str, token: str | None) -> bool:
+    if not token or "." not in token:
+        return False
+    payload_text, signature = token.rsplit(".", 1)
+    expected = hmac.new(dashboard_session_secret(), payload_text.encode("ascii"), hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(signature, expected):
+        return False
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(payload_text + "=" * (-len(payload_text) % 4)).decode("utf-8"))
+    except (ValueError, json.JSONDecodeError):
+        return False
+    return payload.get("account_id") == account_id and int(payload.get("exp", 0)) >= int(time.time())
+
+
 @api.get("/health")
 def health() -> dict:
     return {
@@ -62,6 +96,22 @@ def create_account_api(payload: AccountCreateRequest) -> dict:
         return marketplace().create_account(payload).model_dump(mode="json")
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@api.post("/accounts/login")
+def account_login_api(payload: AccountLoginRequest) -> dict:
+    try:
+        account = marketplace().authenticate_account(payload)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+    token = sign_dashboard_session(account.account_id)
+    return {
+        "account": account.model_dump(mode="json"),
+        "dashboard_token": token,
+        "dashboard_url": f"/dashboard?account_id={account.account_id}&session={token}",
+    }
 
 
 @api.get("/accounts")
@@ -1418,6 +1468,9 @@ def register_page() -> str:
         <label>Email
           <input name="email" value="customer@example.com" required>
         </label>
+        <label>Password
+          <input name="password" type="password" minlength="8" autocomplete="new-password" required>
+        </label>
         <label>Display name
           <input name="display_name" value="Marketplace Customer">
         </label>
@@ -1427,11 +1480,14 @@ def register_page() -> str:
     <section>
       <div>
         <h2>Already registered</h2>
-        <p class="muted">Enter your account ID to open the user dashboard.</p>
+        <p class="muted">Use your email and password to open the user dashboard.</p>
       </div>
-      <form id="existing-form">
-        <label>Account ID
-          <input name="account_id" placeholder="acct_..." required>
+      <form id="login-form">
+        <label>Email
+          <input name="email" value="customer@example.com" required>
+        </label>
+        <label>Password
+          <input name="password" type="password" minlength="8" autocomplete="current-password" required>
         </label>
         <button type="submit">Open dashboard</button>
       </form>
@@ -1456,22 +1512,30 @@ def register_page() -> str:
     document.getElementById('account-form').addEventListener('submit', async event => {
       event.preventDefault();
       try {
-        const account = await request('/accounts', {
+        const payload = readForm(event.target);
+        await request('/accounts', {
+          method: 'POST',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        const login = await request('/accounts/login', {
+          method: 'POST',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify({email: payload.email, password: payload.password})
+        });
+        location.href = login.dashboard_url;
+      } catch (error) { out(error); }
+    });
+    document.getElementById('login-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      try {
+        const login = await request('/accounts/login', {
           method: 'POST',
           headers: {'content-type': 'application/json'},
           body: JSON.stringify(readForm(event.target))
         });
-        location.href = `/dashboard?account_id=${encodeURIComponent(account.account_id)}`;
+        location.href = login.dashboard_url;
       } catch (error) { out(error); }
-    });
-    document.getElementById('existing-form').addEventListener('submit', event => {
-      event.preventDefault();
-      const accountId = new FormData(event.target).get('account_id').trim();
-      if (!accountId) {
-        out('Account ID is required.');
-        return;
-      }
-      location.href = `/dashboard?account_id=${encodeURIComponent(accountId)}`;
     });
   </script>
 </body>
@@ -1479,8 +1543,8 @@ def register_page() -> str:
 
 
 @api.get("/dashboard", response_class=HTMLResponse)
-def user_dashboard_page(account_id: str | None = None):
-    if not account_id:
+def user_dashboard_page(account_id: str | None = None, session: str | None = None):
+    if not account_id or not verify_dashboard_session(account_id, session):
         return RedirectResponse(url="/register", status_code=303)
     account_id_json = json.dumps(account_id)
     html = """<!doctype html>

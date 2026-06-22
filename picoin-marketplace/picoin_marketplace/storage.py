@@ -251,3 +251,9 @@ class MarketplaceStorage:
                     ON scanner_checkpoints(chain_code, updated_at);
                 """
             )
+            columns = {
+                row[1]
+                for row in connection.execute("PRAGMA table_info(accounts)").fetchall()
+            }
+            if "password_hash" not in columns:
+                connection.execute("ALTER TABLE accounts ADD COLUMN password_hash TEXT")

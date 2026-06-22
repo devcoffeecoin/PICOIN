@@ -114,16 +114,16 @@ Open user access as a separate page:
 http://127.0.0.1:9410/register
 ```
 
-Users register first or enter an existing account ID. After registration the UI
-opens the user dashboard at `/dashboard?account_id=...`, where the user can
-verify wallets, view deposit addresses, automatic scanner deposits, recent
-deposit history, and balances.
+Users register first with email and password, or log in with the same
+credentials. After login the UI opens the user dashboard with a signed session
+URL, where the user can verify wallets, view deposit addresses, automatic
+scanner deposits, recent deposit history, and balances.
 
 ## UI Checkout Flow
 
 The marketplace and user dashboard support a complete local operator flow:
 
-1. Open `/register` and create an account.
+1. Open `/register` and create an account with email and password.
 2. Register and verify a Picoin or Ethereum wallet for that account.
 3. Send PICOIN, USDT, or USDC from the verified wallet to the marketplace deposit address.
 4. Return to `/` and select a pool in `Quick Order`.
