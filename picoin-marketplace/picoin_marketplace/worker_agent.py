@@ -8,8 +8,15 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any
 
-from .models import HardwareType, WorkerStatus, utc_now
+from .models import ExecutionStatus, HardwareType, WorkerStatus, utc_now
 from .scanner_worker import env_int
+
+
+def env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None or not value.strip():
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
 def env_float(name: str, default: float) -> float:
@@ -48,6 +55,12 @@ class WorkerAgentConfig:
     agent_version: str = "0.1.0"
     status: WorkerStatus = WorkerStatus.ONLINE
     metrics: dict[str, Any] = field(default_factory=dict)
+    report_assignments: bool = False
+    report_status: ExecutionStatus = ExecutionStatus.RUNNING
+    reported_hashrate: float | None = None
+    accepted_shares: int | None = None
+    rejected_shares: int | None = None
+    uptime_seconds: int | None = None
 
 
 def config_from_env() -> WorkerAgentConfig:
@@ -71,6 +84,20 @@ def config_from_env() -> WorkerAgentConfig:
         endpoint_url=os.getenv("PICOIN_MARKETPLACE_WORKER_ENDPOINT_URL") or None,
         agent_version=os.getenv("PICOIN_MARKETPLACE_WORKER_AGENT_VERSION", "0.1.0"),
         status=WorkerStatus(os.getenv("PICOIN_MARKETPLACE_WORKER_STATUS", "online").lower()),
+        report_assignments=env_bool("PICOIN_MARKETPLACE_WORKER_REPORT_ASSIGNMENTS", False),
+        report_status=ExecutionStatus(os.getenv("PICOIN_MARKETPLACE_WORKER_REPORT_STATUS", "running").lower()),
+        reported_hashrate=env_float("PICOIN_MARKETPLACE_WORKER_HASHRATE", 0.0)
+        if os.getenv("PICOIN_MARKETPLACE_WORKER_HASHRATE")
+        else None,
+        accepted_shares=env_int("PICOIN_MARKETPLACE_WORKER_ACCEPTED_SHARES", 0)
+        if os.getenv("PICOIN_MARKETPLACE_WORKER_ACCEPTED_SHARES")
+        else None,
+        rejected_shares=env_int("PICOIN_MARKETPLACE_WORKER_REJECTED_SHARES", 0)
+        if os.getenv("PICOIN_MARKETPLACE_WORKER_REJECTED_SHARES")
+        else None,
+        uptime_seconds=env_int("PICOIN_MARKETPLACE_WORKER_UPTIME_SECONDS", 0)
+        if os.getenv("PICOIN_MARKETPLACE_WORKER_UPTIME_SECONDS")
+        else None,
     )
 
 
@@ -150,6 +177,33 @@ def fetch_assignments(config: WorkerAgentConfig, worker_id: str) -> list[dict[st
     return [item for item in data if isinstance(item, dict)]
 
 
+def assignment_report_payload(config: WorkerAgentConfig) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "status": config.report_status.value,
+        "metrics": config.metrics,
+    }
+    optional = {
+        "reported_hashrate": config.reported_hashrate,
+        "accepted_shares": config.accepted_shares,
+        "rejected_shares": config.rejected_shares,
+        "uptime_seconds": config.uptime_seconds,
+    }
+    for key, value in optional.items():
+        if value is not None:
+            payload[key] = value
+    return payload
+
+
+def report_assignment(config: WorkerAgentConfig, worker_id: str, assignment: dict[str, Any]) -> dict[str, Any]:
+    booking_id = str(assignment.get("booking_id") or "").strip()
+    if not booking_id:
+        raise ValueError("assignment booking_id is required")
+    return json_post(
+        f"{config.marketplace_url}/workers/{worker_id}/assignments/{booking_id}/reports",
+        assignment_report_payload(config),
+    )
+
+
 def run_once(config: WorkerAgentConfig, *, register: bool = True, worker_id: str | None = None) -> dict[str, Any]:
     started_at = utc_now()
     registered: dict[str, Any] | None = None
@@ -161,6 +215,9 @@ def run_once(config: WorkerAgentConfig, *, register: bool = True, worker_id: str
         raise ValueError("worker_id is required when registration is disabled")
     heartbeat = heartbeat_worker(config, active_worker_id)
     assignments = fetch_assignments(config, active_worker_id)
+    reports: list[dict[str, Any]] = []
+    if config.report_assignments:
+        reports = [report_assignment(config, active_worker_id, assignment) for assignment in assignments]
     return {
         "service": "picoin-marketplace-worker",
         "started_at": started_at.isoformat(),
@@ -170,6 +227,8 @@ def run_once(config: WorkerAgentConfig, *, register: bool = True, worker_id: str
         "heartbeat": heartbeat,
         "assignments": assignments,
         "assignment_count": len(assignments),
+        "reports": reports,
+        "report_count": len(reports),
     }
 
 
@@ -214,6 +273,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--region", default=None)
     parser.add_argument("--capability", action="append", default=None)
     parser.add_argument("--status", choices=[item.value for item in WorkerStatus], default=None)
+    parser.add_argument("--report-assignments", action="store_true", default=None)
+    parser.add_argument("--report-status", choices=[item.value for item in ExecutionStatus], default=None)
+    parser.add_argument("--reported-hashrate", type=float, default=None)
+    parser.add_argument("--accepted-shares", type=int, default=None)
+    parser.add_argument("--rejected-shares", type=int, default=None)
+    parser.add_argument("--uptime-seconds", type=int, default=None)
     return parser
 
 
@@ -238,6 +303,12 @@ def config_from_args(args: argparse.Namespace) -> WorkerAgentConfig:
         agent_version=base.agent_version,
         status=WorkerStatus(args.status or base.status.value),
         metrics=base.metrics,
+        report_assignments=base.report_assignments if args.report_assignments is None else args.report_assignments,
+        report_status=ExecutionStatus(args.report_status or base.report_status.value),
+        reported_hashrate=args.reported_hashrate if args.reported_hashrate is not None else base.reported_hashrate,
+        accepted_shares=args.accepted_shares if args.accepted_shares is not None else base.accepted_shares,
+        rejected_shares=args.rejected_shares if args.rejected_shares is not None else base.rejected_shares,
+        uptime_seconds=args.uptime_seconds if args.uptime_seconds is not None else base.uptime_seconds,
     )
 
 

@@ -325,6 +325,26 @@ def test_worker_registration_and_heartbeat_manage_capacity(tmp_path, monkeypatch
     assert heartbeat["listing"]["units_available"] == 1
     assert heartbeat["listing"]["status"] == "active"
 
+    report = client.post(
+        f"/workers/worker-gpu-1/assignments/{booking['booking_id']}/reports",
+        json={
+            "status": "running",
+            "reported_hashrate": 125.5,
+            "accepted_shares": 42,
+            "rejected_shares": 1,
+            "uptime_seconds": 600,
+            "message": "running kawpow split",
+            "metrics": {"temperature_c": 64},
+        },
+    ).json()
+    assert report["worker_id"] == "worker-gpu-1"
+    assert report["booking_id"] == booking["booking_id"]
+    assert report["status"] == "running"
+    assert report["reported_hashrate"] == 125.5
+    assert report["accepted_shares"] == 42
+    assert report["pair_symbol"] == "PICO/RAVENCOIN"
+    assert 0 <= report["progress_percent"] <= 100
+
     paused = client.post(
         "/workers/worker-gpu-1/heartbeat",
         json={"status": "paused", "units_total": 3, "units_available": 3},
@@ -344,6 +364,12 @@ def test_worker_registration_and_heartbeat_manage_capacity(tmp_path, monkeypatch
     assert assignments[0]["pair_symbol"] == "PICO/RAVENCOIN"
     assert assignments[0]["picoin_capacity_units"] == 0.2
     assert assignments[0]["paired_capacity_units"] == 1.8
+    assert assignments[0]["latest_report"]["report_id"] == report["report_id"]
+    assert assignments[0]["latest_report"]["accepted_shares"] == 42
+
+    reports = client.get(f"/assignment-reports?worker_id=worker-gpu-1&booking_id={booking['booking_id']}").json()
+    assert len(reports) == 1
+    assert reports[0]["report_id"] == report["report_id"]
 
     settlement = client.post(f"/settlements/bookings/{booking['booking_id']}").json()
     assert settlement["status"] == "accrued"

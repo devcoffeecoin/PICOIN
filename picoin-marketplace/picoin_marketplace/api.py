@@ -10,6 +10,7 @@ from fastapi.responses import HTMLResponse
 from .marketplace import Marketplace, DEFAULT_STATE_DIR
 from .models import (
     AccountCreateRequest,
+    AssignmentReportRequest,
     BookingCreateRequest,
     BookingQuoteRequest,
     ChainCreateRequest,
@@ -580,6 +581,16 @@ def home() -> str:
           <tbody id="listing-rows"></tbody>
         </table>
       </section>
+      <section>
+        <div class="section-head">
+          <h2>Live Execution</h2>
+          <span class="muted" id="report-count-label"></span>
+        </div>
+        <table class="mini-table">
+          <thead><tr><th>Worker</th><th>Pair</th><th>Status</th><th>Progress</th><th>Hashrate</th><th>Shares</th><th>Updated</th></tr></thead>
+          <tbody id="report-rows"></tbody>
+        </table>
+      </section>
     </div>
     <div class="side-column">
       <section>
@@ -944,12 +955,13 @@ def home() -> str:
       }}
     }}
     async function loadData() {{
-      const [summary, pools, cards, listings, workers] = await Promise.all([
+      const [summary, pools, cards, listings, workers, reports] = await Promise.all([
         request('/summary'),
         request('/pools?active_only=true&limit=100'),
         request('/pool-cards?active_only=true&limit=100'),
         request('/listings?active_only=true&limit=100'),
-        request('/workers?limit=100')
+        request('/workers?limit=100'),
+        request('/assignment-reports?limit=25')
       ]);
       cardData = cards;
       document.getElementById('metric-pools').textContent = summary.active_pool_count;
@@ -973,6 +985,17 @@ def home() -> str:
           <td><code>${{item.pool_id.slice(0, 12)}}</code></td>
           <td>${{item.last_seen_at ? item.last_seen_at.replace('T', ' ').slice(0, 19) : '-'}}</td>
         </tr>`).join('') : '<tr><td colspan="4" class="muted">No workers registered yet.</td></tr>';
+      document.getElementById('report-count-label').textContent = `${{reports.length}} recent`;
+      document.getElementById('report-rows').innerHTML = reports.length ? reports.map(item => `
+        <tr>
+          <td>${{item.worker_id}}</td>
+          <td><code>${{item.pair_symbol}}</code></td>
+          <td>${{item.status}}</td>
+          <td>${{item.progress_percent}}%</td>
+          <td>${{item.reported_hashrate ?? '-'}}</td>
+          <td>${{item.accepted_shares ?? 0}} / ${{item.rejected_shares ?? 0}}</td>
+          <td>${{item.created_at ? item.created_at.replace('T', ' ').slice(0, 19) : '-'}}</td>
+        </tr>`).join('') : '<tr><td colspan="7" class="muted">No execution reports yet.</td></tr>';
       for (const selectId of ['listing-pool', 'booking-pool', 'worker-pool']) {{
         const select = document.getElementById(selectId);
         const current = select.value;
@@ -1311,6 +1334,32 @@ def worker_assignments_api(worker_id: str, active_only: bool = True, limit: int 
         ]
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@api.post("/workers/{worker_id}/assignments/{booking_id}/reports")
+def report_assignment_api(worker_id: str, booking_id: str, payload: AssignmentReportRequest) -> dict:
+    try:
+        return marketplace().report_assignment(worker_id, booking_id, payload).model_dump(mode="json")
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@api.get("/assignment-reports")
+def assignment_reports_api(
+    worker_id: str | None = None,
+    booking_id: str | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    return [
+        report.model_dump(mode="json")
+        for report in marketplace().list_assignment_reports(
+            worker_id=worker_id,
+            booking_id=booking_id,
+            limit=limit,
+        )
+    ]
 
 
 @api.post("/workers/maintenance/expire-stale")

@@ -5,7 +5,7 @@ import os
 import re
 import urllib.parse
 import urllib.request
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_CEILING
 from pathlib import Path
 
@@ -14,12 +14,15 @@ from .models import (
     Account,
     AccountBalance,
     AccountCreateRequest,
+    AssignmentReport,
+    AssignmentReportRequest,
     ChainCreateRequest,
     ChainDefinition,
     ChainFamily,
     ConfirmationProcessRequest,
     Deposit,
     DepositStatus,
+    ExecutionStatus,
     EvmNativeTransferPollRequest,
     EvmTokenTransferImportRequest,
     EvmTokenTransferPollRequest,
@@ -1532,6 +1535,7 @@ class Marketplace:
         assignments: list[WorkerAssignment] = []
         for row in rows:
             booking = Booking.model_validate(json.loads(row["payload"]))
+            latest_report = self.latest_assignment_report(booking_id=booking.booking_id)
             assignments.append(
                 WorkerAssignment(
                     assignment_id="assign_" + hash_json({"worker_id": worker.worker_id, "booking_id": booking.booking_id})[:18],
@@ -1556,10 +1560,132 @@ class Marketplace:
                     expires_at=booking.expires_at,
                     created_at=booking.created_at,
                     updated_at=booking.updated_at,
+                    progress_percent=self.booking_progress_percent(booking),
+                    latest_report=latest_report.model_dump(mode="json") if latest_report else None,
                     metadata=booking.metadata,
                 )
             )
         return assignments
+
+    def booking_progress_percent(self, booking: Booking, *, now: datetime | None = None) -> float:
+        if booking.status != BookingStatus.ACTIVE or booking.starts_at is None or booking.expires_at is None:
+            return 0.0
+        current = now if now is not None else utc_now()
+        total_seconds = (booking.expires_at - booking.starts_at).total_seconds()
+        if total_seconds <= 0:
+            return 100.0
+        elapsed_seconds = (current - booking.starts_at).total_seconds()
+        return round(max(0.0, min(100.0, elapsed_seconds * 100.0 / total_seconds)), 2)
+
+    def report_assignment(
+        self,
+        worker_id: str,
+        booking_id: str,
+        request: AssignmentReportRequest,
+    ) -> AssignmentReport:
+        worker = self.get_worker(worker_id)
+        booking = self.get_booking(booking_id)
+        if booking.listing_id != worker.listing_id:
+            raise ValueError("booking is not assigned to this worker")
+        if booking.status != BookingStatus.ACTIVE:
+            raise ValueError("booking is not active")
+        now = utc_now()
+        report = AssignmentReport(
+            report_id="report_"
+            + hash_json(
+                {
+                    "worker_id": worker.worker_id,
+                    "booking_id": booking.booking_id,
+                    "created_at": now.isoformat(),
+                }
+            )[:18],
+            worker_id=worker.worker_id,
+            booking_id=booking.booking_id,
+            listing_id=booking.listing_id,
+            pool_id=booking.pool_id,
+            provider_id=booking.provider_id,
+            requester_wallet=booking.requester_wallet,
+            hardware_type=booking.hardware_type,
+            pair_symbol=booking.pair_symbol,
+            paired_coin=booking.paired_coin,
+            status=request.status,
+            reported_hashrate=request.reported_hashrate,
+            accepted_shares=request.accepted_shares,
+            rejected_shares=request.rejected_shares,
+            uptime_seconds=request.uptime_seconds,
+            progress_percent=self.booking_progress_percent(booking, now=now),
+            message=request.message,
+            metrics=request.metrics,
+            created_at=now,
+        )
+        self.put_assignment_report(report)
+        return report
+
+    def put_assignment_report(self, report: AssignmentReport) -> None:
+        with self.storage.connect() as connection:
+            connection.execute(
+                """
+                INSERT INTO assignment_reports (
+                    report_id,
+                    worker_id,
+                    booking_id,
+                    listing_id,
+                    provider_id,
+                    pool_id,
+                    status,
+                    payload,
+                    created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(report_id) DO UPDATE SET
+                    status = excluded.status,
+                    payload = excluded.payload
+                """,
+                (
+                    report.report_id,
+                    report.worker_id,
+                    report.booking_id,
+                    report.listing_id,
+                    report.provider_id,
+                    report.pool_id,
+                    report.status.value,
+                    report.model_dump_json(),
+                    report.created_at.isoformat(),
+                ),
+            )
+
+    def list_assignment_reports(
+        self,
+        *,
+        worker_id: str | None = None,
+        booking_id: str | None = None,
+        limit: int = 100,
+    ) -> list[AssignmentReport]:
+        safe_limit = max(1, min(int(limit), 1000))
+        params: list[object] = []
+        query = "SELECT payload FROM assignment_reports"
+        clauses: list[str] = []
+        if worker_id:
+            clauses.append("worker_id = ?")
+            params.append(worker_id.strip())
+        if booking_id:
+            clauses.append("booking_id = ?")
+            params.append(booking_id.strip())
+        if clauses:
+            query += " WHERE " + " AND ".join(clauses)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(safe_limit)
+        with self.storage.connect() as connection:
+            rows = connection.execute(query, params).fetchall()
+        return [AssignmentReport.model_validate(json.loads(row["payload"])) for row in rows]
+
+    def latest_assignment_report(
+        self,
+        *,
+        booking_id: str,
+    ) -> AssignmentReport | None:
+        reports = self.list_assignment_reports(booking_id=booking_id, limit=1)
+        return reports[0] if reports else None
 
     def expire_stale_workers(self, *, stale_after_seconds: int = 120, limit: int = 1000) -> dict[str, object]:
         cutoff_seconds = max(0, int(stale_after_seconds))

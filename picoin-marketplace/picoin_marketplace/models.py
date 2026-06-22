@@ -53,6 +53,13 @@ class SettlementStatus(str, Enum):
     CANCELED = "canceled"
 
 
+class ExecutionStatus(str, Enum):
+    RUNNING = "running"
+    PAUSED = "paused"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
 class PoolStatus(str, Enum):
     ACTIVE = "active"
     PAUSED = "paused"
@@ -508,7 +515,41 @@ class WorkerAssignment(BaseModel):
     expires_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
+    progress_percent: float = 0.0
+    latest_report: dict[str, Any] | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+
+class AssignmentReportRequest(BaseModel):
+    status: ExecutionStatus = ExecutionStatus.RUNNING
+    reported_hashrate: float | None = Field(default=None, ge=0.0)
+    accepted_shares: int | None = Field(default=None, ge=0)
+    rejected_shares: int | None = Field(default=None, ge=0)
+    uptime_seconds: int | None = Field(default=None, ge=0)
+    message: str | None = Field(default=None, max_length=500)
+    metrics: dict[str, Any] = Field(default_factory=dict)
+
+
+class AssignmentReport(BaseModel):
+    report_id: str
+    worker_id: str
+    booking_id: str
+    listing_id: str
+    pool_id: str
+    provider_id: str
+    requester_wallet: str
+    hardware_type: HardwareType
+    pair_symbol: str
+    paired_coin: str
+    status: ExecutionStatus = ExecutionStatus.RUNNING
+    reported_hashrate: float | None = None
+    accepted_shares: int | None = None
+    rejected_shares: int | None = None
+    uptime_seconds: int | None = None
+    progress_percent: float = 0.0
+    message: str | None = None
+    metrics: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime = Field(default_factory=utc_now)
 
 
 class ProviderSettlement(BaseModel):

@@ -671,6 +671,48 @@ curl -sS "http://127.0.0.1:9410/workers/worker-gpu-1/assignments?active_only=fal
   | python -m json.tool
 ```
 
+Report active execution for a booking:
+
+```bash
+curl -sS -X POST \
+  http://127.0.0.1:9410/workers/worker-gpu-1/assignments/booking_FROM_ASSIGNMENT/reports \
+  -H 'content-type: application/json' \
+  -d '{
+    "status": "running",
+    "reported_hashrate": 125.5,
+    "accepted_shares": 42,
+    "rejected_shares": 1,
+    "uptime_seconds": 600,
+    "metrics": {
+      "temperature_c": 64
+    }
+  }' | python -m json.tool
+```
+
+Inspect execution reports:
+
+```bash
+curl -sS "http://127.0.0.1:9410/assignment-reports?worker_id=worker-gpu-1&limit=25" \
+  | python -m json.tool
+```
+
+The worker agent keeps assignment reports disabled by default for backward
+compatibility. Enable them when the local mining controller can provide live
+runtime metrics:
+
+```bash
+PICOIN_MARKETPLACE_WORKER_REPORT_ASSIGNMENTS=1 \
+PICOIN_MARKETPLACE_WORKER_HASHRATE=125.5 \
+PICOIN_MARKETPLACE_WORKER_ACCEPTED_SHARES=42 \
+PICOIN_MARKETPLACE_WORKER_REJECTED_SHARES=1 \
+PICOIN_MARKETPLACE_WORKER_UPTIME_SECONDS=600 \
+picoin-marketplace-worker --once
+```
+
+Execution reports do not release funds or change capacity by themselves. They
+give the marketplace, customer, and provider a live operational view of an
+active reservation before settlement/dispute logic is added.
+
 Expire stale workers:
 
 ```bash

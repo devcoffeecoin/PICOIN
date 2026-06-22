@@ -69,6 +69,57 @@ def test_worker_agent_requires_worker_id_without_registration(monkeypatch):
         run_once(config, register=False)
 
 
+def test_worker_agent_can_report_active_assignments(monkeypatch):
+    calls = []
+
+    def fake_json_post(url, payload):
+        calls.append((url, payload))
+        if url.endswith("/workers/worker-gpu-1/heartbeat"):
+            return {"worker": {"worker_id": "worker-gpu-1", "status": "online"}, "listing": {"units_available": 1}}
+        if url.endswith("/workers/worker-gpu-1/assignments/booking-1/reports"):
+            return {"report_id": "report-1", "booking_id": "booking-1", "status": payload["status"]}
+        raise AssertionError(url)
+
+    monkeypatch.setattr("picoin_marketplace.worker_agent.json_post", fake_json_post)
+    monkeypatch.setattr(
+        "picoin_marketplace.worker_agent.json_get",
+        lambda url: [{"assignment_id": "assign-1", "booking_id": "booking-1"}],
+    )
+    config = WorkerAgentConfig(
+        marketplace_url="http://marketplace.local",
+        worker_id="worker-gpu-1",
+        provider_id="provider-gpu-1",
+        provider_wallet="PI_PROVIDER_GPU",
+        pool_id="pool_gpu_raven",
+        hardware_type=HardwareType.GPU,
+        units_total=1,
+        units_available=1,
+        report_assignments=True,
+        reported_hashrate=125.5,
+        accepted_shares=42,
+        rejected_shares=1,
+        uptime_seconds=600,
+        metrics={"temperature_c": 64},
+    )
+
+    result = run_once(config, register=False)
+
+    assert calls[0][0] == "http://marketplace.local/workers/worker-gpu-1/heartbeat"
+    assert calls[1] == (
+        "http://marketplace.local/workers/worker-gpu-1/assignments/booking-1/reports",
+        {
+            "status": "running",
+            "metrics": {"temperature_c": 64},
+            "reported_hashrate": 125.5,
+            "accepted_shares": 42,
+            "rejected_shares": 1,
+            "uptime_seconds": 600,
+        },
+    )
+    assert result["report_count"] == 1
+    assert result["reports"][0]["report_id"] == "report-1"
+
+
 def test_worker_agent_config_from_env(monkeypatch):
     monkeypatch.setenv("PICOIN_MARKETPLACE_URL", "http://marketplace.local")
     monkeypatch.setenv("PICOIN_MARKETPLACE_WORKER_ID", "worker-cpu-1")

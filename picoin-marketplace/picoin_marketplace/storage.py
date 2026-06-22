@@ -76,6 +76,27 @@ class MarketplaceStorage:
                 CREATE INDEX IF NOT EXISTS idx_workers_pool_status
                     ON workers(pool_id, status, updated_at);
 
+                CREATE TABLE IF NOT EXISTS assignment_reports (
+                    report_id TEXT PRIMARY KEY,
+                    worker_id TEXT NOT NULL,
+                    booking_id TEXT NOT NULL,
+                    listing_id TEXT NOT NULL,
+                    provider_id TEXT NOT NULL,
+                    pool_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    payload TEXT NOT NULL,
+                    created_at TEXT NOT NULL
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_assignment_reports_worker
+                    ON assignment_reports(worker_id, created_at);
+
+                CREATE INDEX IF NOT EXISTS idx_assignment_reports_booking
+                    ON assignment_reports(booking_id, created_at);
+
+                CREATE INDEX IF NOT EXISTS idx_assignment_reports_listing
+                    ON assignment_reports(listing_id, created_at);
+
                 CREATE TABLE IF NOT EXISTS bookings (
                     booking_id TEXT PRIMARY KEY,
                     pool_id TEXT NOT NULL,
