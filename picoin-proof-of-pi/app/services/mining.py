@@ -2953,6 +2953,38 @@ def _competitive_task_id(miner_id: str, assignment: dict[str, Any], params: dict
     return f"task_{digest[:16]}"
 
 
+def _competitive_retry_task_id(
+    connection: Any,
+    miner_id: str,
+    assignment: dict[str, Any],
+    params: dict[str, Any],
+) -> str:
+    for retry_index in range(1, 1000):
+        digest = sha256_text(
+            canonical_json(
+                {
+                    "mode": COMPETITIVE_ROUND_ASSIGNMENT_MODE,
+                    "retry_index": retry_index,
+                    "network_id": NETWORK_ID,
+                    "chain_id": CHAIN_ID,
+                    "miner_id": miner_id,
+                    "height": int(assignment.get("round_height") or 0),
+                    "previous_hash": assignment.get("previous_hash"),
+                    "assignment_seed": assignment.get("assignment_seed"),
+                    "range_start": int(assignment["range_start"]),
+                    "range_end": int(assignment["range_end"]),
+                    "algorithm": params["algorithm"],
+                    "protocol_params_id": params["id"],
+                }
+            )
+        )
+        task_id = f"task_{digest[:16]}"
+        existing = connection.execute("SELECT 1 FROM tasks WHERE task_id = ?", (task_id,)).fetchone()
+        if existing is None:
+            return task_id
+    raise MiningError(429, "competitive round retry limit reached; retry after next block")
+
+
 def create_next_task(
     miner_id: str,
     *,
@@ -3065,7 +3097,11 @@ def create_next_task(
                     assignment,
                     params,
                 )
-                return _task_for_next_response(connection, revived_task or existing_round_task)
+                if revived_task is not None:
+                    return _task_for_next_response(connection, revived_task)
+                if str(existing_round_task.get("status") or "") in {"assigned", "committed", "revealed"}:
+                    return _task_for_next_response(connection, existing_round_task)
+                task_id = _competitive_retry_task_id(connection, miner_id, assignment, params)
         else:
             task_id = f"task_{uuid.uuid4().hex[:16]}"
             assignment = _assign_pseudo_random_range(connection, miner_id, task_id, params)
@@ -3723,6 +3759,88 @@ def _close_obsolete_competitive_validation_jobs(connection: Any) -> int:
         if _mark_competitive_task_stale(connection, task["task_id"], reason):
             closed_jobs += pending_jobs
     return closed_jobs
+
+
+def _close_terminal_validation_tasks(connection: Any) -> int:
+    rows = connection.execute(
+        """
+        SELECT
+            tasks.task_id,
+            validation_jobs.status AS job_status,
+            validation_jobs.result_reason,
+            validation_jobs.completed_at,
+            validation_jobs.finalized_at
+        FROM tasks
+        JOIN validation_jobs ON validation_jobs.task_id = tasks.task_id
+        WHERE tasks.status = 'revealed'
+          AND validation_jobs.status IN ('approved', 'rejected', 'expired')
+        ORDER BY validation_jobs.completed_at ASC, validation_jobs.created_at ASC
+        """
+    ).fetchall()
+    closed = 0
+    for row in rows:
+        task_id = row["task_id"]
+        job_status = str(row["job_status"] or "")
+        timestamp = row["finalized_at"] or row["completed_at"] or utc_now()
+        if job_status == "approved":
+            block = connection.execute("SELECT 1 FROM blocks WHERE task_id = ? LIMIT 1", (task_id,)).fetchone()
+            if block is not None:
+                cursor = connection.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'accepted',
+                        submitted_at = COALESCE(submitted_at, ?)
+                    WHERE task_id = ?
+                      AND status = 'revealed'
+                    """,
+                    (timestamp, task_id),
+                )
+            else:
+                reason = row["result_reason"] or "approved validation job did not finalize canonical block"
+                cursor = connection.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'expired',
+                        submitted_at = COALESCE(submitted_at, ?),
+                        stale_at = COALESCE(stale_at, ?),
+                        stale_reason = COALESCE(stale_reason, ?)
+                    WHERE task_id = ?
+                      AND status = 'revealed'
+                    """,
+                    (timestamp, timestamp, reason, task_id),
+                )
+                release_selected_transactions(connection, task_id, reason, timestamp)
+        elif job_status == "rejected":
+            reason = row["result_reason"] or "validation job rejected"
+            cursor = connection.execute(
+                """
+                UPDATE tasks
+                SET status = 'rejected',
+                    submitted_at = COALESCE(submitted_at, ?),
+                    stale_reason = COALESCE(stale_reason, ?)
+                WHERE task_id = ?
+                  AND status = 'revealed'
+                """,
+                (timestamp, reason, task_id),
+            )
+            release_selected_transactions(connection, task_id, reason, timestamp)
+        else:
+            reason = row["result_reason"] or "validation job expired"
+            cursor = connection.execute(
+                """
+                UPDATE tasks
+                SET status = 'expired',
+                    submitted_at = COALESCE(submitted_at, ?),
+                    stale_at = COALESCE(stale_at, ?),
+                    stale_reason = COALESCE(stale_reason, ?)
+                WHERE task_id = ?
+                  AND status = 'revealed'
+                """,
+                (timestamp, timestamp, reason, task_id),
+            )
+            release_selected_transactions(connection, task_id, reason, timestamp)
+        closed += max(0, cursor.rowcount)
+    return closed
 
 
 def _competitive_round_pending_candidate(connection: Any, task: dict[str, Any]) -> dict[str, Any] | None:
@@ -7290,6 +7408,7 @@ def _reject_in_connection(
 
 def _expire_assigned_tasks(connection: Any) -> dict[str, int]:
     released_assignments = _release_timed_out_validation_assignments(connection)
+    closed_terminal_tasks = _close_terminal_validation_tasks(connection)
     closed_competitive_jobs = _close_obsolete_competitive_validation_jobs(connection)
     expired_rows = connection.execute(
         """
@@ -7361,6 +7480,7 @@ def _expire_assigned_tasks(connection: Any) -> dict[str, int]:
         "expired_tasks": max(0, task_cursor.rowcount) + revealed_expired_count,
         "expired_validation_jobs": job_expired_count,
         "released_validation_assignments": released_assignments,
+        "closed_terminal_validation_tasks": closed_terminal_tasks,
         "closed_competitive_validation_jobs": closed_competitive_jobs,
     }
 
@@ -7374,6 +7494,7 @@ def _maybe_expire_assigned_tasks(connection: Any) -> dict[str, Any]:
             "expired_tasks": 0,
             "expired_validation_jobs": 0,
             "released_validation_assignments": 0,
+            "closed_terminal_validation_tasks": 0,
             "closed_competitive_validation_jobs": 0,
             "skipped": "recent",
         }
@@ -7382,6 +7503,7 @@ def _maybe_expire_assigned_tasks(connection: Any) -> dict[str, Any]:
             "expired_tasks": 0,
             "expired_validation_jobs": 0,
             "released_validation_assignments": 0,
+            "closed_terminal_validation_tasks": 0,
             "closed_competitive_validation_jobs": 0,
             "skipped": "already_running",
         }
@@ -7392,6 +7514,7 @@ def _maybe_expire_assigned_tasks(connection: Any) -> dict[str, Any]:
                 "expired_tasks": 0,
                 "expired_validation_jobs": 0,
                 "released_validation_assignments": 0,
+                "closed_terminal_validation_tasks": 0,
                 "closed_competitive_validation_jobs": 0,
                 "skipped": "recent",
             }

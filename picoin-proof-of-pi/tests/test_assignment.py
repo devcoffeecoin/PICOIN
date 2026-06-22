@@ -990,6 +990,97 @@ def test_competitive_round_reactivates_expired_uncommitted_task(tmp_path, monkey
     assert job_count == 0
 
 
+def test_competitive_round_terminal_task_does_not_block_retry_assignment(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-competitive-terminal-retry.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr(mining_service, "MINING_TASK_MODE", "competitive_round")
+    init_db(db_path)
+
+    keys = generate_keypair()
+    miner = register_miner("competitive-terminal-retry", keys["public_key"])
+    first = create_next_task(miner["miner_id"])
+
+    with get_connection() as connection:
+        connection.execute(
+            """
+            UPDATE tasks
+            SET status = 'rejected',
+                submitted_at = '2026-06-22T15:00:00+00:00',
+                stale_reason = 'terminal task from same round'
+            WHERE task_id = ?
+            """,
+            (first["task_id"],),
+        )
+
+    retry = create_next_task(miner["miner_id"])
+
+    assert retry["status"] == "assigned"
+    assert retry["task_id"] != first["task_id"]
+    assert retry["assignment_mode"] == "competitive_round"
+    assert retry["assignment_seed"] == first["assignment_seed"]
+    assert retry["range_start"] == first["range_start"]
+    assert retry["range_end"] == first["range_end"]
+    with get_connection() as connection:
+        rows = connection.execute(
+            """
+            SELECT status
+            FROM tasks
+            WHERE miner_id = ?
+            ORDER BY created_at ASC
+            """,
+            (miner["miner_id"],),
+        ).fetchall()
+    assert [row["status"] for row in rows] == ["rejected", "assigned"]
+
+
+def test_cleanup_closes_revealed_task_after_terminal_validation_job(tmp_path, monkeypatch) -> None:
+    db_path = tmp_path / "assignment-terminal-validation-cleanup.sqlite3"
+    monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
+    monkeypatch.setattr("app.core.settings.DATABASE_PATH", db_path)
+    monkeypatch.setattr(mining_service, "MINING_TASK_MODE", "competitive_round")
+    init_db(db_path)
+
+    keys = generate_keypair()
+    miner = register_miner("terminal-validation-cleanup", keys["public_key"])
+    task = create_next_task(miner["miner_id"])
+
+    with get_connection() as connection:
+        connection.execute("UPDATE tasks SET status = 'revealed' WHERE task_id = ?", (task["task_id"],))
+        connection.execute(
+            """
+            INSERT INTO validation_jobs (
+                job_id, task_id, miner_id, result_hash, merkle_root, challenge_seed,
+                samples, status, result_reason, created_at, completed_at, finalized_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, '[]', 'approved', ?, ?, ?, ?)
+            """,
+            (
+                "job_terminal_validation_cleanup",
+                task["task_id"],
+                miner["miner_id"],
+                "a" * 64,
+                "b" * 64,
+                "c" * 64,
+                "external validator accepted samples",
+                "2026-06-22T15:00:00+00:00",
+                "2026-06-22T15:01:00+00:00",
+                "2026-06-22T15:01:00+00:00",
+            ),
+        )
+
+    result = cleanup_expired_tasks()
+
+    assert result["closed_terminal_validation_tasks"] == 1
+    with get_connection() as connection:
+        row = connection.execute(
+            "SELECT status, stale_reason FROM tasks WHERE task_id = ?",
+            (task["task_id"],),
+        ).fetchone()
+    assert row["status"] == "expired"
+    assert "accepted samples" in row["stale_reason"]
+
+
 def test_competitive_round_reveal_reactivates_expired_committed_task(tmp_path, monkeypatch) -> None:
     db_path = tmp_path / "assignment-competitive-expired-committed-reveal.sqlite3"
     monkeypatch.setattr("app.db.database.DATABASE_PATH", db_path)
