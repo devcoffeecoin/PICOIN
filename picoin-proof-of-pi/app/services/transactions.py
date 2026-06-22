@@ -18,7 +18,9 @@ from app.core.settings import (
     MIN_VALIDATOR_STAKE,
     MIN_TX_FEE_UNITS,
     NETWORK_ID,
+    PROTOCOL_VERSION,
     SCIENCE_MAX_PENDING_PER_REQUESTER,
+    VALIDATOR_REGISTRATION_STAKE,
 )
 from app.core.signatures import verify_payload_signature
 from app.db.database import row_to_dict
@@ -507,6 +509,7 @@ def apply_block_transactions(
             tx,
             expected_nonce_by_sender,
             allow_nonce_gap=canonical_replay,
+            allow_missing_validator_registration=canonical_replay,
         )
         if reason:
             raise TransactionExecutionError(f"block transaction {tx['tx_hash']} is invalid: {reason}")
@@ -515,7 +518,13 @@ def apply_block_transactions(
             _apply_transfer_transaction(connection, tx, block_height, timestamp)
         elif tx["tx_type"] == "stake":
             if _is_validator_stake_tx(tx):
-                _apply_validator_stake_transaction(connection, tx, block_height, timestamp)
+                _apply_validator_stake_transaction(
+                    connection,
+                    tx,
+                    block_height,
+                    timestamp,
+                    canonical_replay=canonical_replay,
+                )
             else:
                 _apply_science_stake_transaction(connection, tx, block_height, timestamp)
         elif tx["tx_type"] == "unstake":
@@ -804,6 +813,7 @@ def _transaction_rejection_reason(
     reserved_faucet_timestamps_by_sender: dict[str, list[datetime]] | None = None,
     *,
     allow_nonce_gap: bool = False,
+    allow_missing_validator_registration: bool = False,
 ) -> str | None:
     if tx["tx_type"] not in SUPPORTED_BLOCK_TX_TYPES:
         return "unsupported transaction type for block execution"
@@ -828,7 +838,11 @@ def _transaction_rejection_reason(
     if tx["tx_type"] == "transfer":
         return _transfer_rejection_reason(tx)
     if tx["tx_type"] == "stake":
-        return _stake_rejection_reason(connection, tx)
+        return _stake_rejection_reason(
+            connection,
+            tx,
+            allow_missing_validator_registration=allow_missing_validator_registration,
+        )
     if tx["tx_type"] == "unstake":
         return _unstake_rejection_reason(connection, tx)
     if tx["tx_type"] == "science_job_create":
@@ -914,10 +928,19 @@ def _validator_stake_validator_id(tx: dict[str, Any]) -> str:
     return str(payload.get("validator_id") or tx.get("recipient") or "").strip()
 
 
-def _stake_rejection_reason(connection: Any, tx: dict[str, Any]) -> str | None:
+def _stake_rejection_reason(
+    connection: Any,
+    tx: dict[str, Any],
+    *,
+    allow_missing_validator_registration: bool = False,
+) -> str | None:
     stake_type = _stake_type(tx)
     if stake_type == "validator":
-        return _validator_stake_rejection_reason(connection, tx)
+        return _validator_stake_rejection_reason(
+            connection,
+            tx,
+            allow_missing_registration=allow_missing_validator_registration,
+        )
     if stake_type != "science":
         return "unsupported stake_type"
     amount = round(float(tx.get("amount", 0)), 8)
@@ -969,7 +992,12 @@ def _unstake_rejection_reason(connection: Any, tx: dict[str, Any]) -> str | None
     return None
 
 
-def _validator_stake_rejection_reason(connection: Any, tx: dict[str, Any]) -> str | None:
+def _validator_stake_rejection_reason(
+    connection: Any,
+    tx: dict[str, Any],
+    *,
+    allow_missing_registration: bool = False,
+) -> str | None:
     if _tx_amount_units(tx) <= 0:
         return "validator stake amount must be positive"
     validator_id = _validator_stake_validator_id(tx)
@@ -982,6 +1010,8 @@ def _validator_stake_rejection_reason(connection: Any, tx: dict[str, Any]) -> st
         ).fetchone()
     )
     if validator is None:
+        if allow_missing_registration:
+            return None
         return "validator stake requires registered validator"
     stake_owner = str(validator.get("stake_owner_address") or "").strip()
     wallet_stake_units = to_units(validator.get("wallet_stake_locked") or 0)
@@ -1314,12 +1344,21 @@ def _apply_science_unstake_transaction(connection: Any, tx: dict[str, Any], bloc
     unstake_science_access_in_connection(connection, sender, timestamp=timestamp)
 
 
-def _apply_validator_stake_transaction(connection: Any, tx: dict[str, Any], block_height: int, timestamp: str) -> None:
+def _apply_validator_stake_transaction(
+    connection: Any,
+    tx: dict[str, Any],
+    block_height: int,
+    timestamp: str,
+    *,
+    canonical_replay: bool = False,
+) -> None:
     amount_units = _tx_amount_units(tx)
     fee_units = _tx_fee_units(tx)
     amount = units_to_float(amount_units)
     sender = tx["sender"]
     validator_id = _validator_stake_validator_id(tx)
+    if canonical_replay:
+        _ensure_canonical_replay_validator_registration(connection, tx, timestamp)
     _apply_account_delta(
         connection,
         sender,
@@ -1342,7 +1381,7 @@ def _apply_validator_stake_transaction(connection: Any, tx: dict[str, Any], bloc
         f"validator stake lock from {sender}",
         timestamp,
     )
-    connection.execute(
+    updated = connection.execute(
         """
         UPDATE validators
         SET stake_locked = ROUND(stake_locked + ?, 8),
@@ -1355,6 +1394,59 @@ def _apply_validator_stake_transaction(connection: Any, tx: dict[str, Any], bloc
         WHERE validator_id = ?
         """,
         (amount, amount, sender, timestamp, validator_id),
+    )
+    if updated.rowcount == 0:
+        raise TransactionExecutionError("validator stake requires registered validator")
+
+
+def _ensure_canonical_replay_validator_registration(connection: Any, tx: dict[str, Any], timestamp: str) -> None:
+    validator_id = _validator_stake_validator_id(tx)
+    if not validator_id.startswith("validator_"):
+        return
+    existing = connection.execute(
+        "SELECT validator_id FROM validators WHERE validator_id = ?",
+        (validator_id,),
+    ).fetchone()
+    if existing is not None:
+        return
+
+    payload = tx.get("payload") if isinstance(tx.get("payload"), dict) else {}
+    name = str(
+        payload.get("validator_name")
+        or payload.get("name")
+        or f"canonical-replay:{validator_id}"
+    )[:80]
+    public_key = str(
+        payload.get("validator_public_key")
+        or payload.get("public_key")
+        or f"ed25519:canonical-replay:{validator_id}"
+    )[:256]
+    reward_address = str(payload.get("reward_address") or "").strip() or None
+    if reward_address and not is_valid_address(reward_address):
+        reward_address = None
+
+    connection.execute(
+        """
+        INSERT INTO validators (
+            validator_id, name, public_key, reward_address, registered_at,
+            last_seen_at, last_heartbeat_at, online_status, sync_status,
+            reason_if_not_eligible, protocol_version, enabled, stake_locked,
+            wallet_stake_locked, stake_owner_address
+        )
+        VALUES (?, ?, ?, ?, ?, ?, NULL, 'offline', 'unknown',
+                'canonical replay placeholder awaiting validator heartbeat',
+                ?, 1, ?, 0, NULL)
+        """,
+        (
+            validator_id,
+            name,
+            public_key,
+            reward_address,
+            timestamp,
+            timestamp,
+            PROTOCOL_VERSION,
+            VALIDATOR_REGISTRATION_STAKE,
+        ),
     )
 
 
