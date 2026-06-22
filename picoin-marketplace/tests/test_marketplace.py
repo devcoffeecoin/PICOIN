@@ -21,12 +21,12 @@ def test_gpu_listing_booking_payment_and_release(tmp_path, monkeypatch):
         json={
             "hardware_type": "gpu",
             "paired_coin": "monero",
-            "name": "GPU PICO/MONERO pool",
+            "name": "GPU PICOIN/MONERO pool",
         },
     )
     assert pool_response.status_code == 200
     pool = pool_response.json()
-    assert pool["pair_symbol"] == "PICO/MONERO"
+    assert pool["pair_symbol"] == "PICOIN/MONERO"
     assert pool["picoin_capacity_percent"] == 10.0
     assert pool["paired_capacity_percent"] == 90.0
 
@@ -49,10 +49,10 @@ def test_gpu_listing_booking_payment_and_release(tmp_path, monkeypatch):
     )
     assert listing_response.status_code == 200
     listing = listing_response.json()
-    assert listing["currency"] == "PICO"
+    assert listing["currency"] == "PICOIN"
     assert listing["hardware_type"] == "gpu"
     assert listing["pool_id"] == pool["pool_id"]
-    assert listing["pair_symbol"] == "PICO/MONERO"
+    assert listing["pair_symbol"] == "PICOIN/MONERO"
     assert listing["units_available"] == 2
 
     booking_response = client.post(
@@ -70,12 +70,12 @@ def test_gpu_listing_booking_payment_and_release(tmp_path, monkeypatch):
     booking = payload["booking"]
     payment = payload["payment"]
     assert booking["status"] == "awaiting_payment"
-    assert booking["currency"] == "PICO"
-    assert booking["pair_symbol"] == "PICO/MONERO"
+    assert booking["currency"] == "PICOIN"
+    assert booking["pair_symbol"] == "PICOIN/MONERO"
     assert booking["picoin_capacity_units"] == 0.1
     assert booking["paired_capacity_units"] == 0.9
     assert booking["amount_pi"] == 3.1416
-    assert payment["currency"] == "PICO"
+    assert payment["currency"] == "PICOIN"
     assert payment["amount_pi"] == 3.1416
     assert payment["pay_to_address"] == "PI_ESCROW_MARKET"
     assert payment["memo"] == booking["booking_id"]
@@ -151,10 +151,10 @@ def test_summary_counts_cpu_gpu_and_asic(tmp_path, monkeypatch):
 
     summary = client.get("/summary").json()
 
-    assert summary["currency"] == "PICO"
+    assert summary["currency"] == "PICOIN"
     assert summary["active_pool_count"] == 3
     assert summary["active_listing_count"] == 3
-    assert summary["active_pairs"] == ["PICO/DOGE", "PICO/LITECOIN", "PICO/RAVENCOIN"]
+    assert summary["active_pairs"] == ["PICOIN/DOGE", "PICOIN/LITECOIN", "PICOIN/RAVENCOIN"]
     assert summary["total_units_by_hardware"] == {"cpu": 3, "gpu": 3, "asic": 3}
     assert summary["available_units_by_hardware"] == {"cpu": 3, "gpu": 3, "asic": 3}
 
@@ -188,10 +188,17 @@ def test_default_pools_are_seeded(tmp_path, monkeypatch):
     assert response.status_code == 200
     pairs = sorted((pool["hardware_type"], pool["pair_symbol"]) for pool in response.json())
     assert pairs == [
-        ("asic", "PICO/DOGE"),
-        ("asic", "PICO/LITECOIN"),
-        ("cpu", "PICO/MONERO"),
-        ("gpu", "PICO/RAVENCOIN"),
+        ("asic", "PICOIN/DOGE"),
+        ("asic", "PICOIN/LITECOIN"),
+        ("cpu", "PICOIN/DAGGER"),
+        ("cpu", "PICOIN/ETICA"),
+        ("cpu", "PICOIN/MONERO"),
+        ("cpu", "PICOIN/QUANTUMR"),
+        ("gpu", "PICOIN/ETC"),
+        ("gpu", "PICOIN/KARLSEN"),
+        ("gpu", "PICOIN/PEARL"),
+        ("gpu", "PICOIN/RAVENCOIN"),
+        ("gpu", "PICOIN/ZANO"),
     ]
 
 
@@ -211,7 +218,8 @@ def test_home_returns_operator_dashboard(tmp_path, monkeypatch):
     assert "Worker Agents" in response.text
     assert "Register worker" in response.text
     assert "Pay from confirmed balance" in response.text
-    assert "Accounts & Deposits" in response.text
+    assert "User Registration & Wallets" in response.text
+    assert "Register and verify wallet" in response.text
 
 
 def test_pool_cards_show_availability_and_price(tmp_path, monkeypatch):
@@ -228,7 +236,7 @@ def test_pool_cards_show_availability_and_price(tmp_path, monkeypatch):
     ).json()
 
     empty_cards = client.get("/pool-cards").json()
-    assert empty_cards[0]["pair_symbol"] == "PICO/RAVENCOIN"
+    assert empty_cards[0]["pair_symbol"] == "PICOIN/RAVENCOIN"
     assert empty_cards[0]["available_units"] == 0
     assert empty_cards[0]["can_book"] is False
     assert empty_cards[0]["status"] == "waiting_capacity"
@@ -342,7 +350,7 @@ def test_worker_registration_and_heartbeat_manage_capacity(tmp_path, monkeypatch
     assert report["status"] == "running"
     assert report["reported_hashrate"] == 125.5
     assert report["accepted_shares"] == 42
-    assert report["pair_symbol"] == "PICO/RAVENCOIN"
+    assert report["pair_symbol"] == "PICOIN/RAVENCOIN"
     assert 0 <= report["progress_percent"] <= 100
 
     paused = client.post(
@@ -361,7 +369,7 @@ def test_worker_registration_and_heartbeat_manage_capacity(tmp_path, monkeypatch
     assert len(assignments) == 1
     assert assignments[0]["booking_id"] == booking["booking_id"]
     assert assignments[0]["status"] == "active"
-    assert assignments[0]["pair_symbol"] == "PICO/RAVENCOIN"
+    assert assignments[0]["pair_symbol"] == "PICOIN/RAVENCOIN"
     assert assignments[0]["picoin_capacity_units"] == 0.2
     assert assignments[0]["paired_capacity_units"] == 1.8
     assert assignments[0]["latest_report"]["report_id"] == report["report_id"]
@@ -378,7 +386,7 @@ def test_worker_registration_and_heartbeat_manage_capacity(tmp_path, monkeypatch
     assert settlement["gross_amount_base_units"] == "4000000"
     assert settlement["fee_amount_base_units"] == "40000"
     assert settlement["provider_amount_base_units"] == "3960000"
-    assert settlement["currency"] == "PICO"
+    assert settlement["currency"] == "PICOIN"
 
     duplicate_settlement = client.post(f"/settlements/bookings/{booking['booking_id']}").json()
     assert duplicate_settlement["settlement_id"] == settlement["settlement_id"]
@@ -467,7 +475,7 @@ def test_account_picoin_deposit_confirmation_and_balance_payment(tmp_path, monke
 
     deposit_payload = {
         "chain_code": "picoin",
-        "token_symbol": "PICO",
+        "token_symbol": "PICOIN",
         "from_address": "PI_CUSTOMER_WALLET",
         "to_address": "PI_MARKETPLACE_ESCROW",
         "amount_base_units": "10000000",
@@ -486,7 +494,7 @@ def test_account_picoin_deposit_confirmation_and_balance_payment(tmp_path, monke
     assert processed["credited"] == 1
 
     balances = client.get(f"/accounts/{account['account_id']}/balances").json()
-    pico_balance = next(row for row in balances if row["token_symbol"] == "PICO")
+    pico_balance = next(row for row in balances if row["token_symbol"] == "PICOIN")
     assert pico_balance["available_base_units"] == "10000000"
     assert pico_balance["available"] == "10"
 
@@ -521,20 +529,20 @@ def test_account_picoin_deposit_confirmation_and_balance_payment(tmp_path, monke
 
     paid = client.post(
         f"/payments/{payment['payment_id']}/pay-from-balance",
-        json={"account_id": account["account_id"], "chain_code": "picoin", "token_symbol": "PICO"},
+        json={"account_id": account["account_id"], "chain_code": "picoin", "token_symbol": "PICOIN"},
     ).json()
     assert paid["booking"]["status"] == "active"
     assert paid["payment"]["status"] == "confirmed"
     assert paid["ledger_entry"]["direction"] == "debit"
 
     balances_after = client.get(f"/accounts/{account['account_id']}/balances").json()
-    pico_after = next(row for row in balances_after if row["token_symbol"] == "PICO")
+    pico_after = next(row for row in balances_after if row["token_symbol"] == "PICOIN")
     assert pico_after["available_base_units"] == "6858400"
 
 def test_ethereum_token_deposit_can_pay_marketplace_booking(tmp_path, monkeypatch):
     monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("PICOIN_MARKETPLACE_SEED_DEFAULT_POOLS", "0")
-    monkeypatch.setenv("PICOIN_MARKETPLACE_ETH_PICO_RATE", "1000")
+    monkeypatch.setenv("PICOIN_MARKETPLACE_ETH_PICOIN_RATE", "1000")
     monkeypatch.setenv("PICOIN_MARKETPLACE_ETH_CONFIRMATIONS", "3")
     monkeypatch.setenv("PICOIN_MARKETPLACE_EVM_ESCROW_ADDRESS", "0x2222222222222222222222222222222222222222")
     client = TestClient(marketplace_api.api)
@@ -654,7 +662,7 @@ def test_picoin_history_import_scans_confirmed_deposits(tmp_path, monkeypatch):
     assert duplicate["confirmation_result"]["credited"] == 0
 
     balances = client.get(f"/accounts/{account['account_id']}/balances").json()
-    pico_balance = next(row for row in balances if row["token_symbol"] == "PICO")
+    pico_balance = next(row for row in balances if row["token_symbol"] == "PICOIN")
     assert pico_balance["available_base_units"] == "2500000"
 
 
@@ -725,7 +733,7 @@ def test_evm_token_transfer_log_import_credits_verified_wallet(tmp_path, monkeyp
             "decimals": 6,
             "token_type": "erc20",
             "contract_address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "pico_rate": 1,
+            "picoin_rate": 1,
         },
     ).json()
     assert token["token_symbol"] == "USDC"
@@ -785,7 +793,7 @@ def test_evm_token_transfer_poll_uses_rpc_logs(tmp_path, monkeypatch):
             "decimals": 18,
             "token_type": "erc20",
             "contract_address": "0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-            "pico_rate": 2,
+            "picoin_rate": 2,
         },
     )
 

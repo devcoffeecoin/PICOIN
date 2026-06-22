@@ -4,14 +4,14 @@ from datetime import datetime, timedelta, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 def utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
 
-PICO_CURRENCY = "PICO"
+PICOIN_CURRENCY = "PICOIN"
 
 
 class HardwareType(str, Enum):
@@ -133,13 +133,21 @@ class TokenCreateRequest(BaseModel):
     decimals: int = Field(default=18, ge=0, le=36)
     token_type: str = Field(default="native", max_length=32)
     contract_address: str | None = Field(default=None, max_length=128)
-    pico_rate: float | None = Field(
+    picoin_rate: float | None = Field(
         default=None,
         gt=0,
-        description="How many PICO one whole token buys; required for paying bookings with this token.",
+        description="How many PICOIN one whole token buys; required for paying bookings with this token.",
     )
     enabled: bool = True
     metadata: dict[str, Any] = Field(default_factory=dict)
+
+    @model_validator(mode="before")
+    @classmethod
+    def accept_legacy_pico_rate(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "picoin_rate" not in data and "pico_rate" in data:
+            data = dict(data)
+            data["picoin_rate"] = data["pico_rate"]
+        return data
 
 
 class TokenDefinition(TokenCreateRequest):
@@ -268,7 +276,7 @@ class AccountBalance(BaseModel):
 class PayFromBalanceRequest(BaseModel):
     account_id: str = Field(min_length=1, max_length=80)
     chain_code: str = Field(default="picoin", min_length=2, max_length=32)
-    token_symbol: str = Field(default=PICO_CURRENCY, min_length=2, max_length=24)
+    token_symbol: str = Field(default=PICOIN_CURRENCY, min_length=2, max_length=24)
 
 
 class MiningPoolCreateRequest(BaseModel):
@@ -283,7 +291,7 @@ class MiningPoolCreateRequest(BaseModel):
 class MiningPool(BaseModel):
     pool_id: str
     hardware_type: HardwareType
-    base_coin: str = PICO_CURRENCY
+    base_coin: str = PICOIN_CURRENCY
     paired_coin: str
     pair_symbol: str
     name: str
@@ -331,7 +339,7 @@ class Listing(BaseModel):
     units_available: int
     price_pi_per_hour: float
     min_booking_minutes: int
-    currency: str = PICO_CURRENCY
+    currency: str = PICOIN_CURRENCY
     region: str | None = None
     capabilities: list[str] = Field(default_factory=list)
     cpu_threads: int | None = None
@@ -401,7 +409,7 @@ class BookingCreateRequest(BaseModel):
     account_id: str | None = Field(default=None, max_length=80)
     requester_wallet: str = Field(min_length=10, max_length=96)
     payment_chain_code: str = Field(default="picoin", min_length=2, max_length=32)
-    payment_token_symbol: str = Field(default=PICO_CURRENCY, min_length=2, max_length=24)
+    payment_token_symbol: str = Field(default=PICOIN_CURRENCY, min_length=2, max_length=24)
     hardware_type: HardwareType | None = None
     pool_id: str | None = Field(default=None, max_length=80)
     paired_coin: str | None = Field(default=None, max_length=24)
@@ -438,7 +446,7 @@ class BookingQuote(BaseModel):
     duration_minutes: int
     price_pi_per_hour: float
     amount_pi: float
-    currency: str = PICO_CURRENCY
+    currency: str = PICOIN_CURRENCY
     picoin_capacity_percent: float
     paired_capacity_percent: float
     picoin_capacity_units: float
@@ -450,11 +458,11 @@ class BookingQuote(BaseModel):
 class PaymentOrder(BaseModel):
     payment_id: str
     booking_id: str
-    currency: str = PICO_CURRENCY
+    currency: str = PICOIN_CURRENCY
     amount_pi: float
     amount_base_units: str | None = None
     payment_chain_code: str = "picoin"
-    payment_token_symbol: str = PICO_CURRENCY
+    payment_token_symbol: str = PICOIN_CURRENCY
     account_id: str | None = None
     pay_to_address: str
     memo: str
@@ -480,7 +488,7 @@ class Booking(BaseModel):
     units: int
     duration_minutes: int
     amount_pi: float
-    currency: str = PICO_CURRENCY
+    currency: str = PICOIN_CURRENCY
     picoin_capacity_units: float = 0.0
     paired_capacity_units: float = 0.0
     status: BookingStatus = BookingStatus.AWAITING_PAYMENT
@@ -568,7 +576,7 @@ class ProviderSettlement(BaseModel):
     gross_amount_base_units: str
     fee_amount_base_units: str
     provider_amount_base_units: str
-    currency: str = PICO_CURRENCY
+    currency: str = PICOIN_CURRENCY
     status: SettlementStatus = SettlementStatus.ACCRUED
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
@@ -591,13 +599,13 @@ class MarketplaceSummary(BaseModel):
     available_units_by_hardware: dict[str, int]
     booked_units_by_hardware: dict[str, int]
     active_pairs: list[str]
-    currency: str = PICO_CURRENCY
+    currency: str = PICOIN_CURRENCY
 
 
 class PoolCard(BaseModel):
     pool_id: str
     hardware_type: HardwareType
-    base_coin: str = PICO_CURRENCY
+    base_coin: str = PICOIN_CURRENCY
     paired_coin: str
     pair_symbol: str
     name: str

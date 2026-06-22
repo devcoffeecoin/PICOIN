@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "picoin-marketplace"
 version = "0.1.0"
-description = "Marketplace app for renting CPU, GPU, and ASIC capacity priced in Picoin and payable with PICO or approved Ethereum tokens."
+description = "Marketplace app for renting CPU, GPU, and ASIC capacity priced in Picoin and payable with PICOIN or approved Ethereum tokens."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [

@@ -14,13 +14,13 @@ the marketplace operator.
 ## Core Rule
 
 ```text
-pricing_currency = PICO
-accepted_payment_rails = PICO + approved EVM tokens
+pricing_currency = PICOIN
+accepted_payment_rails = PICOIN + approved EVM tokens
 ```
 
-The marketplace prices capacity in PICO. A customer can fund an account with
-PICO or an approved Ethereum token such as ETH/ERC20, and the marketplace
-converts the booking invoice through the token's configured `pico_rate`.
+The marketplace prices capacity in PICOIN. A customer can fund an account with
+PICOIN or an approved Ethereum token such as ETH/ERC20, and the marketplace
+converts the booking invoice through the token's configured `picoin_rate`.
 
 The paired coins are not payment currencies. They define how the rented mining
 capacity is split inside each pool.
@@ -30,25 +30,32 @@ capacity is split inside each pool.
 Each pool is defined by:
 
 - one hardware type: `cpu`, `gpu`, or `asic`
-- one paired mining target: for example `MONERO`, `DOGE`, `RAVENCOIN`, or `LITECOIN`
-- one pair symbol: `PICO/MONERO`, `PICO/DOGE`, `PICO/RAVENCOIN`, `PICO/LITECOIN`
+- one paired mining target: for example `MONERO`, `QUANTUMR`, `DAGGER`, `ETICA`, `ZANO`, `ETC`, `PEARL`, `KARLSEN`, `DOGE`, or `LITECOIN`
+- one pair symbol: for example `PICOIN/MONERO`, `PICOIN/ETC`, `PICOIN/ZANO`, or `PICOIN/KARLSEN`
 - one capacity split: default `10%` Picoin and `90%` paired coin
 - payment rails: Picoin native plus approved Ethereum tokens
 
 Example pairs:
 
 ```text
-CPU  PICO/MONERO
-GPU  PICO/RAVENCOIN
-ASIC PICO/DOGE
-ASIC PICO/LITECOIN
+CPU  PICOIN/MONERO
+CPU  PICOIN/QUANTUMR
+CPU  PICOIN/DAGGER
+CPU  PICOIN/ETICA
+GPU  PICOIN/RAVENCOIN
+GPU  PICOIN/ZANO
+GPU  PICOIN/ETC
+GPU  PICOIN/PEARL
+GPU  PICOIN/KARLSEN
+ASIC PICOIN/DOGE
+ASIC PICOIN/LITECOIN
 ```
 
-These four pools are seeded by default on startup. Set
+These pools are seeded by default on startup. Set
 `PICOIN_MARKETPLACE_SEED_DEFAULT_POOLS=0` to disable default pool creation.
 
 The default policy means that when a customer reserves 10 GPU units from a
-`PICO/RAVENCOIN` pool, the booking records:
+`PICOIN/RAVENCOIN` pool, the booking records:
 
 ```text
 1.0 GPU unit  -> Picoin support capacity
@@ -61,11 +68,11 @@ rate.
 
 ## MVP Flow
 
-1. An operator creates a paired pool such as `PICO/MONERO`.
+1. An operator creates a paired pool such as `PICOIN/MONERO`.
 2. A provider publishes CPU, GPU, or ASIC capacity into that pool.
 3. A customer creates a booking request for a pool or hardware type.
 4. The marketplace selects capacity and creates a payment order.
-5. The customer deposits PICO or an approved Ethereum token into the marketplace
+5. The customer deposits PICOIN or an approved Ethereum token into the marketplace
    deposit address.
 6. The scanner records the deposit, waits for confirmations, and credits the
    account ledger once.
@@ -107,7 +114,7 @@ pay-from-balance checkout.
 
 The dashboard supports a complete local operator flow:
 
-1. Create an account in `Accounts & Deposits`.
+1. Create an account in `User Registration & Wallets`.
 2. Register and verify a Picoin or Ethereum wallet for that account.
 3. Record a scanner deposit and process confirmations.
 4. Select a pool in `Quick Order`.
@@ -125,7 +132,7 @@ PICOIN_MARKETPLACE_ESCROW_ADDRESS=PI_MARKETPLACE_ESCROW
 PICOIN_MARKETPLACE_EVM_ESCROW_ADDRESS=0x0000000000000000000000000000000000000000
 PICOIN_MARKETPLACE_CONFIRMATIONS_REQUIRED=1
 PICOIN_MARKETPLACE_ETH_CONFIRMATIONS=12
-PICOIN_MARKETPLACE_ETH_PICO_RATE=1000
+PICOIN_MARKETPLACE_ETH_PICOIN_RATE=1000
 PICOIN_MARKETPLACE_ETH_RPC_URLS=
 PICOIN_MARKETPLACE_FEE_PERCENT=1
 PICOIN_MARKETPLACE_PAYMENT_WINDOW_MINUTES=30
@@ -363,7 +370,7 @@ curl -sS -X POST http://127.0.0.1:9410/scanner/deposits \
   -H 'content-type: application/json' \
   -d '{
     "chain_code": "picoin",
-    "token_symbol": "PICO",
+    "token_symbol": "PICOIN",
     "from_address": "PI_CUSTOMER_WALLET",
     "to_address": "PI_MARKETPLACE_ESCROW",
     "amount_base_units": "10000000",
@@ -437,7 +444,7 @@ curl -sS -X POST http://127.0.0.1:9410/tokens \
     "decimals": 6,
     "token_type": "erc20",
     "contract_address": "0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48",
-    "pico_rate": 1
+    "picoin_rate": 1
   }' | python -m json.tool
 ```
 
@@ -499,7 +506,7 @@ curl -sS -X POST http://127.0.0.1:9410/payments/PAYMENT_ID/pay-from-balance \
   -d '{
     "account_id": "ACCOUNT_ID",
     "chain_code": "picoin",
-    "token_symbol": "PICO"
+    "token_symbol": "PICOIN"
   }' | python -m json.tool
 ```
 
@@ -515,13 +522,13 @@ curl -sS -X POST http://127.0.0.1:9410/settlements/bookings/BOOKING_ID \
   | python -m json.tool
 ```
 
-Settlements are idempotent by `booking_id`. Amounts are PICO-denominated:
+Settlements are idempotent by `booking_id`. Amounts are PICOIN-denominated:
 
 ```text
 gross_amount_base_units
 fee_amount_base_units
 provider_amount_base_units
-currency=PICO
+currency=PICOIN
 ```
 
 Set the marketplace fee:
@@ -545,7 +552,7 @@ curl -sS -X POST http://127.0.0.1:9410/pools \
   -d '{
     "hardware_type": "gpu",
     "paired_coin": "ravencoin",
-    "name": "GPU PICO/RAVENCOIN pool",
+    "name": "GPU PICOIN/RAVENCOIN pool",
     "picoin_capacity_percent": 10,
     "paired_capacity_percent": 90
   }' | python -m json.tool
@@ -577,7 +584,7 @@ can_book
 ```
 
 This is the marketplace-facing layer for a NiceHash EasyMining-like flow:
-choose the pair, choose units and duration, then reserve and pay in PICO.
+choose the pair, choose units and duration, then reserve and pay in PICOIN.
 
 ## Worker Agents
 
@@ -783,7 +790,7 @@ curl -sS -X POST http://127.0.0.1:9410/bookings \
     "units": 1,
     "duration_minutes": 60,
     "payment_chain_code": "picoin",
-    "payment_token_symbol": "PICO",
+    "payment_token_symbol": "PICOIN",
     "required_capabilities": ["llm", "cuda"]
   }' | python -m json.tool
 ```
@@ -792,10 +799,10 @@ The response contains:
 
 ```text
 booking.status = awaiting_payment
-booking.pair_symbol = PICO/RAVENCOIN
+booking.pair_symbol = PICOIN/RAVENCOIN
 booking.picoin_capacity_percent = 10
 booking.paired_capacity_percent = 90
-payment.currency = PICO
+payment.currency = PICOIN
 payment.amount_pi = exact Picoin amount
 payment.pay_to_address = marketplace escrow address
 payment.memo = booking id

@@ -51,7 +51,7 @@ def health() -> dict:
         "status": "ok",
         "service": "picoin-marketplace",
         "domain": "marketplace.picoin.science",
-        "currency": "PICO",
+        "currency": "PICOIN",
     }
 
 
@@ -289,6 +289,7 @@ def home() -> str:
       gap: 14px;
       align-content: start;
     }}
+    .account-section {{ order: -1; }}
     .metrics {{
       display: grid;
       grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -543,7 +544,7 @@ def home() -> str:
   <header>
     <h1>Picoin Marketplace</h1>
     <div class="toolbar">
-      <span class="pill">PICO + Ethereum tokens</span>
+      <span class="pill">Picoin + Ethereum tokens</span>
       <span class="pill blue">CPU / GPU / ASIC</span>
       <span class="status">marketplace.picoin.science</span>
     </div>
@@ -554,7 +555,7 @@ def home() -> str:
         <div class="metric"><span>Active pools</span><strong id="metric-pools">0</strong></div>
         <div class="metric"><span>Active listings</span><strong id="metric-listings">0</strong></div>
         <div class="metric"><span>Available units</span><strong id="metric-units">0</strong></div>
-        <div class="metric"><span>Currency</span><strong id="metric-currency">PICO</strong></div>
+        <div class="metric"><span>Currency</span><strong id="metric-currency">PICOIN</strong></div>
       </div>
       <section>
         <div class="section-head">
@@ -577,7 +578,7 @@ def home() -> str:
           <span class="muted" id="listing-count-label"></span>
         </div>
         <table class="mini-table">
-          <thead><tr><th>Provider</th><th>Pair</th><th>Hardware</th><th>Units</th><th>PI/hour</th></tr></thead>
+          <thead><tr><th>Provider</th><th>Pair</th><th>Hardware</th><th>Units</th><th>Picoin/hour</th></tr></thead>
           <tbody id="listing-rows"></tbody>
         </table>
       </section>
@@ -593,70 +594,10 @@ def home() -> str:
       </section>
     </div>
     <div class="side-column">
-      <section>
+      <section class="account-section">
         <div class="section-head">
-          <h2>Quick Order</h2>
-          <span class="pill gold">10% PICO / 90% pair</span>
-        </div>
-        <div class="package-grid" id="package-grid">
-          <button class="package active" type="button" data-units="1" data-minutes="60"><strong>Starter</strong><span>1 unit / 1 hour</span></button>
-          <button class="package" type="button" data-units="5" data-minutes="360"><strong>Boost</strong><span>5 units / 6 hours</span></button>
-          <button class="package" type="button" data-units="10" data-minutes="1440"><strong>Pro</strong><span>10 units / 24 hours</span></button>
-        </div>
-        <form id="booking-form">
-          <label class="span-2">Pool
-            <select name="pool_id" id="booking-pool"></select>
-          </label>
-          <label class="span-2">Picoin wallet
-            <input name="requester_wallet" value="PI_CUSTOMER_WALLET" required>
-          </label>
-          <label class="span-2">Account ID
-            <input name="account_id" id="booking-account-id" placeholder="acct_..." >
-          </label>
-          <label>Payment chain
-            <select name="payment_chain_code">
-              <option value="picoin">Picoin</option>
-              <option value="ethereum">Ethereum</option>
-            </select>
-          </label>
-          <label>Payment token
-            <select name="payment_token_symbol">
-              <option value="PICO">PICO</option>
-              <option value="ETH">ETH</option>
-            </select>
-          </label>
-          <label>Units
-            <input name="units" type="number" min="1" value="1" required>
-          </label>
-          <label>Duration
-            <select name="duration_minutes">
-              <option value="60">1 hour</option>
-              <option value="360">6 hours</option>
-              <option value="1440">24 hours</option>
-            </select>
-          </label>
-          <button class="span-2" type="submit">Reserve capacity</button>
-        </form>
-        <div class="quote-box" id="quote-box">
-          <div class="quote-row"><span>Selected pair</span><strong id="quote-pair">-</strong></div>
-          <div class="quote-row"><span>Total cost</span><strong id="quote-amount">-</strong></div>
-          <div class="quote-row"><span>Picoin capacity</span><strong id="quote-pico">-</strong></div>
-          <div class="quote-row"><span>Paired capacity</span><strong id="quote-paired">-</strong></div>
-        </div>
-        <pre id="booking-output"></pre>
-        <div class="card-actions" style="margin-top:10px">
-          <span class="muted">Use the selected account balance for the last reservation.</span>
-          <button id="pay-balance-button" type="button" class="secondary">Pay from confirmed balance</button>
-        </div>
-        <div class="quote-box">
-          <div class="quote-row"><span>Account balances</span><button id="refresh-balances-button" class="light" type="button">Refresh</button></div>
-          <div class="balance-list" id="balance-list"><span class="muted">Create or select an account to view balances.</span></div>
-        </div>
-      </section>
-      <section>
-        <div class="section-head">
-          <h2>Accounts & Deposits</h2>
-          <span class="pill blue">scanner ready</span>
+          <h2>User Registration & Wallets</h2>
+          <span class="pill blue">create account first</span>
         </div>
         <form id="account-form">
           <label class="span-2">Email
@@ -691,7 +632,7 @@ def home() -> str:
           </label>
           <label>Token
             <select name="token_symbol">
-              <option value="PICO">PICO</option>
+              <option value="PICOIN">PICOIN</option>
               <option value="ETH">ETH</option>
             </select>
           </label>
@@ -713,6 +654,66 @@ def home() -> str:
           <button class="span-2" type="submit">Record deposit and confirm</button>
         </form>
         <pre id="account-output"></pre>
+      </section>
+      <section>
+        <div class="section-head">
+          <h2>Quick Order</h2>
+          <span class="pill gold">10% Picoin / 90% pair</span>
+        </div>
+        <div class="package-grid" id="package-grid">
+          <button class="package active" type="button" data-units="1" data-minutes="60"><strong>Starter</strong><span>1 unit / 1 hour</span></button>
+          <button class="package" type="button" data-units="5" data-minutes="360"><strong>Boost</strong><span>5 units / 6 hours</span></button>
+          <button class="package" type="button" data-units="10" data-minutes="1440"><strong>Pro</strong><span>10 units / 24 hours</span></button>
+        </div>
+        <form id="booking-form">
+          <label class="span-2">Pool
+            <select name="pool_id" id="booking-pool"></select>
+          </label>
+          <label class="span-2">Picoin wallet
+            <input name="requester_wallet" value="PI_CUSTOMER_WALLET" required>
+          </label>
+          <label class="span-2">Account ID
+            <input name="account_id" id="booking-account-id" placeholder="acct_..." >
+          </label>
+          <label>Payment chain
+            <select name="payment_chain_code">
+              <option value="picoin">Picoin</option>
+              <option value="ethereum">Ethereum</option>
+            </select>
+          </label>
+          <label>Payment token
+            <select name="payment_token_symbol">
+              <option value="PICOIN">PICOIN</option>
+              <option value="ETH">ETH</option>
+            </select>
+          </label>
+          <label>Units
+            <input name="units" type="number" min="1" value="1" required>
+          </label>
+          <label>Duration
+            <select name="duration_minutes">
+              <option value="60">1 hour</option>
+              <option value="360">6 hours</option>
+              <option value="1440">24 hours</option>
+            </select>
+          </label>
+          <button class="span-2" type="submit">Reserve capacity</button>
+        </form>
+        <div class="quote-box" id="quote-box">
+          <div class="quote-row"><span>Selected pair</span><strong id="quote-pair">-</strong></div>
+          <div class="quote-row"><span>Total cost</span><strong id="quote-amount">-</strong></div>
+          <div class="quote-row"><span>Picoin capacity</span><strong id="quote-pico">-</strong></div>
+          <div class="quote-row"><span>Paired capacity</span><strong id="quote-paired">-</strong></div>
+        </div>
+        <pre id="booking-output"></pre>
+        <div class="card-actions" style="margin-top:10px">
+          <span class="muted">Use the selected account balance for the last reservation.</span>
+          <button id="pay-balance-button" type="button" class="secondary">Pay from confirmed balance</button>
+        </div>
+        <div class="quote-box">
+          <div class="quote-row"><span>Account balances</span><button id="refresh-balances-button" class="light" type="button">Refresh</button></div>
+          <div class="balance-list" id="balance-list"><span class="muted">Create or select an account to view balances.</span></div>
+        </div>
       </section>
       <section>
         <h2>Publish Capacity</h2>
@@ -739,7 +740,7 @@ def home() -> str:
           <label>Units
             <input name="units_total" type="number" min="1" value="1" required>
           </label>
-          <label>PI/hour
+          <label>Picoin/hour
             <input name="price_pi_per_hour" type="number" min="0.000001" step="0.000001" value="1" required>
           </label>
           <button class="span-2 secondary" type="submit">Publish capacity</button>
@@ -771,7 +772,7 @@ def home() -> str:
           <label>Units
             <input name="units_total" type="number" min="1" value="3" required>
           </label>
-          <label>PI/hour
+          <label>Picoin/hour
             <input name="price_pi_per_hour" type="number" min="0.000001" step="0.000001" value="2" required>
           </label>
           <label class="span-2">Title
@@ -824,7 +825,7 @@ def home() -> str:
             <input name="paired_capacity_percent" type="number" min="0" max="100" step="0.0001" value="90" required>
           </label>
           <label class="span-2">Name
-            <input name="name" value="CPU PICO/MONERO pool">
+            <input name="name" value="CPU PICOIN/MONERO pool">
           </label>
           <button class="span-2 light" type="submit">Create pool</button>
         </form>
@@ -859,7 +860,7 @@ def home() -> str:
     }}
     function setQuote(payload) {{
       document.getElementById('quote-pair').textContent = payload?.pair_symbol || '-';
-      document.getElementById('quote-amount').textContent = payload ? `${{fmtPi(payload.amount_pi)}} PICO` : '-';
+      document.getElementById('quote-amount').textContent = payload ? `${{fmtPi(payload.amount_pi)}} PICOIN` : '-';
       document.getElementById('quote-pico').textContent = payload ? `${{fmtPi(payload.picoin_capacity_units)}} units` : '-';
       document.getElementById('quote-paired').textContent = payload ? `${{fmtPi(payload.paired_capacity_units)}} units` : '-';
     }}
@@ -936,7 +937,7 @@ def home() -> str:
           </div>
           <div class="card-stats">
             <div class="stat"><span>Available</span><strong>${{card.available_units}}</strong></div>
-            <div class="stat"><span>From</span><strong>${{fmtPi(card.min_price_pi_per_hour)}} PI/h</strong></div>
+            <div class="stat"><span>From</span><strong>${{fmtPi(card.min_price_pi_per_hour)}} Picoin/h</strong></div>
             <div class="stat"><span>Algorithm</span><strong>${{card.algorithm || '-'}}</strong></div>
           </div>
           <div class="card-actions">

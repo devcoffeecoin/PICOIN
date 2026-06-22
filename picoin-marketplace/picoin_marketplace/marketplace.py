@@ -28,7 +28,7 @@ from .models import (
     EvmTokenTransferPollRequest,
     LedgerDirection,
     LedgerEntry,
-    PICO_CURRENCY,
+    PICOIN_CURRENCY,
     PayFromBalanceRequest,
     PicoinHistoryImportRequest,
     PicoinNodePollRequest,
@@ -81,25 +81,67 @@ DEFAULT_POOL_SPECS = [
     {
         "hardware_type": HardwareType.CPU,
         "paired_coin": "MONERO",
-        "name": "CPU PICO/MONERO pool",
+        "name": "CPU PICOIN/MONERO pool",
         "metadata": {"algorithm": "randomx", "primary_use": "cpu-mining"},
+    },
+    {
+        "hardware_type": HardwareType.CPU,
+        "paired_coin": "QUANTUMR",
+        "name": "CPU PICOIN/QUANTUMR pool",
+        "metadata": {"algorithm": "quantumr", "primary_use": "cpu-mining"},
+    },
+    {
+        "hardware_type": HardwareType.CPU,
+        "paired_coin": "DAGGER",
+        "name": "CPU PICOIN/DAGGER pool",
+        "metadata": {"algorithm": "dagger", "primary_use": "cpu-mining"},
+    },
+    {
+        "hardware_type": HardwareType.CPU,
+        "paired_coin": "ETICA",
+        "name": "CPU PICOIN/ETICA pool",
+        "metadata": {"algorithm": "etchash", "primary_use": "cpu-mining"},
     },
     {
         "hardware_type": HardwareType.GPU,
         "paired_coin": "RAVENCOIN",
-        "name": "GPU PICO/RAVENCOIN pool",
+        "name": "GPU PICOIN/RAVENCOIN pool",
         "metadata": {"algorithm": "kawpow", "primary_use": "gpu-mining"},
+    },
+    {
+        "hardware_type": HardwareType.GPU,
+        "paired_coin": "ZANO",
+        "name": "GPU PICOIN/ZANO pool",
+        "metadata": {"algorithm": "progpowz", "primary_use": "gpu-mining"},
+    },
+    {
+        "hardware_type": HardwareType.GPU,
+        "paired_coin": "ETC",
+        "name": "GPU PICOIN/ETC pool",
+        "metadata": {"algorithm": "etchash", "primary_use": "gpu-mining", "label": "Ethereum Classic"},
+    },
+    {
+        "hardware_type": HardwareType.GPU,
+        "paired_coin": "PEARL",
+        "name": "GPU PICOIN/PEARL pool",
+        "metadata": {"algorithm": "ethash", "primary_use": "gpu-mining"},
+    },
+    {
+        "hardware_type": HardwareType.GPU,
+        "paired_coin": "KARLSEN",
+        "name": "GPU PICOIN/KARLSEN pool",
+        "metadata": {"algorithm": "karlsenhash", "primary_use": "gpu-mining"},
     },
     {
         "hardware_type": HardwareType.ASIC,
         "paired_coin": "DOGE",
-        "name": "ASIC PICO/DOGE pool",
+        "name": "ASIC PICOIN/DOGE pool",
         "metadata": {"algorithm": "scrypt", "primary_use": "asic-mining"},
     },
     {
         "hardware_type": HardwareType.ASIC,
         "paired_coin": "LITECOIN",
-        "name": "ASIC PICO/LITECOIN pool",
+        "name": "ASIC PICOIN/LITECOIN pool",
         "metadata": {"algorithm": "scrypt", "primary_use": "asic-mining"},
     },
 ]
@@ -139,11 +181,11 @@ class Marketplace:
         token_defaults = [
             TokenCreateRequest(
                 chain_code="picoin",
-                token_symbol=PICO_CURRENCY,
+                token_symbol=PICOIN_CURRENCY,
                 display_name="Picoin",
                 decimals=6,
                 token_type="native",
-                pico_rate=1.0,
+                picoin_rate=1.0,
             ),
             TokenCreateRequest(
                 chain_code="ethereum",
@@ -151,7 +193,12 @@ class Marketplace:
                 display_name="Ether",
                 decimals=18,
                 token_type="native",
-                pico_rate=float(os.getenv("PICOIN_MARKETPLACE_ETH_PICO_RATE", "1000")),
+                picoin_rate=float(
+                    os.getenv(
+                        "PICOIN_MARKETPLACE_ETH_PICOIN_RATE",
+                        os.getenv("PICOIN_MARKETPLACE_ETH_PICO_RATE", "1000"),
+                    )
+                ),
             ),
         ]
         for request in token_defaults:
@@ -250,7 +297,7 @@ class Marketplace:
             decimals=request.decimals,
             token_type=request.token_type.strip().lower(),
             contract_address=normalize_optional_address(chain.family, request.contract_address),
-            pico_rate=request.pico_rate,
+            picoin_rate=request.picoin_rate,
             enabled=request.enabled,
             metadata=request.metadata,
             created_at=now,
@@ -607,7 +654,7 @@ class Marketplace:
 
     def import_picoin_history(self, request: PicoinHistoryImportRequest) -> dict:
         chain = self.get_chain("picoin")
-        token = self.get_token(chain.chain_code, PICO_CURRENCY)
+        token = self.get_token(chain.chain_code, PICOIN_CURRENCY)
         imported = 0
         skipped = 0
         errors: list[dict[str, object]] = []
@@ -1036,8 +1083,8 @@ class Marketplace:
                 raise ValueError("payment is confirmed but no ledger debit was found")
             return booking, payment, existing
         token = self.get_token(request.chain_code, request.token_symbol)
-        if token.pico_rate is None:
-            raise ValueError("token has no PICO rate configured for marketplace payments")
+        if token.picoin_rate is None:
+            raise ValueError("token has no PICOIN rate configured for marketplace payments")
         required_units = amount_pi_to_base_units(payment.amount_pi, token)
         balance = self.available_balance(request.account_id, token.chain_code, token.token_symbol)
         if balance < required_units:
@@ -1107,7 +1154,7 @@ class Marketplace:
         validate_capacity_split(request.picoin_capacity_percent, request.paired_capacity_percent)
         now = utc_now()
         paired_coin = normalize_coin(request.paired_coin)
-        pair_symbol = f"{PICO_CURRENCY}/{paired_coin}"
+        pair_symbol = f"{PICOIN_CURRENCY}/{paired_coin}"
         pool = MiningPool(
             pool_id=pool_id_for(request.hardware_type, paired_coin),
             hardware_type=request.hardware_type,
@@ -1781,8 +1828,8 @@ class Marketplace:
         quote = quote_for_listing(listing, request.units, request.duration_minutes)
         payment_chain = self.get_chain(request.payment_chain_code)
         payment_token = self.get_token(payment_chain.chain_code, request.payment_token_symbol)
-        if payment_token.pico_rate is None:
-            raise ValueError("payment token has no PICO rate configured")
+        if payment_token.picoin_rate is None:
+            raise ValueError("payment token has no PICOIN rate configured")
         if request.account_id:
             self.get_account(request.account_id)
         booking_id = "booking_" + hash_json(
@@ -2195,7 +2242,10 @@ def normalize_chain_code(value: str) -> str:
 
 
 def normalize_coin(value: str) -> str:
-    return value.strip().upper()
+    coin = value.strip().upper()
+    if coin == "PICO":
+        return PICOIN_CURRENCY
+    return coin
 
 
 def normalize_optional_address(family: ChainFamily, value: str | None) -> str | None:
@@ -2281,7 +2331,7 @@ def picoin_history_row_to_deposit_request(
         return None
     return ScannerDepositCreateRequest(
         chain_code="picoin",
-        token_symbol=PICO_CURRENCY,
+        token_symbol=PICOIN_CURRENCY,
         from_address=sender,
         to_address=recipient,
         amount_base_units=str(amount_units),
@@ -2553,9 +2603,9 @@ def compute_amount_pi(price_pi_per_hour: float, units: int, duration_minutes: in
 
 
 def amount_pi_to_base_units(amount_pi: float, token: TokenDefinition) -> int:
-    if token.pico_rate is None or token.pico_rate <= 0:
-        raise ValueError("token has no PICO rate configured")
-    token_amount = Decimal(str(amount_pi)) / Decimal(str(token.pico_rate))
+    if token.picoin_rate is None or token.picoin_rate <= 0:
+        raise ValueError("token has no PICOIN rate configured")
+    token_amount = Decimal(str(amount_pi)) / Decimal(str(token.picoin_rate))
     scale = Decimal(10) ** int(token.decimals)
     return int((token_amount * scale).to_integral_value(rounding=ROUND_CEILING))
 
