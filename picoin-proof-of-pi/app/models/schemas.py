@@ -827,6 +827,9 @@ class WalletCreateResponse(BaseModel):
 class MaintenanceCleanupResponse(BaseModel):
     expired_tasks: int
     expired_validation_jobs: int
+    released_validation_assignments: int = 0
+    closed_terminal_validation_tasks: int = 0
+    closed_competitive_validation_jobs: int = 0
     message: str
 
 
