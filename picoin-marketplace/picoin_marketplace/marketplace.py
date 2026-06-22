@@ -223,6 +223,70 @@ class Marketplace:
         for request in token_defaults:
             if not self.token_exists(request.chain_code, request.token_symbol):
                 self.create_token(request)
+        self.normalize_legacy_picoin_currency()
+
+    def normalize_legacy_picoin_currency(self) -> None:
+        legacy_symbol = "PICO"
+        current_symbol = PICOIN_CURRENCY
+        now = utc_now().isoformat()
+        with self.storage.connect() as connection:
+            for table in ("deposits", "ledger_entries"):
+                rows = connection.execute(
+                    f"SELECT rowid, payload FROM {table} WHERE token_symbol = ?",
+                    (legacy_symbol,),
+                ).fetchall()
+                for row in rows:
+                    payload = json.loads(row["payload"])
+                    payload["token_symbol"] = current_symbol
+                    connection.execute(
+                        f"""
+                        UPDATE {table}
+                        SET token_symbol = ?, payload = ?, updated_at = COALESCE(updated_at, ?)
+                        WHERE rowid = ?
+                        """
+                        if table == "deposits"
+                        else f"""
+                        UPDATE {table}
+                        SET token_symbol = ?, payload = ?
+                        WHERE rowid = ?
+                        """,
+                        (
+                            (current_symbol, json.dumps(payload, sort_keys=True), now, row["rowid"])
+                            if table == "deposits"
+                            else (current_symbol, json.dumps(payload, sort_keys=True), row["rowid"])
+                        ),
+                    )
+            token_rows = connection.execute(
+                "SELECT chain_code, payload FROM tokens WHERE token_symbol = ?",
+                (legacy_symbol,),
+            ).fetchall()
+            for row in token_rows:
+                existing = connection.execute(
+                    "SELECT 1 FROM tokens WHERE chain_code = ? AND token_symbol = ?",
+                    (row["chain_code"], current_symbol),
+                ).fetchone()
+                if existing is not None:
+                    connection.execute(
+                        "DELETE FROM tokens WHERE chain_code = ? AND token_symbol = ?",
+                        (row["chain_code"], legacy_symbol),
+                    )
+                    continue
+                payload = json.loads(row["payload"])
+                payload["token_symbol"] = current_symbol
+                connection.execute(
+                    """
+                    UPDATE tokens
+                    SET token_symbol = ?, payload = ?, updated_at = ?
+                    WHERE chain_code = ? AND token_symbol = ?
+                    """,
+                    (
+                        current_symbol,
+                        json.dumps(payload, sort_keys=True),
+                        now,
+                        row["chain_code"],
+                        legacy_symbol,
+                    ),
+                )
 
     def chain_exists(self, chain_code: str) -> bool:
         with self.storage.connect() as connection:
@@ -1859,6 +1923,9 @@ class Marketplace:
         return sum(Booking.model_validate(json.loads(row["payload"])).units for row in rows)
 
     def create_booking(self, request: BookingCreateRequest) -> tuple[Booking, PaymentOrder]:
+        if not request.account_id:
+            raise ValueError("registered account_id is required to reserve mining capacity")
+        self.get_account(request.account_id)
         listing = self.select_listing(request)
         if request.duration_minutes < listing.min_booking_minutes:
             raise ValueError(f"duration_minutes below listing minimum {listing.min_booking_minutes}")
@@ -1870,10 +1937,9 @@ class Marketplace:
         payment_token = self.get_token(payment_chain.chain_code, request.payment_token_symbol)
         if payment_token.picoin_rate is None:
             raise ValueError("payment token has no PICOIN rate configured")
-        if request.account_id:
-            self.get_account(request.account_id)
         booking_id = "booking_" + hash_json(
             {
+                "account_id": request.account_id,
                 "pool_id": listing.pool_id,
                 "listing_id": listing.listing_id,
                 "requester_wallet": request.requester_wallet.strip().upper(),

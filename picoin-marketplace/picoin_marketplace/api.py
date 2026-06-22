@@ -738,180 +738,31 @@ def home() -> str:
     <div class="side-column">
       <section>
         <div class="section-head">
-          <h2>Quick Order</h2>
-          <span class="pill gold">10% Picoin / 90% pair</span>
+          <h2>Reserve Capacity</h2>
+          <span class="pill gold">registered users</span>
         </div>
-        <div class="package-grid" id="package-grid">
-          <button class="package active" type="button" data-units="1" data-minutes="60"><strong>Starter</strong><span>1 unit / 1 hour</span></button>
-          <button class="package" type="button" data-units="5" data-minutes="360"><strong>Boost</strong><span>5 units / 6 hours</span></button>
-          <button class="package" type="button" data-units="10" data-minutes="1440"><strong>Pro</strong><span>10 units / 24 hours</span></button>
-        </div>
-        <form id="booking-form">
-          <label class="span-2">Pool
-            <select name="pool_id" id="booking-pool"></select>
-          </label>
-          <label class="span-2">Picoin wallet
-            <input name="requester_wallet" value="PI_CUSTOMER_WALLET" required>
-          </label>
-          <label class="span-2">Account ID
-            <input name="account_id" id="booking-account-id" placeholder="acct_..." >
-          </label>
-          <label>Payment chain
-            <select name="payment_chain_code">
-              <option value="picoin">Picoin</option>
-              <option value="ethereum">Ethereum</option>
-            </select>
-          </label>
-          <label>Payment token
-            <select name="payment_token_symbol">
-              <option value="PICOIN">PICOIN</option>
-              <option value="USDT">USDT</option>
-              <option value="USDC">USDC</option>
-            </select>
-          </label>
-          <label>Units
-            <input name="units" type="number" min="1" value="1" required>
-          </label>
-          <label>Duration
-            <select name="duration_minutes">
-              <option value="60">1 hour</option>
-              <option value="360">6 hours</option>
-              <option value="1440">24 hours</option>
-            </select>
-          </label>
-          <button class="span-2" type="submit">Reserve capacity</button>
-        </form>
-        <div class="quote-box" id="quote-box">
-          <div class="quote-row"><span>Selected pair</span><strong id="quote-pair">-</strong></div>
-          <div class="quote-row"><span>Total cost</span><strong id="quote-amount">-</strong></div>
-          <div class="quote-row"><span>Picoin capacity</span><strong id="quote-pico">-</strong></div>
-          <div class="quote-row"><span>Paired capacity</span><strong id="quote-paired">-</strong></div>
-        </div>
-        <pre id="booking-output"></pre>
+        <p class="muted">Browse the public marketplace here. To reserve mining power, open a registered user dashboard and pay from confirmed PICOIN, USDT, or USDC balance.</p>
         <div class="card-actions" style="margin-top:10px">
-          <span class="muted">Use the selected account balance for the last reservation.</span>
-          <button id="pay-balance-button" type="button" class="secondary">Pay from confirmed balance</button>
+          <a class="nav-button" href="/register">Register / Login to Reserve</a>
+        </div>
+      </section>
+      <section>
+        <div class="section-head">
+          <h2>Payment Rails</h2>
+          <span class="pill">automatic scanner</span>
         </div>
         <div class="quote-box">
-          <div class="quote-row"><span>Account balances</span><button id="refresh-balances-button" class="light" type="button">Refresh</button></div>
-          <div class="balance-list" id="balance-list"><span class="muted">Create or select an account to view balances.</span></div>
+          <div class="quote-row"><span>Native chain</span><strong>PICOIN</strong></div>
+          <div class="quote-row"><span>Ethereum tokens</span><strong>USDT / USDC</strong></div>
+          <div class="quote-row"><span>Credit rule</span><strong>Confirmed deposits only</strong></div>
         </div>
       </section>
       <section>
-        <h2>Publish Capacity</h2>
-        <form id="listing-form">
-          <label>Pool
-            <select name="pool_id" id="listing-pool"></select>
-          </label>
-          <label>Hardware
-            <select name="hardware_type">
-              <option value="cpu">CPU</option>
-              <option value="gpu">GPU</option>
-              <option value="asic">ASIC</option>
-            </select>
-          </label>
-          <label>Provider
-            <input name="provider_id" value="provider-1" required>
-          </label>
-          <label>Wallet
-            <input name="provider_wallet" value="PI_PROVIDER_WALLET" required>
-          </label>
-          <label class="span-2">Title
-            <input name="title" value="Mining capacity node" required>
-          </label>
-          <label>Units
-            <input name="units_total" type="number" min="1" value="1" required>
-          </label>
-          <label>Picoin/hour
-            <input name="price_pi_per_hour" type="number" min="0.000001" step="0.000001" value="1" required>
-          </label>
-          <button class="span-2 secondary" type="submit">Publish capacity</button>
-        </form>
-        <pre id="listing-output"></pre>
-      </section>
-      <section>
-        <h2>Worker Agents</h2>
-        <form id="worker-form">
-          <label>Pool
-            <select name="pool_id" id="worker-pool"></select>
-          </label>
-          <label>Hardware
-            <select name="hardware_type">
-              <option value="cpu">CPU</option>
-              <option value="gpu">GPU</option>
-              <option value="asic">ASIC</option>
-            </select>
-          </label>
-          <label>Worker ID
-            <input name="worker_id" value="worker-gpu-1">
-          </label>
-          <label>Provider
-            <input name="provider_id" value="provider-gpu-1" required>
-          </label>
-          <label class="span-2">Provider wallet
-            <input name="provider_wallet" value="PI_PROVIDER_GPU" required>
-          </label>
-          <label>Units
-            <input name="units_total" type="number" min="1" value="3" required>
-          </label>
-          <label>Picoin/hour
-            <input name="price_pi_per_hour" type="number" min="0.000001" step="0.000001" value="2" required>
-          </label>
-          <label class="span-2">Title
-            <input name="title" value="GPU worker node">
-          </label>
-          <button class="span-2 secondary" type="submit">Register worker</button>
-        </form>
-        <form id="worker-heartbeat-form" style="margin-top:10px">
-          <label>Worker ID
-            <input name="worker_id" value="worker-gpu-1" required>
-          </label>
-          <label>Status
-            <select name="status">
-              <option value="online">Online</option>
-              <option value="paused">Paused</option>
-              <option value="offline">Offline</option>
-            </select>
-          </label>
-          <label>Units total
-            <input name="units_total" type="number" min="1" value="3">
-          </label>
-          <label>Units available
-            <input name="units_available" type="number" min="0" value="3">
-          </label>
-          <button class="span-2 light" type="submit">Send heartbeat</button>
-        </form>
-        <table class="mini-table" style="margin-top:10px">
-          <thead><tr><th>Worker</th><th>Status</th><th>Pool</th><th>Seen</th></tr></thead>
-          <tbody id="worker-rows"></tbody>
-        </table>
-        <pre id="worker-output"></pre>
-      </section>
-      <section>
-        <h2>Create Pair Pool</h2>
-        <form id="pool-form">
-          <label>Hardware
-            <select name="hardware_type">
-              <option value="cpu">CPU</option>
-              <option value="gpu">GPU</option>
-              <option value="asic">ASIC</option>
-            </select>
-          </label>
-          <label>Paired coin
-            <input name="paired_coin" value="monero" required>
-          </label>
-          <label>Picoin %
-            <input name="picoin_capacity_percent" type="number" min="0" max="100" step="0.0001" value="10" required>
-          </label>
-          <label>Paired %
-            <input name="paired_capacity_percent" type="number" min="0" max="100" step="0.0001" value="90" required>
-          </label>
-          <label class="span-2">Name
-            <input name="name" value="CPU PICOIN/MONERO pool">
-          </label>
-          <button class="span-2 light" type="submit">Create pool</button>
-        </form>
-        <pre id="pool-output"></pre>
+        <div class="section-head">
+          <h2>Provider Network</h2>
+          <span class="pill blue">CPU / GPU / ASIC</span>
+        </div>
+        <p class="muted">Provider and worker controls remain API-backed. The public page only displays active capacity and execution reports.</p>
       </section>
     </div>
   </main>
@@ -950,8 +801,10 @@ def home() -> str:
       return symbol === 'PICOIN' ? 'picoin' : 'ethereum';
     }}
     function syncPaymentChain() {{
-      const token = document.querySelector('#booking-form [name="payment_token_symbol"]').value;
-      document.querySelector('#booking-form [name="payment_chain_code"]').value = paymentChainForToken(token);
+      const tokenInput = document.querySelector('#booking-form [name="payment_token_symbol"]');
+      const chainInput = document.querySelector('#booking-form [name="payment_chain_code"]');
+      if (!tokenInput || !chainInput) return;
+      chainInput.value = paymentChainForToken(tokenInput.value);
     }}
     function normalizeBookingPayment(payload) {{
       if (payload.payment_token_symbol) payload.payment_chain_code = paymentChainForToken(payload.payment_token_symbol);
@@ -1084,7 +937,12 @@ def home() -> str:
     }}
     async function refreshQuote() {{
       try {{
-        const payload = normalizeBookingPayment(readForm(document.getElementById('booking-form')));
+        const form = document.getElementById('booking-form');
+        if (!form) {{
+          setQuote(null);
+          return;
+        }}
+        const payload = normalizeBookingPayment(readForm(form));
         const quote = await request('/bookings/quote', {{
           method: 'POST',
           headers: {{'content-type': 'application/json'}},
@@ -1103,6 +961,7 @@ def home() -> str:
       return option;
     }}
     function syncHardwareFromPool(select, hardwareSelect) {{
+      if (!select || !hardwareSelect) return;
       const selected = select.options[select.selectedIndex];
       if (selected?.dataset.hardware) hardwareSelect.value = selected.dataset.hardware;
     }}
@@ -1133,16 +992,13 @@ def home() -> str:
           </div>
           <div class="card-actions">
             <span class="muted">${{card.can_book ? 'Ready for instant reservation' : 'Waiting for providers'}}</span>
-            <button data-pool="${{card.pool_id}}" ${{card.can_book ? '' : 'disabled'}}>Mine this pair</button>
+            <button data-pool="${{card.pool_id}}" ${{card.can_book ? '' : 'disabled'}}>Login to reserve</button>
           </div>
         </article>
       `).join('');
       for (const button of container.querySelectorAll('button[data-pool]')) {{
         button.addEventListener('click', () => {{
-          document.getElementById('booking-pool').value = button.dataset.pool;
-          document.getElementById('booking-output').textContent = '';
-          refreshQuote();
-          document.getElementById('booking-form').scrollIntoView({{behavior:'smooth', block:'center'}});
+          location.href = '/register';
         }});
       }}
     }}
@@ -1170,7 +1026,8 @@ def home() -> str:
           <td>${{item.units_available}} / ${{item.units_total}}</td>
           <td>${{fmtPi(item.price_pi_per_hour)}}</td>
         </tr>`).join('');
-      document.getElementById('worker-rows').innerHTML = workers.length ? workers.map(item => `
+      const workerRows = document.getElementById('worker-rows');
+      if (workerRows) workerRows.innerHTML = workers.length ? workers.map(item => `
         <tr>
           <td>${{item.worker_id}}</td>
           <td>${{item.status}}</td>
@@ -1190,6 +1047,7 @@ def home() -> str:
         </tr>`).join('') : '<tr><td colspan="7" class="muted">No execution reports yet.</td></tr>';
       for (const selectId of ['listing-pool', 'booking-pool', 'worker-pool']) {{
         const select = document.getElementById(selectId);
+        if (!select) continue;
         const current = select.value;
         select.innerHTML = '';
         for (const pool of pools) select.appendChild(poolOption(pool));
@@ -1200,7 +1058,7 @@ def home() -> str:
       syncPaymentChain();
       await refreshQuote();
     }}
-    document.getElementById('package-grid').addEventListener('click', event => {{
+    document.getElementById('package-grid')?.addEventListener('click', event => {{
       const button = event.target.closest('button[data-units]');
       if (!button) return;
       for (const item of document.querySelectorAll('#package-grid .package')) item.classList.toggle('active', item === button);
@@ -1215,19 +1073,19 @@ def home() -> str:
       for (const item of document.querySelectorAll('#hardware-tabs .tab')) item.classList.toggle('active', item === button);
       renderCards();
     }});
-    document.getElementById('listing-pool').addEventListener('change', event => {{
+    document.getElementById('listing-pool')?.addEventListener('change', event => {{
       syncHardwareFromPool(event.target, document.querySelector('#listing-form [name="hardware_type"]'));
     }});
-    document.getElementById('worker-pool').addEventListener('change', event => {{
+    document.getElementById('worker-pool')?.addEventListener('change', event => {{
       syncHardwareFromPool(event.target, document.querySelector('#worker-form [name="hardware_type"]'));
     }});
-    document.getElementById('booking-form').addEventListener('input', refreshQuote);
-    document.getElementById('booking-form').addEventListener('change', refreshQuote);
-    document.querySelector('#booking-form [name="payment_token_symbol"]').addEventListener('change', () => {{
+    document.getElementById('booking-form')?.addEventListener('input', refreshQuote);
+    document.getElementById('booking-form')?.addEventListener('change', refreshQuote);
+    document.querySelector('#booking-form [name="payment_token_symbol"]')?.addEventListener('change', () => {{
       syncPaymentChain();
       refreshQuote();
     }});
-    document.getElementById('pool-form').addEventListener('submit', async event => {{
+    document.getElementById('pool-form')?.addEventListener('submit', async event => {{
       event.preventDefault();
       try {{
         const payload = readForm(event.target);
@@ -1240,7 +1098,7 @@ def home() -> str:
         await loadData();
       }} catch (error) {{ out('pool-output', error); }}
     }});
-    document.getElementById('listing-form').addEventListener('submit', async event => {{
+    document.getElementById('listing-form')?.addEventListener('submit', async event => {{
       event.preventDefault();
       try {{
         const payload = readForm(event.target);
@@ -1253,7 +1111,7 @@ def home() -> str:
         await loadData();
       }} catch (error) {{ out('listing-output', error); }}
     }});
-    document.getElementById('worker-form').addEventListener('submit', async event => {{
+    document.getElementById('worker-form')?.addEventListener('submit', async event => {{
       event.preventDefault();
       try {{
         const payload = readForm(event.target);
@@ -1267,7 +1125,7 @@ def home() -> str:
         await loadData();
       }} catch (error) {{ out('worker-output', error); }}
     }});
-    document.getElementById('worker-heartbeat-form').addEventListener('submit', async event => {{
+    document.getElementById('worker-heartbeat-form')?.addEventListener('submit', async event => {{
       event.preventDefault();
       try {{
         const payload = readForm(event.target);
@@ -1282,29 +1140,19 @@ def home() -> str:
         await loadData();
       }} catch (error) {{ out('worker-output', error); }}
     }});
-    document.getElementById('booking-form').addEventListener('submit', async event => {{
+    document.getElementById('booking-form')?.addEventListener('submit', async event => {{
       event.preventDefault();
-      try {{
-        const payload = normalizeBookingPayment(readForm(event.target));
-        if (!payload.account_id) delete payload.account_id;
-        const result = await request('/bookings', {{
-          method: 'POST',
-          headers: {{'content-type': 'application/json'}},
-          body: JSON.stringify(payload)
-        }});
-        lastPaymentId = result.payment.payment_id;
-        out('booking-output', result);
-        await refreshDashboard();
-        await loadData();
-      }} catch (error) {{ out('booking-output', error); }}
+      out('booking-output', 'Open the user dashboard to reserve mining capacity.');
+      location.href = '/register';
     }});
-    document.getElementById('refresh-balances-button').addEventListener('click', refreshBalances);
-    document.getElementById('pay-balance-button').addEventListener('click', async () => {{
+    document.getElementById('refresh-balances-button')?.addEventListener('click', refreshBalances);
+    document.getElementById('pay-balance-button')?.addEventListener('click', async () => {{
       const accountId = document.getElementById('booking-account-id').value.trim();
       const tokenSymbol = document.querySelector('#booking-form [name="payment_token_symbol"]').value;
       const chainCode = paymentChainForToken(tokenSymbol);
       if (!lastPaymentId) {{
-        out('booking-output', 'Create a booking first, then pay it from balance.');
+        out('booking-output', 'Open the user dashboard to reserve and pay from balance.');
+        location.href = '/register';
         return;
       }}
       if (!accountId) {{
@@ -1322,7 +1170,7 @@ def home() -> str:
         await loadData();
       }} catch (error) {{ out('booking-output', error); }}
     }});
-    loadData().catch(error => out('booking-output', error));
+    loadData().catch(error => console.error(error));
   </script>
 </body>
 </html>"""
@@ -1698,6 +1546,61 @@ def user_dashboard_page(account_id: str | None = None, session: str | None = Non
       margin-bottom: 5px;
     }
     .dashboard-box strong, .dashboard-box code { font-size: .83rem; }
+    .pool-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+      gap: 8px;
+    }
+    .pool-card {
+      border: 1px solid #e3e8ec;
+      border-radius: 8px;
+      background: #fff;
+      padding: 10px;
+      display: grid;
+      gap: 8px;
+    }
+    .pool-card strong { font-size: .92rem; }
+    .card-stats {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+    }
+    .stat {
+      border: 1px solid #e8edf0;
+      border-radius: 7px;
+      padding: 7px;
+      background: #f8fafb;
+      min-width: 0;
+    }
+    .stat span {
+      display: block;
+      color: var(--muted);
+      font-size: .68rem;
+    }
+    .stat strong {
+      display: block;
+      font-size: .78rem;
+      overflow-wrap: anywhere;
+    }
+    .package-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .package {
+      background: #fff;
+      color: var(--ink);
+      border: 1px solid var(--line);
+      display: grid;
+      gap: 2px;
+      text-align: left;
+    }
+    .package.active {
+      border-color: #82b6b0;
+      background: var(--soft);
+      color: #0d5e59;
+    }
     .token-rail { display: flex; gap: 6px; flex-wrap: wrap; }
     .balance-list, .deposit-list { display: grid; gap: 6px; }
     .balance-line {
@@ -1824,6 +1727,61 @@ def user_dashboard_page(account_id: str | None = None, session: str | None = Non
       </section>
       <section>
         <div class="section-head">
+          <h2>Reserve Mining Power</h2>
+          <span class="pill gold">registered only</span>
+        </div>
+        <div class="package-grid" id="dashboard-package-grid">
+          <button class="package active" type="button" data-units="1" data-minutes="60"><strong>Starter</strong><span>1 unit / 1 hour</span></button>
+          <button class="package" type="button" data-units="5" data-minutes="360"><strong>Boost</strong><span>5 units / 6 hours</span></button>
+          <button class="package" type="button" data-units="10" data-minutes="1440"><strong>Pro</strong><span>10 units / 24 hours</span></button>
+        </div>
+        <form id="dashboard-booking-form">
+          <label class="span-2">Pool
+            <select name="pool_id" id="dashboard-booking-pool"></select>
+          </label>
+          <label class="span-2">Picoin wallet
+            <input name="requester_wallet" value="PI_CUSTOMER_WALLET" required>
+          </label>
+          <label>Payment token
+            <select name="payment_token_symbol">
+              <option value="PICOIN">PICOIN</option>
+              <option value="USDT">USDT</option>
+              <option value="USDC">USDC</option>
+            </select>
+          </label>
+          <label>Units
+            <input name="units" type="number" min="1" value="1" required>
+          </label>
+          <label>Duration
+            <select name="duration_minutes">
+              <option value="60">1 hour</option>
+              <option value="360">6 hours</option>
+              <option value="1440">24 hours</option>
+            </select>
+          </label>
+          <label>Payment chain
+            <select name="payment_chain_code" disabled>
+              <option value="picoin">Picoin</option>
+              <option value="ethereum">Ethereum</option>
+            </select>
+          </label>
+          <button class="span-2" type="submit">Reserve capacity</button>
+        </form>
+        <div class="quote-box" style="margin-top:10px">
+          <div class="quote-row"><span>Selected pair</span><strong id="dashboard-quote-pair">-</strong></div>
+          <div class="quote-row"><span>Total cost</span><strong id="dashboard-quote-amount">-</strong></div>
+          <div class="quote-row"><span>Picoin capacity</span><strong id="dashboard-quote-picoin">-</strong></div>
+          <div class="quote-row"><span>Paired capacity</span><strong id="dashboard-quote-paired">-</strong></div>
+        </div>
+        <div class="pool-grid" id="dashboard-pool-cards" style="margin-top:10px"></div>
+        <div class="quote-box" style="margin-top:10px">
+          <div class="quote-row"><span>Last reservation</span><strong id="dashboard-payment-label">None</strong></div>
+          <button id="dashboard-pay-balance-button" class="secondary" type="button">Pay from confirmed balance</button>
+        </div>
+        <pre id="booking-output"></pre>
+      </section>
+      <section>
+        <div class="section-head">
           <h2>Recent Deposits</h2>
           <span class="muted" id="deposit-count-label">0</span>
         </div>
@@ -1841,6 +1799,8 @@ def user_dashboard_page(account_id: str | None = None, session: str | None = Non
   <script>
     const json = value => JSON.stringify(value, null, 2);
     const out = (id, value) => document.getElementById(id).textContent = typeof value === 'string' ? value : json(value);
+    let dashboardPoolCards = [];
+    let lastDashboardPaymentId = null;
     async function request(path, options = {}) {
       const response = await fetch(path, options);
       const payload = await response.json();
@@ -1849,10 +1809,96 @@ def user_dashboard_page(account_id: str | None = None, session: str | None = Non
     }
     function readForm(form) {
       const data = Object.fromEntries(new FormData(form).entries());
+      for (const key of ['units', 'duration_minutes']) {
+        if (key in data) data[key] = Number(data[key]);
+      }
       for (const key of Object.keys(data)) {
         if (data[key] === '') delete data[key];
       }
       return data;
+    }
+    function fmtPi(value) {
+      return value === null || value === undefined ? '-' : Number(value).toFixed(6).replace(/0+$/, '').replace(/\\.$/, '');
+    }
+    function paymentChainForToken(symbol) {
+      return symbol === 'PICOIN' ? 'picoin' : 'ethereum';
+    }
+    function normalizeBookingPayment(payload) {
+      if (payload.payment_token_symbol) payload.payment_chain_code = paymentChainForToken(payload.payment_token_symbol);
+      return payload;
+    }
+    function syncPaymentChain() {
+      const token = document.querySelector('#dashboard-booking-form [name="payment_token_symbol"]').value;
+      document.querySelector('#dashboard-booking-form [name="payment_chain_code"]').value = paymentChainForToken(token);
+    }
+    function setDashboardQuote(payload) {
+      document.getElementById('dashboard-quote-pair').textContent = payload?.pair_symbol || '-';
+      document.getElementById('dashboard-quote-amount').textContent = payload ? `${fmtPi(payload.amount_pi)} PICOIN` : '-';
+      document.getElementById('dashboard-quote-picoin').textContent = payload ? `${fmtPi(payload.picoin_capacity_units)} units` : '-';
+      document.getElementById('dashboard-quote-paired').textContent = payload ? `${fmtPi(payload.paired_capacity_units)} units` : '-';
+    }
+    function poolOption(pool) {
+      const option = document.createElement('option');
+      option.value = pool.pool_id;
+      option.textContent = `${pool.pair_symbol} - ${pool.hardware_type.toUpperCase()}`;
+      return option;
+    }
+    function renderDashboardPoolCards() {
+      const target = document.getElementById('dashboard-pool-cards');
+      if (!dashboardPoolCards.length) {
+        target.innerHTML = '<div class="dashboard-box span-2"><span>Pools</span><strong>No pools available yet.</strong></div>';
+        return;
+      }
+      target.innerHTML = dashboardPoolCards.map(card => `
+        <article class="pool-card">
+          <strong>${card.pair_symbol}</strong>
+          <span class="muted">${card.hardware_type.toUpperCase()} - ${card.name}</span>
+          <div class="card-stats">
+            <div class="stat"><span>Available</span><strong>${card.available_units}</strong></div>
+            <div class="stat"><span>From</span><strong>${fmtPi(card.min_price_pi_per_hour)}</strong></div>
+            <div class="stat"><span>Split</span><strong>${card.picoin_capacity_percent}/${card.paired_capacity_percent}</strong></div>
+          </div>
+          <button type="button" data-pool="${card.pool_id}" ${card.can_book ? '' : 'disabled'}>${card.can_book ? 'Use this pool' : 'Waiting for providers'}</button>
+        </article>
+      `).join('');
+      for (const button of target.querySelectorAll('button[data-pool]')) {
+        button.addEventListener('click', () => {
+          document.getElementById('dashboard-booking-pool').value = button.dataset.pool;
+          refreshDashboardQuote();
+        });
+      }
+    }
+    async function loadPurchasingData() {
+      const [pools, cards] = await Promise.all([
+        request('/pools?active_only=true&limit=100'),
+        request('/pool-cards?active_only=true&limit=100')
+      ]);
+      dashboardPoolCards = cards;
+      const select = document.getElementById('dashboard-booking-pool');
+      const current = select.value;
+      select.innerHTML = '';
+      for (const pool of pools) select.appendChild(poolOption(pool));
+      if (current) select.value = current;
+      renderDashboardPoolCards();
+      syncPaymentChain();
+      await refreshDashboardQuote();
+    }
+    async function refreshDashboardQuote() {
+      try {
+        const payload = normalizeBookingPayment(readForm(document.getElementById('dashboard-booking-form')));
+        if (!payload.pool_id) {
+          setDashboardQuote(null);
+          return;
+        }
+        const quote = await request('/bookings/quote', {
+          method: 'POST',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        setDashboardQuote(quote);
+      } catch (error) {
+        setDashboardQuote(null);
+      }
     }
     function activeAccountId() {
       return document.getElementById('dashboard-account-id').value.trim()
@@ -1962,6 +2008,61 @@ def user_dashboard_page(account_id: str | None = None, session: str | None = Non
     });
     document.getElementById('dashboard-balances-button').addEventListener('click', refreshDashboard);
     document.getElementById('refresh-dashboard-button').addEventListener('click', refreshDashboard);
+    document.getElementById('dashboard-booking-form').addEventListener('input', refreshDashboardQuote);
+    document.getElementById('dashboard-booking-form').addEventListener('change', refreshDashboardQuote);
+    document.querySelector('#dashboard-booking-form [name="payment_token_symbol"]').addEventListener('change', () => {
+      syncPaymentChain();
+      refreshDashboardQuote();
+    });
+    document.getElementById('dashboard-package-grid').addEventListener('click', event => {
+      const button = event.target.closest('button[data-units]');
+      if (!button) return;
+      for (const item of document.querySelectorAll('#dashboard-package-grid .package')) item.classList.toggle('active', item === button);
+      document.querySelector('#dashboard-booking-form [name="units"]').value = button.dataset.units;
+      document.querySelector('#dashboard-booking-form [name="duration_minutes"]').value = button.dataset.minutes;
+      refreshDashboardQuote();
+    });
+    document.getElementById('dashboard-booking-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      const accountId = activeAccountId();
+      if (!accountId) {
+        out('booking-output', 'Registered account is required.');
+        return;
+      }
+      try {
+        const payload = normalizeBookingPayment(readForm(event.target));
+        payload.account_id = accountId;
+        const result = await request('/bookings', {
+          method: 'POST',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify(payload)
+        });
+        lastDashboardPaymentId = result.payment.payment_id;
+        document.getElementById('dashboard-payment-label').textContent = result.payment.payment_id;
+        out('booking-output', result);
+        await refreshDashboard();
+        await loadPurchasingData();
+      } catch (error) { out('booking-output', error); }
+    });
+    document.getElementById('dashboard-pay-balance-button').addEventListener('click', async () => {
+      const accountId = activeAccountId();
+      const tokenSymbol = document.querySelector('#dashboard-booking-form [name="payment_token_symbol"]').value;
+      const chainCode = paymentChainForToken(tokenSymbol);
+      if (!lastDashboardPaymentId) {
+        out('booking-output', 'Create a reservation first, then pay it from confirmed balance.');
+        return;
+      }
+      try {
+        const result = await request(`/payments/${lastDashboardPaymentId}/pay-from-balance`, {
+          method: 'POST',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify({ account_id: accountId, chain_code: chainCode, token_symbol: tokenSymbol })
+        });
+        out('booking-output', result);
+        await refreshDashboard();
+        await loadPurchasingData();
+      } catch (error) { out('booking-output', error); }
+    });
     document.getElementById('dashboard-account-id').addEventListener('change', event => {
       syncAccountInputs(event.target.value.trim());
       refreshDashboard();
@@ -1971,6 +2072,7 @@ def user_dashboard_page(account_id: str | None = None, session: str | None = Non
     if (initialAccountId) syncAccountInputs(initialAccountId);
     else if (params.get('account_id')) syncAccountInputs(params.get('account_id'));
     refreshDashboard();
+    loadPurchasingData().catch(error => out('booking-output', error));
   </script>
 </body>
 </html>"""

@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import json
+
 from fastapi.testclient import TestClient
 
 from picoin_marketplace import api as marketplace_api
+from picoin_marketplace.marketplace import Marketplace
+from picoin_marketplace.models import AccountCreateRequest, LedgerDirection, LedgerEntry, TokenDefinition, utc_now
 
 
 def evm_topic(address: str) -> str:
@@ -54,10 +58,15 @@ def test_gpu_listing_booking_payment_and_release(tmp_path, monkeypatch):
     assert listing["pool_id"] == pool["pool_id"]
     assert listing["pair_symbol"] == "PICOIN/MONERO"
     assert listing["units_available"] == 2
+    account = client.post(
+        "/accounts",
+        json={"email": "buyer@example.com", "password": "secret-pass-1"},
+    ).json()
 
     booking_response = client.post(
         "/bookings",
         json={
+            "account_id": account["account_id"],
             "requester_wallet": "PI_CUSTOMER_WALLET",
             "pool_id": pool["pool_id"],
             "units": 1,
@@ -103,14 +112,113 @@ def test_gpu_listing_booking_payment_and_release(tmp_path, monkeypatch):
     assert restored_listing["units_available"] == 2
 
 
+def test_legacy_pico_balances_are_canonicalized_to_picoin(tmp_path, monkeypatch):
+    monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("PICOIN_MARKETPLACE_SEED_DEFAULT_POOLS", "0")
+    market = Marketplace(tmp_path)
+    account = market.create_account(
+        AccountCreateRequest(
+            email="legacy-pico@example.com",
+            password="LegacyPico123!",
+        )
+    )
+    legacy_token = TokenDefinition(
+        chain_code="picoin",
+        token_symbol="PICO",
+        display_name="Legacy Pico",
+        decimals=6,
+        token_type="native",
+        picoin_rate=1.0,
+    )
+    legacy_entry = LedgerEntry(
+        entry_id="ledger_legacy_pico",
+        account_id=account.account_id,
+        chain_code="picoin",
+        token_symbol="PICO",
+        direction=LedgerDirection.CREDIT,
+        amount_base_units="2500000",
+        entry_type="deposit",
+        reference_type="deposit",
+        reference_id="legacy-pico-deposit",
+    )
+    with market.storage.connect() as connection:
+        connection.execute(
+            """
+            INSERT INTO tokens (chain_code, token_symbol, enabled, payload, updated_at)
+            VALUES (?, ?, ?, ?, ?)
+            """,
+            (
+                legacy_token.chain_code,
+                legacy_token.token_symbol,
+                1,
+                legacy_token.model_dump_json(),
+                utc_now().isoformat(),
+            ),
+        )
+        connection.execute(
+            """
+            INSERT INTO ledger_entries (
+                entry_id,
+                account_id,
+                chain_code,
+                token_symbol,
+                direction,
+                amount_base_units,
+                reference_type,
+                reference_id,
+                payload,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                legacy_entry.entry_id,
+                legacy_entry.account_id,
+                legacy_entry.chain_code,
+                legacy_entry.token_symbol,
+                legacy_entry.direction.value,
+                legacy_entry.amount_base_units,
+                legacy_entry.reference_type,
+                legacy_entry.reference_id,
+                legacy_entry.model_dump_json(),
+                legacy_entry.created_at.isoformat(),
+            ),
+        )
+
+    market = Marketplace(tmp_path)
+
+    tokens = market.list_tokens(chain_code="picoin", enabled_only=False)
+    assert [token.token_symbol for token in tokens] == ["PICOIN"]
+    balances = market.account_balances(account.account_id)
+    picoin_balances = [row for row in balances if row.token_symbol == "PICOIN"]
+    pico_balances = [row for row in balances if row.token_symbol == "PICO"]
+    assert len(picoin_balances) == 1
+    assert pico_balances == []
+    assert picoin_balances[0].available_base_units == "2500000"
+    with market.storage.connect() as connection:
+        assert connection.execute("SELECT COUNT(*) FROM tokens WHERE token_symbol = 'PICO'").fetchone()[0] == 0
+        assert connection.execute("SELECT COUNT(*) FROM ledger_entries WHERE token_symbol = 'PICO'").fetchone()[0] == 0
+        payload = json.loads(
+            connection.execute("SELECT payload FROM ledger_entries WHERE entry_id = ?", (legacy_entry.entry_id,)).fetchone()[
+                "payload"
+            ]
+        )
+    assert payload["token_symbol"] == "PICOIN"
+
+
 def test_booking_requires_matching_capacity(tmp_path, monkeypatch):
     monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("PICOIN_MARKETPLACE_SEED_DEFAULT_POOLS", "0")
     client = TestClient(marketplace_api.api)
+    account = client.post(
+        "/accounts",
+        json={"email": "capacity-buyer@example.com", "password": "secret-pass-1"},
+    ).json()
 
     response = client.post(
         "/bookings",
         json={
+            "account_id": account["account_id"],
             "requester_wallet": "PI_CUSTOMER_WALLET",
             "hardware_type": "asic",
             "units": 1,
@@ -120,6 +228,54 @@ def test_booking_requires_matching_capacity(tmp_path, monkeypatch):
 
     assert response.status_code == 400
     assert "no matching capacity listing available" in response.json()["detail"]
+
+
+def test_booking_requires_registered_account(tmp_path, monkeypatch):
+    monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("PICOIN_MARKETPLACE_SEED_DEFAULT_POOLS", "0")
+    client = TestClient(marketplace_api.api)
+
+    pool = client.post(
+        "/pools",
+        json={"hardware_type": "gpu", "paired_coin": "ravencoin"},
+    ).json()
+    client.post(
+        "/listings",
+        json={
+            "pool_id": pool["pool_id"],
+            "provider_id": "provider-gpu-1",
+            "provider_wallet": "PI_PROVIDER_GPU",
+            "hardware_type": "gpu",
+            "title": "Ravencoin GPU rig",
+            "units_total": 1,
+            "price_pi_per_hour": 1.0,
+        },
+    )
+
+    missing = client.post(
+        "/bookings",
+        json={
+            "requester_wallet": "PI_CUSTOMER_WALLET",
+            "pool_id": pool["pool_id"],
+            "units": 1,
+            "duration_minutes": 60,
+        },
+    )
+    assert missing.status_code == 400
+    assert "registered account_id is required" in missing.json()["detail"]
+
+    unknown = client.post(
+        "/bookings",
+        json={
+            "account_id": "acct_missing",
+            "requester_wallet": "PI_CUSTOMER_WALLET",
+            "pool_id": pool["pool_id"],
+            "units": 1,
+            "duration_minutes": 60,
+        },
+    )
+    assert unknown.status_code == 400
+    assert "account not found" in unknown.json()["detail"]
 
 
 def test_summary_counts_cpu_gpu_and_asic(tmp_path, monkeypatch):
@@ -202,7 +358,7 @@ def test_default_pools_are_seeded(tmp_path, monkeypatch):
     ]
 
 
-def test_home_returns_operator_dashboard(tmp_path, monkeypatch):
+def test_home_returns_public_marketplace_catalog(tmp_path, monkeypatch):
     monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("PICOIN_MARKETPLACE_SEED_DEFAULT_POOLS", "1")
     client = TestClient(marketplace_api.api)
@@ -212,17 +368,19 @@ def test_home_returns_operator_dashboard(tmp_path, monkeypatch):
     assert response.status_code == 200
     assert "Picoin Marketplace" in response.text
     assert "Easy Mining Pools" in response.text
-    assert "Quick Order" in response.text
-    assert "Create Pair Pool" in response.text
-    assert "Publish Capacity" in response.text
-    assert "Worker Agents" in response.text
-    assert "Register worker" in response.text
-    assert "Pay from confirmed balance" in response.text
+    assert "Reserve Capacity" in response.text
+    assert "Register / Login to Reserve" in response.text
+    assert "Create Pair Pool" not in response.text
+    assert "Publish Capacity" not in response.text
+    assert "Worker Agents" not in response.text
+    assert "Register worker" not in response.text
+    assert "Pay from confirmed balance" not in response.text
     assert 'href="/register"' in response.text
     assert "Register / Dashboard" in response.text
     assert "Scanner worker" not in response.text
     assert "Register and verify wallet" not in response.text
     assert "Record deposit and confirm" not in response.text
+    assert "dashboard-booking-form" not in response.text
     assert "USDT" in response.text
     assert "USDC" in response.text
 
@@ -262,6 +420,9 @@ def test_user_dashboard_page_is_separate_from_marketplace_home(tmp_path, monkeyp
     assert "Dashboard Account" in response.text
     assert "Create account" not in response.text
     assert "Register and verify wallet" in response.text
+    assert "Reserve Mining Power" in response.text
+    assert "dashboard-booking-form" in response.text
+    assert "Pay from confirmed balance" in response.text
     assert "Scanner Worker" in response.text
     assert "Recent Deposits" in response.text
     assert "Back to marketplace" in response.text
@@ -402,10 +563,15 @@ def test_worker_registration_and_heartbeat_manage_capacity(tmp_path, monkeypatch
     assert worker["listing_id"] == listing["listing_id"]
     assert listing["units_total"] == 3
     assert listing["units_available"] == 3
+    account = client.post(
+        "/accounts",
+        json={"email": "worker-buyer@example.com", "password": "secret-pass-1"},
+    ).json()
 
     booking_payload = client.post(
         "/bookings",
         json={
+            "account_id": account["account_id"],
             "requester_wallet": "PI_CUSTOMER_WALLET",
             "pool_id": pool["pool_id"],
             "units": 2,
