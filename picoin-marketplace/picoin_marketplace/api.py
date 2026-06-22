@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import os
+import json
 from pathlib import Path
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .marketplace import Marketplace, DEFAULT_STATE_DIR
 from .models import (
@@ -636,7 +637,7 @@ def home() -> str:
     <div class="toolbar">
       <span class="pill">PICOIN / USDT / USDC</span>
       <span class="pill blue">CPU / GPU / ASIC</span>
-      <a class="nav-button" href="/dashboard">User Dashboard</a>
+      <a class="nav-button" href="/register">Register / Dashboard</a>
       <span class="status">marketplace.picoin.science</span>
     </div>
   </header>
@@ -1277,9 +1278,212 @@ def home() -> str:
 </html>"""
 
 
-@api.get("/dashboard", response_class=HTMLResponse)
-def user_dashboard_page() -> str:
+@api.get("/register", response_class=HTMLResponse)
+def register_page() -> str:
     return """<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Picoin Marketplace Access</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f3f6f8;
+      --surface: #ffffff;
+      --line: #d6dde2;
+      --ink: #17212b;
+      --muted: #667480;
+      --accent: #14746f;
+      --accent-2: #2f5d8c;
+      --soft: #edf5f4;
+      --blue-soft: #edf3fb;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--bg);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      letter-spacing: 0;
+    }
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--line);
+      padding: 13px 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+    }
+    h1 { margin: 0; font-size: 1.16rem; font-weight: 760; }
+    h2 { margin: 0 0 6px; font-size: 1rem; font-weight: 760; }
+    p { margin: 0; }
+    main {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 18px;
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 16px;
+    }
+    section {
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 16px;
+      display: grid;
+      gap: 12px;
+      align-content: start;
+    }
+    .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    .pill {
+      background: var(--soft);
+      color: #0d5e59;
+      border: 1px solid #cce2df;
+      border-radius: 999px;
+      padding: 2px 7px;
+      font-size: .78rem;
+      white-space: nowrap;
+    }
+    .pill.blue {
+      background: var(--blue-soft);
+      color: #214f82;
+      border-color: #c9daef;
+    }
+    .muted { color: var(--muted); font-size: .84rem; }
+    form { display: grid; gap: 10px; }
+    label { display: grid; gap: 5px; color: var(--muted); font-size: .78rem; }
+    input {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 10px;
+      font: inherit;
+      color: var(--ink);
+      background: #fff;
+    }
+    button, .nav-button {
+      border: 0;
+      border-radius: 6px;
+      padding: 10px 12px;
+      background: var(--accent);
+      color: white;
+      font-weight: 700;
+      cursor: pointer;
+      text-decoration: none;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      font-size: .88rem;
+    }
+    button.secondary { background: var(--accent-2); }
+    .nav-button.light {
+      background: #fff;
+      color: var(--ink);
+      border: 1px solid var(--line);
+    }
+    pre {
+      margin: 0;
+      max-height: 220px;
+      overflow: auto;
+      background: #111923;
+      color: #dce8ec;
+      border-radius: 8px;
+      padding: 10px;
+      font-size: .78rem;
+    }
+    @media (max-width: 760px) {
+      header { align-items: flex-start; flex-direction: column; }
+      main { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Picoin Marketplace Access</h1>
+    <div class="toolbar">
+      <span class="pill">PICOIN / USDT / USDC</span>
+      <span class="pill blue">Register first</span>
+      <a class="nav-button light" href="/">Back to marketplace</a>
+    </div>
+  </header>
+  <main>
+    <section>
+      <div>
+        <h2>Create your marketplace account</h2>
+        <p class="muted">Register first, then the user dashboard opens with deposit addresses, scanner status, balances, and wallet verification.</p>
+      </div>
+      <form id="account-form">
+        <label>Email
+          <input name="email" value="customer@example.com" required>
+        </label>
+        <label>Display name
+          <input name="display_name" value="Marketplace Customer">
+        </label>
+        <button class="secondary" type="submit">Create account and enter dashboard</button>
+      </form>
+    </section>
+    <section>
+      <div>
+        <h2>Already registered</h2>
+        <p class="muted">Enter your account ID to open the user dashboard.</p>
+      </div>
+      <form id="existing-form">
+        <label>Account ID
+          <input name="account_id" placeholder="acct_..." required>
+        </label>
+        <button type="submit">Open dashboard</button>
+      </form>
+      <pre id="register-output"></pre>
+    </section>
+  </main>
+  <script>
+    const out = value => document.getElementById('register-output').textContent = typeof value === 'string' ? value : JSON.stringify(value, null, 2);
+    async function request(path, options = {}) {
+      const response = await fetch(path, options);
+      const payload = await response.json();
+      if (!response.ok) throw payload;
+      return payload;
+    }
+    function readForm(form) {
+      const data = Object.fromEntries(new FormData(form).entries());
+      for (const key of Object.keys(data)) {
+        if (data[key] === '') delete data[key];
+      }
+      return data;
+    }
+    document.getElementById('account-form').addEventListener('submit', async event => {
+      event.preventDefault();
+      try {
+        const account = await request('/accounts', {
+          method: 'POST',
+          headers: {'content-type': 'application/json'},
+          body: JSON.stringify(readForm(event.target))
+        });
+        location.href = `/dashboard?account_id=${encodeURIComponent(account.account_id)}`;
+      } catch (error) { out(error); }
+    });
+    document.getElementById('existing-form').addEventListener('submit', event => {
+      event.preventDefault();
+      const accountId = new FormData(event.target).get('account_id').trim();
+      if (!accountId) {
+        out('Account ID is required.');
+        return;
+      }
+      location.href = `/dashboard?account_id=${encodeURIComponent(accountId)}`;
+    });
+  </script>
+</body>
+</html>"""
+
+
+@api.get("/dashboard", response_class=HTMLResponse)
+def user_dashboard_page(account_id: str | None = None):
+    if not account_id:
+        return RedirectResponse(url="/register", status_code=303)
+    account_id_json = json.dumps(account_id)
+    html = """<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
@@ -1486,28 +1690,21 @@ def user_dashboard_page() -> str:
       <span class="pill">PICOIN / USDT / USDC</span>
       <span class="pill blue">Scanner deposits</span>
       <a class="nav-button light" href="/">Back to marketplace</a>
+      <a class="nav-button light" href="/register">Switch account</a>
     </div>
   </header>
   <main>
     <div class="column">
       <section>
         <div class="section-head">
-          <h2>Account</h2>
-          <span class="pill">wallets</span>
+          <h2>Dashboard Account</h2>
+          <span class="pill">registered</span>
         </div>
-        <form id="account-form">
-          <label class="span-2">Email
-            <input name="email" value="customer@example.com" required>
-          </label>
-          <label class="span-2">Display name
-            <input name="display_name" value="Marketplace Customer">
-          </label>
-          <button class="span-2 secondary" type="submit">Create account</button>
-        </form>
+        <p class="muted">This page is opened after registration. Use this account to verify wallets, receive deposits, and pay bookings from confirmed balance.</p>
         <div class="quote-box" style="margin-top:10px">
           <div class="quote-row"><span>Active account</span><strong id="dashboard-account-label">Not selected</strong></div>
           <label class="span-2">Account ID
-            <input id="dashboard-account-id" placeholder="acct_...">
+            <input id="dashboard-account-id" placeholder="acct_..." readonly>
           </label>
           <button id="refresh-dashboard-button" class="light" type="button">Refresh dashboard</button>
         </div>
@@ -1683,19 +1880,6 @@ def user_dashboard_page() -> str:
         out('account-output', error);
       }
     }
-    document.getElementById('account-form').addEventListener('submit', async event => {
-      event.preventDefault();
-      try {
-        const account = await request('/accounts', {
-          method: 'POST',
-          headers: {'content-type': 'application/json'},
-          body: JSON.stringify(readForm(event.target))
-        });
-        syncAccountInputs(account.account_id);
-        out('account-output', account);
-        await refreshDashboard();
-      } catch (error) { out('account-output', error); }
-    });
     document.getElementById('wallet-form').addEventListener('submit', async event => {
       event.preventDefault();
       try {
@@ -1719,11 +1903,14 @@ def user_dashboard_page() -> str:
       refreshDashboard();
     });
     const params = new URLSearchParams(location.search);
-    if (params.get('account_id')) syncAccountInputs(params.get('account_id'));
+    const initialAccountId = __ACCOUNT_ID_JSON__;
+    if (initialAccountId) syncAccountInputs(initialAccountId);
+    else if (params.get('account_id')) syncAccountInputs(params.get('account_id'));
     refreshDashboard();
   </script>
 </body>
 </html>"""
+    return HTMLResponse(html.replace("__ACCOUNT_ID_JSON__", account_id_json))
 
 
 @api.get("/summary")
