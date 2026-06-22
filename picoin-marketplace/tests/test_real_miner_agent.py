@@ -2,13 +2,14 @@ from __future__ import annotations
 
 from picoin_marketplace import real_miner_agent
 from picoin_marketplace.models import HardwareType
-from picoin_marketplace.real_miner_agent import RealMinerConfig, config_from_env, run_miner_once
+import pytest
+
+from picoin_marketplace.real_miner_agent import RealMinerConfig, config_from_env, run_miner_once, start_miner_processes
 
 
 class FakeProcess:
-    pid = 12345
-
-    def __init__(self):
+    def __init__(self, pid=12345):
+        self.pid = pid
         self.terminated = False
 
     def poll(self):
@@ -27,7 +28,7 @@ class FakeProcess:
 def test_real_miner_autodiscovers_monero_pool_and_reports_xmrig(monkeypatch):
     posts = []
     popen_calls = []
-    fake_process = FakeProcess()
+    fake_processes = [FakeProcess(1001), FakeProcess(1002)]
 
     def fake_get(url):
         if "/pools" in url:
@@ -50,7 +51,7 @@ def test_real_miner_autodiscovers_monero_pool_and_reports_xmrig(monkeypatch):
 
     def fake_popen(command, **kwargs):
         popen_calls.append((command, kwargs))
-        return fake_process
+        return fake_processes[len(popen_calls) - 1]
 
     monkeypatch.setattr("picoin_marketplace.worker_agent.json_get", fake_get)
     monkeypatch.setattr("picoin_marketplace.worker_agent.json_post", fake_post)
@@ -77,8 +78,10 @@ def test_real_miner_autodiscovers_monero_pool_and_reports_xmrig(monkeypatch):
         paired_coin="MONERO",
         units_total=2,
         price_pi_per_hour=0.5,
-        miner_command=["xmrig", "-o", "pool.supportxmr.com:443"],
-        miner_api_url="http://127.0.0.1:18088/2/summary",
+        picoin_command=["picoin", "miner", "--identity", "/var/lib/picoin-marketplace/miner_identity.json", "mine"],
+        paired_command=["xmrig", "-o", "pool.supportxmr.com:443"],
+        paired_api_url="http://127.0.0.1:18088/2/summary",
+        require_picoin_miner=True,
         warmup_seconds=0,
     )
 
@@ -87,15 +90,27 @@ def test_real_miner_autodiscovers_monero_pool_and_reports_xmrig(monkeypatch):
     assert result["pool_id"] == "pool_cpu_monero"
     assert result["worker_id"] == "real-monero-1"
     assert result["report_count"] == 1
-    assert popen_calls[0][0] == ["xmrig", "-o", "pool.supportxmr.com:443"]
-    assert fake_process.terminated is True
+    assert popen_calls[0][0] == [
+        "picoin",
+        "miner",
+        "--identity",
+        "/var/lib/picoin-marketplace/miner_identity.json",
+        "mine",
+    ]
+    assert popen_calls[1][0] == ["xmrig", "-o", "pool.supportxmr.com:443"]
+    assert fake_processes[0].terminated is True
+    assert fake_processes[1].terminated is True
     register_payload = posts[0][1]
     assert register_payload["pool_id"] == "pool_cpu_monero"
     assert register_payload["hardware_type"] == "cpu"
     heartbeat_payload = posts[1][1]
     assert heartbeat_payload["status"] == "online"
     assert heartbeat_payload["metrics"]["real_miner"] is True
+    assert heartbeat_payload["metrics"]["paired_controller"] is True
     assert heartbeat_payload["metrics"]["pair_symbol"] == "PICOIN/MONERO"
+    assert heartbeat_payload["metrics"]["picoin"]["running"] is True
+    assert heartbeat_payload["metrics"]["paired"]["running"] is True
+    assert heartbeat_payload["metrics"]["split"] == {"picoin_percent": 10, "paired_percent": 90}
     report_payload = posts[2][1]
     assert report_payload["reported_hashrate"] == 321.5
     assert report_payload["accepted_shares"] == 12
@@ -109,8 +124,10 @@ def test_real_miner_config_from_env(monkeypatch):
     monkeypatch.setenv("PICOIN_MARKETPLACE_WORKER_PROVIDER_WALLET", "PI_PROVIDER_CPU")
     monkeypatch.setenv("PICOIN_MARKETPLACE_WORKER_HARDWARE_TYPE", "cpu")
     monkeypatch.setenv("PICOIN_MARKETPLACE_MINER_PAIRED_COIN", "monero")
+    monkeypatch.setenv("PICOIN_MARKETPLACE_PICOIN_MINER_COMMAND", "picoin miner --identity miner.json mine")
     monkeypatch.setenv("PICOIN_MARKETPLACE_MINER_COMMAND", "xmrig -o pool.example:443 -u wallet")
     monkeypatch.setenv("PICOIN_MARKETPLACE_MINER_API_URL", "http://127.0.0.1:18088/2/summary")
+    monkeypatch.setenv("PICOIN_MARKETPLACE_REQUIRE_PICOIN_MINER", "1")
     monkeypatch.setenv("PICOIN_MARKETPLACE_WORKER_UNITS_TOTAL", "4")
     monkeypatch.setenv("PICOIN_MARKETPLACE_WORKER_PRICE_PI_PER_HOUR", "0.75")
 
@@ -121,8 +138,12 @@ def test_real_miner_config_from_env(monkeypatch):
     assert config.provider_wallet == "PI_PROVIDER_CPU"
     assert config.hardware_type == HardwareType.CPU
     assert config.paired_coin == "MONERO"
+    assert config.picoin_command == ["picoin", "miner", "--identity", "miner.json", "mine"]
+    assert config.paired_command == ["xmrig", "-o", "pool.example:443", "-u", "wallet"]
     assert config.miner_command == ["xmrig", "-o", "pool.example:443", "-u", "wallet"]
+    assert config.paired_api_url == "http://127.0.0.1:18088/2/summary"
     assert config.miner_api_url == "http://127.0.0.1:18088/2/summary"
+    assert config.require_picoin_miner is True
     assert config.units_total == 4
     assert config.price_pi_per_hour == 0.75
 
@@ -173,3 +194,13 @@ def test_real_miner_creates_missing_picoin_monero_pool(monkeypatch):
             "paired_capacity_percent": 90,
         },
     )
+
+
+def test_real_miner_requires_both_sides_when_picoin_is_required():
+    config = RealMinerConfig(
+        picoin_command=["picoin", "miner", "mine"],
+        require_picoin_miner=True,
+    )
+
+    with pytest.raises(ValueError, match="paired miner command"):
+        start_miner_processes(config)

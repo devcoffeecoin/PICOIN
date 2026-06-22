@@ -5,8 +5,8 @@ This directory contains Linux deployment artifacts for:
 - `picoin-marketplace`: FastAPI app on `127.0.0.1:9410`
 - `picoin-marketplace-scanner`: deposit scanner loop for Picoin and EVM rails
 - `picoin-marketplace-maintenance`: worker expiry and marketplace housekeeping
-- `picoin-marketplace-miner`: optional real external miner controller, for
-  example XMRig reporting into the `PICOIN/MONERO` pool
+- `picoin-marketplace-miner`: optional real paired miner controller; for
+  example Picoin plus XMRig reporting into the `PICOIN/MONERO` pool
 
 ## Install
 
@@ -50,8 +50,10 @@ sudo systemctl restart picoin-marketplace picoin-marketplace-scanner
 sudo systemctl restart picoin-marketplace-maintenance
 ```
 
-The real miner service is installed but not enabled automatically. Configure
-`PICOIN_MARKETPLACE_MINER_COMMAND` first, then run:
+The real miner service is installed but not enabled automatically. Configure at
+least `PICOIN_MARKETPLACE_PAIRED_MINER_COMMAND` first. For a true pair worker,
+also configure `PICOIN_MARKETPLACE_PICOIN_MINER_COMMAND` and set
+`PICOIN_MARKETPLACE_REQUIRE_PICOIN_MINER=1`, then run:
 
 ```bash
 sudo systemctl enable --now picoin-marketplace-miner

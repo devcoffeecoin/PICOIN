@@ -60,5 +60,5 @@ systemctl restart picoin-marketplace.service picoin-marketplace-scanner.service 
 
 echo "Picoin Marketplace installed."
 echo "Edit ${ENV_DIR}/picoin-marketplace.env for production addresses and RPC URLs."
-echo "Optional real miner service: configure PICOIN_MARKETPLACE_MINER_COMMAND, then enable picoin-marketplace-miner.service."
+echo "Optional real miner service: configure PICOIN_MARKETPLACE_PICOIN_MINER_COMMAND and PICOIN_MARKETPLACE_PAIRED_MINER_COMMAND, then enable picoin-marketplace-miner.service."
 echo "API health: curl -fsS http://127.0.0.1:9410/health"

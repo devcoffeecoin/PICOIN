@@ -744,13 +744,23 @@ Execution reports do not release funds or change capacity by themselves. They
 give the marketplace, customer, and provider a live operational view of an
 active reservation before settlement/dispute logic is added.
 
-## Real PICOIN/MONERO Miner
+## Real PICOIN/MONERO Miner Pair
 
 For a real CPU mining test, use the optional `picoin-marketplace-miner`
 controller. It does not mine by itself and it does not bundle a miner binary.
-It launches a real external process, such as `xmrig`, registers the worker in
-the `PICOIN/MONERO` pool, sends heartbeats, reads the XMRig HTTP API when
-configured, and reports live hashrate/shares against active bookings.
+It launches external miner processes, registers the worker in the
+`PICOIN/MONERO` pool, sends heartbeats, reads miner APIs when configured, and
+reports live capacity against active bookings.
+
+For a true pair pool, run two commands on the same worker host:
+
+- Picoin side: `PICOIN_MARKETPLACE_PICOIN_MINER_COMMAND`
+- Paired side, for example Monero/XMRig: `PICOIN_MARKETPLACE_PAIRED_MINER_COMMAND`
+
+The marketplace split is still 10% Picoin and 90% paired coin. The controller
+does not magically merge protocols into one miner binary; it supervises both
+miners at the same time and reports the combined worker as one
+`PICOIN/MONERO` marketplace listing.
 
 Confirm the seeded CPU pool exists:
 
@@ -759,8 +769,8 @@ curl -sS "http://127.0.0.1:9410/pools?hardware_type=cpu&paired_coin=MONERO" \
   | python -m json.tool
 ```
 
-Run one real-miner tick with XMRig. Replace `MONERO_WALLET` and pool address
-with your own values:
+Run one real-miner tick with Picoin plus XMRig. Replace paths, wallet, and pool
+address with your own values:
 
 ```bash
 PICOIN_MARKETPLACE_URL=http://127.0.0.1:9410 \
@@ -771,8 +781,10 @@ PICOIN_MARKETPLACE_WORKER_HARDWARE_TYPE=cpu \
 PICOIN_MARKETPLACE_WORKER_UNITS_TOTAL=1 \
 PICOIN_MARKETPLACE_WORKER_PRICE_PI_PER_HOUR=1 \
 PICOIN_MARKETPLACE_MINER_PAIRED_COIN=MONERO \
-PICOIN_MARKETPLACE_MINER_COMMAND='xmrig -o pool.supportxmr.com:443 -u MONERO_WALLET -k --tls --http-host 127.0.0.1 --http-port 18088' \
-PICOIN_MARKETPLACE_MINER_API_URL=http://127.0.0.1:18088/2/summary \
+PICOIN_MARKETPLACE_PICOIN_MINER_COMMAND='/opt/picoin/src/PICOIN/.venv/bin/python -m picoin miner --server https://api.picoin.science --identity /var/lib/picoin-marketplace/picoin-miner-identity.json mine --loops 1 --workers 1' \
+PICOIN_MARKETPLACE_PAIRED_MINER_COMMAND='xmrig -o pool.supportxmr.com:443 -u MONERO_WALLET -k --tls --http-host 127.0.0.1 --http-port 18088' \
+PICOIN_MARKETPLACE_PAIRED_MINER_API_URL=http://127.0.0.1:18088/2/summary \
+PICOIN_MARKETPLACE_REQUIRE_PICOIN_MINER=1 \
 picoin-marketplace-miner --once
 ```
 
@@ -785,10 +797,13 @@ picoin-marketplace-miner
 The controller auto-discovers the active `PICOIN/MONERO` CPU pool when
 `PICOIN_MARKETPLACE_WORKER_POOL_ID` is empty. If the pool is missing, it creates
 the `PICOIN/MONERO` CPU pool with the standard 10%/90% split unless
-`PICOIN_MARKETPLACE_MINER_AUTO_CREATE_POOL=0` is set. It reports
-`status=online` only while the miner process or monitored miner API is healthy.
-If the miner exits, the marketplace listing is reported as unavailable until the
-process restarts.
+`PICOIN_MARKETPLACE_MINER_AUTO_CREATE_POOL=0` is set.
+
+Set `PICOIN_MARKETPLACE_REQUIRE_PICOIN_MINER=1` for production pair workers. In
+that mode, the marketplace listing is online only when both the Picoin side and
+the paired-coin side are healthy. Existing single-XMRig tests can keep using the
+legacy `PICOIN_MARKETPLACE_MINER_COMMAND` key; it is treated as an alias for
+`PICOIN_MARKETPLACE_PAIRED_MINER_COMMAND`.
 
 Expire stale workers:
 
