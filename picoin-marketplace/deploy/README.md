@@ -28,7 +28,18 @@ PICOIN_MARKETPLACE_ESCROW_ADDRESS
 PICOIN_MARKETPLACE_PICOIN_NODE_URL
 PICOIN_MARKETPLACE_EVM_ESCROW_ADDRESS
 PICOIN_MARKETPLACE_EVM_RPC_URL
+PICOIN_MARKETPLACE_SESSION_SECRET
 ```
+
+For `https://marketplace.picoin.science`, also set:
+
+```text
+PICOIN_MARKETPLACE_SECURE_COOKIES=1
+```
+
+`PICOIN_MARKETPLACE_SESSION_SECRET` must be a long random value. New installs
+generate one automatically; older deployments should add it manually before
+exposing account dashboards.
 
 Restart after editing:
 

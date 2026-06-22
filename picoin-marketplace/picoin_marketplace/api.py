@@ -9,7 +9,7 @@ import time
 from pathlib import Path
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .marketplace import Marketplace, DEFAULT_STATE_DIR
@@ -42,6 +42,8 @@ from .models import (
 
 
 api = FastAPI(title="Picoin Compute Marketplace", version="0.1.0")
+DASHBOARD_ACCOUNT_COOKIE = "picoin_marketplace_account"
+DASHBOARD_SESSION_COOKIE = "picoin_marketplace_session"
 
 
 def marketplace() -> Marketplace:
@@ -80,6 +82,39 @@ def verify_dashboard_session(account_id: str, token: str | None) -> bool:
     return payload.get("account_id") == account_id and int(payload.get("exp", 0)) >= int(time.time())
 
 
+def secure_cookie_enabled() -> bool:
+    return os.getenv("PICOIN_MARKETPLACE_SECURE_COOKIES", "0").lower() in {"1", "true", "yes", "on"}
+
+
+def set_dashboard_cookies(response: Response, account_id: str, token: str) -> None:
+    cookie_options = {
+        "httponly": True,
+        "samesite": "lax",
+        "secure": secure_cookie_enabled(),
+        "max_age": 86_400,
+    }
+    response.set_cookie(DASHBOARD_ACCOUNT_COOKIE, account_id, **cookie_options)
+    response.set_cookie(DASHBOARD_SESSION_COOKIE, token, **cookie_options)
+
+
+def request_session_token(request: Request, explicit_token: str | None = None) -> str | None:
+    if explicit_token:
+        return explicit_token
+    bearer = request.headers.get("authorization", "")
+    if bearer.lower().startswith("bearer "):
+        return bearer.split(" ", 1)[1].strip()
+    return request.headers.get("x-picoin-marketplace-session") or request.cookies.get(DASHBOARD_SESSION_COOKIE)
+
+
+def request_account_id(request: Request, explicit_account_id: str | None = None) -> str | None:
+    return explicit_account_id or request.cookies.get(DASHBOARD_ACCOUNT_COOKIE)
+
+
+def require_dashboard_session(account_id: str, request: Request, explicit_token: str | None = None) -> None:
+    if not verify_dashboard_session(account_id, request_session_token(request, explicit_token)):
+        raise HTTPException(status_code=401, detail="valid marketplace account session required")
+
+
 @api.get("/health")
 def health() -> dict:
     return {
@@ -99,7 +134,7 @@ def create_account_api(payload: AccountCreateRequest) -> dict:
 
 
 @api.post("/accounts/login")
-def account_login_api(payload: AccountLoginRequest) -> dict:
+def account_login_api(payload: AccountLoginRequest, response: Response) -> dict:
     try:
         account = marketplace().authenticate_account(payload)
     except KeyError as exc:
@@ -107,10 +142,11 @@ def account_login_api(payload: AccountLoginRequest) -> dict:
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
     token = sign_dashboard_session(account.account_id)
+    set_dashboard_cookies(response, account.account_id, token)
     return {
         "account": account.model_dump(mode="json"),
         "dashboard_token": token,
-        "dashboard_url": f"/dashboard?account_id={account.account_id}&session={token}",
+        "dashboard_url": "/dashboard",
     }
 
 
@@ -1391,8 +1427,9 @@ def register_page() -> str:
 
 
 @api.get("/dashboard", response_class=HTMLResponse)
-def user_dashboard_page(account_id: str | None = None, session: str | None = None):
-    if not account_id or not verify_dashboard_session(account_id, session):
+def user_dashboard_page(request: Request, account_id: str | None = None, session: str | None = None):
+    account_id = request_account_id(request, account_id)
+    if not account_id or not verify_dashboard_session(account_id, request_session_token(request, session)):
         return RedirectResponse(url="/register", status_code=303)
     account_id_json = json.dumps(account_id)
     html = """<!doctype html>
@@ -2270,9 +2307,17 @@ def worker_api(worker_id: str) -> dict:
 
 
 @api.post("/bookings")
-def create_booking_api(payload: BookingCreateRequest) -> dict:
+def create_booking_api(payload: BookingCreateRequest, request: Request) -> dict:
     try:
-        booking, payment = marketplace().create_booking(payload)
+        app = marketplace()
+        if payload.account_id:
+            app.get_account(payload.account_id)
+            require_dashboard_session(payload.account_id, request)
+        booking, payment = app.create_booking(payload)
+    except HTTPException:
+        raise
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (KeyError, LookupError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {
@@ -2326,9 +2371,12 @@ def submit_payment_api(payment_id: str, payload: PaymentSubmitRequest) -> dict:
 
 
 @api.post("/payments/{payment_id}/pay-from-balance")
-def pay_from_balance_api(payment_id: str, payload: PayFromBalanceRequest) -> dict:
+def pay_from_balance_api(payment_id: str, payload: PayFromBalanceRequest, request: Request) -> dict:
     try:
+        require_dashboard_session(payload.account_id, request)
         booking, payment, ledger_entry = marketplace().pay_payment_from_balance(payment_id, payload)
+    except HTTPException:
+        raise
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except ValueError as exc:

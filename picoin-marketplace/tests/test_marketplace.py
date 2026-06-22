@@ -9,6 +9,19 @@ from picoin_marketplace.marketplace import Marketplace
 from picoin_marketplace.models import AccountCreateRequest, LedgerDirection, LedgerEntry, TokenDefinition, utc_now
 
 
+def create_logged_in_account(client: TestClient, email: str, password: str = "secret-pass-1") -> dict:
+    account = client.post(
+        "/accounts",
+        json={"email": email, "password": password},
+    ).json()
+    login = client.post(
+        "/accounts/login",
+        json={"email": email, "password": password},
+    )
+    assert login.status_code == 200
+    return account
+
+
 def evm_topic(address: str) -> str:
     return "0x" + ("0" * 24) + address.lower().removeprefix("0x")
 
@@ -58,10 +71,7 @@ def test_gpu_listing_booking_payment_and_release(tmp_path, monkeypatch):
     assert listing["pool_id"] == pool["pool_id"]
     assert listing["pair_symbol"] == "PICOIN/MONERO"
     assert listing["units_available"] == 2
-    account = client.post(
-        "/accounts",
-        json={"email": "buyer@example.com", "password": "secret-pass-1"},
-    ).json()
+    account = create_logged_in_account(client, "buyer@example.com")
 
     booking_response = client.post(
         "/bookings",
@@ -210,10 +220,7 @@ def test_booking_requires_matching_capacity(tmp_path, monkeypatch):
     monkeypatch.setenv("PICOIN_MARKETPLACE_STATE_DIR", str(tmp_path))
     monkeypatch.setenv("PICOIN_MARKETPLACE_SEED_DEFAULT_POOLS", "0")
     client = TestClient(marketplace_api.api)
-    account = client.post(
-        "/accounts",
-        json={"email": "capacity-buyer@example.com", "password": "secret-pass-1"},
-    ).json()
+    account = create_logged_in_account(client, "capacity-buyer@example.com")
 
     response = client.post(
         "/bookings",
@@ -264,6 +271,23 @@ def test_booking_requires_registered_account(tmp_path, monkeypatch):
     assert missing.status_code == 400
     assert "registered account_id is required" in missing.json()["detail"]
 
+    known = client.post(
+        "/accounts",
+        json={"email": "known-buyer@example.com", "password": "secret-pass-1"},
+    ).json()
+    unauthenticated = client.post(
+        "/bookings",
+        json={
+            "account_id": known["account_id"],
+            "requester_wallet": "PI_CUSTOMER_WALLET",
+            "pool_id": pool["pool_id"],
+            "units": 1,
+            "duration_minutes": 60,
+        },
+    )
+    assert unauthenticated.status_code == 401
+    assert "valid marketplace account session required" in unauthenticated.json()["detail"]
+
     unknown = client.post(
         "/bookings",
         json={
@@ -274,7 +298,7 @@ def test_booking_requires_registered_account(tmp_path, monkeypatch):
             "duration_minutes": 60,
         },
     )
-    assert unknown.status_code == 400
+    assert unknown.status_code == 404
     assert "account not found" in unknown.json()["detail"]
 
 
@@ -411,7 +435,7 @@ def test_user_dashboard_page_is_separate_from_marketplace_home(tmp_path, monkeyp
     ).json()
 
     assert login["account"]["account_id"] == account["account_id"]
-    assert login["dashboard_url"].startswith(f"/dashboard?account_id={account['account_id']}&session=")
+    assert login["dashboard_url"] == "/dashboard"
 
     response = client.get(login["dashboard_url"])
 
@@ -563,10 +587,7 @@ def test_worker_registration_and_heartbeat_manage_capacity(tmp_path, monkeypatch
     assert worker["listing_id"] == listing["listing_id"]
     assert listing["units_total"] == 3
     assert listing["units_available"] == 3
-    account = client.post(
-        "/accounts",
-        json={"email": "worker-buyer@example.com", "password": "secret-pass-1"},
-    ).json()
+    account = create_logged_in_account(client, "worker-buyer@example.com")
 
     booking_payload = client.post(
         "/bookings",
@@ -727,10 +748,7 @@ def test_account_picoin_deposit_confirmation_and_balance_payment(tmp_path, monke
     monkeypatch.setenv("PICOIN_MARKETPLACE_SEED_DEFAULT_POOLS", "0")
     client = TestClient(marketplace_api.api)
 
-    account = client.post(
-        "/accounts",
-        json={"email": "customer@example.com", "display_name": "Customer"},
-    ).json()
+    account = create_logged_in_account(client, "customer@example.com")
     wallet = client.post(
         f"/accounts/{account['account_id']}/wallets",
         json={"chain_code": "picoin", "address": "PI_CUSTOMER_WALLET"},
@@ -792,6 +810,13 @@ def test_account_picoin_deposit_confirmation_and_balance_payment(tmp_path, monke
     payment = booking_payload["payment"]
     assert payment["amount_base_units"] == "3141600"
 
+    blocked_client = TestClient(marketplace_api.api)
+    blocked = blocked_client.post(
+        f"/payments/{payment['payment_id']}/pay-from-balance",
+        json={"account_id": account["account_id"], "chain_code": "picoin", "token_symbol": "PICOIN"},
+    )
+    assert blocked.status_code == 401
+
     paid = client.post(
         f"/payments/{payment['payment_id']}/pay-from-balance",
         json={"account_id": account["account_id"], "chain_code": "picoin", "token_symbol": "PICOIN"},
@@ -812,7 +837,7 @@ def test_usdc_deposit_can_pay_marketplace_booking(tmp_path, monkeypatch):
     monkeypatch.setenv("PICOIN_MARKETPLACE_EVM_ESCROW_ADDRESS", "0x2222222222222222222222222222222222222222")
     client = TestClient(marketplace_api.api)
 
-    account = client.post("/accounts", json={"email": "usdc@example.com"}).json()
+    account = create_logged_in_account(client, "usdc@example.com")
     wallet = client.post(
         f"/accounts/{account['account_id']}/wallets",
         json={

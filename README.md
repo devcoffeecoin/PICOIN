@@ -2,7 +2,7 @@
 
 ## Applications
 
-- `picoin-marketplace`: standalone app for `marketplace.picoin.science`, with CPU/GPU/ASIC paired mining pools such as `PICO/MONERO`, `PICO/DOGE`, `PICO/RAVENCOIN`, and `PICO/LITECOIN`; marketplace capacity is priced in Picoin and can be paid with PICO or approved Ethereum tokens.
+- `picoin-marketplace`: standalone app for `marketplace.picoin.science`, with CPU/GPU/ASIC paired mining pools such as `PICOIN/MONERO`, `PICOIN/DOGE`, `PICOIN/RAVENCOIN`, and `PICOIN/LITECOIN`; marketplace capacity is priced in Picoin and can be paid with PICOIN or approved Ethereum tokens.
 
 Official mainnet and node operator guide.
 

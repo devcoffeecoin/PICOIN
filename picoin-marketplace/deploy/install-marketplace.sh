@@ -38,6 +38,12 @@ python3 -m venv "${APP_DIR}/.venv"
 
 if [[ ! -f "${ENV_DIR}/picoin-marketplace.env" ]]; then
   cp "${APP_DIR}/deploy/picoin-marketplace.env.example" "${ENV_DIR}/picoin-marketplace.env"
+  SESSION_SECRET="$("${APP_DIR}/.venv/bin/python" - <<'PY'
+import secrets
+print(secrets.token_urlsafe(48))
+PY
+)"
+  sed -i "s/^PICOIN_MARKETPLACE_SESSION_SECRET=.*/PICOIN_MARKETPLACE_SESSION_SECRET=${SESSION_SECRET}/" "${ENV_DIR}/picoin-marketplace.env"
 fi
 
 cp "${APP_DIR}/deploy/picoin-marketplace.service" /etc/systemd/system/picoin-marketplace.service
